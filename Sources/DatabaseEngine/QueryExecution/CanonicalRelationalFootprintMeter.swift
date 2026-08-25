@@ -50,17 +50,20 @@ package enum CanonicalRelationalFootprintMeter {
 
     package static func footprint(
         of row: QueryRow,
-        workMeter: DatabaseWorkMeter
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage = .projection
     ) throws -> DatabaseIntermediateFootprint {
         var retainedBytes = try retainedByteCount(
             fields: row.fields,
-            workMeter: workMeter
+            workMeter: workMeter,
+            stage: stage
         )
         retainedBytes = try adding(
             retainedBytes,
             retainedByteCount(
                 fields: row.annotations,
-                workMeter: workMeter
+                workMeter: workMeter,
+                stage: stage
             )
         )
         if let version = row.version {
@@ -72,6 +75,26 @@ package enum CanonicalRelationalFootprintMeter {
         return DatabaseIntermediateFootprint(
             rows: 1,
             bytes: try adding(rowHeaderByteCount, retainedBytes)
+        )
+    }
+
+    /// Returns the retained claim for one prospective QueryRow field.
+    ///
+    /// Supplying the UTF-8 count lets a feature executor reserve memory before
+    /// allocating a composed field-name String.
+    package static func fieldEntryFootprint(
+        nameUTF8Count: Int,
+        value: borrowing FieldValue,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> DatabaseIntermediateFootprint {
+        DatabaseIntermediateFootprint(
+            bytes: try retainedEntryByteCount(
+                nameUTF8Count: nameUTF8Count,
+                value: value,
+                workMeter: workMeter,
+                stage: stage
+            )
         )
     }
 
@@ -178,7 +201,8 @@ package enum CanonicalRelationalFootprintMeter {
 
     private static func retainedByteCount(
         fields: [String: FieldValue],
-        workMeter: DatabaseWorkMeter
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage = .projection
     ) throws -> UInt64 {
         var total = UInt64(MemoryLayout<[String: FieldValue]>.stride)
         for (name, value) in fields {
@@ -187,11 +211,12 @@ package enum CanonicalRelationalFootprintMeter {
                 retainedEntryByteCount(
                     name: name,
                     value: value,
-                    workMeter: workMeter
+                    workMeter: workMeter,
+                    stage: stage
                 )
             )
         }
-        try workMeter.checkpoint(at: .projection)
+        try workMeter.checkpoint(at: stage)
         return total
     }
 
@@ -246,17 +271,32 @@ package enum CanonicalRelationalFootprintMeter {
     private static func retainedEntryByteCount(
         name: String,
         value: FieldValue,
-        workMeter: DatabaseWorkMeter
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage = .projection
+    ) throws -> UInt64 {
+        try retainedEntryByteCount(
+            nameUTF8Count: name.utf8.count,
+            value: value,
+            workMeter: workMeter,
+            stage: stage
+        )
+    }
+
+    private static func retainedEntryByteCount(
+        nameUTF8Count: Int,
+        value: borrowing FieldValue,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
     ) throws -> UInt64 {
         let valueBytes = try StorageValueDecoder.retainedFootprint(of: value)
         let retainedBytes = try adding(
             collectionEntryByteCount,
-            try adding(UInt64(name.utf8.count), valueBytes)
+            try adding(UInt64(nameUTF8Count), valueBytes)
         )
         try DatabaseByteProcessingMeter.consume(
             byteCount: retainedBytes,
             workMeter: workMeter,
-            stage: .projection
+            stage: stage
         )
         return retainedBytes
     }

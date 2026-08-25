@@ -18,13 +18,13 @@
   - [x] Rebuild iterator concurrency tests around an overlap barrier
   - [x] Rebuild concurrent save tests around a blocked first save and exact error matching
   - [x] Review transaction ownership and commit the sprint
-- [ ] Sprint 4: Canonical graph execution contract
-  - [ ] Add failing GRAPH_TABLE semantic, resource, cancellation, and SQL entry tests
-  - [ ] Implement one metered retained GRAPH_TABLE execution path for direct and canonical reads
-  - [ ] Reject or execute every declared path and node-label semantic explicitly
-  - [ ] Add typed RDF dataset resolution and exact SPARQL function failures
-  - [ ] Replace empty SPARQL admission success with a nonempty end-to-end fixture
-  - [ ] Review authorization, transaction, resource, and capability boundaries and commit the sprint
+- [x] Sprint 4: Canonical graph execution contract
+  - [x] Add failing GRAPH_TABLE semantic, resource, cancellation, and SQL entry tests
+  - [x] Implement one metered retained GRAPH_TABLE execution path for direct and canonical reads
+  - [x] Reject or execute every declared path and node-label semantic explicitly
+  - [x] Add typed RDF dataset resolution and exact SPARQL function failures
+  - [x] Replace empty SPARQL admission success with a nonempty end-to-end fixture
+  - [x] Review authorization, transaction, resource, and capability boundaries and commit the sprint
 - [ ] Sprint 5: Specialized index public-path evidence
   - [ ] Add Rank public builder and canonical executor behavior tests
   - [ ] Add Bitmap public builder and canonical executor behavior tests

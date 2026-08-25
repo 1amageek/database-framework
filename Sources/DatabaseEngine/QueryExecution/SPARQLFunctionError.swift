@@ -3,7 +3,11 @@
 
 
 /// Errors that occur during SPARQL() function execution
-public enum SPARQLFunctionError: Error, Sendable, CustomStringConvertible {
+public enum SPARQLFunctionError:
+    Error,
+    Sendable,
+    Equatable,
+    CustomStringConvertible {
     /// Invalid arguments provided to SPARQL() function
     ///
     /// Expected format: SPARQL(TypeName, 'SPARQL query string', ['?variable'])
@@ -20,10 +24,11 @@ public enum SPARQLFunctionError: Error, Sendable, CustomStringConvertible {
     /// The specified type does not have a graph index defined.
     case graphIndexNotFound(String)
 
-    /// Invalid graph index configuration
-    ///
-    /// The selected index is not a property-graph declaration.
-    case invalidGraphIndex(String)
+    /// More than one RDF dataset index is declared for the selected type.
+    case ambiguousGraphIndexes(
+        typeName: String,
+        candidates: [String]
+    )
 
     /// Missing variable in SPARQL result
     ///
@@ -44,8 +49,8 @@ public enum SPARQLFunctionError: Error, Sendable, CustomStringConvertible {
             return "Type '\(typeName)' not found in schema"
         case .graphIndexNotFound(let typeName):
             return "Graph index not found for type '\(typeName)'"
-        case .invalidGraphIndex(let typeName):
-            return "Invalid graph index configuration for type '\(typeName)'"
+        case .ambiguousGraphIndexes(let typeName, let candidates):
+            return "Multiple RDF dataset indexes found for type '\(typeName)': \(candidates.joined(separator: ", "))"
         case .missingVariable(let varName):
             return "Variable '\(varName)' not found in SPARQL result"
         case .multipleVariablesNotSupported:

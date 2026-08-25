@@ -128,7 +128,7 @@ the harness proves that the resolved macro dependency revisions match the
 tracked release pins.
 
 The backend-independent unit gate selects `GraphIndexes` and executes exactly
-611 `DatabaseEngineTests`, 872 `GraphIndexTests`, and 18
+611 `DatabaseEngineTests`, 876 `GraphIndexTests`, and 18
 `DatabaseRuntimeTests`. These target-level counts prevent a hidden test group
 from being offset by an unrelated target's additions or removals.
 

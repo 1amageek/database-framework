@@ -902,8 +902,21 @@ internal struct SPARQLFunctionRewriter: Sendable {
                 "SPARQL() requires an explicit partition for dynamic entity '\(entity.name)'"
             )
         }
-        guard let dataset = try RDFDatasetReadResolver.resolve(entity: entity) else {
-            throw SPARQLFunctionError.invalidGraphIndex(entity.name)
+        let dataset: RDFDatasetReadResolution
+        do {
+            dataset = try RDFDatasetReadResolver.resolveRequired(
+                entity: entity
+            )
+        } catch let error as RDFDatasetReadResolutionError {
+            switch error {
+            case .missing:
+                throw SPARQLFunctionError.graphIndexNotFound(entity.name)
+            case .ambiguous(let candidates):
+                throw SPARQLFunctionError.ambiguousGraphIndexes(
+                    typeName: entity.name,
+                    candidates: candidates
+                )
+            }
         }
         let graphIndex = dataset.indexDescriptor
         try context.authorizeIndexFieldRead(

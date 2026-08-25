@@ -7,30 +7,44 @@ package struct RDFDatasetReadResolution {
 }
 
 package enum RDFDatasetReadResolver {
-    package static func resolve(
+    /// Resolves an optional schema-wide projection source.
+    ///
+    /// No declared dataset means the authoritative RDF store remains the only
+    /// source. Multiple declarations are never equivalent to no declaration.
+    package static func resolveOptional(
         schema: Schema
     ) throws -> RDFDatasetReadResolution? {
         let candidates = try resolutions(in: schema)
-        return candidates.count == 1 ? candidates[0] : nil
-    }
-
-    package static func resolve(
-        entity: Schema.Entity
-    ) throws -> RDFDatasetReadResolution? {
-        let candidates = try resolutions(for: entity)
-        return candidates.count == 1 ? candidates[0] : nil
-    }
-
-    package static func errorMessage(schema: Schema) throws -> String {
-        let candidates = try resolutions(in: schema)
-        guard !candidates.isEmpty else {
-            return "No RDF dataset index found in schema"
+        switch candidates.count {
+        case 0:
+            return nil
+        case 1:
+            return candidates[0]
+        default:
+            throw RDFDatasetReadResolutionError.ambiguous(
+                candidates: candidateNames(candidates)
+            )
         }
+    }
 
-        let names = candidates.map { "\($0.entity.name):\($0.indexDescriptor.name)" }
-            .sorted()
-            .joined(separator: ", ")
-        return "RDF dataset source is ambiguous. Available indexes: \(names)"
+    /// Resolves the dataset explicitly selected by an entity-bound SQL
+    /// SPARQL function.
+    package static func resolveRequired(
+        entity: Schema.Entity
+    ) throws -> RDFDatasetReadResolution {
+        let candidates = try resolutions(for: entity)
+        switch candidates.count {
+        case 0:
+            throw RDFDatasetReadResolutionError.missing(
+                entityName: entity.name
+            )
+        case 1:
+            return candidates[0]
+        default:
+            throw RDFDatasetReadResolutionError.ambiguous(
+                candidates: candidateNames(candidates)
+            )
+        }
     }
 
     private static func resolutions(
@@ -60,5 +74,13 @@ package enum RDFDatasetReadResolver {
             ))
         }
         return result
+    }
+
+    private static func candidateNames(
+        _ candidates: [RDFDatasetReadResolution]
+    ) -> [String] {
+        candidates.map {
+            "\($0.entity.name):\($0.indexDescriptor.name)"
+        }.sorted()
     }
 }

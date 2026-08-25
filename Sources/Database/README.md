@@ -229,8 +229,8 @@ do {
         print("Invalid SPARQL() arguments: \(message)")
     case .missingVariable(let varName):
         print("Variable '\(varName)' not found in SPARQL results")
-    case .invalidGraphIndex(let typeName):
-        print("Invalid graph index for type '\(typeName)'")
+    case .ambiguousGraphIndexes(let typeName, let candidates):
+        print("Type '\(typeName)' has multiple RDF indexes: \(candidates)")
     }
 }
 ```
@@ -393,11 +393,11 @@ let users = try await context.executeSQL(
 Errors that occur during SPARQL() function execution.
 
 ```swift
-public enum SPARQLFunctionError: Error, Sendable, CustomStringConvertible {
+public enum SPARQLFunctionError: Error, Sendable, Equatable, CustomStringConvertible {
     case invalidArguments(String)
     case typeNotFound(String)
     case graphIndexNotFound(String)
-    case invalidGraphIndex(String)
+    case ambiguousGraphIndexes(typeName: String, candidates: [String])
     case missingVariable(String)
     case multipleVariablesNotSupported
 }

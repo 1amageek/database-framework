@@ -170,7 +170,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         scanner: CanonicalRDFDatasetScanner,
         includedFieldNames: [String]
     ) {
-        let resolution = try RDFDatasetReadResolver.resolve(
+        let resolution = try RDFDatasetReadResolver.resolveOptional(
             schema: context.container.schema
         )
         let projectedSources: [RDFDatasetSource]

@@ -155,7 +155,7 @@ struct GraphDirectReadAuthorizationTests {
         defer { await container.shutdown() }
         let context = container.testBaseContext()
         let source = GraphTableSource.match(
-            graph: "SecuredGraph",
+            graph: "secured_direct_property_index",
             from: NodePattern(variable: "source"),
             via: EdgePattern(labels: ["follows"], direction: .outgoing),
             to: NodePattern(variable: "target")

@@ -3,12 +3,13 @@ import DatabaseKit
 import StorageKit
 
 public protocol GraphTableSourceExecutor: Sendable {
-    func execute(
+    func executeInTransaction(
         context: DatabaseContext,
         graphTableSource: GraphTableSource,
         options: ReadExecutionContext,
-        partitions: FieldObject
-    ) async throws -> [QueryRow]
+        partitions: FieldObject,
+        transaction: any TransactionAccess
+    ) async throws -> DatabaseRetainedQueryRows
 }
 
 public protocol SPARQLSourceExecutor: Sendable {

@@ -10,12 +10,14 @@ public enum GraphTableReadExecutors {
 }
 
 private struct RuntimeGraphTableSourceExecutor: GraphTableSourceExecutor {
-    func execute(
+    func executeInTransaction(
         context: DatabaseContext,
         graphTableSource: GraphTableSource,
         options: ReadExecutionContext,
-        partitions: FieldObject
-    ) async throws -> [QueryRow] {
+        partitions: FieldObject,
+        transaction: any TransactionAccess
+    ) async throws -> DatabaseRetainedQueryRows {
+        try GraphTableExecutor.validate(graphTableSource)
         guard let resolution = try PropertyGraphReadResolver.resolve(
             graphName: graphTableSource.graphName,
             schema: context.container.schema
@@ -27,32 +29,26 @@ private struct RuntimeGraphTableSourceExecutor: GraphTableSourceExecutor {
                 )
             )
         }
-        let execution = CanonicalReadExecution.resolve(
-            requested: options.consistency,
-            default: .snapshot
-        )
         let queryContext = context.indexQueryContext
-        return try await queryContext.withTransaction(
-            configuration: execution.transactionConfiguration
-        ) { transaction in
-            guard let index = try await queryContext
-                .readableIndex(
-                    named: resolution.indexDescriptor.name,
-                        indexType: resolution.indexDescriptor.type,
-                        forEntityName: resolution.entity.name,
-                    partitions: partitions,
-                    transaction: transaction
-                ) else {
-                return []
-            }
-            let rows = try await GraphTableExecutor(
-                indexDescriptor: resolution.indexDescriptor,
-                indexSubspace: index.subspace,
-                graphTableSource: graphTableSource
-            ).execute(transaction: transaction)
-            return rows.map { row in
-                QueryRow(fields: row.fields)
-            }
+        guard let index = try await queryContext.readableIndex(
+            named: resolution.indexDescriptor.name,
+            indexType: resolution.indexDescriptor.type,
+            forEntityName: resolution.entity.name,
+            partitions: partitions,
+            transaction: transaction
+        ) else {
+            return try DatabaseRetainedQueryRowsBuilder(
+                workMeter: options.workMeter,
+                stage: .pathExpansion
+            ).finish()
         }
+        return try await GraphTableExecutor(
+            indexDescriptor: resolution.indexDescriptor,
+            indexSubspace: index.subspace,
+            graphTableSource: graphTableSource
+        ).execute(
+            transaction: transaction,
+            workMeter: options.workMeter
+        )
     }
 }

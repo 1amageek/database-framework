@@ -2747,11 +2747,12 @@ extension DatabaseContext {
             guard let executor = container.runtimeConfiguration.logicalSourceExecutors.graphTableExecutor else {
                 throw CanonicalReadError.unsupportedSource("graphTable executor is not registered")
             }
-            let rows = try await executor.execute(
+            let rows = try await executor.executeInTransaction(
                 context: self,
                 graphTableSource: graphTableSource,
                 options: options,
-                partitions: partitionValues ?? FieldObject()
+                partitions: partitionValues ?? FieldObject(),
+                transaction: transaction
             )
             var retained = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
                 workMeter: options.workMeter,
@@ -2759,44 +2760,49 @@ extension DatabaseContext {
                 layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self),
                 expectedCount: rows.count
             )
-            for graphRow in rows {
-                try options.workMeter.consume(at: .bindingCandidate)
-                let sourceRow = canonicalGraphTableSourceRow(
-                    from: graphRow.fields,
-                    graphName: graphTableSource.graphName
-                )
-                let outputRow: CanonicalSourceRow
-                if let columns = graphTableSource.columns, !columns.isEmpty {
-                    var fields: [String: FieldValue] = [:]
-                    fields.reserveCapacity(columns.count)
-                    for column in columns {
-                        fields[column.alias] = try await evaluateQueryExpression(
-                            column.expression,
-                            on: sourceRow,
-                            context: CanonicalQueryEvaluationContext(
-                                options: options,
-                                transaction: transaction,
-                                partitionValues: partitionValues,
-                                partitionMode: partitionMode,
-                                namedSubqueries: namedSubqueries,
-                                outerRow: allowsOuterReferences ? outerRow : nil,
-                                preparedFusionGraph: preparedFusionGraph
-                            ),
-                            workMeter: options.workMeter
+            for index in 0..<rows.count {
+                try await rows.withElement(at: index) { graphRow in
+                    try options.workMeter.consume(at: .bindingCandidate)
+                    let sourceRow = canonicalGraphTableSourceRow(
+                        from: graphRow.fields,
+                        graphName: graphTableSource.graphName
+                    )
+                    let outputRow: CanonicalSourceRow
+                    if let columns = graphTableSource.columns,
+                       !columns.isEmpty {
+                        var fields: [String: FieldValue] = [:]
+                        fields.reserveCapacity(columns.count)
+                        for column in columns {
+                            fields[column.alias] = try await evaluateQueryExpression(
+                                column.expression,
+                                on: sourceRow,
+                                context: CanonicalQueryEvaluationContext(
+                                    options: options,
+                                    transaction: transaction,
+                                    partitionValues: partitionValues,
+                                    partitionMode: partitionMode,
+                                    namedSubqueries: namedSubqueries,
+                                    outerRow: allowsOuterReferences ? outerRow : nil,
+                                    preparedFusionGraph: preparedFusionGraph
+                                ),
+                                workMeter: options.workMeter
+                            )
+                        }
+                        outputRow = CanonicalSourceRow(fields: fields)
+                            .applyingAlias(graphTableSource.alias)
+                    } else {
+                        outputRow = sourceRow.applyingAlias(
+                            graphTableSource.alias
                         )
                     }
-                    outputRow = CanonicalSourceRow(fields: fields)
-                        .applyingAlias(graphTableSource.alias)
-                } else {
-                    outputRow = sourceRow.applyingAlias(graphTableSource.alias)
+                    try retained.append(
+                        footprint: try CanonicalRelationalFootprintMeter.footprint(
+                            of: outputRow,
+                            workMeter: options.workMeter
+                        ),
+                        make: { outputRow }
+                    )
                 }
-                try retained.append(
-                    footprint: try CanonicalRelationalFootprintMeter.footprint(
-                        of: outputRow,
-                        workMeter: options.workMeter
-                    ),
-                    make: { outputRow }
-                )
             }
             let materializedRows = try retained.finish().moveToSharedOwnership(
                 at: .bindingCandidate
