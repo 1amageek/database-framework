@@ -1,5 +1,4 @@
 #if !os(WASI)
-#if FOUNDATION_DB
 import DatabaseKit
 import DatabaseTypes
 import TestHeartbeat
@@ -95,5 +94,4 @@ struct IndexDescriptorTests {
         #expect(descriptor.description.contains("bitmap"))
     }
 }
-#endif
 #endif

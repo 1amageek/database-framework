@@ -1,4 +1,4 @@
-#if FOUNDATION_DB
+#if !os(WASI)
 // NamedGraphUnitTests.swift
 // Unit tests for Named Graph (Quad) support
 //

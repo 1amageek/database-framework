@@ -26,6 +26,49 @@ jobs:
       - name: Verify benchmark separation
         run: scripts/verify-benchmark-separation
 
+  unit-test-contract:
+    name: Backend-independent unit contracts
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install pinned Swift toolchain
+        run: |
+          toolchain_package="$RUNNER_TEMP/${SWIFT_SNAPSHOT}-osx.pkg"
+          toolchain_root="$HOME/Library/Developer/Toolchains/${SWIFT_SNAPSHOT}.xctoolchain"
+          curl -fL --retry 3 -o "$toolchain_package" "$SWIFT_SNAPSHOT_URL"
+          installer -pkg "$toolchain_package" -target CurrentUserHomeDirectory
+          test -x "$toolchain_root/usr/bin/swift"
+          platform_linker="$(env -u TOOLCHAINS xcrun --find ld)"
+          ln -sf "$platform_linker" "$toolchain_root/usr/bin/ld"
+          test -x "$toolchain_root/usr/bin/ld"
+          echo "$toolchain_root/usr/bin" >> "$GITHUB_PATH"
+
+      - name: Run backend-independent unit contracts
+        run: |
+          scripts/xcode-test-harness \
+            --traits GraphIndexes \
+            --only-testing DatabaseEngineTests \
+            --only-testing GraphIndexTests \
+            --only-testing DatabaseRuntimeTests \
+            --expected-target-count DatabaseEngineTests=611 \
+            --expected-target-count GraphIndexTests=872 \
+            --expected-target-count DatabaseRuntimeTests=18 \
+            --require-zero-skips \
+            --require-zero-expected-failures \
+            --require-zero-runtime-warnings \
+            --result-directory /tmp/database-framework-unit-results
+
+      - name: Upload unit-test evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-independent-unit-contracts
+          path: /tmp/database-framework-unit-results
+          if-no-files-found: error
+
   benchmark-build:
     name: Benchmark verification
     runs-on: xcode-27

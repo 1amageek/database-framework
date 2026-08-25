@@ -49,9 +49,12 @@
   service. Scenario actors coordinate suites inside that process; separate
   harness runs never share a service or network.
 - The strict SQLite contracts are 112 tests without `MultiBase` and 115
-  tests with it. The existing `MultiBase` backend contracts are 3,447
+  tests with it. The existing `MultiBase` backend contracts are 3,452
   FoundationDB tests and 68 PostgreSQL tests. PostgreSQL tests require an
   isolated real server.
+- The backend-independent `GraphIndexes` lane executes exactly 611
+  `DatabaseEngineTests`, 872 `GraphIndexTests`, and 18 `DatabaseRuntimeTests`.
+  It must report zero failures, skips, expected failures, and runtime warnings.
 - PostgreSQL is addressed as `postgresql:5432` only inside the run network.
   FoundationDB uses the service-generated private cluster file. The runner
   checksum-verifies the FoundationDB Linux client package and uses explicit

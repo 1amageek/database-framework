@@ -1,5 +1,4 @@
 #if !os(WASI)
-#if FOUNDATION_DB
 import DatabaseKit
 import DatabaseTypes
 
@@ -10,5 +9,4 @@ struct IndexProjectionKeyOnlyEntity {
     var id: String = ""
     var email: String
 }
-#endif
 #endif

@@ -1,5 +1,4 @@
 #if !os(WASI)
-#if FOUNDATION_DB
 import DatabaseKit
 import DatabaseEngine
 import DatabaseTypes
@@ -259,5 +258,4 @@ struct CanonicalCoveringValueBuilderTests {
         }
     }
 }
-#endif
 #endif

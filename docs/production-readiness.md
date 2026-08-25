@@ -127,6 +127,11 @@ successfully. Do not replace these invocations with a direct package-wide
 the harness proves that the resolved macro dependency revisions match the
 tracked release pins.
 
+The backend-independent unit gate selects `GraphIndexes` and executes exactly
+611 `DatabaseEngineTests`, 872 `GraphIndexTests`, and 18
+`DatabaseRuntimeTests`. These target-level counts prevent a hidden test group
+from being offset by an unrelated target's additions or removals.
+
 The framework release gate resolves database-kit 26.0819.0. That published tag
 contains the `CompositionSelection`, `CompositionResolution`, and DatabaseWire
 v5 contracts consumed by this source revision and resolves to database-kit main

@@ -1,4 +1,4 @@
-#if FOUNDATION_DB
+#if !os(WASI)
 // TableauxReasonerTests.swift
 // Comprehensive tests for SHOIN(D) Tableaux reasoner implementation
 

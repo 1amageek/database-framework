@@ -1,5 +1,4 @@
 #if !os(WASI)
-#if FOUNDATION_DB
 import DatabaseKit
 import DatabaseTypes
 import Testing
@@ -97,5 +96,4 @@ struct TypeValidationTests {
         }
     }
 }
-#endif
 #endif

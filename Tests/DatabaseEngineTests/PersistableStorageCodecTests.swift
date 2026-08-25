@@ -1,5 +1,4 @@
 #if !os(WASI)
-#if FOUNDATION_DB
 import DatabaseKit
 import DatabaseTypes
 import DatabaseEngine
@@ -101,5 +100,4 @@ struct PersistableStorageCodecTests {
         }
     }
 }
-#endif
 #endif

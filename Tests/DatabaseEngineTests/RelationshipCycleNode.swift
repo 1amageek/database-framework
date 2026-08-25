@@ -1,5 +1,4 @@
 #if !os(WASI)
-#if FOUNDATION_DB
 import DatabaseKit
 import DatabaseTypes
 
@@ -12,5 +11,4 @@ struct RelationshipCycleNode {
     @Relationship(deleteRule: .cascade)
     var peer: PersistableReference<RelationshipCycleNode>
 }
-#endif
 #endif

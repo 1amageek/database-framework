@@ -1,5 +1,4 @@
 #if !os(WASI)
-#if FOUNDATION_DB
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
@@ -89,5 +88,4 @@ struct TypeConversionTests {
         #expect(TypeConversion.asInt64(.int64(Int64.min)) == Int64.min)
     }
 }
-#endif
 #endif

@@ -1,4 +1,4 @@
-#if FOUNDATION_DB
+#if !os(WASI)
 // CompletionGraphTests.swift
 // Tests for CompletionGraph - trail-based state management
 

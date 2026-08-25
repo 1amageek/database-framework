@@ -1,4 +1,4 @@
-#if FOUNDATION_DB
+#if !os(WASI)
 /// FilterAnalyzerTests.swift
 /// Unit tests for SPARQL filter analysis and pushdown classification
 

@@ -1,5 +1,4 @@
 #if !os(WASI)
-#if FOUNDATION_DB
 // MCVTests.swift
 // Tests for Most Common Values (MCV) implementation
 
@@ -337,6 +336,4 @@ struct MCVTests {
         #expect(abs(mcv.entries[0].frequency - 1.0) < 0.001)
     }
 }
-#endif
-
 #endif

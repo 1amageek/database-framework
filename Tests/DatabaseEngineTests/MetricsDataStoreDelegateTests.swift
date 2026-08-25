@@ -1,5 +1,4 @@
 #if !os(WASI)
-#if FOUNDATION_DB
 import TestHeartbeat
 import Testing
 @testable import DatabaseEngine
@@ -31,5 +30,4 @@ struct MetricsDataStoreDelegateTests {
         })
     }
 }
-#endif
 #endif

@@ -1,4 +1,4 @@
-#if FOUNDATION_DB
+#if !os(WASI)
 // OWLReasonerTests.swift
 // Comprehensive tests for high-level OWLReasoner API
 

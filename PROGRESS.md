@@ -7,11 +7,11 @@
   - [x] Make the scenario coordinator own every created engine through shutdown completion
   - [x] Review lifecycle, cancellation, failure, and nested-scenario paths
   - [x] Run focused verification and commit the sprint
-- [ ] Sprint 2: Trait-independent test graph
-  - [ ] Separate backend-independent unit tests from FoundationDB compilation conditions
-  - [ ] Split feature-minimal and all-feature runtime capability expectations
-  - [ ] Add exact discovery/count contracts for the resulting lanes
-  - [ ] Review trait dependency direction and commit the sprint
+- [x] Sprint 2: Trait-independent test graph
+  - [x] Separate backend-independent unit tests from FoundationDB compilation conditions
+  - [x] Split feature-minimal and all-feature runtime capability expectations
+  - [x] Add exact discovery/count contracts for the resulting lanes
+  - [x] Review trait dependency direction and commit the sprint
 - [ ] Sprint 3: Deterministic concurrency and durable atomicity evidence
   - [ ] Rebuild OnlineIndexer atomicity tests around failure injection and durable reopen
   - [ ] Rebuild snapshot conflict tests around competing commits

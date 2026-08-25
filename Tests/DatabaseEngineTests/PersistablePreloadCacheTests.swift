@@ -1,5 +1,4 @@
 #if !os(WASI)
-#if FOUNDATION_DB
 // PersistablePreloadCacheTests.swift
 // DatabaseEngine Tests - Entity preload cache tests
 
@@ -414,6 +413,4 @@ struct CacheWarmerTests {
         #expect(cache.get(key: "item2") != nil)
     }
 }
-#endif
-
 #endif

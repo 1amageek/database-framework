@@ -1,5 +1,4 @@
 #if !os(WASI)
-#if FOUNDATION_DB
 import DatabaseTypes
 import Testing
 import TestHeartbeat
@@ -112,5 +111,4 @@ struct RangeSetTests {
         }
     }
 }
-#endif
 #endif

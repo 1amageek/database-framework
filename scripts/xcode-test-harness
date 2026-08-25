@@ -6,6 +6,8 @@ SCHEME="database-framework-Package"
 DESTINATION="platform=macOS,arch=arm64"
 TRAITS=""
 EXPECTED_TEST_COUNT=""
+EXPECTED_TARGET_COUNTS=()
+EXPECTED_TARGET_COUNT_SIZE=0
 TOOLCHAIN_IDENTIFIER="org.swift.64202608141a"
 XCODE_TOOLCHAIN_IDENTIFIER="com.apple.dt.toolchain.XcodeDefault"
 REQUIRE_ZERO_SKIPS=false
@@ -37,6 +39,9 @@ Options:
   --only-testing <identifier>  Include one test identifier. Repeatable.
   --skip-testing <identifier>  Exclude one test identifier. Repeatable.
   --expected-count <count>     Require an exact executed-test count.
+  --expected-target-count <target=count>
+                               Require an exact count for one test bundle.
+                               Repeatable; their sum must equal the total count.
   --require-zero-skips         Fail when any selected test is skipped.
   --require-zero-expected-failures
                                Fail when any expected failure is recorded.
@@ -96,6 +101,12 @@ while [[ $# -gt 0 ]]; do
     --expected-count)
       require_value "$1" "${2:-}"
       EXPECTED_TEST_COUNT="$2"
+      shift 2
+      ;;
+    --expected-target-count)
+      require_value "$1" "${2:-}"
+      EXPECTED_TARGET_COUNTS+=("$2")
+      EXPECTED_TARGET_COUNT_SIZE=$((EXPECTED_TARGET_COUNT_SIZE + 1))
       shift 2
       ;;
     --require-zero-skips)
@@ -172,6 +183,25 @@ fi
 if ! [[ "$EXPECTED_TEST_COUNT" =~ ^[0-9]*$ ]]; then
   echo "error: --expected-count must be a non-negative integer" >&2
   exit 2
+fi
+if (( EXPECTED_TARGET_COUNT_SIZE > 0 )); then
+  for expected_target_count in "${EXPECTED_TARGET_COUNTS[@]}"; do
+    if ! [[ "$expected_target_count" =~ ^[A-Za-z_][A-Za-z0-9_.-]*=(0|[1-9][0-9]*)$ ]]; then
+      echo "error: --expected-target-count must use target=count" >&2
+      exit 2
+    fi
+    expected_target="${expected_target_count%%=*}"
+    duplicate_count=0
+    for candidate in "${EXPECTED_TARGET_COUNTS[@]}"; do
+      if [[ "${candidate%%=*}" == "$expected_target" ]]; then
+        duplicate_count=$((duplicate_count + 1))
+      fi
+    done
+    if (( duplicate_count != 1 )); then
+      echo "error: duplicate expected target count: $expected_target" >&2
+      exit 2
+    fi
+  done
 fi
 if ! [[ "$BUILD_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
   echo "error: --build-timeout must be a positive integer" >&2
@@ -428,6 +458,11 @@ for command in cmp grep shasum swift xcodebuild xcrun plutil perl rsync tee; do
     exit 1
   fi
 done
+if (( EXPECTED_TARGET_COUNT_SIZE > 0 )) \
+    && ! command -v jq >/dev/null 2>&1; then
+  echo "error: jq is required for target-level test counts" >&2
+  exit 1
+fi
 
 PINNED_SWIFTC="$(xcrun --toolchain "$TOOLCHAIN_IDENTIFIER" --find swiftc)"
 
@@ -781,6 +816,38 @@ fi
 if [[ -n "$EXPECTED_TEST_COUNT" && "$total_count" != "$EXPECTED_TEST_COUNT" ]]; then
   echo "error: expected $EXPECTED_TEST_COUNT tests, executed $total_count" >&2
   exit 1
+fi
+if (( EXPECTED_TARGET_COUNT_SIZE > 0 )); then
+  test_tree="$(
+    xcrun xcresulttool get test-results tests \
+      --path "$test_result" --compact
+  )"
+  expected_target_total=0
+  for expected_target_count in "${EXPECTED_TARGET_COUNTS[@]}"; do
+    expected_target="${expected_target_count%%=*}"
+    expected_count="${expected_target_count#*=}"
+    bundle_count="$(
+      printf '%s' "$test_tree" | jq --arg target "$expected_target" \
+        '[.. | objects | select(.nodeType == "Unit test bundle" and .name == $target)] | length'
+    )"
+    if [[ "$bundle_count" != "1" ]]; then
+      echo "error: expected one test bundle named $expected_target, found $bundle_count" >&2
+      exit 1
+    fi
+    actual_count="$(
+      printf '%s' "$test_tree" | jq --arg target "$expected_target" \
+        '[.. | objects | select(.nodeType == "Unit test bundle" and .name == $target) | .. | objects | select(.nodeType == "Test Case")] | length'
+    )"
+    if [[ "$actual_count" != "$expected_count" ]]; then
+      echo "error: expected $expected_count tests in $expected_target, executed $actual_count" >&2
+      exit 1
+    fi
+    expected_target_total=$((expected_target_total + expected_count))
+  done
+  if (( expected_target_total != total_count )); then
+    echo "error: target count contract covers $expected_target_total tests, executed $total_count" >&2
+    exit 1
+  fi
 fi
 if [[ "$REQUIRE_ZERO_SKIPS" == true && "$skipped_count" != "0" ]]; then
   echo "error: expected zero skipped tests, observed $skipped_count" >&2

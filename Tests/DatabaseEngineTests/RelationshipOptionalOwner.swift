@@ -1,5 +1,4 @@
 #if !os(WASI)
-#if FOUNDATION_DB
 import DatabaseKit
 import DatabaseTypes
 
@@ -13,5 +12,4 @@ struct RelationshipOptionalOwner {
     @Relationship(deleteRule: .nullify)
     var target: PersistableReference<RelationshipTarget>? = nil
 }
-#endif
 #endif

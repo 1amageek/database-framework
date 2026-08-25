@@ -1,4 +1,4 @@
-#if FOUNDATION_DB
+#if !os(WASI)
 import DatabaseKit
 import DatabaseTypes
 import Testing

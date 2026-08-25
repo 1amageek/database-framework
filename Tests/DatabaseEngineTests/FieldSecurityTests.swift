@@ -1,5 +1,4 @@
 #if !os(WASI)
-#if FOUNDATION_DB
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
@@ -273,5 +272,4 @@ struct RestrictedFieldMutationValidationTests {
         )
     }
 }
-#endif
 #endif

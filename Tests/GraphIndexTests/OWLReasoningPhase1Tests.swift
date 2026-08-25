@@ -1,4 +1,4 @@
-#if FOUNDATION_DB
+#if !os(WASI)
 // OWLReasoningPhase1Tests.swift
 // Tests for OWL 2 RL Reasoning Phase 1 components
 //

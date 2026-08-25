@@ -1,5 +1,4 @@
 #if !os(WASI)
-#if FOUNDATION_DB
 // DataAccessTests.swift
 // FDBIndexing Tests - DataAccess tests for nested field extraction
 
@@ -303,6 +302,4 @@ struct DataAccessTests {
         #expect(try TupleDecoder.decodeString(values[1]) == "94102")
     }
 }
-#endif
-
 #endif

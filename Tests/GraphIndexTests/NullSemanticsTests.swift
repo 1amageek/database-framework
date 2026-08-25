@@ -1,4 +1,4 @@
-#if FOUNDATION_DB
+#if !os(WASI)
 // NullSemanticsTests.swift
 // GraphIndex - SPARQL three-valued logic NULL semantics tests
 //

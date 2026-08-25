@@ -1,5 +1,4 @@
 #if !os(WASI)
-#if FOUNDATION_DB
 // ReservoirSamplingTests.swift
 // Tests for Reservoir Sampling with Algorithm L
 
@@ -268,6 +267,4 @@ struct ReservoirSamplingTests {
     }
 
 }
-#endif
-
 #endif

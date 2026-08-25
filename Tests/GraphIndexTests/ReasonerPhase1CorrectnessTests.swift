@@ -1,4 +1,4 @@
-#if FOUNDATION_DB
+#if !os(WASI)
 // ReasonerPhase1CorrectnessTests.swift
 // Phase 1 correctness tests for OWL Reasoner bug fixes:
 // - B-1: Nominal merge prohibition (UNA violation)

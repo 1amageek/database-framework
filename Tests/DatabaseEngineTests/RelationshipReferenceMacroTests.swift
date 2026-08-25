@@ -1,5 +1,4 @@
 #if !os(WASI)
-#if FOUNDATION_DB
 import DatabaseKit
 import Testing
 
@@ -49,5 +48,4 @@ struct RelationshipReferenceMacroTests {
         #expect(field.isArray)
     }
 }
-#endif
 #endif

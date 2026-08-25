@@ -1,5 +1,4 @@
 #if !os(WASI)
-#if FOUNDATION_DB
 import DatabaseKit
 import DatabaseTypes
 import Foundation
@@ -7,7 +6,7 @@ import Testing
 import TestHeartbeat
 @testable import DatabaseEngine
 
-@Suite("ContinuationToken Tests", .foundationDBScenario, .serialized, .heartbeat)
+@Suite("ContinuationToken Tests", .serialized, .heartbeat)
 struct ContinuationTokenTests {
     @Test("Empty raw token is rejected")
     func emptyTokenIsRejected() {
@@ -161,5 +160,4 @@ private struct ContinuationCursorUser {
     var name: String = ""
     var age: Int64 = 0
 }
-#endif
 #endif

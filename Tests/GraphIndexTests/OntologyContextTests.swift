@@ -1,4 +1,4 @@
-#if FOUNDATION_DB
+#if !os(WASI)
 // OntologyContextTests.swift
 // Tests for OntologyContext — the bridge between SPARQL executor and OWL ontology.
 

@@ -1,5 +1,4 @@
 #if !os(WASI)
-#if FOUNDATION_DB
 // AdaptiveThrottlerTests.swift
 // Tests for AdaptiveThrottler
 
@@ -297,7 +296,5 @@ struct AdaptiveThrottlerTests {
         #expect(batch.description.contains("max: 500"))
     }
 }
-
-#endif
 
 #endif

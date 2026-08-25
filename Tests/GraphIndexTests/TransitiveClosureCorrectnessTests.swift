@@ -1,4 +1,4 @@
-#if FOUNDATION_DB
+#if !os(WASI)
 // TransitiveClosureCorrectnessTests.swift
 // Tests for the Warshall-based transitive closure in ReasoningGraphQueryBuilder.
 //

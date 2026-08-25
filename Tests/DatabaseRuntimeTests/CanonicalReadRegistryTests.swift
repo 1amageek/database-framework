@@ -58,8 +58,8 @@ struct CanonicalReadRegistryTests {
         )
     }
 
-    @Test("Builtin runtime composes canonical providers and read executors")
-    func builtinRuntimeComposesProvidersAndExecutors() throws {
+    @Test("Builtin runtime matches the selected feature traits exactly")
+    func builtinRuntimeMatchesSelectedFeatureTraits() throws {
         let entityRuntime = try DatabaseFrameworkRuntime.entity(
             RuntimeConfigurationScalarEntity.self
         )
@@ -73,26 +73,83 @@ struct CanonicalReadRegistryTests {
         let registry = configuration.readExecutors
         let maintainers = configuration.indexMaintainerProviders
 
-        #expect(maintainers.contains(indexType: .ordered))
-        #expect(maintainers.contains(indexType: .vector))
-        #expect(maintainers.contains(indexType: .graph(.property)))
-        #expect(maintainers.contains(indexType: .graph(.rdf)))
-        #expect(configuration.persistableMutationMaintainers.contains(where: {
-            $0.identifier == RelationshipReferenceMaintainer().identifier
-        }))
+        let maintainerExpectations: [(IndexType, Bool)] = [
+            (.ordered, RuntimeFeatureExpectations.scalarIndexes),
+            (.vector, RuntimeFeatureExpectations.vectorIndexes),
+            (.text(.fullText), RuntimeFeatureExpectations.fullTextIndexes),
+            (.text(.autocomplete), RuntimeFeatureExpectations.fullTextIndexes),
+            (.spatial, RuntimeFeatureExpectations.spatialIndexes),
+            (.rank, RuntimeFeatureExpectations.rankIndexes),
+            (.bitmap, RuntimeFeatureExpectations.bitmapIndexes),
+            (.history, RuntimeFeatureExpectations.versionIndexes),
+            (.graph(.property), RuntimeFeatureExpectations.graphIndexes),
+            (.graph(.rdf), RuntimeFeatureExpectations.graphIndexes),
+            (.aggregate(.count), RuntimeFeatureExpectations.aggregationIndexes),
+            (.aggregate(.sum), RuntimeFeatureExpectations.aggregationIndexes),
+            (.aggregate(.minimum), RuntimeFeatureExpectations.aggregationIndexes),
+            (.aggregate(.maximum), RuntimeFeatureExpectations.aggregationIndexes),
+            (.aggregate(.average), RuntimeFeatureExpectations.aggregationIndexes),
+            (.updateCount, RuntimeFeatureExpectations.aggregationIndexes),
+            (.aggregate(.nonNullCount), RuntimeFeatureExpectations.aggregationIndexes),
+            (
+                .aggregate(.approximateDistinct),
+                RuntimeFeatureExpectations.aggregationIndexes
+            ),
+            (.aggregate(.percentile), RuntimeFeatureExpectations.aggregationIndexes),
+            (.leaderboard, RuntimeFeatureExpectations.leaderboardIndexes),
+        ]
+        for (indexType, isExpected) in maintainerExpectations {
+            #expect(maintainers.contains(indexType: indexType) == isExpected)
+        }
 
-        #expect(entityRuntime.hasIndexReader(for: .vector))
-        #expect(entityRuntime.hasIndexReader(for: .text(.fullText)))
-        #expect(entityRuntime.hasIndexReader(for: .rank))
-        #expect(entityRuntime.hasIndexReader(for: .bitmap))
-        #expect(entityRuntime.hasIndexReader(for: .history))
-        #expect(registry.polymorphicIndexExecutor(for: .vector) != nil)
-        #expect(registry.polymorphicIndexExecutor(for: .text(.fullText)) != nil)
-        #expect(registry.polymorphicIndexExecutor(for: .rank) != nil)
-        #expect(registry.polymorphicIndexExecutor(for: .bitmap) != nil)
-        #expect(registry.polymorphicIndexExecutor(for: .history) != nil)
-        #expect(configuration.logicalSourceExecutors.graphTableExecutor != nil)
-        #expect(configuration.logicalSourceExecutors.sparqlExecutor != nil)
+        let typedReadExpectations: [(IndexType, Bool)] = [
+            (.vector, RuntimeFeatureExpectations.vectorIndexes),
+            (.text(.fullText), RuntimeFeatureExpectations.fullTextIndexes),
+            (.rank, RuntimeFeatureExpectations.rankIndexes),
+            (.bitmap, RuntimeFeatureExpectations.bitmapIndexes),
+            (.history, RuntimeFeatureExpectations.versionIndexes),
+        ]
+        for (indexType, isExpected) in typedReadExpectations {
+            #expect(entityRuntime.hasIndexReader(for: indexType) == isExpected)
+            #expect(
+                (registry.polymorphicIndexExecutor(for: indexType) != nil)
+                    == isExpected
+            )
+        }
+
+        let fusionReadExpectations: [(IndexType, Bool)] = [
+            (.vector, RuntimeFeatureExpectations.vectorIndexes),
+            (.text(.fullText), RuntimeFeatureExpectations.fullTextIndexes),
+            (.spatial, RuntimeFeatureExpectations.spatialIndexes),
+            (.bitmap, RuntimeFeatureExpectations.bitmapIndexes),
+            (.leaderboard, RuntimeFeatureExpectations.leaderboardIndexes),
+        ]
+        for (indexType, isExpected) in fusionReadExpectations {
+            #expect(
+                (configuration.fusionReadExecutors.indexExecutor(
+                    for: indexType
+                ) != nil) == isExpected
+            )
+        }
+
+        #expect(
+            (configuration.fusionReadExecutors.connectedExecutor(
+                for: .graph(.property)
+            ) != nil) == RuntimeFeatureExpectations.graphIndexes
+        )
+        #expect(
+            (configuration.logicalSourceExecutors.graphTableExecutor != nil)
+                == RuntimeFeatureExpectations.graphIndexes
+        )
+        #expect(
+            (configuration.logicalSourceExecutors.sparqlExecutor != nil)
+                == RuntimeFeatureExpectations.graphIndexes
+        )
+        #expect(
+            configuration.persistableMutationMaintainers.contains(where: {
+                $0.identifier == RelationshipReferenceMaintainer().identifier
+            }) == RuntimeFeatureExpectations.relationships
+        )
     }
 
     @Test("Duplicate maintainer providers fail configuration")

@@ -1,5 +1,4 @@
 #if !os(WASI)
-#if FOUNDATION_DB
 import Testing
 import TestHeartbeat
 import DatabaseKit
@@ -64,6 +63,4 @@ struct CircularReferenceTests {
         #expect(orderRelationship.relatedTypeName == RefCustomer.persistableType)
     }
 }
-#endif
-
 #endif

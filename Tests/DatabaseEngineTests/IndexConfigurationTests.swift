@@ -1,5 +1,4 @@
 #if !os(WASI)
-#if FOUNDATION_DB
 // IndexConfigurationTests.swift
 // Tests for runtime index configuration propagation and application.
 
@@ -400,6 +399,4 @@ struct LanguageRecordingIndexMaintainer<Item: PersistedEntityValue>: IndexMainta
         // Language configuration observation does not scan index data.
     }
 }
-#endif
-
 #endif

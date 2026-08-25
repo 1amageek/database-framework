@@ -1,5 +1,4 @@
 #if !os(WASI)
-#if FOUNDATION_DB
 import DatabaseKit
 import DatabaseTypes
 
@@ -15,5 +14,4 @@ struct IndexProjectionEntity {
     var tags: [String] = []
     var target: PersistableReference<RelationshipTarget>? = nil
 }
-#endif
 #endif

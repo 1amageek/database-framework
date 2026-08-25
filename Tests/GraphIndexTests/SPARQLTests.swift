@@ -1,4 +1,4 @@
-#if FOUNDATION_DB
+#if !os(WASI)
 // SPARQLTests.swift
 // Unit and integration tests for SPARQL-like query functionality
 

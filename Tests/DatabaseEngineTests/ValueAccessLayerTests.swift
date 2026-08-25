@@ -1,5 +1,4 @@
 #if !os(WASI)
-#if FOUNDATION_DB
 import Foundation
 import Testing
 import TestHeartbeat
@@ -320,5 +319,4 @@ struct CompiledFieldOrderingTests {
         #expect(values.map { $0.name } == ["Bob", "Alice", "Charlie"])
     }
 }
-#endif
 #endif

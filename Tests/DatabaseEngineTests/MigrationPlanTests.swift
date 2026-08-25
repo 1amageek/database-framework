@@ -1,5 +1,4 @@
 #if !os(WASI)
-#if FOUNDATION_DB
 import Testing
 import TestHeartbeat
 import Foundation
@@ -487,6 +486,4 @@ struct MigrationPlanTests {
         }
     }
 }
-#endif
-
 #endif

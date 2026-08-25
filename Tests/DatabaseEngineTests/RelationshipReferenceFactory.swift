@@ -1,5 +1,4 @@
 #if !os(WASI)
-#if FOUNDATION_DB
 import DatabaseKit
 import DatabaseTypes
 
@@ -18,5 +17,4 @@ enum RelationshipReferenceFactory {
         )
     }
 }
-#endif
 #endif

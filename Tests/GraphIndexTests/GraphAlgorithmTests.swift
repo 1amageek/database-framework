@@ -1,4 +1,4 @@
-#if FOUNDATION_DB
+#if !os(WASI)
 // GraphAlgorithmTests.swift
 // Tests for Graph algorithms: Shortest Path, Path Pattern, PageRank, Community Detection
 

@@ -1,5 +1,4 @@
 #if !os(WASI)
-#if FOUNDATION_DB
 import DatabaseKit
 import DatabaseEngine
 
@@ -56,5 +55,4 @@ enum IndexProjectionEntityFactory {
         return entity
     }
 }
-#endif
 #endif

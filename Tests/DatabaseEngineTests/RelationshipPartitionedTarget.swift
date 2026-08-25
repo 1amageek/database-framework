@@ -1,5 +1,4 @@
 #if !os(WASI)
-#if FOUNDATION_DB
 import DatabaseKit
 import DatabaseTypes
 import DatabaseEngine
@@ -18,5 +17,4 @@ struct RelationshipPartitionedTarget {
     var tenantID: String
     var name: String
 }
-#endif
 #endif

@@ -1,5 +1,4 @@
 #if !os(WASI)
-#if FOUNDATION_DB
 // RemoteFetchTests.swift
 // DatabaseEngine Tests - Remote fetch optimization tests
 
@@ -234,6 +233,4 @@ struct RemoteFetchItem: Equatable {
     var id: String = UUID().uuidString
     var name: String
 }
-#endif
-
 #endif

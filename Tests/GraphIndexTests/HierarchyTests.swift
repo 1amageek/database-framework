@@ -1,4 +1,4 @@
-#if FOUNDATION_DB
+#if !os(WASI)
 // HierarchyTests.swift
 // Tests for ClassHierarchy and RoleHierarchy
 

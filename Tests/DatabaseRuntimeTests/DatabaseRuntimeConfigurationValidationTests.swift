@@ -154,6 +154,7 @@ struct DatabaseRuntimeConfigurationValidationTests {
         }
     }
 
+    #if ScalarIndexes
     @Test("Runtime accepts additional indexes compiled with the schema")
     func matchingAdditionalIndexesPassValidation() throws {
         let additionalIndex = try IndexDescriptor(
@@ -191,7 +192,9 @@ struct DatabaseRuntimeConfigurationValidationTests {
 
         try configuration.validate(schema: schema)
     }
+    #endif
 
+    #if GraphIndexes
     @Test("OWL runtime retains its provider with additional indexes")
     func owlRuntimeSupportsAdditionalIndexes() throws {
         let additionalIndex = try IndexDescriptor(
@@ -229,6 +232,7 @@ struct DatabaseRuntimeConfigurationValidationTests {
 
         try configuration.validate(schema: schema)
     }
+    #endif
 
     @Test("Container open rejects a mismatched entity before initialization")
     func containerOpenRejectsMismatchedEntitySchema() async throws {
@@ -314,6 +318,7 @@ struct DatabaseRuntimeConfigurationValidationTests {
         }
     }
 
+    #if ScalarIndexes
     @Test("Builtin runtime satisfies compiled schema maintainers")
     func builtinRuntimeSatisfiesSchema() throws {
         let schema = try Schema(
@@ -335,7 +340,9 @@ struct DatabaseRuntimeConfigurationValidationTests {
 
         try configuration.validate(schema: schema)
     }
+    #endif
 
+    #if VectorIndexes
     @Test("Builtin runtime validates polymorphic member maintainers")
     func builtinRuntimeValidatesPolymorphicMemberMaintainers() throws {
         let schema = try Schema(
@@ -357,6 +364,7 @@ struct DatabaseRuntimeConfigurationValidationTests {
 
         try configuration.validate(schema: schema)
     }
+    #endif
 
     @Test("Schema validation rejects a missing required read executor")
     func missingReadExecutorFailsValidation() throws {
@@ -454,6 +462,7 @@ struct DatabaseRuntimeConfigurationValidationTests {
         }
     }
 
+    #if Relationships
     @Test("Builtin runtime satisfies relationship invariants")
     func builtinRuntimeSatisfiesRelationshipSchema() throws {
         let schema = try Schema(
@@ -483,4 +492,5 @@ struct DatabaseRuntimeConfigurationValidationTests {
 
         try configuration.validate(schema: schema)
     }
+    #endif
 }

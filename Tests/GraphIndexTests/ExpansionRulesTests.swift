@@ -1,4 +1,4 @@
-#if FOUNDATION_DB
+#if !os(WASI)
 // ExpansionRulesTests.swift
 // Tests for Tableaux expansion rules
 
