@@ -420,7 +420,12 @@ struct RoaringBitmapUnitTests {
 
 // MARK: - BitmapIndexMaintainer Behavior Tests
 
-@Suite("BitmapIndex Maintainer Behavior Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite(
+    "BitmapIndex Maintainer Behavior Tests",
+    .tags(.fdb),
+    .foundationDBScenario,
+    .heartbeat
+)
 struct BitmapIndexMaintainerBehaviorTests {
 
     // MARK: - Insert Tests
@@ -888,7 +893,7 @@ struct BitmapIndexMaintainerBehaviorTests {
 
 // MARK: - Edge Cases Tests
 
-@Suite("BitmapIndex Edge Cases", .tags(.fdb), .serialized, .heartbeat)
+@Suite("BitmapIndex Edge Cases", .tags(.fdb), .foundationDBScenario, .heartbeat)
 struct BitmapIndexEdgeCasesTests {
 
     @Test("Empty bitmap query returns empty")

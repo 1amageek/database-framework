@@ -26,10 +26,11 @@ struct SerializedScenarioAccessGateTests {
         #expect(maximumConcurrentOperations == 1)
     }
 
-    @Test("Cancellation transfers ownership to the next waiter", .timeLimit(.minutes(1)))
-    func cancellationTransfersOwnership() async throws {
+    @Test("Cancellation removes a waiter before the current owner releases", .timeLimit(.minutes(1)))
+    func cancellationRemovesWaitingRequestImmediately() async throws {
         let gate = SerializedScenarioAccessGate()
         let firstOperation = ScenarioOperationBlocker()
+        let cancellationFinished = ScenarioCompletionSignal()
 
         let first = Task {
             try await gate.withAccess {
@@ -39,7 +40,13 @@ struct SerializedScenarioAccessGateTests {
         await firstOperation.waitUntilEntered()
 
         let cancelled = Task {
-            try await gate.withAccess {}
+            do {
+                try await gate.withAccess {}
+                await cancellationFinished.signal()
+            } catch {
+                await cancellationFinished.signal()
+                throw error
+            }
         }
         let succeeding = Task {
             try await gate.withAccess { true }
@@ -49,12 +56,18 @@ struct SerializedScenarioAccessGateTests {
             await Task.yield()
         }
         cancelled.cancel()
-        await firstOperation.release()
 
-        try await first.value
+        // Cancellation owns removal from the wait queue. Completion must not
+        // depend on the current owner releasing the gate.
+        await cancellationFinished.wait()
+        #expect(await gate.waitingRequestCount == 1)
+
         await #expect(throws: CancellationError.self) {
             try await cancelled.value
         }
+
+        await firstOperation.release()
+        try await first.value
         #expect(try await succeeding.value)
     }
 }
@@ -104,6 +117,24 @@ private actor ScenarioOperationBlocker {
         isReleased = true
         releaseContinuation?.resume()
         releaseContinuation = nil
+    }
+}
+
+private actor ScenarioCompletionSignal {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var isSignalled = false
+
+    func wait() async {
+        guard !isSignalled else { return }
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func signal() {
+        isSignalled = true
+        continuation?.resume()
+        continuation = nil
     }
 }
 #endif

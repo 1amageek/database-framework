@@ -79,7 +79,7 @@ private struct RankIndexContext {
 
 // MARK: - Behavior Tests
 
-@Suite("RankIndex Behavior Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("RankIndex Behavior Tests", .tags(.fdb), .foundationDBScenario, .heartbeat)
 struct RankIndexBehaviorTests {
 
     // MARK: - Insert Tests

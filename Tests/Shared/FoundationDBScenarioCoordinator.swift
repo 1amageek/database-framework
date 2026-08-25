@@ -46,6 +46,20 @@ public enum FoundationDBScenarioInitializationError: Error, LocalizedError {
     }
 }
 
+public enum FoundationDBScenarioAccessError: Error, LocalizedError, Equatable {
+    case engineRequestedOutsideScenario
+    case scenarioEndedDuringEngineCreation
+
+    public var errorDescription: String? {
+        switch self {
+        case .engineRequestedOutsideScenario:
+            return "FoundationDB test engines are available only inside withSerializedAccess."
+        case .scenarioEndedDuringEngineCreation:
+            return "The FoundationDB scenario ended while creating an engine."
+        }
+    }
+}
+
 /// Coordinates FoundationDB initialization and serialized scenario access.
 ///
 /// This actor ensures:
@@ -63,6 +77,7 @@ public enum FoundationDBScenarioInitializationError: Error, LocalizedError {
 public actor FoundationDBScenarioCoordinator {
     public static let shared = FoundationDBScenarioCoordinator()
     @TaskLocal private static var holdsSerializedAccess = false
+    @TaskLocal private static var scenarioResourceOwner: ScenarioResourceOwner?
     private static let transactionTimeoutMs = 30_000
     private static let healthCheckAttemptTimeoutMs = 2_000
     private static let clusterReadyTimeoutMs = 10_000
@@ -312,13 +327,29 @@ public actor FoundationDBScenarioCoordinator {
     }
 
     public func makeEngine() async throws -> FDBStorageEngine {
-        try await initialize()
-        return try await createConfiguredEngine()
+        try await makeScenarioEngine(systemPriority: false)
     }
 
     public func makeSystemPriorityEngine() async throws -> FDBStorageEngine {
+        try await makeScenarioEngine(systemPriority: true)
+    }
+
+    private func makeScenarioEngine(
+        systemPriority: Bool
+    ) async throws -> FDBStorageEngine {
+        guard let owner = Self.scenarioResourceOwner else {
+            throw FoundationDBScenarioAccessError.engineRequestedOutsideScenario
+        }
         try await initialize()
-        return try await createConfiguredEngine(systemPriority: true)
+        let engine = try await createConfiguredEngine(systemPriority: systemPriority)
+        guard await owner.register(
+            engine,
+            shutdown: { engine in await engine.waitUntilShutdown() }
+        ) else {
+            await engine.waitUntilShutdown()
+            throw FoundationDBScenarioAccessError.scenarioEndedDuringEngineCreation
+        }
+        return engine
     }
 
     /// Clears the complete user keyspace owned by the isolated test cluster.
@@ -360,8 +391,18 @@ public actor FoundationDBScenarioCoordinator {
         }
         return try await serializedAccess.withAccess {
             try await self.resetDatabaseConsistencyDomain()
-            return try await Self.$holdsSerializedAccess.withValue(true) {
-                try await operation()
+            let resourceOwner = ScenarioResourceOwner()
+            do {
+                let result = try await Self.$holdsSerializedAccess.withValue(true) {
+                    try await Self.$scenarioResourceOwner.withValue(resourceOwner) {
+                        try await operation()
+                    }
+                }
+                await resourceOwner.shutdownAll()
+                return result
+            } catch {
+                await resourceOwner.shutdownAll()
+                throw error
             }
         }
     }

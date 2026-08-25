@@ -123,7 +123,7 @@ private struct SpatialIndexContext {
 
 // MARK: - Behavior Tests
 
-@Suite("SpatialIndex Behavior Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("SpatialIndex Behavior Tests", .tags(.fdb), .foundationDBScenario, .heartbeat)
 struct SpatialIndexBehaviorTests {
 
     // MARK: - Insert Tests

@@ -113,7 +113,7 @@ func timeWindowLeaderboardIndexDefinition(
 
 // MARK: - Insert Tests
 
-@Suite("LeaderboardIndex Insert Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("LeaderboardIndex Insert Tests", .tags(.fdb), .foundationDBScenario, .heartbeat)
 struct LeaderboardIndexInsertTests {
 
     @Test("Insert adds to leaderboard")
@@ -177,7 +177,7 @@ struct LeaderboardIndexInsertTests {
 
 // MARK: - Delete Tests
 
-@Suite("LeaderboardIndex Delete Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("LeaderboardIndex Delete Tests", .tags(.fdb), .foundationDBScenario, .heartbeat)
 struct LeaderboardIndexDeleteTests {
 
     @Test("Delete removes from leaderboard")
@@ -258,7 +258,7 @@ struct LeaderboardIndexDeleteTests {
 
 // MARK: - Update Tests
 
-@Suite("LeaderboardIndex Update Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("LeaderboardIndex Update Tests", .tags(.fdb), .foundationDBScenario, .heartbeat)
 struct LeaderboardIndexUpdateTests {
 
     @Test("Update score changes rank")
@@ -344,7 +344,7 @@ struct LeaderboardIndexUpdateTests {
 
 // MARK: - TopK Tests
 
-@Suite("LeaderboardIndex TopK Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("LeaderboardIndex TopK Tests", .tags(.fdb), .foundationDBScenario, .heartbeat)
 struct LeaderboardIndexTopKTests {
 
     @Test("getTopK returns correct count")
@@ -419,7 +419,7 @@ struct LeaderboardIndexTopKTests {
 
 // MARK: - Rank Tests
 
-@Suite("LeaderboardIndex Rank Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("LeaderboardIndex Rank Tests", .tags(.fdb), .foundationDBScenario, .heartbeat)
 struct LeaderboardIndexRankTests {
 
     @Test("getRank returns correct position")
@@ -481,7 +481,7 @@ struct LeaderboardIndexRankTests {
 
 // MARK: - Ties Tests
 
-@Suite("LeaderboardIndex Ties Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("LeaderboardIndex Ties Tests", .tags(.fdb), .foundationDBScenario, .heartbeat)
 struct LeaderboardIndexTiesTests {
 
     @Test("Ties are handled correctly")
@@ -526,7 +526,7 @@ struct LeaderboardIndexTiesTests {
 
 // MARK: - Window Tests
 
-@Suite("LeaderboardIndex Window Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("LeaderboardIndex Window Tests", .tags(.fdb), .foundationDBScenario, .heartbeat)
 struct LeaderboardIndexWindowTests {
 
     @Test("Available windows are tracked")
@@ -581,7 +581,7 @@ struct LeaderboardIndexWindowTests {
 
 // MARK: - ScanItem Tests
 
-@Suite("LeaderboardIndex ScanItem Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("LeaderboardIndex ScanItem Tests", .tags(.fdb), .foundationDBScenario, .heartbeat)
 struct LeaderboardIndexScanItemTests {
 
     @Test("scanItem adds to leaderboard")
@@ -616,7 +616,7 @@ struct LeaderboardIndexScanItemTests {
 
 // MARK: - Edge Cases Tests
 
-@Suite("LeaderboardIndex Edge Cases", .tags(.fdb), .serialized, .heartbeat)
+@Suite("LeaderboardIndex Edge Cases", .tags(.fdb), .foundationDBScenario, .heartbeat)
 struct LeaderboardIndexEdgeCasesTests {
 
     @Test("Large scores work correctly")

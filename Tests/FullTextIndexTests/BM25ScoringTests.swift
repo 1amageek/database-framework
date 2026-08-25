@@ -203,7 +203,7 @@ struct BM25ScorerUnitTests {
 
 // MARK: - BM25 Integration Tests
 
-@Suite("BM25 Integration Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("BM25 Integration Tests", .tags(.fdb), .foundationDBScenario, .heartbeat)
 struct BM25IntegrationTests {
 
     @Test("BM25 statistics are maintained")

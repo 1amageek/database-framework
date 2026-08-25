@@ -4,10 +4,7 @@
 
 import Testing
 import Foundation
-import StorageKit
-import FDBStorage
 import DatabaseKit
-import DatabaseTypes
 import TestSupport
 @testable import DatabaseEngine
 @testable import SpatialIndex
@@ -41,64 +38,6 @@ struct NearbyStore {
             encoding: .s2,
             level: 10
         ))
-}
-
-// MARK: - Spatial Query Context
-
-private struct SpatialQueryContext {
-    let database: any StorageEngine
-    let subspace: Subspace
-    let indexSubspace: Subspace
-    let maintainer: SpatialIndexMaintainer<NearbyStore>
-    let testId: String
-
-    init() async throws {
-        self.database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
-        self.testId = String(UUID().uuidString.prefix(8))
-        self.subspace = Subspace(prefix: Tuple("test", "spatial_advanced", testId).pack())
-        let indexName = "NearbyStore_spatial_geoPoint"
-        self.indexSubspace = subspace.subspace("I").subspace(indexName)
-
-        let index = try ResolvedIndex(
-            for: NearbyStore.self,
-            name: indexName,
-            definition: spatialIndexDefinition(
-                fieldName: "geoPoint",
-                fieldNumber: 3,
-                encoding: .s2,
-                level: 10
-            ),
-            rootExpression: FieldKeyExpression(fieldName: "geoPoint"),
-            itemTypes: Set(["NearbyStore"])
-        )
-
-        self.maintainer = SpatialIndexMaintainer<NearbyStore>(
-            index: index,
-            encoding: .s2,
-            level: 10,
-            subspace: indexSubspace,
-            idExpression: FieldKeyExpression(fieldName: "id")
-        )
-    }
-
-    func cleanup() async throws {
-        try await database.withTransaction { transaction in
-            let (begin, end) = subspace.range()
-            try transaction.clearRange(beginKey: begin, endKey: end)
-        }
-    }
-
-    func insertStores(_ stores: [NearbyStore]) async throws {
-        try await database.withTransaction { transaction in
-            for store in stores {
-                try await maintainer.updateIndex(
-                    oldItem: nil,
-                    newItem: store,
-                    transaction: transaction
-                )
-            }
-        }
-    }
 }
 
 // MARK: - Distance Calculation Tests

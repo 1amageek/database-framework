@@ -90,7 +90,7 @@ private struct ScalarIndexContext {
 
 // MARK: - Behavior Tests
 
-@Suite("ScalarIndex Behavior Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("ScalarIndex Behavior Tests", .tags(.fdb), .foundationDBScenario, .heartbeat)
 struct ScalarIndexBehaviorTests {
 
     // MARK: - Insert Tests

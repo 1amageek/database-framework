@@ -1,0 +1,39 @@
+# Progress
+
+- [x] Sprint 1: FoundationDB scenario lifecycle ownership
+  - [x] Define the cancellation and engine lifetime contracts from existing call paths
+  - [x] Add failing focused tests for immediate waiter cancellation and authoritative scenario shutdown
+  - [x] Implement cancellable FIFO waiting without ownership leakage
+  - [x] Make the scenario coordinator own every created engine through shutdown completion
+  - [x] Review lifecycle, cancellation, failure, and nested-scenario paths
+  - [x] Run focused verification and commit the sprint
+- [ ] Sprint 2: Trait-independent test graph
+  - [ ] Separate backend-independent unit tests from FoundationDB compilation conditions
+  - [ ] Split feature-minimal and all-feature runtime capability expectations
+  - [ ] Add exact discovery/count contracts for the resulting lanes
+  - [ ] Review trait dependency direction and commit the sprint
+- [ ] Sprint 3: Deterministic concurrency and durable atomicity evidence
+  - [ ] Rebuild OnlineIndexer atomicity tests around failure injection and durable reopen
+  - [ ] Rebuild snapshot conflict tests around competing commits
+  - [ ] Rebuild iterator concurrency tests around an overlap barrier
+  - [ ] Rebuild concurrent save tests around a blocked first save and exact error matching
+  - [ ] Review transaction ownership and commit the sprint
+- [ ] Sprint 4: Canonical graph execution contract
+  - [ ] Add failing GRAPH_TABLE semantic, resource, cancellation, and SQL entry tests
+  - [ ] Implement one metered retained GRAPH_TABLE execution path for direct and canonical reads
+  - [ ] Reject or execute every declared path and node-label semantic explicitly
+  - [ ] Add typed RDF dataset resolution and exact SPARQL function failures
+  - [ ] Replace empty SPARQL admission success with a nonempty end-to-end fixture
+  - [ ] Review authorization, transaction, resource, and capability boundaries and commit the sprint
+- [ ] Sprint 5: Specialized index public-path evidence
+  - [ ] Add Rank public builder and canonical executor behavior tests
+  - [ ] Add Bitmap public builder and canonical executor behavior tests
+  - [ ] Replace Spatial proxy tests with production polygon, KNN, radius, and bounds tests
+  - [ ] Add Bitmap, Leaderboard, Spatial, and Vector Fusion resource lifecycle tests
+  - [ ] Add required real-backend cursor and value-lifetime coverage
+  - [ ] Review zero-copy and resource ownership and commit the sprint
+- [ ] Integrated verification
+  - [ ] Audit incomplete implementations, conditional synchronization, and dependency direction
+  - [ ] Run the affected focused and package-level test matrix with reviewed counts
+  - [ ] Run final production review and resolve every finding
+  - [ ] Confirm commit history and push the current branch to its configured upstream

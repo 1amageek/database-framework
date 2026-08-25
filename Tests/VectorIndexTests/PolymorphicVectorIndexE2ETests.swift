@@ -104,7 +104,12 @@ struct PolymorphicOptionalVectorReport: PolymorphicOptionalVectorE2EDocument {
     var pageCount: Int64
 }
 
-@Suite("Polymorphic Vector Index E2E Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite(
+    "Polymorphic Vector Index E2E Tests",
+    .tags(.fdb),
+    .foundationDBScenario,
+    .heartbeat
+)
 struct PolymorphicVectorIndexE2ETests {
     private let indexName = "PolymorphicVectorE2EDocument_embedding"
     private let optionalIndexName = "PolymorphicOptionalVectorE2EDocument_embedding"

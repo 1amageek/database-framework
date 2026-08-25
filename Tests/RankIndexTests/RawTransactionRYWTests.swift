@@ -15,7 +15,7 @@ import StorageKit
 import FDBStorage
 import TestSupport
 
-@Suite("Raw Transaction RYW Tests", .serialized, .heartbeat)
+@Suite("Raw Transaction RYW Tests", .foundationDBScenario, .heartbeat)
 struct RawTransactionRYWTests {
 
     init() async throws {

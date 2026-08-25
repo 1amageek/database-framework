@@ -100,7 +100,7 @@ private struct FixedVersionIndexBehaviorWallClock: WallClock {
 
 // MARK: - Behavior Tests
 
-@Suite("VersionIndex Behavior Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("VersionIndex Behavior Tests", .tags(.fdb), .foundationDBScenario, .heartbeat)
 struct VersionIndexBehaviorTests {
 
     // MARK: - Insert Tests
