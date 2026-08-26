@@ -72,7 +72,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
 
     private let context: DatabaseContext
     private let workMeter: DatabaseWorkMeter
-    private let transaction: any TransactionAccess
+    private let transaction: DatabaseReadTransaction
     private let structuralLimits: QueryStructuralLimits
     private let retainedStorage: DatabasePreparedSQLSelectStorage
     private let inliningStructureMeter = InliningStructureMeter()
@@ -88,7 +88,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
     internal init(
         context: DatabaseContext,
         workMeter: DatabaseWorkMeter,
-        transaction: any TransactionAccess,
+        transaction: DatabaseReadTransaction,
         retainedStorage: DatabasePreparedSQLSelectStorage,
         structuralLimits: QueryStructuralLimits = .default
     ) {
@@ -919,10 +919,6 @@ internal struct SPARQLFunctionRewriter: Sendable {
             }
         }
         let graphIndex = dataset.indexDescriptor
-        try context.authorizeIndexFieldRead(
-            entity: entity,
-            descriptor: graphIndex
-        )
 
         // 4. Admit and execute the schema-declared index in the parent read
         // transaction. The rewritten SQL query consumes the same snapshot.
@@ -1075,7 +1071,6 @@ internal struct SPARQLFunctionRewriter: Sendable {
         }
         return try await _executeRetainedSPARQLString(
             sparqlQuery,
-            database: context.container.engine,
             sources: sources,
             monotonicClock: context.container.monotonicClock,
             wallClock: context.container.wallClock,

@@ -24,6 +24,11 @@ extension SPARQLQueryExecutor {
             limit: limit
         )
         let executor = try requestScoped(by: workMeter)
+        guard let database else {
+            throw SPARQLQueryError.executionFailed(
+                "A caller-owned transaction is required for this executor"
+            )
+        }
         return try await StorageTransactionExecutor(engine: database)
             .withTransaction(
                 configuration: .default,
@@ -133,6 +138,11 @@ extension SPARQLQueryExecutor {
     ) async throws -> ([VariableBinding], ExecutionStatistics) {
         let executor = try scoped(to: selectPlan.ordered.dataset)
             .requestScoped(by: workMeter)
+        guard let database else {
+            throw SPARQLQueryError.executionFailed(
+                "A caller-owned transaction is required for this executor"
+            )
+        }
         return try await StorageTransactionExecutor(engine: database)
             .withTransaction(
                 configuration: .default,

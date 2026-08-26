@@ -12,41 +12,211 @@ final class ReadAuthorizedTransactionAccess:
     TransactionAccess,
     Sendable
 {
-    private let transaction: any TransactionAccess
+    private final class SnapshotIdentity: Sendable {}
+
+    private let transactionDomainValue: StorageTransactionDomain
+    private let capabilitiesValue: TransactionCapabilities
+    /// Stable identity issued when DatabaseEngine first admits a storage
+    /// transaction for reads. Every attenuation wrapper inherits the token;
+    /// the StorageKit transaction itself need not have reference identity.
+    private let snapshotIdentity: SnapshotIdentity
+    private let directTransaction: (any TransactionAccess)?
+    private let resolveTransaction:
+        @Sendable () throws -> any TransactionAccess
+    private let validateScope: @Sendable () throws -> Void
+    private let beginScopeOperation:
+        (@Sendable () throws -> DatabaseReadScopeOperationLease)?
+    private let registerScopeCursor:
+        (@Sendable (
+            @Sendable (DatabaseReadScopeOperationLease) -> KeyValueCursor,
+            DatabaseReadScopeOperationLease
+        )
+            -> KeyValueCursor)?
 
     private init(transaction: any TransactionAccess) {
-        self.transaction = transaction
+        self.transactionDomainValue = transaction.transactionDomain
+        self.capabilitiesValue = transaction.capabilities
+        self.snapshotIdentity = SnapshotIdentity()
+        self.directTransaction = transaction
+        self.resolveTransaction = { transaction }
+        self.validateScope = {}
+        self.beginScopeOperation = nil
+        self.registerScopeCursor = nil
+    }
+
+    private init(
+        admitted transaction: ReadAuthorizedTransactionAccess,
+        resolveTransaction: @escaping @Sendable () throws
+            -> any TransactionAccess,
+        validateScope: @escaping @Sendable () throws -> Void,
+        beginScopeOperation: @escaping @Sendable () throws
+            -> DatabaseReadScopeOperationLease,
+        registerScopeCursor: @escaping @Sendable (
+            @Sendable (DatabaseReadScopeOperationLease) -> KeyValueCursor,
+            DatabaseReadScopeOperationLease
+        ) -> KeyValueCursor
+    ) {
+        self.transactionDomainValue = transaction.transactionDomain
+        self.capabilitiesValue = transaction.capabilities
+        self.snapshotIdentity = transaction.snapshotIdentity
+        self.directTransaction = nil
+        self.resolveTransaction = resolveTransaction
+        self.validateScope = validateScope
+        self.beginScopeOperation = beginScopeOperation
+        self.registerScopeCursor = registerScopeCursor
     }
 
     static func admitted(
         _ transaction: any TransactionAccess
     ) -> any TransactionAccess {
-        if transaction is ReadAuthorizedTransactionAccess {
-            return transaction
+        admittedReadAccess(transaction)
+    }
+
+    static func admittedReadAccess(
+        _ transaction: any TransactionAccess
+    ) -> ReadAuthorizedTransactionAccess {
+        if let admitted = transaction as? ReadAuthorizedTransactionAccess {
+            return admitted
         }
         return ReadAuthorizedTransactionAccess(transaction: transaction)
+    }
+
+    static func scoped(
+        admitted transaction: ReadAuthorizedTransactionAccess,
+        resolveTransaction: @escaping @Sendable () throws
+            -> ReadAuthorizedTransactionAccess,
+        validateScope: @escaping @Sendable () throws -> Void,
+        beginScopeOperation: @escaping @Sendable () throws
+            -> DatabaseReadScopeOperationLease,
+        registerScopeCursor: @escaping @Sendable (
+            @Sendable (DatabaseReadScopeOperationLease) -> KeyValueCursor,
+            DatabaseReadScopeOperationLease
+        ) -> KeyValueCursor
+    ) -> ReadAuthorizedTransactionAccess {
+        ReadAuthorizedTransactionAccess(
+            admitted: transaction,
+            resolveTransaction: resolveTransaction,
+            validateScope: validateScope,
+            beginScopeOperation: beginScopeOperation,
+            registerScopeCursor: registerScopeCursor
+        )
+    }
+
+    func matches(_ transaction: any TransactionAccess) -> Bool {
+        guard let admitted = transaction as? ReadAuthorizedTransactionAccess
+        else { return false }
+        return admitted.snapshotIdentity === snapshotIdentity
+    }
+
+    func restoreReadPosition(_ position: DatabaseReadPosition) throws {
+        try validate(operation: nil)
+        try Self.restoreReadPosition(
+            position,
+            on: resolveTransaction()
+        )
+    }
+
+    static func restoreReadPosition(
+        _ position: DatabaseReadPosition,
+        on transaction: any TransactionAccess
+    ) throws {
+        guard case .version(let version) = position,
+              transaction.capabilities.historicalReadVersion else {
+            throw DatabaseReadPositionError.positionIsNotRestorable
+        }
+        guard let signedVersion = Int64(exactly: version) else {
+            throw DatabaseReadPositionError.versionExceedsStorageRange(
+                version
+            )
+        }
+        if let admitted = transaction as? ReadAuthorizedTransactionAccess {
+            try admitted.restoreReadPosition(position)
+        } else {
+            try transaction.setReadVersion(signedVersion)
+        }
+    }
+
+    func selectReadPosition(
+        restoring requestedPosition: DatabaseReadPosition?
+    ) async throws -> DatabaseReadPosition {
+        if let requestedPosition {
+            try restoreReadPosition(requestedPosition)
+        }
+        let position = try await captureReadPosition()
+        if let requestedPosition, position != requestedPosition {
+            throw DatabaseReadPositionError.restoredPositionChanged(
+                expected: requestedPosition,
+                actual: position
+            )
+        }
+        return position
+    }
+
+    func captureReadPosition() async throws -> DatabaseReadPosition {
+        guard capabilitiesValue.readVersion else {
+            return .opaque(Self.makeOpaqueReadPosition())
+        }
+        let signedVersion = try await getReadVersion()
+        guard let version = UInt64(exactly: signedVersion) else {
+            throw DatabaseReadPositionError.invalidStorageVersion(
+                signedVersion
+            )
+        }
+        return .version(version)
+    }
+
+    private static func makeOpaqueReadPosition() -> ByteString {
+        var generator = SystemRandomNumberGenerator()
+        return ByteString((0..<32).map { _ in
+            UInt8.random(in: .min ... .max, using: &generator)
+        })
+    }
+
+    private func validate(
+        operation: DatabaseReadScopeOperationLease?
+    ) throws {
+        if let operation {
+            try operation.validate()
+        } else {
+            try validateScope()
+        }
     }
 
     func namespaceTransactionBorrow(
         for lifecycle: DatabaseStorageLifecycle
     ) throws -> ContainerNamespaceTransactionBorrow {
-        if let transaction = transaction as? ContainerTransactionAccess {
-            return try transaction.namespaceTransactionBorrow(for: lifecycle)
+        let operation = try beginScopeOperation?()
+        do {
+            try validate(operation: operation)
+            let transaction = try resolveTransaction()
+            if let transaction = transaction as? ContainerTransactionAccess {
+                let borrow = try transaction.namespaceTransactionBorrow(
+                    for: lifecycle
+                )
+                return borrow.retainingReadScope(operation)
+            }
+            if let transaction = transaction as? ContainerTransaction {
+                let borrow = try transaction.namespaceTransactionBorrow(
+                    for: lifecycle
+                )
+                return borrow.retainingReadScope(operation)
+            }
+        } catch {
+            operation?.end()
+            throw error
         }
-        if let transaction = transaction as? ContainerTransaction {
-            return try transaction.namespaceTransactionBorrow(for: lifecycle)
-        }
+        operation?.end()
         throw StorageError.invalidOperation(
             "Namespace reads require a transaction admitted by the same database container"
         )
     }
 
     var capabilities: TransactionCapabilities {
-        transaction.capabilities
+        capabilitiesValue
     }
 
     var transactionDomain: StorageTransactionDomain {
-        transaction.transactionDomain
+        transactionDomainValue
     }
 
     /// Physical compaction is a mutation capability and is not exposed through
@@ -59,21 +229,39 @@ final class ReadAuthorizedTransactionAccess:
         for key: ByteString,
         snapshot: Bool
     ) async throws -> ByteString? {
-        try await transaction.getValue(for: key, snapshot: snapshot)
+        let operation = try beginScopeOperation?()
+        defer { operation?.end() }
+        try validate(operation: operation)
+        let value = try await resolveTransaction().getValue(
+            for: key,
+            snapshot: snapshot
+        )
+        try validate(operation: operation)
+        return value
     }
 
     func getValue(for key: ByteString) async throws -> ByteString? {
-        try await transaction.getValue(for: key)
+        let operation = try beginScopeOperation?()
+        defer { operation?.end() }
+        try validate(operation: operation)
+        let value = try await resolveTransaction().getValue(for: key)
+        try validate(operation: operation)
+        return value
     }
 
     func getKey(
         selector: KeySelector,
         snapshot: Bool
     ) async throws -> ByteString? {
-        try await transaction.getKey(
+        let operation = try beginScopeOperation?()
+        defer { operation?.end() }
+        try validate(operation: operation)
+        let key = try await resolveTransaction().getKey(
             selector: selector,
             snapshot: snapshot
         )
+        try validate(operation: operation)
+        return key
     }
 
     func rangeCursor(
@@ -84,13 +272,56 @@ final class ReadAuthorizedTransactionAccess:
         snapshot: Bool,
         streamingMode: StreamingMode
     ) -> KeyValueCursor {
-        transaction.rangeCursor(
-            from: begin,
-            to: end,
-            limit: limit,
-            reverse: reverse,
-            snapshot: snapshot,
-            streamingMode: streamingMode
+        guard let beginScopeOperation, let registerScopeCursor else {
+            guard let directTransaction else {
+                preconditionFailure(
+                    "Direct read access must retain its transaction"
+                )
+            }
+            return directTransaction.rangeCursor(
+                from: begin,
+                to: end,
+                limit: limit,
+                reverse: reverse,
+                snapshot: snapshot,
+                streamingMode: streamingMode
+            )
+        }
+        var operation: DatabaseReadScopeOperationLease?
+        let transaction: any TransactionAccess
+        do {
+            operation = try beginScopeOperation()
+            try operation?.validate()
+            transaction = try resolveTransaction()
+        } catch {
+            let admissionError = error
+            operation?.end()
+            return KeyValueCursor(validatingScope: {
+                throw admissionError
+            })
+        }
+        guard let operation else {
+            preconditionFailure("Scoped read operation was not acquired")
+        }
+        return registerScopeCursor(
+            { cursorOperation in
+                KeyValueCursor(
+                    consuming: ReadScopeValidatedRangeResult(
+                        base: transaction.rangeCursor(
+                            from: begin,
+                            to: end,
+                            limit: limit,
+                            reverse: reverse,
+                            snapshot: snapshot,
+                            streamingMode: streamingMode
+                        ),
+                        operation: cursorOperation
+                    )
+                ).validatingBeforeAdvance {
+                    try cursorOperation.validate()
+                }
+            },
+            operation
         )
     }
 
@@ -115,29 +346,34 @@ final class ReadAuthorizedTransactionAccess:
     }
 
     func setReadVersion(_ version: Int64) throws {
-        try transaction.setReadVersion(version)
+        throw DatabaseReadTransactionError.mutationRequiresWriteAccess
     }
 
     func getReadVersion() async throws -> Int64 {
-        try await transaction.getReadVersion()
+        let operation = try beginScopeOperation?()
+        defer { operation?.end() }
+        try validate(operation: operation)
+        let version = try await resolveTransaction().getReadVersion()
+        try validate(operation: operation)
+        return version
     }
 
     func setOption(forOption option: TransactionOption) throws {
-        try transaction.setOption(forOption: option)
+        throw DatabaseReadTransactionError.mutationRequiresWriteAccess
     }
 
     func setOption(
         to value: ByteString?,
         forOption option: TransactionOption
     ) throws {
-        try transaction.setOption(to: value, forOption: option)
+        throw DatabaseReadTransactionError.mutationRequiresWriteAccess
     }
 
     func setOption(
         to value: Int,
         forOption option: TransactionOption
     ) throws {
-        try transaction.setOption(to: value, forOption: option)
+        throw DatabaseReadTransactionError.mutationRequiresWriteAccess
     }
 
     func addConflictRange(
@@ -145,21 +381,22 @@ final class ReadAuthorizedTransactionAccess:
         endKey: ByteString,
         type: ConflictRangeType
     ) throws {
-        try transaction.addConflictRange(
-            beginKey: beginKey,
-            endKey: endKey,
-            type: type
-        )
+        throw DatabaseReadTransactionError.mutationRequiresWriteAccess
     }
 
     func getEstimatedRangeSizeBytes(
         beginKey: ByteString,
         endKey: ByteString
     ) async throws -> Int {
-        try await transaction.getEstimatedRangeSizeBytes(
+        let operation = try beginScopeOperation?()
+        defer { operation?.end() }
+        try validate(operation: operation)
+        let size = try await resolveTransaction().getEstimatedRangeSizeBytes(
             beginKey: beginKey,
             endKey: endKey
         )
+        try validate(operation: operation)
+        return size
     }
 
     func getRangeSplitPoints(
@@ -167,14 +404,60 @@ final class ReadAuthorizedTransactionAccess:
         endKey: ByteString,
         chunkSize: Int
     ) async throws -> [ByteString] {
-        try await transaction.getRangeSplitPoints(
+        let operation = try beginScopeOperation?()
+        defer { operation?.end() }
+        try validate(operation: operation)
+        let points = try await resolveTransaction().getRangeSplitPoints(
             beginKey: beginKey,
             endKey: endKey,
             chunkSize: chunkSize
         )
+        try validate(operation: operation)
+        return points
     }
 
     func requestVersionstamp() -> any PendingTransactionVersionstamp {
-        transaction.requestVersionstamp()
+        RejectedReadVersionstamp()
+    }
+}
+
+/// Keeps read-scope validation inside the cursor lifetime boundary.
+///
+/// `KeyValueCursor` releases retained owners after its native cursor reaches a
+/// terminal state. Performing the post-advance validation in this native
+/// cursor ensures that an admitted advance completes before that release can
+/// end its read-scope operation. Key and value buffers pass through unchanged.
+private struct ReadScopeValidatedRangeResult: TransactionRangeResult {
+    let base: KeyValueCursor
+    let operation: DatabaseReadScopeOperationLease
+
+    func makeCursor() -> Cursor {
+        Cursor(base: base, operation: operation)
+    }
+
+    struct Cursor: TransactionRangeCursor {
+        var base: KeyValueCursor
+        let operation: DatabaseReadScopeOperationLease
+
+        mutating func next() async throws -> (ByteString, ByteString)? {
+            try operation.validate()
+            let element = try await base.next()
+            try operation.validate()
+            return element
+        }
+
+        mutating func finish(
+            isolation actor: isolated (any Actor)?
+        ) async throws {
+            try await base.finish()
+        }
+    }
+}
+
+private struct RejectedReadVersionstamp: PendingTransactionVersionstamp {
+    var value: TransactionVersionstamp {
+        get async throws {
+            throw DatabaseReadTransactionError.mutationRequiresWriteAccess
+        }
     }
 }

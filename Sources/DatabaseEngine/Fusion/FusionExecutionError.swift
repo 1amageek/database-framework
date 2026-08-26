@@ -18,6 +18,7 @@ public enum FusionExecutionError: Error, Sendable, Equatable {
     case indexExecutorNotRegistered(IndexType)
     case indexNotReadable(entity: String, name: String)
     case inputLimitOutOfRange(UInt64)
+    case relationalSubqueryNotSupported
     case requiredCandidates(stage: Int, input: Int)
     case invalidInputScoring(FusionScoring?)
     case reservedAnnotationCollision(String)

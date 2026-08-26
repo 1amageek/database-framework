@@ -75,6 +75,10 @@ final class DatabaseSchemaGenerationStore: Sendable {
         }
     }
 
+    var pendingDrainWaiterCount: Int {
+        state.withLock { $0.drainWaiters.count }
+    }
+
     /// Waits until every lease older than `generation` has been released.
     /// New acquisitions can only bind the currently published generation, so
     /// no older lease can enter after the caller observes the publication.

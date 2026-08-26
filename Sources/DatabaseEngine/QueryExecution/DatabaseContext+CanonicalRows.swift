@@ -590,12 +590,13 @@ private enum CanonicalPartitionRoutingMode: Sendable {
 
 private struct CanonicalQueryEvaluationContext: Sendable {
     let options: ReadExecutionContext
-    let transaction: any TransactionAccess
+    let transaction: DatabaseReadTransaction
     let partitionValues: FieldObject?
     let partitionMode: CanonicalPartitionRoutingMode
     let namedSubqueries: [NamedSubquery]
     let outerRow: CanonicalSourceRow?
     let preparedFusionGraph: FusionPreparedQueryGraph
+    let fusionSession: DatabaseReadSession
 }
 
 extension DatabaseContext {
@@ -673,31 +674,38 @@ extension DatabaseContext {
                 requested: execution.consistency,
                 default: .serializable
             )
-            let authorizationPlan = DatabaseFieldReadAuthorizationPlan.make(
-                query: selectQuery,
-                schema: container.schema
-            ).merging(
-                resolvedFusionGraph.authorizationPlan
-            )
-            return try await withFieldReadAuthorization(authorizationPlan) {
+            let authorizationPlan = resolvedFusionGraph.authorizationPlan
+            return try await withFieldReadAuthorization(
+                authorizationPlan,
+                listRequirements: resolvedFusionGraph
+                    .listAuthorizationRequirements
+            ) { authorization in
                 let preparedFusionGraph = try FusionPreflight.prepareGraph(
-                    selectQuery,
                     resolvedFusionGraph,
+                    authorization: authorization,
                     context: self,
                     workMeter: execution.workMeter
                 )
                 return try await withStorageAccess(
                     requiredAccess: .read,
                     configuration: readExecution.transactionConfiguration
-                ) { [self] transaction in
-                    try await queryCanonical(
-                        selectQuery,
-                        options: execution,
-                        partitionValues: graphPartitions,
-                        partitionMode: .strict,
-                        transaction: transaction,
-                        preparedFusionGraph: preparedFusionGraph
-                    )
+                ) { [self] _ in
+                    try await DatabaseReadSession.withSession(
+                        context: self,
+                        workMeter: execution.workMeter
+                    ) { session in
+                        let authorizedSession = try session
+                            .authorizedSession(authorization)
+                        return try await queryCanonical(
+                            selectQuery,
+                            options: execution,
+                            partitionValues: graphPartitions,
+                            partitionMode: .strict,
+                            transaction: authorizedSession.transaction,
+                            preparedFusionGraph: preparedFusionGraph,
+                            fusionSession: authorizedSession
+                        )
+                    }
                 }
             }
         }
@@ -708,17 +716,24 @@ extension DatabaseContext {
     func executeFusionRelationalRows(
         _ selectQuery: SelectQuery,
         options: ReadExecutionContext,
-        transaction: any TransactionAccess,
-        preparedFusionGraph: FusionPreparedQueryGraph
+        preparedFusionGraph: FusionPreparedQueryGraph,
+        session: DatabaseReadSession,
+        authorization: DatabaseReadAuthorization,
+        listAuthorizationRequirement:
+            DatabaseListReadAuthorizationRequirement
     ) async throws -> CanonicalRetainedQueryResponse {
         let internalOptions = executionContextWithoutExternalPageWindow(options)
+        let authorizedSession = try session.authorizedSession(authorization)
         return try await queryCanonical(
             selectQuery,
             options: internalOptions,
             partitionValues: FieldObject(),
             partitionMode: .strict,
-            transaction: transaction,
-            preparedFusionGraph: preparedFusionGraph
+            transaction: authorizedSession.transaction,
+            preparedFusionGraph: preparedFusionGraph,
+            fusionSession: authorizedSession,
+            admittedListAuthorizationRequirement:
+                listAuthorizationRequirement
         )
     }
 
@@ -728,8 +743,9 @@ extension DatabaseContext {
         _ candidates: FusionCandidateDomain,
         query selectQuery: SelectQuery,
         options: ReadExecutionContext,
-        transaction: any TransactionAccess,
-        preparedFusionGraph: FusionPreparedQueryGraph
+        preparedFusionGraph: FusionPreparedQueryGraph,
+        session: DatabaseReadSession,
+        authorization: DatabaseReadAuthorization
     ) async throws -> CanonicalRetainedQueryResponse {
         guard case .table(let tableRef) = selectQuery.source else {
             throw CanonicalReadError.unsupportedSelectQuery(
@@ -765,6 +781,7 @@ extension DatabaseContext {
         let sourceRows = try builder.finish().moveToSharedOwnership(
             at: .bindingCandidate
         )
+        let authorizedSession = try session.authorizedSession(authorization)
         return try await finalizeRelationalRows(
             selectQuery,
             sourceRows: sourceRows,
@@ -774,7 +791,7 @@ extension DatabaseContext {
             options: internalOptions,
             evaluationContext: CanonicalQueryEvaluationContext(
                 options: internalOptions,
-                transaction: transaction,
+                transaction: authorizedSession.transaction,
                 partitionValues: FieldObject(),
                 partitionMode: .strict,
                 namedSubqueries: try mergeNamedSubqueries(
@@ -782,14 +799,16 @@ extension DatabaseContext {
                     inherited: []
                 ),
                 outerRow: nil,
-                preparedFusionGraph: preparedFusionGraph
+                preparedFusionGraph: preparedFusionGraph,
+                fusionSession: authorizedSession
             )
         )
     }
 
     /// Resolves relational bindings before Fusion opens a physical index.
     func validateFusionRelationalInput(
-        _ selectQuery: SelectQuery
+        _ selectQuery: SelectQuery,
+        entity: Schema.Entity
     ) throws {
         guard case .table(let tableRef) = selectQuery.source else {
             throw CanonicalReadError.unsupportedSelectQuery(
@@ -798,7 +817,14 @@ extension DatabaseContext {
         }
         try validateRelationalQueryBindings(
             selectQuery,
-            sourceSchema: try tableRelationSchema(tableRef),
+            sourceSchema: try CanonicalRelationSchema(
+                scopes: [
+                    CanonicalRelationScope(
+                        name: tableRef.alias ?? tableRef.effectiveName,
+                        columns: entity.allFields
+                    )
+                ]
+            ),
             outerRow: nil
         )
     }
@@ -816,35 +842,32 @@ extension DatabaseContext {
         )
     }
 
-    /// Executes a Base-local read through the active storage transaction.
-    ///
-    /// The transaction argument preserves the source-executor API shape, but
-    /// it is not an authority boundary. The TaskLocal execution binding is the
-    /// only transaction admitted below, so an unrelated argument cannot create
-    /// a mixed snapshot or rebind the read to another Base.
-    @_spi(DatabaseExecution)
-    public func query(
+    /// Executes a Base-local canonical read through one validated read session.
+    package func querySessionBound(
         _ selectQuery: SelectQuery,
         execution: ReadExecutionContext,
         graphPartitions: FieldObject = FieldObject(),
-        transaction _: any TransactionAccess
+        session: DatabaseReadSession
     ) async throws -> QueryResponse {
         do {
-            return try await queryTransactionBoundUnmapped(
+            let response = try await querySessionBoundRetainedUnmapped(
                 selectQuery,
                 execution: execution,
-                graphPartitions: graphPartitions
+                graphPartitions: graphPartitions,
+                session: session
             )
+            return response.promoteToPublicResponse()
         } catch {
             throw sanitizedFusionExecutionError(error)
         }
     }
 
-    private func queryTransactionBoundUnmapped(
+    private func querySessionBoundRetainedUnmapped(
         _ selectQuery: SelectQuery,
         execution: ReadExecutionContext,
-        graphPartitions: FieldObject
-    ) async throws -> QueryResponse {
+        graphPartitions: FieldObject,
+        session: DatabaseReadSession
+    ) async throws -> CanonicalRetainedQueryResponse {
         try QueryStructuralValidator.validate(
             selectQuery,
             limits: execution.queryStructuralLimits
@@ -863,88 +886,45 @@ extension DatabaseContext {
             )
         }
         #endif
-        let admittedTransaction = ReadAuthorizedTransactionAccess.admitted(
-            binding.transaction
-        )
-        return try await withDataOperation { [self] in
-            let resolvedFusionGraph = try FusionPreflight.resolveGraph(
-                selectQuery,
-                context: self,
-                workMeter: execution.workMeter
-            )
-            let authorizationPlan = DatabaseFieldReadAuthorizationPlan.make(
-                query: selectQuery,
-                schema: container.schema
-            ).merging(
-                resolvedFusionGraph.authorizationPlan
-            )
-            return try await withFieldReadAuthorization(authorizationPlan) {
-                let preparedFusionGraph = try FusionPreflight.prepareGraph(
+        guard session.transaction.storageAccess.matches(binding.transaction)
+        else {
+            throw DatabaseTransactionError.invalidOperationContext
+        }
+        return try await session.withCanonicalExecution(
+            workMeter: execution.workMeter
+        ) { _ in
+            return try await withDataOperation { [self] in
+                let resolvedFusionGraph = try FusionPreflight.resolveGraph(
                     selectQuery,
-                    resolvedFusionGraph,
                     context: self,
                     workMeter: execution.workMeter
                 )
-                #if DATABASE_MULTI_BASE
-                _ = try requireOperationDataRoot()
-                let executionBinding = try DatabaseTransactionExecutionBinding(
-                    context: self,
-                    transaction: admittedTransaction,
-                    grantedAccess: .read,
-                    databaseTransaction: nil
-                )
-                #else
-                let executionBinding = try DatabaseTransactionExecutionBinding(
-                    context: self,
-                    transaction: admittedTransaction,
-                    databaseTransaction: nil
-                )
-                #endif
-                return try await ActiveDatabaseTransactionContext.$binding
-                    .withValue(executionBinding) {
-                        try await executeTransactionBoundCanonicalQuery(
-                            selectQuery,
-                            options: execution,
-                            graphPartitions: graphPartitions,
-                            transaction: admittedTransaction,
-                            preparedFusionGraph: preparedFusionGraph
-                        )
-                    }
+                let authorizationPlan = resolvedFusionGraph.authorizationPlan
+                return try await withFieldReadAuthorization(
+                    authorizationPlan,
+                    listRequirements: resolvedFusionGraph
+                        .listAuthorizationRequirements
+                ) { authorization in
+                    let preparedFusionGraph = try FusionPreflight.prepareGraph(
+                        resolvedFusionGraph,
+                        authorization: authorization,
+                        context: self,
+                        workMeter: execution.workMeter
+                    )
+                    let authorizedSession = try session
+                        .authorizedSession(authorization)
+                    return try await queryCanonical(
+                        selectQuery,
+                        options: execution,
+                        partitionValues: graphPartitions,
+                        partitionMode: .strict,
+                        transaction: authorizedSession.transaction,
+                        preparedFusionGraph: preparedFusionGraph,
+                        fusionSession: authorizedSession
+                    )
+                }
             }
         }
-    }
-
-    @_spi(DatabaseExecution)
-    public func executeCanonicalQuery(
-        _ selectQuery: SelectQuery,
-        execution: ReadExecutionContext,
-        graphPartitions: FieldObject = FieldObject(),
-        transaction: any TransactionAccess
-    ) async throws -> QueryResponse {
-        try await query(
-            selectQuery,
-            execution: execution,
-            graphPartitions: graphPartitions,
-            transaction: transaction
-        )
-    }
-
-    private func executeTransactionBoundCanonicalQuery(
-        _ selectQuery: SelectQuery,
-        options: ReadExecutionContext,
-        graphPartitions: FieldObject,
-        transaction: any TransactionAccess,
-        preparedFusionGraph: FusionPreparedQueryGraph
-    ) async throws -> QueryResponse {
-        let response = try await queryCanonical(
-            selectQuery,
-            options: options,
-            partitionValues: graphPartitions,
-            partitionMode: .strict,
-            transaction: transaction,
-            preparedFusionGraph: preparedFusionGraph
-        )
-        return response.promoteToPublicResponse()
     }
 
     private func mergeNamedSubqueries(
@@ -1208,14 +1188,16 @@ extension DatabaseContext {
 
     private func withFieldReadAuthorization<Result: Sendable>(
         _ plan: DatabaseFieldReadAuthorizationPlan,
-        _ operation: @Sendable () async throws -> Result
+        listRequirements: [DatabaseListReadAuthorizationRequirement],
+        _ operation: @Sendable (
+            DatabaseReadAuthorization
+        ) async throws -> Result
     ) async throws -> Result {
-        try authorizeFieldReads(plan)
-        return try await RequestFieldAuthorization.$fieldsByEntity.withValue(
-            plan.fieldsByEntity
-        ) {
-            try await operation()
-        }
+        let authorization = try readPolicy().authorizeRead(
+            listRequirements: listRequirements,
+            fields: plan
+        )
+        return try await operation(authorization)
     }
 
     private func validateRelationalQueryBindings(
@@ -1935,10 +1917,13 @@ extension DatabaseContext {
         options: ReadExecutionContext,
         partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode,
-        transaction: any TransactionAccess,
+        transaction: DatabaseReadTransaction,
         inheritedSubqueries: [NamedSubquery] = [],
         outerRow: CanonicalSourceRow? = nil,
-        preparedFusionGraph: FusionPreparedQueryGraph = .empty
+        preparedFusionGraph: FusionPreparedQueryGraph,
+        fusionSession: DatabaseReadSession,
+        admittedListAuthorizationRequirement:
+            DatabaseListReadAuthorizationRequirement? = nil
     ) async throws -> CanonicalRetainedQueryResponse {
         let namedSubqueries = try mergeNamedSubqueries(
             local: selectQuery.subqueries ?? [],
@@ -1951,7 +1936,8 @@ extension DatabaseContext {
             partitionMode: partitionMode,
             namedSubqueries: namedSubqueries,
             outerRow: outerRow,
-            preparedFusionGraph: preparedFusionGraph
+            preparedFusionGraph: preparedFusionGraph,
+            fusionSession: fusionSession
         )
         if !isSPARQLSource(selectQuery.source),
            !sourceRequiresRuntimeInferredSchema(
@@ -1998,24 +1984,38 @@ extension DatabaseContext {
                 selectQuery,
                 logicalSource: logicalSource,
                 options: options,
+                transaction: transaction,
                 evaluationContext: evaluationContext
             )
         }
 
         if isSPARQLSource(selectQuery.source) {
-            guard let executor = container.runtimeConfiguration.logicalSourceExecutors.sparqlExecutor else {
+            guard let executor = try readPolicy().sparqlSourceExecutor else {
                 throw CanonicalReadError.unsupportedSource("SPARQL source executor is not registered")
             }
-            let response = try await executor.executeInTransaction(
-                context: self,
+            let sourceSession = try fusionSession.admittingRDFDatasetRead()
+            let retainedRows = try await executor.executeInTransaction(
+                session: sourceSession,
                 selectQuery: selectQuery,
                 options: options,
-                partitions: partitionValues ?? FieldObject(),
-                transaction: transaction
+                partitions: partitionValues ?? FieldObject()
             )
-            return try retainExternalQueryResponse(
-                response,
-                workMeter: options.workMeter
+            let rows = try materializeLogicalQueryRows(
+                consume retainedRows,
+                workMeter: options.workMeter,
+                stage: .resultMaterialization
+            )
+            let page = try CanonicalQueryPagination.retainedWindow(
+                rows: rows,
+                selectQuery: selectQuery,
+                options: options
+            )
+            return CanonicalRetainedQueryResponse(
+                rows: rows,
+                visibleRange: page.range,
+                continuation: page.continuation,
+                metadata: [:],
+                affectedRows: nil
             )
         }
 
@@ -2035,7 +2035,9 @@ extension DatabaseContext {
                 selectQuery,
                 options: options,
                 transaction: transaction,
-                evaluationContext: evaluationContext
+                evaluationContext: evaluationContext,
+                admittedListAuthorizationRequirement:
+                    admittedListAuthorizationRequirement
             )
         }
 
@@ -2055,6 +2057,8 @@ extension DatabaseContext {
             partitionMode: .routed,
             transaction: transaction,
             preparedFusionGraph: preparedFusionGraph,
+            fusionSession: fusionSession,
+            authorizationQuery: selectQuery,
             outerRow: outerRow
         )
 
@@ -2075,7 +2079,7 @@ extension DatabaseContext {
         options: ReadExecutionContext,
         partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode,
-        transaction: any TransactionAccess,
+        transaction: DatabaseReadTransaction,
         evaluationContext: CanonicalQueryEvaluationContext,
         preparedFusionGraph: FusionPreparedQueryGraph
     ) async throws -> CanonicalRetainedQueryResponse {
@@ -2088,29 +2092,26 @@ extension DatabaseContext {
                 )
             }
             if case .fusion(let fusionSource) = accessPath {
-                let entity = try resolveEntity(named: tableRef.table)
-                guard preparedFusionGraph.isValidated else {
-                    throw FusionExecutionError.executionContractViolation
-                }
-                let preparedFusionPlan = try FusionPreflight
-                    .prepareForExecution(
-                        tableRef: tableRef,
-                        entity: entity,
-                        source: fusionSource,
-                        context: self,
-                        workMeter: options.workMeter
+                let listAuthorizationRequirement = try DatabaseReadPolicy
+                    .listRequirement(
+                        entityName: tableRef.table,
+                        selectQuery: selectQuery
                     )
-                let rowSet = try await FusionExecutor.execute(
-                    context: self,
-                    selectQuery: selectQuery,
+                let preparedEntry = try preparedFusionGraph.entry(
                     tableRef: tableRef,
-                    entity: entity,
                     source: fusionSource,
-                    plan: preparedFusionPlan,
-                    preparedQueryGraph: preparedFusionGraph,
-                    options: options,
-                    transaction: transaction
+                    listAuthorizationRequirement:
+                        listAuthorizationRequirement,
+                    workMeter: options.workMeter
                 )
+                let execution = try FusionExecution.make(
+                    query: selectQuery,
+                    entry: preparedEntry,
+                    graph: preparedFusionGraph,
+                    session: evaluationContext.fusionSession,
+                    options: options
+                )
+                let rowSet = try await FusionExecutor.execute(execution)
                 let sourceName = tableRef.alias ?? tableRef.effectiveName
                 return try await finalizeIndexReadResult(
                     rowSet,
@@ -2132,7 +2133,8 @@ extension DatabaseContext {
                     tableRef: tableRef,
                     selectQuery: selectQuery,
                     indexScan: indexScan,
-                    options: options
+                    options: options,
+                    session: evaluationContext.fusionSession
                 )
                 let sourceName = tableRef.alias ?? tableRef.effectiveName
                 return try await finalizeIndexReadResult(
@@ -2175,17 +2177,16 @@ extension DatabaseContext {
                     "Index '\(index.name)' has type '\(index.type.diagnosticName)', not '\(indexScan.indexType.diagnosticName)'"
                 )
             }
-            guard let executor = container.runtimeConfiguration.readExecutors
-                .polymorphicIndexExecutor(
-                    for: index.type
-                    )
+            guard let executor = try readPolicy().polymorphicIndexExecutor(
+                for: index.type
+            )
             else {
                 throw CanonicalReadError.executorNotRegistered(
                     index.type
                 )
             }
             let rowSet = try await executor.executeRows(
-                context: self,
+                session: evaluationContext.fusionSession,
                 selectQuery: selectQuery,
                 index: index,
                 indexScan: indexScan,
@@ -2265,26 +2266,35 @@ extension DatabaseContext {
     private func executeSingleTableRows(
         _ selectQuery: SelectQuery,
         options: ReadExecutionContext,
-        transaction: (any TransactionAccess)? = nil,
-        evaluationContext: CanonicalQueryEvaluationContext? = nil
+        transaction: DatabaseReadTransaction,
+        evaluationContext: CanonicalQueryEvaluationContext? = nil,
+        admittedListAuthorizationRequirement:
+            DatabaseListReadAuthorizationRequirement? = nil
     ) async throws -> CanonicalRetainedQueryResponse {
         guard case .table(let tableRef) = selectQuery.source else {
             throw CanonicalReadError.unsupportedSource("Expected table source")
         }
 
         let entity = try resolveEntity(named: tableRef.table)
-        guard let runtime = container.runtimeConfiguration
-            .entityRuntimes.registration(named: entity.name) else {
+        guard let runtime = try readPolicy().entityRuntime(
+            named: entity.name
+        ) else {
             throw CanonicalReadError.unsupportedSelectQuery(
                 "Entity '\(tableRef.table)' has no registered runtime type"
             )
         }
 
         let sourceName = tableRef.alias ?? tableRef.effectiveName
+        let authorizationRequirement = try admittedListAuthorizationRequirement
+            ?? DatabaseReadPolicy.listRequirement(
+                entityName: entity.name,
+                selectQuery: selectQuery
+            )
         let pushdown = try await fetchTableSourceRows(
             runtime: runtime,
             sourceName: sourceName,
             selectQuery: selectQuery,
+            authorizationRequirement: authorizationRequirement,
             options: options,
             transaction: transaction
         )
@@ -2321,7 +2331,8 @@ extension DatabaseContext {
         tableRef: TableRef,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
-        options: ReadExecutionContext
+        options: ReadExecutionContext,
+        session: DatabaseReadSession
     ) async throws -> IndexReadResult {
         let entity = try resolveEntity(named: tableRef.table)
         guard let index = entity.indexDescriptors.first(
@@ -2336,20 +2347,22 @@ extension DatabaseContext {
                 "Index '\(index.name)' has type '\(index.type.diagnosticName)', not '\(indexScan.indexType.diagnosticName)'"
             )
         }
-        guard let runtime = container.runtimeConfiguration
-            .entityRuntimes.registration(named: entity.name) else {
+        guard let runtime = try readPolicy().entityRuntime(
+            named: entity.name
+        ) else {
             throw CanonicalReadError.unsupportedSelectQuery(
                 "Entity '\(tableRef.table)' has no registered runtime type"
             )
         }
-        guard let result = try await runtime.executeIndexRows(
+        let result = try await runtime.executeIndexRows(
             index: index,
-            context: self,
+            session: session,
             selectQuery: selectQuery,
             indexScan: indexScan,
             options: options,
             partitions: tableRef.partitions
-        ) else {
+        )
+        guard let result else {
             throw CanonicalReadError.unsupportedSelectQuery(
                 "Entity '\(entity.name)' has no registered '\(indexScan.indexType.diagnosticName)' index reader"
             )
@@ -2357,17 +2370,23 @@ extension DatabaseContext {
         return result
     }
 
+    /// Executes physical table planning with the opaque list requirement
+    /// admitted by the canonical query boundary. A nested source may
+    /// intentionally use an unwindowed physical query, but it must never
+    /// authorize that query's synthetic window.
     private func fetchTableSourceRows(
         runtime: EntityRuntimeRegistration,
         sourceName: String,
         selectQuery: SelectQuery,
+        authorizationRequirement: DatabaseListReadAuthorizationRequirement,
         options: ReadExecutionContext,
-        transaction: (any TransactionAccess)? = nil
+        transaction: DatabaseReadTransaction
     ) async throws -> EntityTableRows {
         try await runtime.fetchTableRows(
             context: self,
             sourceName: sourceName,
             selectQuery: selectQuery,
+            authorizationRequirement: authorizationRequirement,
             options: options,
             transaction: transaction
         )
@@ -2376,15 +2395,21 @@ extension DatabaseContext {
     private func materializeUnwindowedTableSourceRows(
         _ tableRef: TableRef,
         options: ReadExecutionContext,
-        transaction: (any TransactionAccess)?
+        transaction: DatabaseReadTransaction,
+        authorizationQuery: SelectQuery
     ) async throws -> CanonicalRetainedRows {
         let entity = try resolveEntity(named: tableRef.table)
-        guard let runtime = container.runtimeConfiguration
-            .entityRuntimes.registration(named: entity.name) else {
+        guard let runtime = try readPolicy().entityRuntime(
+            named: entity.name
+        ) else {
             throw CanonicalReadError.unsupportedSelectQuery(
                 "Entity '\(tableRef.table)' has no registered runtime type"
             )
         }
+        let authorizationRequirement = try DatabaseReadPolicy.listRequirement(
+            entityName: entity.name,
+            selectQuery: authorizationQuery
+        )
         let sourceName = tableRef.alias ?? tableRef.effectiveName
         let select = SelectQuery(
             projection: .all,
@@ -2395,6 +2420,7 @@ extension DatabaseContext {
             runtime: runtime,
             sourceName: sourceName,
             selectQuery: select,
+            authorizationRequirement: authorizationRequirement,
             options: sourceOptions,
             transaction: transaction
         )
@@ -2439,34 +2465,22 @@ extension DatabaseContext {
         }
     }
 
-    private func executePolymorphicRows(
-        _ selectQuery: SelectQuery,
-        logicalSource: LogicalSourceRef,
-        options: ReadExecutionContext,
-        evaluationContext: CanonicalQueryEvaluationContext
-    ) async throws -> CanonicalRetainedQueryResponse {
-        let group = try container.polymorphicGroup(identifier: logicalSource.identifier)
-        let execution = CanonicalReadExecution.resolve(
-            requested: options.consistency,
-            default: .serializable
-        )
-        let entities = try await scanPolymorphicItems(
-            group: group,
-            configuration: execution.transactionConfiguration,
-            limit: nil,
-            offset: nil,
-            orderBy: nil
-        )
-        let sourceName = logicalSource.alias ?? logicalSource.effectiveName
-
-        var sourceRowBuilder = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
-            workMeter: options.workMeter,
-            stage: .resultMaterialization,
-            layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self),
+    private func materializePolymorphicSourceRows(
+        _ entities: [PolymorphicEntity],
+        sourceName: String,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> CanonicalRetainedRows {
+        var sourceRows = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
+            workMeter: workMeter,
+            stage: stage,
+            layout: try DatabaseRetainedArrayLayout.forElement(
+                CanonicalSourceRow.self
+            ),
             expectedCount: entities.count
         )
         for entity in entities {
-            try options.workMeter.consume(at: .resultMaterialization)
+            try workMeter.consume(at: stage)
             let row = try QueryRowCodec.encode(
                 entity.item,
                 annotations: [
@@ -2480,16 +2494,36 @@ extension DatabaseContext {
                 annotations: row.annotations,
                 version: row.version
             )
-            try sourceRowBuilder.append(
+            try sourceRows.append(
                 footprint: try CanonicalRelationalFootprintMeter.footprint(
                     of: sourceRow,
-                    workMeter: options.workMeter
+                    workMeter: workMeter
                 ),
                 make: { sourceRow }
             )
         }
-        let sourceRows = try sourceRowBuilder.finish().moveToSharedOwnership(
-            at: .resultMaterialization
+        return try sourceRows.finish().moveToSharedOwnership(at: stage)
+    }
+
+    private func executePolymorphicRows(
+        _ selectQuery: SelectQuery,
+        logicalSource: LogicalSourceRef,
+        options: ReadExecutionContext,
+        transaction: DatabaseReadTransaction,
+        evaluationContext: CanonicalQueryEvaluationContext
+    ) async throws -> CanonicalRetainedQueryResponse {
+        let group = try container.polymorphicGroup(identifier: logicalSource.identifier)
+        let entities = try await scanPolymorphicItems(
+            group: group,
+            selectQuery: selectQuery,
+            session: evaluationContext.fusionSession
+        )
+        let sourceName = logicalSource.alias ?? logicalSource.effectiveName
+        let sourceRows = try materializePolymorphicSourceRows(
+            entities,
+            sourceName: sourceName,
+            workMeter: options.workMeter,
+            stage: .resultMaterialization
         )
 
         return try await finalizeRelationalRows(
@@ -2512,8 +2546,10 @@ extension DatabaseContext {
         options: ReadExecutionContext,
         partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode,
-        transaction: any TransactionAccess,
+        transaction: DatabaseReadTransaction,
         preparedFusionGraph: FusionPreparedQueryGraph,
+        fusionSession: DatabaseReadSession,
+        authorizationQuery: SelectQuery,
         outerRow: CanonicalSourceRow? = nil,
         allowsOuterReferences: Bool = false
     ) async throws -> CanonicalRelation {
@@ -2534,7 +2570,8 @@ extension DatabaseContext {
                     transaction: transaction,
                     inheritedSubqueries: namedSubqueries,
                     outerRow: allowsOuterReferences ? outerRow : nil,
-                    preparedFusionGraph: preparedFusionGraph
+                    preparedFusionGraph: preparedFusionGraph,
+                    fusionSession: fusionSession
                 )
                 let alias = tableRef.alias ?? named.name
                 return try materializeQueryRelation(
@@ -2550,7 +2587,8 @@ extension DatabaseContext {
             let rows = try await materializeUnwindowedTableSourceRows(
                 tableRef,
                 options: options,
-                transaction: transaction
+                transaction: transaction,
+                authorizationQuery: authorizationQuery
             )
             return CanonicalRelation(
                 schema: try tableRelationSchema(tableRef),
@@ -2564,52 +2602,24 @@ extension DatabaseContext {
                 )
             }
             let group = try container.polymorphicGroup(identifier: logicalSource.identifier)
-            let execution = CanonicalReadExecution.resolve(
-                requested: options.consistency,
-                default: .serializable
-            )
             let entities = try await scanPolymorphicItems(
                 group: group,
-                configuration: execution.transactionConfiguration
+                selectQuery: authorizationQuery,
+                session: fusionSession
             )
             let sourceName = logicalSource.alias ?? logicalSource.effectiveName
-            var retained = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
+            let rows = try materializePolymorphicSourceRows(
+                entities,
+                sourceName: sourceName,
                 workMeter: options.workMeter,
-                stage: .bindingCandidate,
-                layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self),
-                expectedCount: entities.count
+                stage: .bindingCandidate
             )
-            for entity in entities {
-                try options.workMeter.consume(at: .bindingCandidate)
-                let row = try QueryRowCodec.encode(
-                    entity.item,
-                    annotations: [
-                        PolymorphicRowAnnotation.typeName: .string(entity.typeName),
-                        PolymorphicRowAnnotation.typeCode: .int64(entity.typeCode),
-                    ]
-                )
-                let sourceRow = CanonicalSourceRow.fromBaseFields(
-                    row.fields,
-                    sourceName: sourceName,
-                    annotations: row.annotations,
-                    version: row.version
-                )
-                try retained.append(
-                    footprint: try CanonicalRelationalFootprintMeter.footprint(
-                        of: sourceRow,
-                        workMeter: options.workMeter
-                    ),
-                    make: { sourceRow }
-                )
-            }
             return CanonicalRelation(
                 schema: try polymorphicRelationSchema(
                     group,
                     sourceName: sourceName
                 ),
-                rows: try retained.finish().moveToSharedOwnership(
-                    at: .bindingCandidate
-                )
+                rows: rows
             )
 
         case .subquery(let query, let alias):
@@ -2621,7 +2631,8 @@ extension DatabaseContext {
                 transaction: transaction,
                 inheritedSubqueries: namedSubqueries,
                 outerRow: allowsOuterReferences ? outerRow : nil,
-                preparedFusionGraph: preparedFusionGraph
+                preparedFusionGraph: preparedFusionGraph,
+                fusionSession: fusionSession
             )
             return try materializeQueryRelation(
                 response.visibleRows,
@@ -2641,6 +2652,8 @@ extension DatabaseContext {
                 partitionMode: partitionMode,
                 transaction: transaction,
                 preparedFusionGraph: preparedFusionGraph,
+                fusionSession: fusionSession,
+                authorizationQuery: authorizationQuery,
                 outerRow: outerRow,
                 allowsOuterReferences: allowsOuterReferences
             )
@@ -2655,6 +2668,8 @@ extension DatabaseContext {
                 partitionMode: partitionMode,
                 transaction: transaction,
                 preparedFusionGraph: preparedFusionGraph,
+                fusionSession: fusionSession,
+                authorizationQuery: authorizationQuery,
                 outerRow: outerRow,
                 allowsOuterReferences: allowsOuterReferences
             )
@@ -2669,6 +2684,8 @@ extension DatabaseContext {
                 partitionMode: partitionMode,
                 transaction: transaction,
                 preparedFusionGraph: preparedFusionGraph,
+                fusionSession: fusionSession,
+                authorizationQuery: authorizationQuery,
                 outerRow: outerRow,
                 allowsOuterReferences: allowsOuterReferences
             )
@@ -2682,6 +2699,8 @@ extension DatabaseContext {
                 partitionMode: partitionMode,
                 transaction: transaction,
                 preparedFusionGraph: preparedFusionGraph,
+                fusionSession: fusionSession,
+                authorizationQuery: authorizationQuery,
                 outerRow: outerRow,
                 allowsOuterReferences: allowsOuterReferences
             )
@@ -2696,6 +2715,8 @@ extension DatabaseContext {
                 partitionMode: partitionMode,
                 transaction: transaction,
                 preparedFusionGraph: preparedFusionGraph,
+                fusionSession: fusionSession,
+                authorizationQuery: authorizationQuery,
                 outerRow: outerRow,
                 allowsOuterReferences: allowsOuterReferences
             )
@@ -2744,65 +2765,69 @@ extension DatabaseContext {
             )
 
         case .graphTable(let graphTableSource):
-            guard let executor = container.runtimeConfiguration.logicalSourceExecutors.graphTableExecutor else {
+            guard let executor = try readPolicy().graphTableSourceExecutor else {
                 throw CanonicalReadError.unsupportedSource("graphTable executor is not registered")
             }
-            let rows = try await executor.executeInTransaction(
-                context: self,
+            let sourceRows = try await executor.executeInTransaction(
+                session: fusionSession,
                 graphTableSource: graphTableSource,
                 options: options,
-                partitions: partitionValues ?? FieldObject(),
-                transaction: transaction
+                partitions: partitionValues ?? FieldObject()
+            )
+            let graphRows = try materializeLogicalSourceRows(
+                consume sourceRows,
+                sourceName: nil,
+                workMeter: options.workMeter,
+                stage: .bindingCandidate
             )
             var retained = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
                 workMeter: options.workMeter,
                 stage: .bindingCandidate,
                 layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self),
-                expectedCount: rows.count
+                expectedCount: graphRows.count
             )
-            for index in 0..<rows.count {
-                try await rows.withElement(at: index) { graphRow in
-                    try options.workMeter.consume(at: .bindingCandidate)
-                    let sourceRow = canonicalGraphTableSourceRow(
-                        from: graphRow.fields,
-                        graphName: graphTableSource.graphName
-                    )
-                    let outputRow: CanonicalSourceRow
-                    if let columns = graphTableSource.columns,
-                       !columns.isEmpty {
-                        var fields: [String: FieldValue] = [:]
-                        fields.reserveCapacity(columns.count)
-                        for column in columns {
-                            fields[column.alias] = try await evaluateQueryExpression(
-                                column.expression,
-                                on: sourceRow,
-                                context: CanonicalQueryEvaluationContext(
-                                    options: options,
-                                    transaction: transaction,
-                                    partitionValues: partitionValues,
-                                    partitionMode: partitionMode,
-                                    namedSubqueries: namedSubqueries,
-                                    outerRow: allowsOuterReferences ? outerRow : nil,
-                                    preparedFusionGraph: preparedFusionGraph
-                                ),
-                                workMeter: options.workMeter
-                            )
-                        }
-                        outputRow = CanonicalSourceRow(fields: fields)
-                            .applyingAlias(graphTableSource.alias)
-                    } else {
-                        outputRow = sourceRow.applyingAlias(
-                            graphTableSource.alias
+            for graphRow in graphRows {
+                try options.workMeter.consume(at: .bindingCandidate)
+                let sourceRow = canonicalGraphTableSourceRow(
+                    from: graphRow.fields,
+                    graphName: graphTableSource.graphName
+                )
+                let outputRow: CanonicalSourceRow
+                if let columns = graphTableSource.columns,
+                   !columns.isEmpty {
+                    var fields: [String: FieldValue] = [:]
+                    fields.reserveCapacity(columns.count)
+                    for column in columns {
+                        fields[column.alias] = try await evaluateQueryExpression(
+                            column.expression,
+                            on: sourceRow,
+                            context: CanonicalQueryEvaluationContext(
+                                options: options,
+                                transaction: transaction,
+                                partitionValues: partitionValues,
+                                partitionMode: partitionMode,
+                                namedSubqueries: namedSubqueries,
+                                outerRow: allowsOuterReferences ? outerRow : nil,
+                                preparedFusionGraph: preparedFusionGraph,
+                                fusionSession: fusionSession
+                            ),
+                            workMeter: options.workMeter
                         )
                     }
-                    try retained.append(
-                        footprint: try CanonicalRelationalFootprintMeter.footprint(
-                            of: outputRow,
-                            workMeter: options.workMeter
-                        ),
-                        make: { outputRow }
+                    outputRow = CanonicalSourceRow(fields: fields)
+                        .applyingAlias(graphTableSource.alias)
+                } else {
+                    outputRow = sourceRow.applyingAlias(
+                        graphTableSource.alias
                     )
                 }
+                try retained.append(
+                    footprint: try CanonicalRelationalFootprintMeter.footprint(
+                        of: outputRow,
+                        workMeter: options.workMeter
+                    ),
+                    make: { outputRow }
+                )
             }
             let materializedRows = try retained.finish().moveToSharedOwnership(
                 at: .bindingCandidate
@@ -2814,20 +2839,24 @@ extension DatabaseContext {
             return CanonicalRelation(schema: schema, rows: materializedRows)
 
         case .graphPattern(let pattern):
-            guard let executor = container.runtimeConfiguration.logicalSourceExecutors.sparqlExecutor else {
+            guard let executor = try readPolicy().sparqlSourceExecutor else {
                 throw CanonicalReadError.unsupportedSource("SPARQL source executor is not registered")
             }
-            let response = try await executor.executeInTransaction(
-                context: self,
-                selectQuery: SelectQuery(projection: .all, source: source),
+            let sourceSession = try fusionSession.admittingRDFDatasetRead()
+            let sourceRows = try await executor.executeInTransaction(
+                session: sourceSession,
+                selectQuery: SelectQuery(
+                    projection: .all,
+                    source: source
+                ),
                 options: options,
-                partitions: partitionValues ?? FieldObject(),
-                transaction: transaction
+                partitions: partitionValues ?? FieldObject()
             )
-            let rows = try materializeSourceRows(
-                response.rows,
+            let rows = try materializeLogicalSourceRows(
+                consume sourceRows,
                 sourceName: nil,
-                workMeter: options.workMeter
+                workMeter: options.workMeter,
+                stage: .bindingCandidate
             )
             return CanonicalRelation(
                 schema: try CanonicalRelationSchema(
@@ -2837,20 +2866,24 @@ extension DatabaseContext {
             )
 
         case .namedGraph(_, let pattern):
-            guard let executor = container.runtimeConfiguration.logicalSourceExecutors.sparqlExecutor else {
+            guard let executor = try readPolicy().sparqlSourceExecutor else {
                 throw CanonicalReadError.unsupportedSource("SPARQL source executor is not registered")
             }
-            let response = try await executor.executeInTransaction(
-                context: self,
-                selectQuery: SelectQuery(projection: .all, source: source),
+            let sourceSession = try fusionSession.admittingRDFDatasetRead()
+            let sourceRows = try await executor.executeInTransaction(
+                session: sourceSession,
+                selectQuery: SelectQuery(
+                    projection: .all,
+                    source: source
+                ),
                 options: options,
-                partitions: partitionValues ?? FieldObject(),
-                transaction: transaction
+                partitions: partitionValues ?? FieldObject()
             )
-            let rows = try materializeSourceRows(
-                response.rows,
+            let rows = try materializeLogicalSourceRows(
+                consume sourceRows,
                 sourceName: nil,
-                workMeter: options.workMeter
+                workMeter: options.workMeter,
+                stage: .bindingCandidate
             )
             return CanonicalRelation(
                 schema: try CanonicalRelationSchema(
@@ -2878,8 +2911,10 @@ extension DatabaseContext {
         options: ReadExecutionContext,
         partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode,
-        transaction: any TransactionAccess,
+        transaction: DatabaseReadTransaction,
         preparedFusionGraph: FusionPreparedQueryGraph,
+        fusionSession: DatabaseReadSession,
+        authorizationQuery: SelectQuery,
         outerRow: CanonicalSourceRow?,
         allowsOuterReferences: Bool
     ) async throws -> CanonicalRelation {
@@ -2897,7 +2932,8 @@ extension DatabaseContext {
             partitionMode: partitionMode,
             namedSubqueries: namedSubqueries,
             outerRow: outerRow,
-            preparedFusionGraph: preparedFusionGraph
+            preparedFusionGraph: preparedFusionGraph,
+            fusionSession: fusionSession
         )
         switch clause.type {
         case .lateral, .leftLateral:
@@ -2917,6 +2953,8 @@ extension DatabaseContext {
                 partitionMode: partitionMode,
                 transaction: transaction,
                 preparedFusionGraph: preparedFusionGraph,
+                fusionSession: fusionSession,
+                authorizationQuery: authorizationQuery,
                 outerRow: outerRow,
                 allowsOuterReferences: allowsOuterReferences
             )
@@ -2950,6 +2988,8 @@ extension DatabaseContext {
                     partitionMode: partitionMode,
                     transaction: transaction,
                     preparedFusionGraph: preparedFusionGraph,
+                    fusionSession: fusionSession,
+                    authorizationQuery: authorizationQuery,
                     outerRow: lateralOuter,
                     allowsOuterReferences: true
                 )
@@ -3000,6 +3040,8 @@ extension DatabaseContext {
                 partitionMode: partitionMode,
                 transaction: transaction,
                 preparedFusionGraph: preparedFusionGraph,
+                fusionSession: fusionSession,
+                authorizationQuery: authorizationQuery,
                 outerRow: outerRow,
                 allowsOuterReferences: allowsOuterReferences
             )
@@ -3011,6 +3053,8 @@ extension DatabaseContext {
                 partitionMode: partitionMode,
                 transaction: transaction,
                 preparedFusionGraph: preparedFusionGraph,
+                fusionSession: fusionSession,
+                authorizationQuery: authorizationQuery,
                 outerRow: outerRow,
                 allowsOuterReferences: allowsOuterReferences
             )
@@ -3035,6 +3079,8 @@ extension DatabaseContext {
                 partitionMode: partitionMode,
                 transaction: transaction,
                 preparedFusionGraph: preparedFusionGraph,
+                fusionSession: fusionSession,
+                authorizationQuery: authorizationQuery,
                 outerRow: outerRow,
                 allowsOuterReferences: allowsOuterReferences
             )
@@ -3046,6 +3092,8 @@ extension DatabaseContext {
                 partitionMode: partitionMode,
                 transaction: transaction,
                 preparedFusionGraph: preparedFusionGraph,
+                fusionSession: fusionSession,
+                authorizationQuery: authorizationQuery,
                 outerRow: outerRow,
                 allowsOuterReferences: allowsOuterReferences
             )
@@ -3673,8 +3721,10 @@ extension DatabaseContext {
         options: ReadExecutionContext,
         partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode,
-        transaction: any TransactionAccess,
+        transaction: DatabaseReadTransaction,
         preparedFusionGraph: FusionPreparedQueryGraph,
+        fusionSession: DatabaseReadSession,
+        authorizationQuery: SelectQuery,
         outerRow: CanonicalSourceRow? = nil,
         allowsOuterReferences: Bool = false
     ) async throws -> CanonicalRelation {
@@ -3695,6 +3745,8 @@ extension DatabaseContext {
             partitionMode: partitionMode,
             transaction: transaction,
             preparedFusionGraph: preparedFusionGraph,
+            fusionSession: fusionSession,
+            authorizationQuery: authorizationQuery,
             outerRow: outerRow,
             allowsOuterReferences: allowsOuterReferences
         )
@@ -3714,6 +3766,8 @@ extension DatabaseContext {
             partitionMode: partitionMode,
             transaction: transaction,
             preparedFusionGraph: preparedFusionGraph,
+            fusionSession: fusionSession,
+            authorizationQuery: authorizationQuery,
             outerRow: outerRow,
             allowsOuterReferences: allowsOuterReferences
         )
@@ -3752,8 +3806,10 @@ extension DatabaseContext {
         options: ReadExecutionContext,
         partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode,
-        transaction: any TransactionAccess,
+        transaction: DatabaseReadTransaction,
         preparedFusionGraph: FusionPreparedQueryGraph,
+        fusionSession: DatabaseReadSession,
+        authorizationQuery: SelectQuery,
         outerRow: CanonicalSourceRow? = nil,
         allowsOuterReferences: Bool = false
     ) async throws -> CanonicalRelation {
@@ -3774,6 +3830,8 @@ extension DatabaseContext {
             partitionMode: partitionMode,
             transaction: transaction,
             preparedFusionGraph: preparedFusionGraph,
+            fusionSession: fusionSession,
+            authorizationQuery: authorizationQuery,
             outerRow: outerRow,
             allowsOuterReferences: allowsOuterReferences
         )
@@ -3794,6 +3852,8 @@ extension DatabaseContext {
                 partitionMode: partitionMode,
                 transaction: transaction,
                 preparedFusionGraph: preparedFusionGraph,
+                fusionSession: fusionSession,
+                authorizationQuery: authorizationQuery,
                 outerRow: outerRow,
                 allowsOuterReferences: allowsOuterReferences
             )
@@ -3860,8 +3920,10 @@ extension DatabaseContext {
         options: ReadExecutionContext,
         partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode,
-        transaction: any TransactionAccess,
+        transaction: DatabaseReadTransaction,
         preparedFusionGraph: FusionPreparedQueryGraph,
+        fusionSession: DatabaseReadSession,
+        authorizationQuery: SelectQuery,
         outerRow: CanonicalSourceRow? = nil,
         allowsOuterReferences: Bool = false
     ) async throws -> CanonicalRelation {
@@ -3873,6 +3935,8 @@ extension DatabaseContext {
             partitionMode: partitionMode,
             transaction: transaction,
             preparedFusionGraph: preparedFusionGraph,
+            fusionSession: fusionSession,
+            authorizationQuery: authorizationQuery,
             outerRow: outerRow,
             allowsOuterReferences: allowsOuterReferences
         )
@@ -3884,6 +3948,8 @@ extension DatabaseContext {
             partitionMode: partitionMode,
             transaction: transaction,
             preparedFusionGraph: preparedFusionGraph,
+            fusionSession: fusionSession,
+            authorizationQuery: authorizationQuery,
             outerRow: outerRow,
             allowsOuterReferences: allowsOuterReferences
         )
@@ -5490,7 +5556,8 @@ extension DatabaseContext {
             transaction: context.transaction,
             inheritedSubqueries: context.namedSubqueries,
             outerRow: outerRow,
-            preparedFusionGraph: context.preparedFusionGraph
+            preparedFusionGraph: context.preparedFusionGraph,
+            fusionSession: context.fusionSession
         )
     }
 
@@ -6274,8 +6341,10 @@ extension DatabaseContext {
         options: ReadExecutionContext,
         partitionValues: FieldObject?,
         partitionMode: CanonicalPartitionRoutingMode,
-        transaction: any TransactionAccess,
+        transaction: DatabaseReadTransaction,
         preparedFusionGraph: FusionPreparedQueryGraph,
+        fusionSession: DatabaseReadSession,
+        authorizationQuery: SelectQuery,
         outerRow: CanonicalSourceRow? = nil,
         allowsOuterReferences: Bool = false
     ) async throws -> [CanonicalRelation] {
@@ -6291,6 +6360,8 @@ extension DatabaseContext {
                     partitionMode: partitionMode,
                     transaction: transaction,
                     preparedFusionGraph: preparedFusionGraph,
+                    fusionSession: fusionSession,
+                    authorizationQuery: authorizationQuery,
                     outerRow: outerRow,
                     allowsOuterReferences: allowsOuterReferences
                 )
@@ -6345,6 +6416,72 @@ extension DatabaseContext {
         return try aligned.finish().moveToSharedOwnership(at: .bindingCandidate)
     }
 
+    /// Converts a logical-source result while its request-accounted owner is
+    /// still alive. The source rows are borrowed one at a time and the
+    /// canonical rows receive their own admission before the source owner is
+    /// consumed.
+    private func materializeLogicalSourceRows(
+        _ rows: consuming DatabaseRetainedQueryRows,
+        sourceName: String?,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> CanonicalRetainedRows {
+        var retained = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
+            workMeter: workMeter,
+            stage: stage,
+            layout: try DatabaseRetainedArrayLayout.forElement(
+                CanonicalSourceRow.self
+            ),
+            expectedCount: rows.count
+        )
+        for index in 0..<rows.count {
+            try rows.withElement(at: index) { row in
+                try workMeter.consume(at: stage)
+                let sourceRow = CanonicalSourceRow.fromBaseFields(
+                    row.fields,
+                    sourceName: sourceName,
+                    annotations: row.annotations,
+                    version: row.version
+                )
+                try retained.append(
+                    footprint: try CanonicalRelationalFootprintMeter.footprint(
+                        of: sourceRow,
+                        workMeter: workMeter
+                    ),
+                    make: { sourceRow }
+                )
+            }
+        }
+        return try retained.finish().moveToSharedOwnership(at: stage)
+    }
+
+    private func materializeLogicalQueryRows(
+        _ rows: consuming DatabaseRetainedQueryRows,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> CanonicalRetainedQueryRows {
+        var retained = try DatabaseRetainedArrayBuilder<QueryRow>(
+            workMeter: workMeter,
+            stage: stage,
+            layout: try DatabaseRetainedArrayLayout.forElement(QueryRow.self),
+            expectedCount: rows.count
+        )
+        for index in 0..<rows.count {
+            try rows.withElement(at: index) { row in
+                try workMeter.consume(at: stage)
+                try retained.append(
+                    footprint: try CanonicalRelationalFootprintMeter.footprint(
+                        of: row,
+                        workMeter: workMeter,
+                        stage: stage
+                    ),
+                    make: { row }
+                )
+            }
+        }
+        return try retained.finish().moveToSharedOwnership(at: stage)
+    }
+
     private func materializeSourceRows(
         _ rows: [QueryRow],
         sourceName: String?,
@@ -6353,7 +6490,9 @@ extension DatabaseContext {
         var retained = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
             workMeter: workMeter,
             stage: .bindingCandidate,
-            layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self),
+            layout: try DatabaseRetainedArrayLayout.forElement(
+                CanonicalSourceRow.self
+            ),
             expectedCount: rows.count
         )
         for row in rows {
@@ -6372,41 +6511,8 @@ extension DatabaseContext {
                 make: { sourceRow }
             )
         }
-        return try retained.finish().moveToSharedOwnership(at: .bindingCandidate)
-    }
-
-    /// Adapts a completed logical-source result back into request-accounted
-    /// ownership. Logical-source executors expose `QueryResponse` as their
-    /// public boundary; canonical composition must re-establish ownership
-    /// before the result crosses another query operator.
-    private func retainExternalQueryResponse(
-        _ response: QueryResponse,
-        workMeter: DatabaseWorkMeter
-    ) throws -> CanonicalRetainedQueryResponse {
-        var retained = try DatabaseRetainedArrayBuilder<QueryRow>(
-            workMeter: workMeter,
-            stage: .resultMaterialization,
-            layout: try DatabaseRetainedArrayLayout.forElement(QueryRow.self),
-            expectedCount: response.rows.count
-        )
-        for row in response.rows {
-            try retained.append(
-                footprint: try CanonicalRelationalFootprintMeter.footprint(
-                    of: row,
-                    workMeter: workMeter
-                ),
-                make: { row }
-            )
-        }
-        let rows = try retained.finish().moveToSharedOwnership(
-            at: .resultMaterialization
-        )
-        return CanonicalRetainedQueryResponse(
-            rows: rows,
-            visibleRange: rows.startIndex..<rows.endIndex,
-            continuation: response.continuation,
-            metadata: response.metadata,
-            affectedRows: response.affectedRows
+        return try retained.finish().moveToSharedOwnership(
+            at: .bindingCandidate
         )
     }
 

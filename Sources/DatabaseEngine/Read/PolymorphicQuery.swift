@@ -229,14 +229,25 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
 
     /// Execute the logical query and decode polymorphic rows into concrete items.
     public func executePage() async throws -> PolymorphicQueryPage {
-        try await executePage(accessPath: nil)
+        try await executePage(resolvingAccessPath: { _ in nil })
     }
 
-    /// Execute the logical query and decode polymorphic rows into concrete items.
+    /// Resolves an access path, executes it, and decodes its rows under one
+    /// immutable schema generation.
     @_spi(PolymorphicRuntime)
-    public func executePage(accessPath: AccessPath?) async throws -> PolymorphicQueryPage {
-        let response = try await query(accessPath: accessPath)
-        return try decodePage(from: response)
+    public func executePage(
+        resolvingAccessPath: @Sendable (Schema) throws -> AccessPath?
+    ) async throws -> PolymorphicQueryPage {
+        try await context.withDataOperation { [self] in
+            let schema = try context.readPolicy().schema
+            let response = try await query(
+                accessPath: try resolvingAccessPath(schema)
+            )
+            return try decodePage(
+                from: response,
+                schema: schema
+            )
+        }
     }
 
     /// Execute the logical query and return decoded results.
@@ -252,24 +263,31 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
     /// Execute the logical query and return the first decoded result.
     @_spi(PolymorphicRuntime)
     public func first(accessPath: AccessPath?) async throws -> PolymorphicQueryResult? {
-        try await executePage(accessPath: accessPath).results.first
+        try await executePage { _ in accessPath }.results.first
     }
 
-    /// Decode an existing canonical response produced by this logical source.
-    public func decodePage(from response: QueryResponse) throws -> PolymorphicQueryPage {
+    private func decodePage(
+        from response: QueryResponse,
+        schema: Schema
+    ) throws -> PolymorphicQueryPage {
         PolymorphicQueryPage(
-            results: try response.rows.map(decodeResult(from:)),
+            results: try response.rows.map {
+                try decodeResult(from: $0, schema: schema)
+            },
             continuation: response.continuation,
             metadata: response.metadata
         )
     }
 
-    private func decodeResult(from row: QueryRow) throws -> PolymorphicQueryResult {
+    private func decodeResult(
+        from row: QueryRow,
+        schema: Schema
+    ) throws -> PolymorphicQueryResult {
         guard let typeName = row.annotations[PolymorphicRowAnnotation.typeName]?.stringValue else {
             throw PolymorphicQueryError.missingTypeName
         }
 
-        guard let entity = context.container.schema.entity(named: typeName) else {
+        guard let entity = schema.entity(named: typeName) else {
             throw PolymorphicQueryError.unknownType(typeName)
         }
 
@@ -292,9 +310,16 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
     @_spi(PolymorphicRuntime)
     public func resolveIndexName(
         indexType: IndexType,
-        fieldName: String
+        fieldName: String,
+        in schema: Schema
     ) throws -> String? {
-        let group = try context.container.polymorphicGroup(identifier: groupIdentifier)
+        guard let group = schema.polymorphicGroup(
+            identifier: groupIdentifier
+        ) else {
+            throw PolymorphicRuntimeError.missingGroup(
+                identifier: groupIdentifier
+            )
+        }
         return group.indexes.first { descriptor in
             descriptor.type == indexType
                 && descriptorFields(descriptor.fieldNames, contain: fieldName)

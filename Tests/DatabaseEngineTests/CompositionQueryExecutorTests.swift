@@ -172,7 +172,7 @@ struct CompositionQueryExecutorTests {
         ).composition(fixture.compositionID)
 
         do {
-            _ = try await source.acquireReadLease()
+            _ = try await source.acquireReadMetadata()
             Issue.record("Expected the stopped storage domain to fail")
         } catch is DatabaseCompositionAccessError {
             Issue.record("Storage failure was incorrectly hidden as access denial")

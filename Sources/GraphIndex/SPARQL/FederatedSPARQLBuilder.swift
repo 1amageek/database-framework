@@ -270,7 +270,7 @@ public struct FederatedSPARQLBuilder: Sendable {
             }
             return try await evaluate(
                 sources: sources,
-                transaction: transaction,
+                transaction: transaction.storageTransaction,
                 workMeter: workMeter
             )
         }

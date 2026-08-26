@@ -185,7 +185,7 @@ struct FieldSecuritySQLiteTests {
     }
 
     #if MultiBase
-    @Test("A transaction binding cannot be reused by another session")
+    @Test("A transaction binding rejects another authorization context")
     func transactionBindingIsSessionBound() async throws {
         let container = try await makeContainer()
         defer { await container.shutdown() }
@@ -193,7 +193,7 @@ struct FieldSecuritySQLiteTests {
         let writer = context(in: container, roles: ["security"])
         let employee = context(in: container)
 
-        await #expect(throws: DatabaseGrantAuthorizationError.self) {
+        await #expect(throws: DatabaseTransactionError.invalidOperationContext) {
             try await writer.withTransaction { _ in
                 _ = try await employee.query(
                     SelectQuery(

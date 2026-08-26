@@ -23,11 +23,12 @@ public struct DatabaseGrantStore: Sendable {
         self.revisionKey = self.root.pack(Tuple("revision"))
     }
 
+    @discardableResult
     public func require(
         _ required: Security.Access,
         authorization: AuthorizationContext,
         transaction: any TransactionAccess
-    ) async throws {
+    ) async throws -> Security.Access {
         guard required.containsOnlyKnownPermissions,
               !required.isEmpty else {
             throw DatabaseGrantAuthorizationError.invalidAccessBits(
@@ -47,6 +48,7 @@ public struct DatabaseGrantStore: Sendable {
                 required: required
             )
         }
+        return effective.access
     }
 
     public func effective(

@@ -14,8 +14,7 @@ import StorageKit
 /// **Metrics**: Operations are tracked via DataStoreDelegate (default: MetricsDataStoreDelegate).
 /// Metrics include operation counts, durations, and item counts per type.
 package final class DatabaseDataStore: DataStore, Sendable {
-    /// Security delegate for access control evaluation
-    package let securityDelegate: (any DataStoreSecurityDelegate)?
+    private let securityDelegate: (any DataStoreSecurityDelegate)?
 
     // MARK: - Properties
 
@@ -26,6 +25,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
     let entity: Schema.Entity
     private let indexDescriptors: [IndexDescriptor]
     private let logger: DatabaseLogger
+    private let readPolicy: DatabaseReadPolicy
 
     /// Delegate for operation callbacks (metrics, etc.)
     private let metricsDelegate: DataStoreDelegate
@@ -64,6 +64,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         container: DBContainer,
         subspace: Subspace,
         entity: Schema.Entity,
+        readPolicy: DatabaseReadPolicy,
         metricsDelegate: DataStoreDelegate? = nil,
         securityDelegate: (any DataStoreSecurityDelegate)? = nil,
         indexConfigurations: [any IndexRuntimeConfiguration] = []
@@ -71,6 +72,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         self.container = container
         self.subspace = subspace
         self.entity = entity
+        self.readPolicy = readPolicy
         self.indexDescriptors = entity.indexDescriptors
         self.logger = container.configuration.logging.logger(
             label: "com.database.framework.data-store"
@@ -118,9 +120,8 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
     /// Fetch all models of a type
     package func fetchAll<T: Persistable>(_ type: T.Type) async throws -> [T] {
-        // Evaluate LIST security via delegate
-        try securityDelegate?.evaluateList(
-            entity: T.persistableType,
+        try readPolicy.authorizeList(
+            entityName: T.persistableType,
             limit: nil,
             offset: nil,
             orderBy: nil
@@ -191,10 +192,9 @@ package final class DatabaseDataStore: DataStore, Sendable {
     /// 2. If sorting matches an index, use index ordering
     /// 3. Fall back to full table scan + in-memory filtering if no suitable index
     package func fetch<T: Persistable>(_ query: Query<T>) async throws -> [T] {
-        // Evaluate LIST security via delegate
         let orderByFields = query.sortDescriptors.map { $0.fieldName }
-        try securityDelegate?.evaluateList(
-            entity: T.persistableType,
+        try readPolicy.authorizeList(
+            entityName: T.persistableType,
             limit: query.fetchLimit,
             offset: query.fetchOffset,
             orderBy: orderByFields.isEmpty ? nil : orderByFields
@@ -687,10 +687,9 @@ package final class DatabaseDataStore: DataStore, Sendable {
     /// 2. If predicate matches an index, count using index scan
     /// 3. Fall back to fetch and count if no optimization possible
     package func fetchCount<T: Persistable>(_ query: Query<T>) async throws -> Int {
-        // Evaluate LIST security via delegate
         let orderByFields = query.sortDescriptors.map { $0.fieldName }
-        try securityDelegate?.evaluateList(
-            entity: T.persistableType,
+        try readPolicy.authorizeList(
+            entityName: T.persistableType,
             limit: query.fetchLimit,
             offset: query.fetchOffset,
             orderBy: orderByFields.isEmpty ? nil : orderByFields
@@ -845,10 +844,9 @@ package final class DatabaseDataStore: DataStore, Sendable {
         _ query: Query<T>,
         transaction: any TransactionAccess
     ) async throws -> [T] {
-        // Security evaluation
         let orderByFields = query.sortDescriptors.map { $0.fieldName }
-        try securityDelegate?.evaluateList(
-            entity: T.persistableType,
+        try readPolicy.authorizeList(
+            entityName: T.persistableType,
             limit: query.fetchLimit,
             offset: query.fetchOffset,
             orderBy: orderByFields.isEmpty ? nil : orderByFields
@@ -856,6 +854,34 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
         let results = try await fetchInternalWithTransaction(query, transaction: transaction)
         try evaluateReadResults(results)
+        return results
+    }
+
+    /// Executes a physical typed fetch derived from one authorized logical
+    /// entity read. Physical pushdown may use a different window from the
+    /// logical query, while resource authorization remains a per-row decision.
+    func fetchInTransaction<T: Persistable>(
+        _ query: Query<T>,
+        transaction: any TransactionAccess,
+        authorizedBy authorization: DatabaseReadAuthorization,
+        listRequirement: DatabaseListReadAuthorizationRequirement
+    ) async throws -> [T] {
+        try readPolicy.validate(authorization)
+        guard listRequirement.entityName == T.persistableType,
+              authorization.covers(listRequirement: listRequirement),
+              let authorizedFields = authorization.fields
+                .fieldsByEntity[T.persistableType] else {
+            throw DatabaseReadSessionError.authorizationMismatch
+        }
+
+        let results = try await fetchInternalWithTransaction(
+            query,
+            transaction: transaction
+        )
+        try evaluateReadResults(
+            results,
+            fields: authorizedFields
+        )
         return results
     }
 
@@ -1080,7 +1106,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
             offset: offset,
             hasSort: hasSort,
             requiresPostFilter: needsPostFiltering,
-            hasSecurityFilter: securityDelegate != nil
+            hasSecurityFilter: readPolicy.requiresPerEntityReadAuthorization
         )
 
         // Check index state - only use readable indexes for queries
@@ -1228,7 +1254,6 @@ package final class DatabaseDataStore: DataStore, Sendable {
             transaction: transaction,
             workMeter: workMeter
         )
-        try evaluateReadResults(models)
 
         return IndexFetchResult(models: models, needsPostFiltering: needsPostFiltering)
     }
@@ -1323,10 +1348,9 @@ package final class DatabaseDataStore: DataStore, Sendable {
         _ query: Query<T>,
         transaction: any TransactionAccess
     ) async throws -> Int {
-        // Security evaluation
         let orderByFields = query.sortDescriptors.map { $0.fieldName }
-        try securityDelegate?.evaluateList(
-            entity: T.persistableType,
+        try readPolicy.authorizeList(
+            entityName: T.persistableType,
             limit: query.fetchLimit,
             offset: query.fetchOffset,
             orderBy: orderByFields.isEmpty ? nil : orderByFields
@@ -1457,10 +1481,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         )
         let result = try canonicalModel.decode(as: T.self)
 
-        try securityDelegate?.evaluateGet(
-            canonicalModel,
-            fields: nil
-        )
+        try readPolicy.authorizeGet(canonicalModel)
 
         return result
     }
@@ -1895,13 +1916,17 @@ package final class DatabaseDataStore: DataStore, Sendable {
                 previousCanonicalModel
             )
             oldCanonicalModel = persistedPreviousModel
-            try securityDelegate?.evaluateUpdate(
-                persistedPreviousModel,
-                newResource: canonicalModel
-            )
+            try readPolicy.withAuthorization {
+                try securityDelegate?.evaluateUpdate(
+                    persistedPreviousModel,
+                    newResource: canonicalModel
+                )
+            }
             existingRowPresent = true
         } else {
-            try securityDelegate?.evaluateCreate(canonicalModel)
+            try readPolicy.withAuthorization {
+                try securityDelegate?.evaluateCreate(canonicalModel)
+            }
             existingRowPresent = false
         }
 
@@ -2074,7 +2099,9 @@ package final class DatabaseDataStore: DataStore, Sendable {
             currentVersion: try Self.entityVersionDigest(for: persistedModel),
             identity: identity
         )
-        try securityDelegate?.evaluateDelete(persistedModel)
+        try readPolicy.withAuthorization {
+            try securityDelegate?.evaluateDelete(persistedModel)
+        }
         let transientReservation: DatabaseIntermediateReservation?
         if let workMeter {
             let footprint = try DatabaseEntityMutationFootprintMeter.footprint(
@@ -2117,8 +2144,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
     private func runtime(
         for entity: String
     ) throws -> EntityRuntimeRegistration {
-        guard let runtime = container.runtimeConfiguration.entityRuntimes
-            .registration(named: entity) else {
+        guard let runtime = readPolicy.entityRuntime(named: entity) else {
             throw DatabaseRuntimeConfigurationError.missingCompiledEntityType(
                 entityName: entity
             )
@@ -2167,16 +2193,14 @@ package final class DatabaseDataStore: DataStore, Sendable {
     // evaluateFieldComparison and compareModels removed — unified into
     // FieldComparison.evaluate(on:) and SortDescriptor.orderedComparison()
 
-    /// Authorizes every result without routing a generic method through the
-    /// dynamically selected security delegate.
     private func evaluateReadResults<Model: Persistable>(
-        _ resources: borrowing [Model]
+        _ resources: borrowing [Model],
+        fields: Set<String>? = nil
     ) throws {
-        guard let securityDelegate else { return }
         for index in resources.indices {
-            try securityDelegate.evaluateGet(
+            try readPolicy.authorizeGet(
                 try PersistedModel(resources[index]),
-                fields: nil
+                fields: fields
             )
         }
     }
@@ -2196,7 +2220,8 @@ package final class DatabaseDataStore: DataStore, Sendable {
         return try await container.transactionExecutor.withTransaction(configuration: configuration, clock: container.monotonicClock) { transaction in
             let databaseTransaction = DatabaseTransaction(
                 storageAccess: transaction,
-                container: self.container
+                container: self.container,
+                readPolicy: self.readPolicy
             )
             do {
                 let result = try await operation(databaseTransaction)

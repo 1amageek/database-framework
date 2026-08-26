@@ -145,8 +145,7 @@ public final class RequestSecurityPolicyDelegate:
         }
         try FieldSecurityEvaluator.validateRead(
             entity: entity,
-            fields: fields
-                ?? RequestFieldAuthorization.fieldsByEntity?[resource.entity],
+            fields: fields,
             context: context
         )
     }

@@ -3,16 +3,36 @@ import DatabaseKit
 /// Logical plan and conservative field authority computed without exposing
 /// selector-resolution failures before authorization.
 struct FusionResolvedPlan: Sendable {
+    enum IndexResolution: Sendable {
+        case resolved(IndexDescriptor)
+        case failed(FusionExecutionError)
+    }
+
+    enum ConnectedResolution: Sendable {
+        case resolved(
+            edgeEntity: Schema.Entity,
+            descriptor: IndexDescriptor
+        )
+        case missingEdgeEntity(String)
+        case failed(FusionExecutionError)
+    }
+
     struct Stage: Sendable {
         let inputs: DatabaseSharedRetainedArray<Input>
     }
 
     struct Input: Sendable {
         enum Operation: Sendable {
-            case index(FusionIndexSource)
+            case index(
+                source: FusionIndexSource,
+                resolution: IndexResolution
+            )
             case filter(Expression)
             case order([SortKey])
-            case connected(FusionConnectedSource)
+            case connected(
+                source: FusionConnectedSource,
+                resolution: ConnectedResolution
+            )
         }
 
         let operation: Operation
@@ -27,6 +47,7 @@ struct FusionResolvedPlan: Sendable {
     let authorizationPlan: DatabaseFieldReadAuthorizationPlan
     let entity: Schema.Entity
     let tableRef: TableRef
+    let listAuthorizationRequirement: DatabaseListReadAuthorizationRequirement
 }
 
 /// Fully schema-resolved Fusion plan produced before physical index I/O.
@@ -61,4 +82,7 @@ struct FusionPreparedPlan: Sendable {
     }
 
     let stages: DatabaseSharedRetainedArray<Stage>
+    let entity: Schema.Entity
+    let tableRef: TableRef
+    let listAuthorizationRequirement: DatabaseListReadAuthorizationRequirement
 }

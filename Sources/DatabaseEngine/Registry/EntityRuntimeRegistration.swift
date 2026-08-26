@@ -174,10 +174,24 @@ struct EntityTableRows: Sendable {
     let stableSnapshotQueryFingerprint: ByteString?
 }
 
+fileprivate struct EntityIndexReadRuntime: Sendable {
+    let additionalRequiredFieldNames: @Sendable (
+        IndexScanSource
+    ) throws -> Set<String>
+    let execute: @Sendable (
+        DatabaseReadSession,
+        SelectQuery,
+        IndexDescriptor,
+        IndexScanSource,
+        ReadExecutionContext,
+        FieldObject
+    ) async throws -> IndexReadResult
+}
+
 public struct EntityRuntimeDefinition: Sendable {
     public let entity: Schema.Entity
 
-    private var indexReaders: [IndexType: IndexReader]
+    private var indexReaders: [IndexType: EntityIndexReadRuntime]
     private var indexProviders: [IndexType: any EntityIndexProvider]
     private let canonicalizeStoredModel:
         EntityRuntimeRegistration.CanonicalizeStoredModel
@@ -185,15 +199,6 @@ public struct EntityRuntimeDefinition: Sendable {
     private let makePersistedModel: EntityRuntimeRegistration.MakePersistedModel
     private let resolveIdentity: EntityRuntimeRegistration.ResolveIdentity
     private let fetchTableRows: EntityRuntimeRegistration.FetchTableRows
-
-    fileprivate typealias IndexReader = @Sendable (
-        _ context: DatabaseContext,
-        _ selectQuery: SelectQuery,
-        _ index: IndexDescriptor,
-        _ indexScan: IndexScanSource,
-        _ options: ReadExecutionContext,
-        _ partitions: FieldObject
-    ) async throws -> IndexReadResult
 
     public init<Model: Persistable>(
         _ model: Model.Type,
@@ -247,6 +252,7 @@ public struct EntityRuntimeDefinition: Sendable {
             context,
             sourceName,
             selectQuery,
+            authorizationRequirement,
             options,
             transaction in
             let plan = try SelectQueryPlanner.plan(
@@ -256,13 +262,18 @@ public struct EntityRuntimeDefinition: Sendable {
                 options: options
             )
             let items: [Model]
-            if let transaction {
+            if let authorization = transaction.authorization {
                 items = try await context.fetch(
                     plan.typedQuery,
-                    transaction: transaction
+                    transaction: transaction.storageAccess,
+                    authorizedBy: authorization,
+                    listRequirement: authorizationRequirement
                 )
             } else {
-                items = try await context.fetch(plan.typedQuery)
+                items = try await context.fetch(
+                    plan.typedQuery,
+                    transaction: transaction.storageAccess
+                )
             }
             var retainedRows = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
                 workMeter: options.workMeter,
@@ -361,6 +372,7 @@ public struct EntityRuntimeDefinition: Sendable {
             context,
             sourceName,
             selectQuery,
+            authorizationRequirement,
             options,
             transaction in
             try await Self.fetchSchemaDrivenRows(
@@ -368,6 +380,7 @@ public struct EntityRuntimeDefinition: Sendable {
                 context: context,
                 sourceName: sourceName,
                 selectQuery: selectQuery,
+                authorizationRequirement: authorizationRequirement,
                 options: options,
                 transaction: transaction
             )
@@ -381,23 +394,30 @@ public struct EntityRuntimeDefinition: Sendable {
             throw .duplicateIndexReadExecutor(executor.indexType)
         }
         let registeredEntity = entity
-        indexReaders[executor.indexType] = {
-            context,
-            selectQuery,
-            index,
-            indexScan,
-            options,
-            partitions in
-            try await executor.executeRows(
-                context: context,
-                selectQuery: selectQuery,
-                index: index,
-                indexScan: indexScan,
-                entity: registeredEntity,
-                options: options,
-                partitions: partitions
-            )
-        }
+        indexReaders[executor.indexType] = EntityIndexReadRuntime(
+            additionalRequiredFieldNames: { indexScan in
+                try executor.additionalRequiredFieldNames(
+                    indexScan: indexScan
+                )
+            },
+            execute: {
+                session,
+                selectQuery,
+                index,
+                indexScan,
+                options,
+                partitions in
+                try await executor.executeRows(
+                    session: session,
+                    selectQuery: selectQuery,
+                    index: index,
+                    indexScan: indexScan,
+                    entity: registeredEntity,
+                    options: options,
+                    partitions: partitions
+                )
+            }
+        )
     }
 
     public mutating func register<Provider: IndexMaintainerProvider>(
@@ -884,8 +904,9 @@ public struct EntityRuntimeDefinition: Sendable {
         context: DatabaseContext,
         sourceName: String,
         selectQuery: SelectQuery,
+        authorizationRequirement: DatabaseListReadAuthorizationRequirement,
         options: ReadExecutionContext,
-        transaction: (any TransactionAccess)?
+        transaction: DatabaseReadTransaction
     ) async throws -> EntityTableRows {
         guard case .table(let table) = selectQuery.source,
               table.table == entity.name else {
@@ -904,10 +925,6 @@ public struct EntityRuntimeDefinition: Sendable {
             stablePageWindow?.fetchLimit ?? budgetReadLimit,
             budgetReadLimit
         )
-        let execution = CanonicalReadExecution.resolve(
-            requested: options.consistency,
-            default: .serializable
-        )
         let models = try await context.scanPersistedModels(
             entity: entity,
             partitions: table.partitions,
@@ -916,8 +933,8 @@ public struct EntityRuntimeDefinition: Sendable {
             startingAfterIdentifier:
                 stablePageWindow?.startingAfterIdentifier,
             workMeter: options.workMeter,
-            configuration: execution.transactionConfiguration,
-            transaction: transaction
+            transaction: transaction,
+            authorizationRequirement: authorizationRequirement
         )
         var retainedRows = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
             workMeter: options.workMeter,
@@ -1347,7 +1364,7 @@ public struct EntityRuntimeRegistration: Sendable {
     public let entity: Schema.Entity
     private let indexProviders: [IndexType: EntityIndexProviderDescriptor]
 
-    private let indexReaders: [IndexType: IndexReader]
+    private let indexReaders: [IndexType: EntityIndexReadRuntime]
     private let fetchTableRowsOperation: FetchTableRows
     private let canonicalizeStoredModelOperation: CanonicalizeStoredModel
     private let canonicalizeModelOperation: CanonicalizeModel
@@ -1358,21 +1375,13 @@ public struct EntityRuntimeRegistration: Sendable {
     private let runIndexSliceOperation: RunIndexSlice
     private let finalizeIndexOperation: FinalizeIndex
 
-    fileprivate typealias IndexReader = @Sendable (
-        _ context: DatabaseContext,
-        _ selectQuery: SelectQuery,
-        _ index: IndexDescriptor,
-        _ indexScan: IndexScanSource,
-        _ options: ReadExecutionContext,
-        _ partitions: FieldObject
-    ) async throws -> IndexReadResult
-
     fileprivate typealias FetchTableRows = @Sendable (
         _ context: DatabaseContext,
         _ sourceName: String,
         _ selectQuery: SelectQuery,
+        _ authorizationRequirement: DatabaseListReadAuthorizationRequirement,
         _ options: ReadExecutionContext,
-        _ transaction: (any TransactionAccess)?
+        _ transaction: DatabaseReadTransaction
     ) async throws -> EntityTableRows
 
     fileprivate typealias CanonicalizeModel = @Sendable (
@@ -1435,7 +1444,7 @@ public struct EntityRuntimeRegistration: Sendable {
 
     fileprivate init(
         entity: Schema.Entity,
-        indexReaders: [IndexType: IndexReader],
+        indexReaders: [IndexType: EntityIndexReadRuntime],
         indexProviders: [IndexType: any EntityIndexProvider],
         canonicalizeStoredModel: @escaping CanonicalizeStoredModel,
         canonicalizeModel: @escaping CanonicalizeModel,
@@ -1465,7 +1474,7 @@ public struct EntityRuntimeRegistration: Sendable {
 
     func executeIndexRows(
         index: IndexDescriptor,
-        context: DatabaseContext,
+        session: DatabaseReadSession,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         options: ReadExecutionContext,
@@ -1483,17 +1492,26 @@ public struct EntityRuntimeRegistration: Sendable {
                 "Index access path does not match the validated schema descriptor"
             )
         }
-        guard let read = indexReaders[index.type] else {
+        guard let runtime = indexReaders[index.type] else {
             return nil
         }
-        return try await read(
-            context,
+        return try await runtime.execute(
+            session,
             selectQuery,
             index,
             indexScan,
             options,
             partitions
         )
+    }
+
+    func additionalRequiredFieldNames(
+        for indexScan: IndexScanSource
+    ) throws -> Set<String>? {
+        guard let runtime = indexReaders[indexScan.indexType] else {
+            return nil
+        }
+        return try runtime.additionalRequiredFieldNames(indexScan)
     }
 
     func hasIndexReader(for indexType: IndexType) -> Bool {
@@ -1571,13 +1589,15 @@ public struct EntityRuntimeRegistration: Sendable {
         context: DatabaseContext,
         sourceName: String,
         selectQuery: SelectQuery,
+        authorizationRequirement: DatabaseListReadAuthorizationRequirement,
         options: ReadExecutionContext,
-        transaction: (any TransactionAccess)? = nil
+        transaction: DatabaseReadTransaction
     ) async throws -> EntityTableRows {
         try await fetchTableRowsOperation(
             context,
             sourceName,
             selectQuery,
+            authorizationRequirement,
             options,
             transaction
         )

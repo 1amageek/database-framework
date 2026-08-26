@@ -332,8 +332,19 @@ private func reserveFullTextFacetEntry(
 private struct FullTextReadExecutor: IndexReadExecutor {
     let indexType: IndexType = .text(.fullText)
 
+    func additionalRequiredFieldNames(
+        indexScan: IndexScanSource
+    ) throws -> Set<String> {
+        guard indexScan.parameters[FullTextReadParameter.includeFacets]?.boolValue == true
+        else { return [] }
+        return Set(try requireStringArray(
+            FullTextReadParameter.facetFields,
+            from: indexScan.parameters
+        ))
+    }
+
     func executeRows(
-        context: DatabaseContext,
+        session: DatabaseReadSession,
         selectQuery: SelectQuery,
         index: IndexDescriptor,
         indexScan: IndexScanSource,
@@ -373,9 +384,13 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                 FullTextReadParameter.fieldName
             )
         }
-        try context.authorizeCanonicalListAccess(
+        try session.requireCanonicalIndexReadAuthorization(
             entity: entity,
-            selectQuery: selectQuery
+            index: index,
+            selectQuery: selectQuery,
+            additionalFieldNames: try additionalRequiredFieldNames(
+                indexScan: indexScan
+            )
         )
         let configuration = try FullTextIndexConfiguration(definition: index.declaration.definition)
 
@@ -386,7 +401,7 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                 from: indexScan.parameters
             ) ?? 10
             let result = try await executeFacetedSearch(
-                context: context,
+                session: session,
                 entity: entity,
                 configuration: configuration,
                 terms: terms,
@@ -437,7 +452,7 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                 FullTextReadParameter.bm25B
             ]?.float64Value ?? Double(BM25Parameters.default.b)
             let results = try await executeScoredSearch(
-                context: context,
+                session: session,
                 entity: entity,
                 configuration: configuration,
                 terms: terms,
@@ -475,7 +490,7 @@ private struct FullTextReadExecutor: IndexReadExecutor {
         }
 
         let results = try await executePlainSearch(
-            context: context,
+            session: session,
             entity: entity,
             configuration: configuration,
             terms: terms,
@@ -502,7 +517,7 @@ private struct FullTextReadExecutor: IndexReadExecutor {
     }
 
     private func executePlainSearch(
-        context: DatabaseContext,
+        session: DatabaseReadSession,
         entity: Schema.Entity,
         configuration: FullTextIndexConfiguration,
         terms: [String],
@@ -514,14 +529,16 @@ private struct FullTextReadExecutor: IndexReadExecutor {
         workMeter: DatabaseWorkMeter
     ) async throws -> [PersistedModel] {
         let search = PolymorphicFullTextReadExecutor()
-        return try await context.indexQueryContext.withReadableIndex(
+        guard let readableIndex = try await session.readableIndex(
             named: index.name,
             indexType: indexType,
             forEntityName: entity.name,
-            partitions: partitions,
-            configuration: execution.transactionConfiguration
-        ) { readableIndex, transaction in
-            guard let readableIndex else { return [] }
+            partitions: partitions
+        ) else {
+            return []
+        }
+        let transaction = session.transaction.storageTransaction
+        do {
             let identifiers: [Tuple]
             if matchMode == .phrase {
                 identifiers = try await search.searchPhrase(
@@ -554,11 +571,10 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                     workMeter: workMeter
                 )
             defer { limitedReservation?.release() }
-            let fetched = try await context.fetchPersistedModelsPreservingOrder(
+            let fetched = try await session.fetchPersistedModelsPreservingOrder(
                 entity: entity,
                 primaryKeys: limited,
                 partitions: partitions,
-                transaction: transaction,
                 snapshot: execution.consistency == .snapshot,
                 workMeter: workMeter
             )
@@ -576,7 +592,7 @@ private struct FullTextReadExecutor: IndexReadExecutor {
     }
 
     private func executeScoredSearch(
-        context: DatabaseContext,
+        session: DatabaseReadSession,
         entity: Schema.Entity,
         configuration: FullTextIndexConfiguration,
         terms: [String],
@@ -589,14 +605,16 @@ private struct FullTextReadExecutor: IndexReadExecutor {
         workMeter: DatabaseWorkMeter
     ) async throws -> [(item: PersistedModel, score: Double)] {
         let search = PolymorphicFullTextReadExecutor()
-        return try await context.indexQueryContext.withReadableIndex(
+        guard let readableIndex = try await session.readableIndex(
             named: index.name,
             indexType: indexType,
             forEntityName: entity.name,
-            partitions: partitions,
-            configuration: execution.transactionConfiguration
-        ) { readableIndex, transaction in
-            guard let readableIndex else { return [] }
+            partitions: partitions
+        ) else {
+            return []
+        }
+        let transaction = session.transaction.storageTransaction
+        do {
             let scored = try await search.searchWithScores(
                 terms: terms,
                 matchMode: matchMode,
@@ -618,11 +636,10 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                 workMeter: workMeter
             )
             defer { identifierReservation.release() }
-            let fetched = try await context.fetchPersistedModelsPreservingOrder(
+            let fetched = try await session.fetchPersistedModelsPreservingOrder(
                 entity: entity,
                 primaryKeys: identifiers,
                 partitions: partitions,
-                transaction: transaction,
                 snapshot: execution.consistency == .snapshot,
                 workMeter: workMeter
             )
@@ -657,7 +674,7 @@ private struct FullTextReadExecutor: IndexReadExecutor {
     }
 
     private func executeFacetedSearch(
-        context: DatabaseContext,
+        session: DatabaseReadSession,
         entity: Schema.Entity,
         configuration: FullTextIndexConfiguration,
         terms: [String],
@@ -680,16 +697,16 @@ private struct FullTextReadExecutor: IndexReadExecutor {
             )
         }
         let search = PolymorphicFullTextReadExecutor()
-        return try await context.indexQueryContext.withReadableIndex(
+        guard let readableIndex = try await session.readableIndex(
             named: index.name,
             indexType: indexType,
             forEntityName: entity.name,
-            partitions: partitions,
-            configuration: execution.transactionConfiguration
-        ) { readableIndex, transaction in
-            guard let readableIndex else {
-                return (items: [], facets: [:], totalCount: 0)
-            }
+            partitions: partitions
+        ) else {
+            return (items: [], facets: [:], totalCount: 0)
+        }
+        let transaction = session.transaction.storageTransaction
+        do {
             let identifiers: [Tuple]
             if matchMode == .phrase {
                 identifiers = try await search.searchPhrase(
@@ -714,11 +731,10 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                 workMeter: workMeter
             )
             defer { identifierReservation.release() }
-            let fetched = try await context.fetchPersistedModelsPreservingOrder(
+            let fetched = try await session.fetchPersistedModelsPreservingOrder(
                 entity: entity,
                 primaryKeys: identifiers,
                 partitions: partitions,
-                transaction: transaction,
                 snapshot: execution.consistency == .snapshot,
                 workMeter: workMeter
             )
@@ -954,8 +970,19 @@ private struct FullTextReadExecutor: IndexReadExecutor {
 private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
     let indexType: IndexType = .text(.fullText)
 
+    func additionalRequiredFieldNames(
+        indexScan: IndexScanSource
+    ) throws -> Set<String> {
+        guard indexScan.parameters[FullTextReadParameter.includeFacets]?.boolValue == true
+        else { return [] }
+        return Set(try requireStringArray(
+            FullTextReadParameter.facetFields,
+            from: indexScan.parameters
+        ))
+    }
+
     func executeRows(
-        context: DatabaseContext,
+        session: DatabaseReadSession,
         selectQuery: SelectQuery,
         index: IndexDeclaration<String>,
         indexScan: IndexScanSource,
@@ -988,18 +1015,13 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             requested: options.consistency,
             default: .snapshot
         )
-        let orderByFields = try selectQuery.requiredOrderByColumnNames()
-        try context.authorizePolymorphicListAccess(
+        try session.requireCanonicalPolymorphicIndexReadAuthorization(
+            index: index,
             group: group,
-            limit: try runtimeInteger(
-                selectQuery.limit,
-                parameter: "limit"
-            ),
-            offset: try runtimeInteger(
-                selectQuery.offset,
-                parameter: "offset"
-            ),
-            orderBy: orderByFields
+            selectQuery: selectQuery,
+            additionalFieldNames: try additionalRequiredFieldNames(
+                indexScan: indexScan
+            )
         )
 
         guard index.type == indexType,
@@ -1017,7 +1039,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 from: indexScan.parameters
             ) ?? 10
             let result = try await executeFacetedSearch(
-                context: context,
+                session: session,
                 group: group,
                 configuration: configuration,
                 terms: terms,
@@ -1077,7 +1099,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 FullTextReadParameter.bm25B
             ]?.float64Value ?? Double(BM25Parameters.default.b)
             let results = try await executeScoredSearch(
-                context: context,
+                session: session,
                 group: group,
                 configuration: configuration,
                 terms: terms,
@@ -1115,7 +1137,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         }
 
         let results = try await executePlainSearch(
-            context: context,
+            session: session,
             group: group,
             configuration: configuration,
             terms: terms,
@@ -1180,7 +1202,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
     }
 
     private func executePlainSearch(
-        context: DatabaseContext,
+        session: DatabaseReadSession,
         group: PolymorphicGroup,
         configuration: FullTextIndexConfiguration,
         terms: [String],
@@ -1190,17 +1212,14 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         execution: CanonicalReadExecution,
         workMeter: DatabaseWorkMeter
     ) async throws -> [PolymorphicEntity] {
-        return try await context.executeCanonicalRead(
-            configuration: execution.transactionConfiguration
-        ) { transaction -> [PolymorphicEntity] in
-            guard let readableIndex = try await context.container
-                .readablePolymorphicIndex(
-                    index,
-                    in: group,
-                    transaction: transaction
-                ) else {
-                return []
-            }
+        guard let readableIndex = try await session.readablePolymorphicIndex(
+            index,
+            in: group
+        ) else {
+            return []
+        }
+        let transaction = session.transaction.storageTransaction
+        do {
             let matchingIDs: [Tuple]
             if matchMode == .phrase {
                 matchingIDs = try await searchPhrase(
@@ -1225,10 +1244,10 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 workMeter: workMeter
             )
             defer { identifierReservation.release() }
-            let fetched = try await context.fetchPolymorphicItemsPreservingOrder(
+            let fetched = try await session.fetchPolymorphicItemsPreservingOrder(
                 group: group,
                 ids: matchingIDs,
-                transaction: transaction,
+                snapshot: execution.consistency == .snapshot,
                 workMeter: workMeter
             )
             let fetchedReservation = try DatabaseIntermediateCollectionMeter
@@ -1267,7 +1286,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
     }
 
     private func executeScoredSearch(
-        context: DatabaseContext,
+        session: DatabaseReadSession,
         group: PolymorphicGroup,
         configuration: FullTextIndexConfiguration,
         terms: [String],
@@ -1278,18 +1297,14 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         execution: CanonicalReadExecution,
         workMeter: DatabaseWorkMeter
     ) async throws -> [(entity: PolymorphicEntity, score: Double)] {
-        return try await context.executeCanonicalRead(
-            configuration: execution.transactionConfiguration
-        ) {
-            transaction -> [(entity: PolymorphicEntity, score: Double)] in
-            guard let readableIndex = try await context.container
-                .readablePolymorphicIndex(
-                    index,
-                    in: group,
-                    transaction: transaction
-                ) else {
-                return []
-            }
+        guard let readableIndex = try await session.readablePolymorphicIndex(
+            index,
+            in: group
+        ) else {
+            return []
+        }
+        let transaction = session.transaction.storageTransaction
+        do {
             let scoredResults = try await searchWithScores(
                 terms: terms,
                 matchMode: matchMode,
@@ -1311,10 +1326,10 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 workMeter: workMeter
             )
             defer { identifierReservation.release() }
-            let fetched = try await context.fetchPolymorphicItemsPreservingOrder(
+            let fetched = try await session.fetchPolymorphicItemsPreservingOrder(
                 group: group,
                 ids: identifiers,
-                transaction: transaction,
+                snapshot: execution.consistency == .snapshot,
                 workMeter: workMeter
             )
             let fetchedReservation = try DatabaseIntermediateCollectionMeter
@@ -1356,7 +1371,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
     }
 
     private func executeFacetedSearch(
-        context: DatabaseContext,
+        session: DatabaseReadSession,
         group: PolymorphicGroup,
         configuration: FullTextIndexConfiguration,
         terms: [String],
@@ -1373,22 +1388,14 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 FullTextReadParameter.facetLimit
             )
         }
-        return try await context.executeCanonicalRead(
-            configuration: execution.transactionConfiguration
-        ) {
-            transaction -> (
-                items: [PolymorphicEntity],
-                facets: [String: [(value: String, count: Int64)]],
-                totalCount: Int
-            ) in
-            guard let readableIndex = try await context.container
-                .readablePolymorphicIndex(
-                    index,
-                    in: group,
-                    transaction: transaction
-                ) else {
-                return (items: [], facets: [:], totalCount: 0)
-            }
+        guard let readableIndex = try await session.readablePolymorphicIndex(
+            index,
+            in: group
+        ) else {
+            return (items: [], facets: [:], totalCount: 0)
+        }
+        let transaction = session.transaction.storageTransaction
+        do {
             let matchingIDs: [Tuple]
             if matchMode == .phrase {
                 matchingIDs = try await searchPhrase(
@@ -1413,10 +1420,10 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 workMeter: workMeter
             )
             defer { identifierReservation.release() }
-            let fetched = try await context.fetchPolymorphicItemsPreservingOrder(
+            let fetched = try await session.fetchPolymorphicItemsPreservingOrder(
                 group: group,
                 ids: matchingIDs,
-                transaction: transaction,
+                snapshot: execution.consistency == .snapshot,
                 workMeter: workMeter
             )
             let fetchedReservation = try DatabaseIntermediateCollectionMeter
@@ -1465,7 +1472,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                     let values = try facetValues(
                         fieldName: field,
                         from: entity,
-                        context: context
+                        session: session
                     )
                     for value in values where !value.isEmpty {
                         if counts[value] == nil {
@@ -2154,17 +2161,6 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         return results
     }
 
-    private func runtimeInteger(
-        _ value: UInt64?,
-        parameter: String
-    ) throws -> Int? {
-        guard let value else { return nil }
-        guard let result = Int(exactly: value) else {
-            throw FullTextReadError.invalidParameter(parameter)
-        }
-        return result
-    }
-
     private func optionalInteger(
         _ name: String,
         from parameters: [String: FieldValue]
@@ -2182,10 +2178,11 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
     private func facetValues(
         fieldName: String,
         from entity: PolymorphicEntity,
-        context: DatabaseContext
+        session: DatabaseReadSession
     ) throws -> [String] {
-        guard let registration = context.container.runtimeConfiguration
-            .entityRuntimes.registration(named: entity.typeName),
+        guard let registration = try session.entityRuntime(
+            named: entity.typeName
+        ),
               let fieldSchema = registration.entity.fieldMapByName[
                 fieldName
               ] else {

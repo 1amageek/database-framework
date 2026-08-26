@@ -1,27 +1,126 @@
 import DatabaseKit
 
-/// Authorization collected from every Fusion node before feature validation.
+/// Logical Fusion nodes resolved from one bounded traversal of the query.
 struct FusionResolvedQueryGraph: Sendable {
+    struct Node: Sendable {
+        enum Resolution: Sendable {
+            case resolved(FusionResolvedPlan)
+            case missingEntity(String)
+        }
+
+        let source: FusionSource
+        let resolution: Resolution
+    }
+
+    let nodes: DatabaseSharedRetainedArray<Node>?
+    let listAuthorizationRequirements: [
+        DatabaseListReadAuthorizationRequirement
+    ]
     let authorizationPlan: DatabaseFieldReadAuthorizationPlan
-    let fusionQueryCount: UInt64
+    let schemaGeneration: UInt64
 }
 
-/// Proof that every Fusion node was feature-validated before storage I/O.
-///
-/// Prepared plans are intentionally not keyed by recursive `SelectQuery`
-/// values. A plan is deterministically rebuilt for the current query at its
-/// execution boundary, avoiding recursive hashing and unbounded call stacks.
+/// Fully resolved Fusion plans retained after one authorization decision.
 struct FusionPreparedQueryGraph: Sendable {
-    static let empty = FusionPreparedQueryGraph(isValidated: false)
+    struct EntryKey: Sendable, Hashable {
+        let tableRef: TableRef
+        let source: FusionSource
+        let listAuthorizationRequirement:
+            DatabaseListReadAuthorizationRequirement
+    }
 
-    let isValidated: Bool
+    struct Entry: Sendable {
+        let source: FusionSource
+        let plan: FusionPreparedPlan
+    }
+
+    static let empty = FusionPreparedQueryGraph(
+        entries: nil,
+        entryIndices: [:],
+        lookupReservation: nil,
+        authorization: nil
+    )
+
+    let entries: DatabaseSharedRetainedArray<Entry>?
+    private let entryIndices: [EntryKey: Int]
+    private let lookupReservation: DatabaseIntermediateReservation?
+    let authorization: DatabaseReadAuthorization?
+
+    init(
+        entries: DatabaseSharedRetainedArray<Entry>?,
+        entryIndices: [EntryKey: Int],
+        lookupReservation: DatabaseIntermediateReservation?,
+        authorization: DatabaseReadAuthorization?
+    ) {
+        self.entries = entries
+        self.entryIndices = entryIndices
+        self.lookupReservation = lookupReservation
+        self.authorization = authorization
+    }
+
+    func entry(
+        tableRef: TableRef,
+        source: FusionSource,
+        listAuthorizationRequirement:
+            DatabaseListReadAuthorizationRequirement,
+        workMeter: DatabaseWorkMeter
+    ) throws -> Entry {
+        try workMeter.consume(at: .validation)
+        guard let entries,
+              lookupReservation != nil,
+              let index = entryIndices[
+                EntryKey(
+                    tableRef: tableRef,
+                    source: source,
+                    listAuthorizationRequirement:
+                        listAuthorizationRequirement
+                )
+              ] else {
+            throw FusionExecutionError.executionContractViolation
+        }
+        return entries[index]
+    }
 }
 
 enum FusionSelectQueryGraphWalker {
+    static func containsNestedQuery(
+        in expression: Expression,
+        workMeter: DatabaseWorkMeter
+    ) throws -> Bool {
+        var stack = try WorkStack(
+            root: .expression(expression),
+            workMeter: workMeter
+        )
+        while let item = stack.popLast() {
+            try workMeter.consume(at: .validation)
+            switch item {
+            case .query:
+                return true
+            case .source(let source, let query):
+                try appendChildren(
+                    of: source,
+                    ownedBy: query,
+                    to: &stack
+                )
+            case .path(let path):
+                try appendChildren(of: path, to: &stack)
+            case .pattern(let pattern):
+                try appendChildren(of: pattern, to: &stack)
+            case .expression(let nested):
+                try appendChildren(of: nested, to: &stack)
+            case .aggregate(let aggregate):
+                try appendChildren(of: aggregate, to: &stack)
+            }
+        }
+        return false
+    }
+
     static func forEachQuery(
         in root: SelectQuery,
         workMeter: DatabaseWorkMeter,
-        _ visit: (SelectQuery) throws -> Void
+        _ visit: (SelectQuery) throws -> Void,
+        visitTable: (TableRef, SelectQuery) throws -> Void,
+        visitPolymorphic: (LogicalSourceRef, SelectQuery) throws -> Void
     ) throws {
         var stack = try WorkStack(
             root: .query(root),
@@ -33,8 +132,20 @@ enum FusionSelectQueryGraphWalker {
             case .query(let query):
                 try visit(query)
                 try appendChildren(of: query, to: &stack)
-            case .source(let source):
-                try appendChildren(of: source, to: &stack)
+            case .source(let source, let query):
+                if case .table(let tableRef) = source {
+                    try visitTable(tableRef, query)
+                } else if case .logical(let logicalSource) = source,
+                    logicalSource.kindIdentifier
+                        == LogicalSourceKind.polymorphic
+                {
+                    try visitPolymorphic(logicalSource, query)
+                }
+                try appendChildren(
+                    of: source,
+                    ownedBy: query,
+                    to: &stack
+                )
             case .path(let path):
                 try appendChildren(of: path, to: &stack)
             case .pattern(let pattern):
@@ -49,7 +160,7 @@ enum FusionSelectQueryGraphWalker {
 
     private enum WorkItem: Sendable {
         case query(SelectQuery)
-        case source(DataSource)
+        case source(DataSource, owner: SelectQuery)
         case path(PathPattern)
         case pattern(GraphPattern)
         case expression(Expression)
@@ -115,7 +226,7 @@ enum FusionSelectQueryGraphWalker {
         for nested in query.subqueries ?? [] {
             try stack.append(.query(nested.query))
         }
-        try stack.append(.source(query.source))
+        try stack.append(.source(query.source, owner: query))
         switch query.projection {
         case .all, .allFrom:
             break
@@ -156,6 +267,7 @@ enum FusionSelectQueryGraphWalker {
 
     private static func appendChildren(
         of source: DataSource,
+        ownedBy query: SelectQuery,
         to stack: inout WorkStack
     ) throws {
         switch source {
@@ -164,14 +276,14 @@ enum FusionSelectQueryGraphWalker {
         case .subquery(let query, _):
             try stack.append(.query(query))
         case .join(let join):
-            try stack.append(.source(join.left))
-            try stack.append(.source(join.right))
+            try stack.append(.source(join.left, owner: query))
+            try stack.append(.source(join.right, owner: query))
             if case .on(let expression) = join.condition {
                 try stack.append(.expression(expression))
             }
         #if DATABASE_MULTI_BASE
         case .base(_, let source):
-            try stack.append(.source(source))
+            try stack.append(.source(source, owner: query))
         #endif
         case .graphTable(let source):
             if let expression = source.matchPattern.where {
@@ -190,11 +302,11 @@ enum FusionSelectQueryGraphWalker {
         case .union(let sources), .unionAll(let sources),
              .intersect(let sources):
             for source in sources {
-                try stack.append(.source(source))
+                try stack.append(.source(source, owner: query))
             }
         case .except(let lhs, let rhs):
-            try stack.append(.source(lhs))
-            try stack.append(.source(rhs))
+            try stack.append(.source(lhs, owner: query))
+            try stack.append(.source(rhs, owner: query))
         }
     }
 

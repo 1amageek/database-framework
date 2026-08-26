@@ -27,8 +27,14 @@ private enum VersionReadError: Error, Sendable {
 private struct VersionReadExecutor: IndexReadExecutor {
     let indexType: IndexType = .history
 
+    func additionalRequiredFieldNames(
+        indexScan: IndexScanSource
+    ) throws -> Set<String> {
+        []
+    }
+
     func executeRows(
-        context: DatabaseContext,
+        session: DatabaseReadSession,
         selectQuery: SelectQuery,
         index: IndexDescriptor,
         indexScan: IndexScanSource,
@@ -36,19 +42,18 @@ private struct VersionReadExecutor: IndexReadExecutor {
         options: ReadExecutionContext,
         partitions: FieldObject
     ) async throws -> IndexReadResult {
+        let transaction = session.transaction
         let parameters = IndexReadParameters(indexScan.parameters)
         let primaryKeyValues = try parameters.requireArray(
             named: VersionReadParameter.primaryKey
         )
         let primaryKey = try primaryKeyValues.map { try DatabaseEngine.CanonicalTupleElementCodec.decode($0) }
 
-        let execution = CanonicalReadExecution.resolve(
-            requested: options.consistency,
-            default: .snapshot
-        )
-        try context.authorizeCanonicalListAccess(
+        try session.requireCanonicalIndexReadAuthorization(
             entity: entity,
-            selectQuery: selectQuery
+            index: index,
+            selectQuery: selectQuery,
+            additionalFieldNames: []
         )
         let requestedLimit = try parameters.optionalInteger(
             named: VersionReadParameter.limit
@@ -58,26 +63,26 @@ private struct VersionReadExecutor: IndexReadExecutor {
         }
         let budgetLimit = try options.workMeter.storageReadLimitWithSentinel()
         let limit = min(requestedLimit ?? budgetLimit, budgetLimit)
-        let rawResults = try await context.indexQueryContext.withReadableIndex(
+        let rawResults: [(version: Version, data: ByteString)]
+        if let readableIndex = try await session.readableIndex(
             named: index.name,
             indexType: indexType,
             forEntityName: entity.name,
-            partitions: partitions,
-            configuration: execution.transactionConfiguration
-        ) { readableIndex, transaction -> [(version: Version, data: ByteString)] in
-            guard let readableIndex else { return [] }
-            return try await VersionIndexReader(
+            partitions: partitions
+        ) {
+            rawResults = try await VersionIndexReader(
                 subspace: readableIndex.subspace
             ).history(
                 primaryKey: primaryKey,
                 limit: limit,
-                transaction: transaction,
+                transaction: transaction.storageTransaction,
                 workMeter: options.workMeter
             )
+        } else {
+            rawResults = []
         }
 
-        guard let runtime = context.container.runtimeConfiguration
-            .entityRuntimes.registration(named: entity.name) else {
+        guard let runtime = try session.entityRuntime(named: entity.name) else {
             throw VersionReadError.invalidParameter(
                 VersionReadParameter.primaryKey
             )
@@ -99,10 +104,6 @@ private struct VersionReadExecutor: IndexReadExecutor {
                     expectedEntity: entity.name
                 )
                 let canonical = try runtime.canonicalized(persisted)
-                try context.container.securityDelegate?.evaluateGet(
-                    persisted,
-                    fields: nil
-                )
                 try rows.append(
                     try IndexReadRow.materializing(
                         canonical,
@@ -120,8 +121,14 @@ private struct VersionReadExecutor: IndexReadExecutor {
 private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
     let indexType: IndexType = .history
 
+    func additionalRequiredFieldNames(
+        indexScan: IndexScanSource
+    ) throws -> Set<String> {
+        []
+    }
+
     func executeRows(
-        context: DatabaseContext,
+        session: DatabaseReadSession,
         selectQuery: SelectQuery,
         index: IndexDeclaration<String>,
         indexScan: IndexScanSource,
@@ -129,6 +136,7 @@ private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
         options: ReadExecutionContext,
         partitions: FieldObject
     ) async throws -> IndexReadResult {
+        let transaction = session.transaction
         let parameters = IndexReadParameters(indexScan.parameters)
         let primaryKeyValues = try parameters.requireArray(
             named: VersionReadParameter.primaryKey
@@ -139,26 +147,16 @@ private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
         else {
             throw VersionReadError.invalidParameter(VersionReadParameter.primaryKey)
         }
-        let runtimesByTypeCode = try context.polymorphicTypeMap(for: group)
+        let runtimesByTypeCode = try session.polymorphicTypeMap(for: group)
         guard let runtime = runtimesByTypeCode[typeCode] else {
             throw VersionReadError.invalidParameter(VersionReadParameter.primaryKey)
         }
 
-        let execution = CanonicalReadExecution.resolve(
-            requested: options.consistency,
-            default: .snapshot
-        )
-        try context.authorizePolymorphicListAccess(
+        try session.requireCanonicalPolymorphicIndexReadAuthorization(
+            index: index,
             group: group,
-            limit: try runtimeInteger(
-                selectQuery.limit,
-                parameter: "limit"
-            ),
-            offset: try runtimeInteger(
-                selectQuery.offset,
-                parameter: "offset"
-            ),
-            orderBy: try selectQuery.requiredOrderByColumnNames()
+            selectQuery: selectQuery,
+            additionalFieldNames: []
         )
 
         let requestedLimit = try parameters.optionalInteger(
@@ -169,26 +167,21 @@ private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
         }
         let budgetLimit = try options.workMeter.storageReadLimitWithSentinel()
         let limit = min(requestedLimit ?? budgetLimit, budgetLimit)
-        let rawResults = try await context.executeCanonicalRead(
-            configuration: execution.transactionConfiguration
+        let rawResults: [(version: Version, data: ByteString)]
+        if let readableIndex = try await session.readablePolymorphicIndex(
+            index,
+            in: group
         ) {
-            transaction -> [(version: Version, data: ByteString)] in
-            guard let readableIndex = try await context.container
-                .readablePolymorphicIndex(
-                    index,
-                    in: group,
-                    transaction: transaction
-                ) else {
-                return []
-            }
-            return try await VersionIndexReader(
+            rawResults = try await VersionIndexReader(
                 subspace: readableIndex.subspace
             ).history(
                 primaryKey: primaryKey,
                 limit: limit,
-                transaction: transaction,
+                transaction: transaction.storageTransaction,
                 workMeter: options.workMeter
             )
+        } else {
+            rawResults = []
         }
         let historyReservation = try reserveVersionHistory(
             rawResults,
@@ -207,10 +200,6 @@ private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
                     expectedEntity: runtime.entity.name
                 )
                 let item = try runtime.canonicalized(persistedModel)
-                try context.container.securityDelegate?.evaluateGet(
-                    persistedModel,
-                    fields: nil
-                )
                 try rows.append(
                     try IndexReadRow.materializing(
                         item,
@@ -225,17 +214,6 @@ private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
                 )
             }
         }
-    }
-
-    private func runtimeInteger(
-        _ value: UInt64?,
-        parameter: String
-    ) throws -> Int? {
-        guard let value else { return nil }
-        guard let result = Int(exactly: value) else {
-            throw VersionReadError.invalidParameter(parameter)
-        }
-        return result
     }
 
 }

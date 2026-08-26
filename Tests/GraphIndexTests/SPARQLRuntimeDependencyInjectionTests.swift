@@ -74,6 +74,9 @@ struct SPARQLRuntimeDependencyInjectionTests {
             validating: "did:example:predicate"
         )
         let object = try RDFTerm.iri(validating: "did:example:object")
+        let uncommittedSubject = try RDFTerm.iri(
+            validating: "did:example:uncommitted-subject"
+        )
         try context.insert(
             Statement(
                 subject: subject,
@@ -112,30 +115,110 @@ struct SPARQLRuntimeDependencyInjectionTests {
             container.runtimeConfiguration.logicalSourceExecutors
                 .sparqlExecutor
         )
-        let transactional = try await container.withTestBaseTransaction {
-            transaction in
-            try await executor.executeInTransaction(
-                context: context,
-                selectQuery: query,
-                options: ReadExecutionContext(
-                    monotonicClock: TestProcessMonotonicClock()
+        let transactionalExecution = ReadExecutionContext(
+            monotonicClock: TestProcessMonotonicClock()
+        )
+        let transactional = try await context.withTransaction { transaction in
+            try await transaction.save(
+                Statement(
+                    subject: uncommittedSubject,
+                    predicate: predicate,
+                    object: object
                 ),
-                partitions: FieldObject(),
-                transaction: transaction
+                precondition: .notExists
             )
+            return try await DatabaseReadSession.withSession(
+                context: context,
+                workMeter: transactionalExecution.workMeter
+            ) { session in
+                let authorizedSession = try session
+                    .admittingRDFDatasetRead()
+                let rows = try await executor.executeInTransaction(
+                    session: authorizedSession,
+                    selectQuery: query,
+                    options: transactionalExecution,
+                    partitions: FieldObject()
+                )
+                return QueryResponse(rows: rows.promoteToOutput())
+            }
         }
 
         let expectedSubject = FieldValue.rdfTerm(subject)
-        for response in [ordinary, transactional] {
-            #expect(response.rows.count == 1)
-            #expect(
-                response.rows[0].fields["subject"]
-                    == expectedSubject
-            )
-            #expect(
-                response.rows[0].fields["identity"]
-                    == expectedSubject
-            )
+        let expectedUncommittedSubject = FieldValue.rdfTerm(
+            uncommittedSubject
+        )
+        #expect(ordinary.rows.count == 1)
+        #expect(ordinary.rows[0].fields["subject"] == expectedSubject)
+        #expect(ordinary.rows[0].fields["identity"] == expectedSubject)
+        #expect(transactional.rows.count == 2)
+        #expect(
+            Set(transactional.rows.compactMap { $0.fields["subject"] })
+                == Set([expectedSubject, expectedUncommittedSubject])
+        )
+        #expect(
+            Set(transactional.rows.compactMap { $0.fields["identity"] })
+                == Set([expectedSubject, expectedUncommittedSubject])
+        )
+    }
+
+    @Test("Sealed SPARQL authorization cannot be widened at execution")
+    func sealedAuthorizationCannotBeWidenedAtExecution() async throws {
+        let container = try await DBContainer.open(
+            testing: try Schema(
+                entities: [try Statement.schemaEntity],
+                version: Schema.Version(1, 0, 0)
+            ),
+            configuration: .testing(storageEngine: InMemoryEngine()),
+            runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "sparql-authorization-evidence-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [
+                    try DatabaseFrameworkRuntime.entity(Statement.self)
+                ]
+            ),
+            security: .testingDisabled
+        )
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        let execution = ReadExecutionContext(
+            monotonicClock: TestProcessMonotonicClock()
+        )
+        let executor = try #require(
+            container.runtimeConfiguration.logicalSourceExecutors
+                .sparqlExecutor
+        )
+        let query = SelectQuery(
+            projection: .all,
+            source: .graphPattern(.basic([]))
+        )
+
+        try await context.withTransaction { _ in
+            try await DatabaseReadSession.withSession(
+                context: context,
+                workMeter: execution.workMeter
+            ) { session in
+                let authorization = try context.readPolicy().authorizeRead(
+                    listRequirements: [],
+                    fields: DatabaseFieldReadAuthorizationPlan(
+                        fieldsByEntity: [:]
+                    )
+                )
+                let narrowedSession = try session.authorizedSession(
+                    authorization
+                )
+                await #expect(
+                    throws: DatabaseReadSessionError.authorizationMismatch
+                ) {
+                    _ = try await executor.executeInTransaction(
+                        session: narrowedSession,
+                        selectQuery: query,
+                        options: execution,
+                        partitions: FieldObject()
+                    )
+                }
+            }
         }
     }
 }

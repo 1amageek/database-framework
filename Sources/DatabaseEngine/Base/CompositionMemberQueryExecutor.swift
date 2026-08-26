@@ -13,10 +13,9 @@ public protocol CompositionMemberQueryExecutor: Sendable {
     func validate(_ query: SelectQuery) throws
 
     func execute(
-        context: DatabaseContext,
+        session: DatabaseReadSession,
         query: SelectQuery,
-        execution: ReadExecutionContext,
-        transaction: any TransactionAccess
+        execution: ReadExecutionContext
     ) async throws -> QueryResponse
 
     func prepare(

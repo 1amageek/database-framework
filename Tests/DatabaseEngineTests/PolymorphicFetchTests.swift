@@ -6,8 +6,9 @@ import Foundation
 import StorageKit
 import FDBStorage
 import DatabaseKit
+@_spi(DatabaseExecution) import DatabaseWire
 import TestSupport
-@testable import DatabaseEngine
+@_spi(DatabaseExecution) @testable import DatabaseEngine
 import DatabaseRuntime
 @testable import DatabaseKit
 @testable import FullTextIndex
@@ -146,6 +147,185 @@ struct PolymorphicFetchTests {
 
     // MARK: - Projection Round-Trip
 
+    @Test("Historical read restoration preserves prior committed model state")
+    func historicalReadRestorationPreservesPriorCommittedState() async throws {
+        let container = try await setupContainer()
+        defer { await container.shutdown() }
+        try await cleanup(container: container)
+        let context = container.testBaseContext()
+        var article = PolymorphicFetchArticle(
+            title: "Before restoration",
+            body: "First committed value"
+        )
+        let identifier = try article.persistableIdentifierTuple()
+
+        try context.insert(article)
+        try await context.save()
+
+        let capturedPosition = try await context.withReadSnapshot(
+            workMeter: DatabaseWorkMeter(
+                budget: ExecutionBudget(),
+                monotonicClock: container.monotonicClock
+            )
+        ) { snapshot in
+            #expect(snapshot.supportsPositionRestoration)
+            let stored = try await context.indexQueryContext.fetchItem(
+                id: identifier,
+                type: PolymorphicFetchArticle.self,
+                transaction: snapshot.transaction
+            )
+            #expect(stored?.title == "Before restoration")
+            return snapshot.position
+        }
+
+        article.title = "After restoration"
+        article.body = "Second committed value"
+        try context.update(article)
+        try await context.save()
+
+        try await context.withReadSnapshot(
+            workMeter: DatabaseWorkMeter(
+                budget: ExecutionBudget(),
+                monotonicClock: container.monotonicClock
+            )
+        ) { snapshot in
+            let stored = try await context.indexQueryContext.fetchItem(
+                id: identifier,
+                type: PolymorphicFetchArticle.self,
+                transaction: snapshot.transaction
+            )
+            #expect(stored?.title == "After restoration")
+        }
+
+        try await context.withReadSnapshot(
+            restoring: capturedPosition,
+            workMeter: DatabaseWorkMeter(
+                budget: ExecutionBudget(),
+                monotonicClock: container.monotonicClock
+            )
+        ) { snapshot in
+            #expect(snapshot.position == capturedPosition)
+            let stored = try await context.indexQueryContext.fetchItem(
+                id: identifier,
+                type: PolymorphicFetchArticle.self,
+                transaction: snapshot.transaction
+            )
+            #expect(stored?.title == "Before restoration")
+            #expect(stored?.body == "First committed value")
+        }
+    }
+
+    @Test("Polymorphic query decoding retains its admitted schema generation")
+    func queryDecodingRetainsAdmittedSchemaGeneration() async throws {
+        try await FoundationDBScenarioEnvironment.shared.ensureInitialized()
+        let base = try await FoundationDBScenarioCoordinator.shared.makeEngine()
+        let controlled = ControlledStorageEngine(base: base)
+        let initialSchema = try Schema(
+            entities: [
+                try PolymorphicFetchArticle.schemaEntity,
+                try PolymorphicFetchReport.schemaEntity,
+            ],
+            version: Schema.Version(1, 0, 0)
+        )
+        let initialRuntime = try DatabaseFrameworkRuntime.configuration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "database-tests",
+                revision: 1
+            ),
+            entityRuntimes: [
+                try DatabaseFrameworkRuntime.entity(
+                    PolymorphicFetchArticle.self
+                ),
+                try DatabaseFrameworkRuntime.entity(
+                    PolymorphicFetchReport.self
+                ),
+            ]
+        )
+        let container = try await DBContainer.open(
+            testing: initialSchema,
+            configuration: .testing(storageEngine: controlled),
+            runtimeConfiguration: initialRuntime,
+            security: .testingDisabled
+        )
+        defer { await container.shutdown() }
+        try await cleanup(container: container)
+        let context = container.testBaseContext()
+        let article = PolymorphicFetchArticle(
+            title: "Generation-bound",
+            body: "Decoded by the admitted schema"
+        )
+        try context.insert(article)
+        try await context.save()
+
+        let barrier = controlled.control.suspendNextRangeAdvance()
+        let query = Task {
+            try await context.findPolymorphic(
+                PolymorphicFetchArticle.self
+            ).executePage()
+        }
+        let completionMonitor: Task<Void, Never>
+        do {
+            completionMonitor = try await barrier.waitUntilEntered(
+                beforeCompletionOf: query
+            )
+        } catch {
+            barrier.release()
+            query.cancel()
+            _ = await query.result
+            throw error
+        }
+
+        do {
+            let nextSchema = try Schema(
+            entities: [try PolymorphicFetchReport.schemaEntity],
+            version: Schema.Version(2, 0, 0)
+            )
+            let nextRuntime = try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 2
+                ),
+                entityRuntimes: [
+                    try DatabaseFrameworkRuntime.entity(
+                        PolymorphicFetchReport.self
+                    )
+                ]
+            )
+            let prepared = try container.prepareSchemaGeneration(
+                nextSchema,
+                runtimeConfiguration: nextRuntime
+            )
+            container.publishSchemaGeneration(
+                nextSchema,
+                fingerprint: try SchemaManifest(
+                    schema: nextSchema
+                ).fingerprint(),
+                indexPhysicalFingerprint: prepared.indexPhysicalFingerprint,
+                executionRuntimeFingerprint: prepared
+                    .executionRuntimeFingerprint,
+                runtimeConfiguration: nextRuntime,
+                indexPhysicalLayouts: prepared.indexPhysicalLayouts,
+                generation: container.schemaGeneration + 1
+            )
+
+            barrier.release()
+            let page = try await query.value
+            await completionMonitor.value
+            #expect(page.results.count == 1)
+            #expect(
+                try page.results[0]
+                    .decode(as: PolymorphicFetchArticle.self).title
+                    == article.title
+            )
+        } catch {
+            barrier.release()
+            query.cancel()
+            _ = await query.result
+            await completionMonitor.value
+            throw error
+        }
+    }
+
     @Test("Empty polymorphic reads do not create a projection namespace")
     func emptyReadsDoNotCreateProjectionNamespace() async throws {
         let container = try await setupContainer()
@@ -169,7 +349,7 @@ struct PolymorphicFetchTests {
         #expect(try await container.engine.namespaceExists(path: path) == false)
     }
 
-    @Test("Caller-owned polymorphic fetch observes projection writes in the same transaction")
+    @Test("Polymorphic reads preserve the caller-owned transaction")
     func callerOwnedFetchObservesProjectionWrite() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
@@ -209,18 +389,55 @@ struct PolymorphicFetchTests {
                 for: entity,
                 identifier: Tuple("missing")
             )
-            let fetched = try await context.fetchPolymorphicItemsPreservingOrder(
-                group: group,
-                ids: [compositeIdentifier, missingIdentifier],
-                transaction: transaction
-            )
+            let fetched = try await DatabaseReadSession.withSession(
+                context: context,
+                workMeter: DatabaseWorkMeter(
+                    budget: ExecutionBudget(),
+                    monotonicClock: container.monotonicClock
+                )
+            ) { session in
+                try await context.fetchPolymorphicItemsPreservingOrder(
+                    group: group,
+                    ids: [compositeIdentifier, missingIdentifier],
+                    transaction: session.transaction
+                )
+            }
             #expect(fetched.count == 2)
             #expect(
-                try fetched[0]?.item
+                try fetched[0]?.unmeteredEntity().item
                     .decode(as: PolymorphicFetchArticle.self).title
                     == "Read your writes"
             )
             #expect(fetched[1] == nil)
+
+            let query = SelectQuery(
+                projection: .all,
+                source: .logical(
+                    LogicalSourceRef(
+                        kindIdentifier: LogicalSourceKind.polymorphic,
+                        identifier: group.identifier
+                    )
+                )
+            )
+            let execution = ReadExecutionContext(
+                options: .default,
+                monotonicClock: container.monotonicClock
+            )
+            let response = try await context.withReadSnapshot(
+                workMeter: execution.workMeter
+            ) {
+                snapshot in
+                try await context.querySessionBound(
+                    query,
+                    execution: execution,
+                    session: snapshot.session
+                )
+            }
+            #expect(response.rows.count == 1)
+            #expect(
+                response.rows[0].fields["title"]
+                    == .string("Read your writes")
+            )
         }
     }
 

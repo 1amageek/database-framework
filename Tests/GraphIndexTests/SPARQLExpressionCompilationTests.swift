@@ -216,6 +216,44 @@ struct SPARQLExpressionCompilationTests {
         }
     }
 
+    @Test("Canonical SELECT compilation enforces its structural limit authority")
+    func canonicalSelectCompilationUsesStructuralLimits() throws {
+        var expression = Expression.literal(.bool(true))
+        for _ in 0..<62 {
+            expression = .not(expression)
+        }
+        let query = SelectQuery(
+            projection: .items([
+                ProjectionItem(expression, alias: "value")
+            ]),
+            source: .graphPattern(.basic([]))
+        )
+
+        #expect(
+            throws: SPARQLSemanticValidationError.structural(
+                .resourceLimitExceeded(
+                    resource: .nestingDepth,
+                    actual: 65,
+                    maximum: 64
+                )
+            )
+        ) {
+            _ = try SPARQLSelectPlanCompiler.compileForCanonicalPagination(
+                query,
+                structuralLimits: QueryStructuralLimits(
+                    maximumNestingDepth: 64
+                )
+            )
+        }
+
+        _ = try SPARQLSelectPlanCompiler.compileForCanonicalPagination(
+            query,
+            structuralLimits: QueryStructuralLimits(
+                maximumNestingDepth: 65
+            )
+        )
+    }
+
     @Test("GROUP_CONCAT separators obey the expression string limit")
     func aggregateSeparatorsAreBounded() {
         let binding = AggregateBinding(

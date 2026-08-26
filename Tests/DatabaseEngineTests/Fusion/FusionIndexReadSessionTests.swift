@@ -41,7 +41,7 @@ struct FusionIndexReadSessionTests {
             try await engine.withTransaction { transaction in
                 let recording = SnapshotRecordingTransaction(base: transaction)
                 do {
-                    let session = try FusionIndexReadSession(
+                    let session = try FusionIndexReadSession.testing(
                         index: ReadableIndex(
                             descriptor: descriptor,
                             physicalLayout: try IndexPhysicalLayout(
@@ -100,7 +100,7 @@ struct FusionIndexReadSessionTests {
         try await engine.withTransaction { transaction in
             let recording = SnapshotRecordingTransaction(base: transaction)
             do {
-                let session = try FusionIndexReadSession(
+                let session = try FusionIndexReadSession.testing(
                     index: ReadableIndex(
                         descriptor: descriptor,
                         physicalLayout: try IndexPhysicalLayout(
@@ -414,7 +414,7 @@ struct FusionIndexReadSessionTests {
     ) throws -> FusionIndexReadSession {
         let entity = try FusionIndexReadSessionItem.schemaEntity
         let descriptor = try #require(entity.indexes.first)
-        return try FusionIndexReadSession(
+        return try FusionIndexReadSession.testing(
             index: ReadableIndex(
                 descriptor: descriptor,
                 physicalLayout: try IndexPhysicalLayout(

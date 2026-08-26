@@ -117,9 +117,6 @@ public final class DatabaseContext: Sendable {
     /// Database event logger selected by the container configuration.
     private let logger: DatabaseLogger
 
-    /// Cached stores keyed by (typeName, partitionPath) to avoid re-creation on every save()
-    private let storeRegistry = Mutex(ContextDataStoreRegistry())
-
     /// Error handler for autosave failures
     ///
     /// When set, this handler is called if autosave fails. This allows the caller
@@ -266,84 +263,35 @@ public final class DatabaseContext: Sendable {
         }
     }
 
-    private func cachedStore<T: Persistable>(
+    /// Builds a generation-bound store for one operation. A store owns schema,
+    /// runtime, and authorization state and therefore must not outlive the
+    /// operation's schema lease.
+    private func operationStore<T: Persistable>(
         for type: T.Type
     ) async throws -> DatabaseDataStore {
-        #if DATABASE_MULTI_BASE
-        let lease = try requireOperationDataRoot()
-        let storeKey = DatabaseStoreCacheKey(
-            basePlacementGeneration: lease.generation,
-            entity: T.persistableType,
-            components: []
-        )
-        #else
-        let storeKey = DatabaseStoreCacheKey(
-            entity: T.persistableType,
-            components: []
-        )
-        #endif
-        if let cached = storeRegistry.withLock({
-            $0.stores.value(for: storeKey)
-        }) {
-            return cached
-        }
-
-        let store = try await container.store(for: type)
-        storeRegistry.withLock { $0.stores.insert(store, for: storeKey) }
-        return store
-    }
-
-    /// Point reads with `.server` consistency do not benefit from per-context store caching.
-    ///
-    /// Fresh contexts used by one-shot reads avoid local cache bookkeeping.
-    /// Longer-lived contexts use `cachedStore` to reuse their resolved stores.
-    private func pointReadStore<T: Persistable>(
-        for type: T.Type
-    ) async throws -> DatabaseDataStore {
+        let readPolicy = try readPolicy()
         #if DATABASE_MULTI_BASE
         _ = try requireOperationDataRoot()
         #endif
-        return try await container.store(for: type)
+        return try container.readStore(
+            for: type,
+            readPolicy: readPolicy
+        )
     }
 
-    private func cachedStore<T: Persistable>(
+    private func operationStore<T: Persistable>(
         for type: T.Type,
         path: DirectoryPath<T>
     ) async throws -> DatabaseDataStore {
-        #if DATABASE_MULTI_BASE
-        let lease = try requireOperationDataRoot()
-        let resolvedPath = try AnyDirectoryPath(path).resolve()
-        let storeKey = DatabaseStoreCacheKey(
-            basePlacementGeneration: lease.generation,
-            entity: T.persistableType,
-            components: resolvedPath
-        )
-        #else
-        let resolvedPath = try AnyDirectoryPath(path).resolve()
-        let storeKey = DatabaseStoreCacheKey(
-            entity: T.persistableType,
-            components: resolvedPath
-        )
-        #endif
-        if let cached = storeRegistry.withLock({
-            $0.stores.value(for: storeKey)
-        }) {
-            return cached
-        }
-
-        let store = try await container.store(for: type, path: path)
-        storeRegistry.withLock { $0.stores.insert(store, for: storeKey) }
-        return store
-    }
-
-    private func pointReadStore<T: Persistable>(
-        for type: T.Type,
-        path: DirectoryPath<T>
-    ) async throws -> DatabaseDataStore {
+        let readPolicy = try readPolicy()
         #if DATABASE_MULTI_BASE
         _ = try requireOperationDataRoot()
         #endif
-        return try await container.store(for: type, path: path)
+        return try container.readStore(
+            for: type,
+            path: path,
+            readPolicy: readPolicy
+        )
     }
 
     private func ensureUsable() throws {
@@ -704,6 +652,57 @@ public final class DatabaseContext: Sendable {
         )
     }
 
+    /// Executes a typed physical fetch derived from one authorized logical
+    /// query without repeating its list or field authorization decisions.
+    package func fetch<T: Persistable>(
+        _ query: Query<T>,
+        transaction: any TransactionAccess,
+        authorizedBy authorization: DatabaseReadAuthorization,
+        listRequirement: DatabaseListReadAuthorizationRequirement
+    ) async throws -> [T] {
+        try ensureUsable()
+        try readPolicy().validate(authorization)
+        guard listRequirement.entityName == T.persistableType,
+              authorization.covers(listRequirement: listRequirement),
+              authorization.fields.fieldsByEntity[T.persistableType] != nil
+        else {
+            throw DatabaseReadSessionError.authorizationMismatch
+        }
+        #if DATABASE_MULTI_BASE
+        _ = try requireOperationDataRoot()
+        #endif
+
+        let path: AnyDirectoryPath?
+        if T.hasDynamicDirectory {
+            guard let binding = query.partitionBinding else {
+                throw DirectoryPathError.dynamicFieldsRequired(
+                    typeName: T.persistableType,
+                    fields: T.directoryFieldNames
+                )
+            }
+            try binding.validate()
+            path = try AnyDirectoryPath(binding)
+        } else {
+            path = nil
+        }
+
+        guard let entity = container.schema.entity(named: T.persistableType)
+        else {
+            throw ContainerSchemaError.entityNotFound(T.persistableType)
+        }
+        let store = try await container.store(
+            for: entity,
+            path: path,
+            transaction: transaction
+        )
+        return try await store.fetchInTransaction(
+            query,
+            transaction: transaction,
+            authorizedBy: authorization,
+            listRequirement: listRequirement
+        )
+    }
+
     /// Counts persisted models through a caller-owned storage transaction.
     ///
     /// Composition execution uses this entry point so every partial count is
@@ -762,9 +761,9 @@ public final class DatabaseContext: Sendable {
 
         let store: DatabaseDataStore
         if let binding = query.partitionBinding {
-            store = try await cachedStore(for: T.self, path: binding)
+            store = try await operationStore(for: T.self, path: binding)
         } else {
-            store = try await cachedStore(for: T.self)
+            store = try await operationStore(for: T.self)
         }
         return try await withStorageAccess(requiredAccess: .read) {
             transaction in
@@ -799,9 +798,9 @@ public final class DatabaseContext: Sendable {
         // Get store for this type (partition-aware if needed)
         let store: DatabaseDataStore
         if let binding = query.partitionBinding {
-            store = try await cachedStore(for: T.self, path: binding)
+            store = try await operationStore(for: T.self, path: binding)
         } else {
-            store = try await cachedStore(for: T.self)
+            store = try await operationStore(for: T.self)
         }
 
         // Create TransactionConfiguration with CachePolicy
@@ -847,9 +846,9 @@ public final class DatabaseContext: Sendable {
         // Get store (partition-aware if needed)
         let store: DatabaseDataStore
         if let binding = query.partitionBinding {
-            store = try await cachedStore(for: T.self, path: binding)
+            store = try await operationStore(for: T.self, path: binding)
         } else {
-            store = try await cachedStore(for: T.self)
+            store = try await operationStore(for: T.self)
         }
 
         // Create TransactionConfiguration with CachePolicy
@@ -930,11 +929,7 @@ public final class DatabaseContext: Sendable {
 
         if let inserted = pendingResult.inserted {
             try await requireAccess(.read)
-            // Evaluate GET security for pending insert (not via DataStore)
-            try container.securityDelegate?.evaluateGet(
-                try PersistedModel(inserted),
-                fields: nil
-            )
+            try readPolicy().authorizeGet(try PersistedModel(inserted))
             return inserted
         }
 
@@ -946,14 +941,14 @@ public final class DatabaseContext: Sendable {
         // Auto-commit for default cache policy (single point read, no transaction needed).
         // Non-default cache policies require TransactionRunner for ReadVersionCache support.
         if case .server = cachePolicy {
-            let store = try await pointReadStore(for: type)
+            let store = try await operationStore(for: type)
             return try await withStorageAccess(
                 requiredAccess: .read
             ) { transaction in
                 try await store.fetchByIDInTransaction(type, id: id, transaction: transaction)
             }
         } else {
-            let store = try await cachedStore(for: type)
+            let store = try await operationStore(for: type)
             let config = TransactionConfiguration(cachePolicy: cachePolicy)
             return try await self.withStorageAccess(
                 requiredAccess: .read,
@@ -1010,10 +1005,7 @@ public final class DatabaseContext: Sendable {
 
         if let inserted = pendingResult.inserted {
             try await requireAccess(.read)
-            try container.securityDelegate?.evaluateGet(
-                try PersistedModel(inserted),
-                fields: nil
-            )
+            try readPolicy().authorizeGet(try PersistedModel(inserted))
             return inserted
         }
         if pendingResult.isDeleted {
@@ -1022,7 +1014,7 @@ public final class DatabaseContext: Sendable {
         }
 
         if case .server = cachePolicy {
-            let store = try await pointReadStore(for: type)
+            let store = try await operationStore(for: type)
             return try await withStorageAccess(
                 requiredAccess: .read
             ) { transaction in
@@ -1034,7 +1026,7 @@ public final class DatabaseContext: Sendable {
             }
         }
 
-        let store = try await cachedStore(for: type)
+        let store = try await operationStore(for: type)
         let configuration = TransactionConfiguration(cachePolicy: cachePolicy)
         return try await withStorageAccess(
             requiredAccess: .read,
@@ -1046,59 +1038,6 @@ public final class DatabaseContext: Sendable {
                 transaction: transaction
             )
         }
-    }
-
-    /// Resolves an index-emitted identifier in the caller-owned transaction.
-    /// Directory admission, staged-mutation visibility, and the entity read all
-    /// remain on that transaction's snapshot.
-    package func model<T: Persistable>(
-        forIdentifierTuple identifierTuple: Tuple,
-        as type: T.Type,
-        partitions: FieldObject,
-        transaction: any TransactionAccess
-    ) async throws -> T? {
-        try ensureUsable()
-        #if DATABASE_MULTI_BASE
-        _ = try requireOperationDataRoot()
-        #endif
-
-        let identifier = try PersistableIdentifierKeyCodec.value(
-            from: identifierTuple,
-            expectedType: T.persistableIdentifierType
-        )
-        let pendingResult = try pendingModelLookup(
-            for: identifier,
-            as: type,
-            partitions: partitions
-        )
-        if let inserted = pendingResult.inserted {
-            try container.securityDelegate?.evaluateGet(
-                try PersistedModel(inserted),
-                fields: nil
-            )
-            return inserted
-        }
-        if pendingResult.isDeleted {
-            return nil
-        }
-
-        guard let entity = container.schema.entity(named: T.persistableType) else {
-            throw ContainerSchemaError.entityNotFound(T.persistableType)
-        }
-        let path = try AnyDirectoryPath(
-            entity: entity,
-            partitions: partitions
-        )
-        let store = try await container.store(
-            for: entity,
-            path: path,
-            transaction: transaction
-        )
-        return try await store.fetchByIdentifierTupleInTransaction(
-            type,
-            identifier: identifierTuple,
-            transaction: transaction
-        )
     }
 
     /// Get a single model by its identifier from a partitioned directory
@@ -1154,11 +1093,7 @@ public final class DatabaseContext: Sendable {
 
         if let inserted = pendingResult.inserted {
             try await requireAccess(.read)
-            // Evaluate GET security for pending insert (not via DataStore)
-            try container.securityDelegate?.evaluateGet(
-                try PersistedModel(inserted),
-                fields: nil
-            )
+            try readPolicy().authorizeGet(try PersistedModel(inserted))
             return inserted
         }
 
@@ -1170,14 +1105,14 @@ public final class DatabaseContext: Sendable {
         // Auto-commit for default cache policy (single point read, no transaction needed).
         // Non-default cache policies require TransactionRunner for ReadVersionCache support.
         if case .server = cachePolicy {
-            let store = try await pointReadStore(for: type, path: path)
+            let store = try await operationStore(for: type, path: path)
             return try await withStorageAccess(
                 requiredAccess: .read
             ) { transaction in
                 try await store.fetchByIDInTransaction(type, id: id, transaction: transaction)
             }
         } else {
-            let store = try await cachedStore(for: type, path: path)
+            let store = try await operationStore(for: type, path: path)
             let config = TransactionConfiguration(cachePolicy: cachePolicy)
             return try await self.withStorageAccess(
                 requiredAccess: .read,
@@ -1226,10 +1161,7 @@ public final class DatabaseContext: Sendable {
 
         if let inserted = pendingResult.inserted {
             try await requireAccess(.read)
-            try container.securityDelegate?.evaluateGet(
-                try PersistedModel(inserted),
-                fields: nil
-            )
+            try readPolicy().authorizeGet(try PersistedModel(inserted))
             return inserted
         }
         if pendingResult.isDeleted {
@@ -1238,7 +1170,7 @@ public final class DatabaseContext: Sendable {
         }
 
         if case .server = cachePolicy {
-            let store = try await pointReadStore(for: type, path: path)
+            let store = try await operationStore(for: type, path: path)
             return try await withStorageAccess(
                 requiredAccess: .read
             ) { transaction in
@@ -1250,7 +1182,7 @@ public final class DatabaseContext: Sendable {
             }
         }
 
-        let store = try await cachedStore(for: type, path: path)
+        let store = try await operationStore(for: type, path: path)
         let configuration = TransactionConfiguration(cachePolicy: cachePolicy)
         return try await withStorageAccess(
             requiredAccess: .read,
@@ -1668,7 +1600,8 @@ extension DatabaseContext {
                     : binding.transaction
                 let databaseTransaction = DatabaseTransaction(
                     storageAccess: admittedStorageAccess,
-                    container: self.container
+                    container: self.container,
+                    readPolicy: try self.readPolicy()
                 )
                 #if DATABASE_MULTI_BASE
                 let nestedBinding = try DatabaseTransactionExecutionBinding(
@@ -1720,7 +1653,7 @@ extension DatabaseContext {
                 }
             ) { storageAccess in
                 #if DATABASE_MULTI_BASE
-                try await self.requireGrant(
+                let grantedAccess = try await self.requireGrant(
                     requiredAccess,
                     lease: lease,
                     transaction: storageAccess
@@ -1731,13 +1664,14 @@ extension DatabaseContext {
                     : storageAccess
                 let transaction = DatabaseTransaction(
                     storageAccess: admittedStorageAccess,
-                    container: self.container
+                    container: self.container,
+                    readPolicy: try self.readPolicy()
                 )
                 #if DATABASE_MULTI_BASE
                 let executionBinding = try DatabaseTransactionExecutionBinding(
                     context: self,
                     transaction: admittedStorageAccess,
-                    grantedAccess: requiredAccess,
+                    grantedAccess: grantedAccess,
                     databaseTransaction: transaction
                 )
                 #else
@@ -1819,6 +1753,8 @@ extension DatabaseContext {
     ///
     /// - Parameters:
     ///   - configuration: Transaction configuration (timeout, retry, priority)
+    ///   - restoringReadPosition: Historical position selected before the
+    ///     transaction performs its first data read.
     ///   - operation: The operation to execute within the transaction
     /// - Returns: The result of the operation
     /// - Throws: Error if the transaction cannot be committed after retries
@@ -1826,9 +1762,13 @@ extension DatabaseContext {
         requiredAccess: Security.Access,
         configuration: TransactionConfiguration = .default,
         executionDeadline: TransactionExecutionDeadline? = nil,
+        restoringReadPosition: DatabaseReadPosition? = nil,
         _ operation: @Sendable @escaping (any TransactionAccess) async throws -> T
     ) async throws -> T {
         try ensureUsable()
+        if restoringReadPosition != nil, requiredAccess != .read {
+            throw DatabaseTransactionError.invalidOperationContext
+        }
 
         return try await withDataOperation {
             if let binding = ActiveDatabaseTransactionContext.binding {
@@ -1844,16 +1784,33 @@ extension DatabaseContext {
                     )
                 }
                 #endif
-                let admittedTransaction = requiredAccess == .read
-                    ? ReadAuthorizedTransactionAccess.admitted(
-                        binding.transaction
+                if requiredAccess == .read {
+                    let admittedTransaction = ReadAuthorizedTransactionAccess
+                        .admittedReadAccess(binding.transaction)
+                    let readBinding = binding.admittingRead(
+                        admittedTransaction
                     )
-                    : binding.transaction
-                return try await operation(admittedTransaction)
+                    return try await ActiveDatabaseTransactionContext.$binding
+                        .withValue(readBinding) {
+                            try await operation(admittedTransaction)
+                        }
+                }
+                return try await operation(binding.transaction)
             }
             #if DATABASE_MULTI_BASE
             let lease = try self.requireOperationDataRoot()
             let selectedTransactionExecutor = lease.transactionExecutor
+            let historicalGrantedAccess: Security.Access?
+            if restoringReadPosition != nil {
+                historicalGrantedAccess = try await self.requireCurrentGrant(
+                    requiredAccess,
+                    lease: lease,
+                    configuration: configuration,
+                    executionDeadline: executionDeadline
+                )
+            } else {
+                historicalGrantedAccess = nil
+            }
             #else
             let selectedTransactionExecutor = self.container.transactionExecutor
             #endif
@@ -1866,18 +1823,31 @@ extension DatabaseContext {
             return try await runner.run(
                 configuration: configuration,
                 executionDeadline: executionDeadline,
-                readVersionCache: self.readVersionCache,
+                readVersionCache: restoringReadPosition == nil
+                    ? self.readVersionCache
+                    : nil,
                 operationDescription: "DatabaseContext.withStorageAccess",
                 onCommitOutcomeUnknown: { [self] in
                     stateLock.withLock { $0.commitOutcomeUnknown = true }
                 }
             ) { transaction in
+                if let restoringReadPosition {
+                    try ReadAuthorizedTransactionAccess.restoreReadPosition(
+                        restoringReadPosition,
+                        on: transaction
+                    )
+                }
                 #if DATABASE_MULTI_BASE
-                try await self.requireGrant(
-                    requiredAccess,
-                    lease: lease,
-                    transaction: transaction
-                )
+                let grantedAccess: Security.Access
+                if let historicalGrantedAccess {
+                    grantedAccess = historicalGrantedAccess
+                } else {
+                    grantedAccess = try await self.requireGrant(
+                        requiredAccess,
+                        lease: lease,
+                        transaction: transaction
+                    )
+                }
                 #endif
                 let admittedTransaction = requiredAccess == .read
                     ? ReadAuthorizedTransactionAccess.admitted(transaction)
@@ -1886,7 +1856,7 @@ extension DatabaseContext {
                 let executionBinding = try DatabaseTransactionExecutionBinding(
                     context: self,
                     transaction: admittedTransaction,
-                    grantedAccess: requiredAccess,
+                    grantedAccess: grantedAccess,
                     databaseTransaction: nil
                 )
                 #else
@@ -2006,8 +1976,8 @@ extension DatabaseContext {
         _ access: Security.Access,
         lease: DatabaseDataRootLease,
         transaction: any TransactionAccess
-    ) async throws {
-        try await DatabaseGrantStore(
+    ) async throws -> Security.Access {
+        return try await DatabaseGrantStore(
             resource: resource,
             root: lease.root
         ).require(
@@ -2015,6 +1985,39 @@ extension DatabaseContext {
             authorization: authorization,
             transaction: transaction
         )
+    }
+
+    /// Evaluates persisted Grants at the current database version before a
+    /// separate historical data transaction is created. Historical data must
+    /// never authorize itself from an older, potentially revoked Grant.
+    private func requireCurrentGrant(
+        _ access: Security.Access,
+        lease: DatabaseDataRootLease,
+        configuration: TransactionConfiguration,
+        executionDeadline: TransactionExecutionDeadline?
+    ) async throws -> Security.Access {
+        let runner = TransactionRunner(
+            transactionExecutor: lease.transactionExecutor,
+            clock: container.monotonicClock,
+            logging: container.configuration.logging,
+            metrics: container.configuration.metrics
+        )
+        return try await runner.run(
+            configuration: configuration,
+            executionDeadline: executionDeadline,
+            readVersionCache: nil,
+            operationDescription:
+                "DatabaseContext.requireCurrentHistoricalReadGrant",
+            onCommitOutcomeUnknown: { [self] in
+                stateLock.withLock { $0.commitOutcomeUnknown = true }
+            }
+        ) { transaction in
+            try await self.requireGrant(
+                access,
+                lease: lease,
+                transaction: transaction
+            )
+        }
     }
     #endif
 
@@ -2124,14 +2127,44 @@ extension DatabaseContext {
     public func fetchPolymorphic<P: Polymorphable>(
         _ protocolType: P.Type
     ) async throws -> [PersistedModel] {
-        guard let group = container.schema.polymorphicGroup(
-            identifier: P.polymorphableType
-        ) else {
-            throw PolymorphicRuntimeError.missingGroup(
+        try await withDataOperation { [self] in
+            let policy = try readPolicy()
+            guard let group = policy.schema.polymorphicGroup(
                 identifier: P.polymorphableType
+            ) else {
+                throw PolymorphicRuntimeError.missingGroup(
+                    identifier: P.polymorphableType
+                )
+            }
+            let selectQuery = SelectQuery(
+                projection: .all,
+                source: .logical(
+                    LogicalSourceRef(
+                        kindIdentifier: LogicalSourceKind.polymorphic,
+                        identifier: group.identifier
+                    )
+                )
             )
+            let authorization = try policy.authorizePolymorphicModelScan(
+                group: group,
+                selectQuery: selectQuery
+            )
+            return try await withReadSnapshot(
+                workMeter: DatabaseWorkMeter(
+                    budget: ExecutionBudget(),
+                    monotonicClock: container.monotonicClock
+                )
+            ) { snapshot in
+                let authorizedSession = try snapshot.session.authorizedSession(
+                    authorization
+                )
+                return try await self.scanPolymorphicItems(
+                    group: group,
+                    selectQuery: selectQuery,
+                    session: authorizedSession
+                ).map { $0.item }
+            }
         }
-        return try await scanPolymorphicItems(group: group).map { $0.item }
     }
 
     /// Fetch a specific polymorphic item by ID
@@ -2146,20 +2179,24 @@ extension DatabaseContext {
         _ protocolType: P.Type,
         id: String
     ) async throws -> PersistedModel? {
-        guard let group = container.schema.polymorphicGroup(
-            identifier: P.polymorphableType
-        ) else {
-            throw PolymorphicRuntimeError.missingGroup(
+        try await withDataOperation { [self] in
+            let readPolicy = try readPolicy()
+            guard let group = readPolicy.schema.polymorphicGroup(
                 identifier: P.polymorphableType
-            )
+            ) else {
+                throw PolymorphicRuntimeError.missingGroup(
+                    identifier: P.polymorphableType
+                )
+            }
+            let identifiers = try readPolicy.polymorphicTypeMap(for: group)
+                .keys.map {
+                    Tuple([$0, id])
+                }
+            return try await fetchPolymorphicItems(
+                group: group,
+                ids: identifiers
+            ).first?.item
         }
-        let identifiers = try polymorphicTypeMap(for: group).keys.map {
-            Tuple([$0, id])
-        }
-        return try await fetchPolymorphicItems(
-            group: group,
-            ids: identifiers
-        ).first?.item
     }
 
 }

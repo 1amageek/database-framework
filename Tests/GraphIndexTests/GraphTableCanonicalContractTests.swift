@@ -159,6 +159,44 @@ struct GraphTableCanonicalContractTests {
         }
     }
 
+    @Test("Runtime GRAPH_TABLE observes an uncommitted caller transaction")
+    func runtimeGraphTableObservesCallerTransaction() async throws {
+        let scenario = try await Self.makeScenario(edgeCount: 0)
+        defer { await scenario.container.shutdown() }
+
+        let response = try await scenario.context.withTransaction {
+            transaction in
+            try await transaction.save(
+                GraphTableContractEdge(
+                    id: "uncommitted-edge",
+                    source: "uncommitted-source",
+                    label: "KNOWS",
+                    target: "uncommitted-target",
+                    weight: 1
+                ),
+                precondition: .notExists
+            )
+            return try await scenario.context.query(
+                SelectQuery(
+                    projection: .all,
+                    source: .graphTable(
+                        Self.source(path: Self.linearPath())
+                    )
+                )
+            )
+        }
+
+        #expect(response.rows.count == 1)
+        #expect(
+            response.rows[0].fields["source_id"]
+                == .string("uncommitted-source")
+        )
+        #expect(
+            response.rows[0].fields["target_id"]
+                == .string("uncommitted-target")
+        )
+    }
+
     @Test("Graph expansion owns its intermediate row budget")
     func graphExpansionOwnsIntermediateRowBudget() async throws {
         let scenario = try await Self.makeScenario(edgeCount: 3)

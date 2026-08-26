@@ -36,7 +36,7 @@ public final class DatabaseSchemaLease: Sendable {
     public var schema: Schema { value.schema }
 
     /// Runtime registrations paired with `schema` in this generation.
-    public var runtimeConfiguration: DatabaseRuntimeConfiguration {
+    package var runtimeConfiguration: DatabaseRuntimeConfiguration {
         value.runtimeConfiguration
     }
 

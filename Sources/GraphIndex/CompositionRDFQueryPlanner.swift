@@ -103,20 +103,21 @@ public struct CompositionRDFQueryPlanner: Sendable {
         do {
             try await source.withReadSnapshot { snapshot in
                 let metadata = CompositionRDFMetadata(
-                    composition: snapshot.lease.resolution,
-                    basePlacementGenerations: snapshot.lease
+                    composition: snapshot.metadata.resolution,
+                    basePlacementGenerations: snapshot.metadata
                         .basePlacementGenerations,
                     schemaGeneration: source.container.schemaGeneration,
                     consistency: .federated(try await snapshot.readPoints())
                 )
                 guard try await emit(.began(metadata)) else { return }
                 var nextSequence: UInt64 = 0
-                for member in snapshot.lease.members {
+                for member in snapshot.members {
                     let memberSequenceStart = nextSequence
-                    nextSequence = try await source.withMemberContext(
+                    nextSequence = try await source.withMemberReadSession(
                         member,
-                        in: snapshot
-                    ) { [memberSequenceStart] databaseContext, transaction in
+                        in: snapshot,
+                        workMeter: readContext.workMeter
+                    ) { [memberSequenceStart] session in
                         let graph: DatabaseRetainedRDFGraph
                         switch statement {
                         case .construct(let query):
@@ -128,21 +129,19 @@ public struct CompositionRDFQueryPlanner: Sendable {
                             }
                             graph = try await executor
                                 .executeConstructInTransaction(
-                                    context: databaseContext,
+                                    session: session,
                                     constructQuery: query,
                                     nodeNamespace: nodeNamespace,
                                     options: readContext,
-                                    partitions: graphPartitions,
-                                    transaction: transaction
+                                    partitions: graphPartitions
                                 )
                         case .describe(let query):
                             graph = try await executor
                                 .executeDescribeInTransaction(
-                                    context: databaseContext,
+                                    session: session,
                                     describeQuery: query,
                                     options: readContext,
-                                    partitions: graphPartitions,
-                                    transaction: transaction
+                                    partitions: graphPartitions
                                 )
                         }
                         var memberSequence = memberSequenceStart
@@ -203,28 +202,28 @@ public struct CompositionRDFQueryPlanner: Sendable {
         }
         return try await source.withReadSnapshot { snapshot in
             var matchingBases: [Base.ID] = []
-            matchingBases.reserveCapacity(snapshot.lease.members.count)
-            for member in snapshot.lease.members {
-                let matched = try await source.withMemberContext(
+            matchingBases.reserveCapacity(snapshot.members.count)
+            for member in snapshot.members {
+                let matched = try await source.withMemberReadSession(
                     member,
-                    in: snapshot
-                ) { databaseContext, transaction in
+                    in: snapshot,
+                    workMeter: readContext.workMeter
+                ) { session in
                     try await executor.executeAskInTransaction(
-                        context: databaseContext,
+                        session: session,
                         askQuery: query,
                         options: readContext,
-                        partitions: graphPartitions,
-                        transaction: transaction
+                        partitions: graphPartitions
                     )
                 }
                 if matched { matchingBases.append(member.baseID) }
             }
-            let allBases = snapshot.lease.resolution.bases
+            let allBases = snapshot.metadata.resolution.bases
             return CompositionAskResult(
                 value: !matchingBases.isEmpty,
                 metadata: CompositionRDFMetadata(
-                    composition: snapshot.lease.resolution,
-                    basePlacementGenerations: snapshot.lease
+                    composition: snapshot.metadata.resolution,
+                    basePlacementGenerations: snapshot.metadata
                         .basePlacementGenerations,
                     schemaGeneration: source.container.schemaGeneration,
                     consistency: .federated(try await snapshot.readPoints())

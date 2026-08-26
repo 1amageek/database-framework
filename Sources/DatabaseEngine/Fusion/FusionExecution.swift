@@ -1,0 +1,204 @@
+import DatabaseKit
+import StorageKit
+
+/// One authorized prepared Fusion plan bound to one active read session.
+///
+/// Construction is centralized here so the executor cannot receive or combine
+/// an unrelated query, context, transaction, schema generation, or work meter.
+struct FusionExecution: Sendable {
+    let plan: FusionPreparedPlan
+    let source: FusionSource
+    let options: ReadExecutionContext
+    let maximumResultCount: Int?
+
+    private let session: DatabaseReadSession
+    private let preparedQueryGraph: FusionPreparedQueryGraph
+    private let authorization: DatabaseReadAuthorization
+
+    private init(
+        plan: FusionPreparedPlan,
+        source: FusionSource,
+        options: ReadExecutionContext,
+        maximumResultCount: Int?,
+        session: DatabaseReadSession,
+        preparedQueryGraph: FusionPreparedQueryGraph,
+        authorization: DatabaseReadAuthorization
+    ) {
+        self.plan = plan
+        self.source = source
+        self.options = options
+        self.maximumResultCount = maximumResultCount
+        self.session = session
+        self.preparedQueryGraph = preparedQueryGraph
+        self.authorization = authorization
+    }
+
+    static func make(
+        query: SelectQuery,
+        entry: FusionPreparedQueryGraph.Entry,
+        graph: FusionPreparedQueryGraph,
+        session: DatabaseReadSession,
+        options: ReadExecutionContext
+    ) throws -> FusionExecution {
+        guard let authorization = graph.authorization else {
+            throw FusionExecutionError.executionContractViolation
+        }
+        let listAuthorizationRequirement = try DatabaseReadPolicy
+            .listRequirement(
+                entityName: entry.plan.entity.name,
+                selectQuery: query
+            )
+        guard listAuthorizationRequirement
+                == entry.plan.listAuthorizationRequirement,
+              authorization.covers(
+                listRequirement: listAuthorizationRequirement
+              ) else {
+            throw FusionExecutionError.executionContractViolation
+        }
+        try session.validatePreparedExecution(
+            authorization: authorization,
+            workMeter: options.workMeter
+        )
+        return FusionExecution(
+            plan: entry.plan,
+            source: entry.source,
+            options: options,
+            maximumResultCount: try scoringOutputPrefixLimit(query),
+            session: session,
+            preparedQueryGraph: graph,
+            authorization: authorization
+        )
+    }
+
+    var wallClock: any WallClock { session.wallClock }
+
+    func executeRelationalRows(
+        _ query: SelectQuery
+    ) async throws -> CanonicalRetainedQueryResponse {
+        try await session.executeFusionRelationalRows(
+            query,
+            options: options,
+            preparedFusionGraph: preparedQueryGraph,
+            authorization: authorization,
+            listAuthorizationRequirement:
+                plan.listAuthorizationRequirement
+        )
+    }
+
+    func executeCandidateRelationalRows(
+        _ candidates: FusionCandidateDomain,
+        query: SelectQuery
+    ) async throws -> CanonicalRetainedQueryResponse {
+        try await session.executeFusionCandidateRelationalRows(
+            candidates,
+            query: query,
+            options: options,
+            preparedFusionGraph: preparedQueryGraph,
+            authorization: authorization
+        )
+    }
+
+    func readableIndex(
+        descriptor: IndexDescriptor,
+        entity: Schema.Entity,
+        partitions: FieldObject
+    ) async throws -> ReadableIndex? {
+        try await session.readableFusionIndex(
+            descriptor: descriptor,
+            entity: entity,
+            partitions: partitions,
+            authorization: authorization
+        )
+    }
+
+    func withIndexReadLease<Result: Sendable>(
+        index: ReadableIndex,
+        _ operation: @Sendable (
+            FusionIndexReadSession
+        ) async throws -> Result
+    ) async throws -> Result {
+        try await session.withFusionIndexReadLease(
+            index: index,
+            snapshot: CanonicalReadExecution.resolve(
+                requested: options.consistency,
+                default: .serializable
+            ).consistency == .snapshot,
+            workMeter: options.workMeter,
+            operation
+        )
+    }
+
+    func materializeCandidates(
+        _ result: FusionIndexReadResult
+    ) async throws -> FusionCandidateDomain {
+        var builder = try DatabaseRetainedArrayBuilder<Tuple>(
+            workMeter: options.workMeter,
+            stage: .storageRow,
+            layout: try DatabaseRetainedArrayLayout.forElement(Tuple.self),
+            expectedCount: result.matches.count
+        )
+        for match in result.matches {
+            try builder.append(
+                footprint: DatabaseIntermediateFootprint(
+                    rows: 1,
+                    bytes: UInt64(match.primaryKey.count) + 64
+                ),
+                at: .storageRow
+            ) {
+                try Tuple(packed: match.primaryKey)
+            }
+        }
+        let primaryKeys = try builder.finish().moveToSharedOwnership(
+            at: .storageRow
+        )
+        return try await primaryKeys.withElements { primaryKeys in
+            let snapshot = CanonicalReadExecution.resolve(
+                requested: options.consistency,
+                default: .serializable
+            ).consistency == .snapshot
+            let models = try await session.fetchPersistedModelsPreservingOrder(
+                entity: plan.entity,
+                primaryKeys: primaryKeys,
+                partitions: plan.tableRef.partitions,
+                snapshot: snapshot,
+                workMeter: options.workMeter,
+                authorization: authorization
+            )
+            return try FusionCandidateDomain.make(
+                models: models,
+                primaryKeys: primaryKeys,
+                entity: plan.entity,
+                workMeter: options.workMeter
+            )
+        }
+    }
+
+    private static func scoringOutputPrefixLimit(
+        _ query: SelectQuery
+    ) throws -> Int? {
+        guard let limit = query.limit,
+              query.filter == nil,
+              query.groupBy == nil,
+              query.having == nil,
+              query.orderBy?.isEmpty != false,
+              !query.distinct,
+              !query.reduced else {
+            return nil
+        }
+        let offset = query.offset ?? 0
+        let (prefix, overflow) = limit.addingReportingOverflow(offset)
+        guard !overflow else {
+            throw CanonicalReadError.paginationValueExceedsRuntimeRange(
+                name: "limit + offset",
+                value: UInt64.max
+            )
+        }
+        guard let result = Int(exactly: prefix) else {
+            throw CanonicalReadError.paginationValueExceedsRuntimeRange(
+                name: "limit + offset",
+                value: prefix
+            )
+        }
+        return result
+    }
+}

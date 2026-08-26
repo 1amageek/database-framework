@@ -235,17 +235,49 @@ struct SPARQLFunctionTransactionTests {
             workMeter: workMeter
         )
 
-        let response = try await context.indexQueryContext.withTransaction {
-            transaction in
+        let response = try await context.indexQueryContext.withSession(
+            workMeter: workMeter
+        ) {
+            session in
+            let sessionBaselineRows = workMeter.retainedIntermediateRows
+            let sessionBaselineBytes = workMeter.retainedIntermediateBytes
+            let foreignMeter = DatabaseWorkMeter(
+                budget: options.budget,
+                monotonicClock: scenario.container.monotonicClock
+            )
+            await #expect(
+                throws: DatabaseReadSessionError.workMeterMismatch
+            ) {
+                _ = try await context
+                    .prepareSQLSelectForCanonicalExecution(
+                        query,
+                        workMeter: foreignMeter,
+                        session: session,
+                        structuralLimits: .default
+                    )
+            }
+            #expect(
+                workMeter.retainedIntermediateRows == sessionBaselineRows
+            )
+            #expect(
+                workMeter.retainedIntermediateBytes == sessionBaselineBytes
+            )
+            #expect(foreignMeter.retainedIntermediateRows == 0)
+            #expect(foreignMeter.retainedIntermediateBytes == 0)
+
             let prepared = try await context
                 .prepareSQLSelectForCanonicalExecution(
                     query,
                     workMeter: workMeter,
-                    transaction: transaction,
+                    session: session,
                     structuralLimits: .default
             )
-            #expect(workMeter.retainedIntermediateRows > 0)
-            #expect(workMeter.retainedIntermediateBytes > 0)
+            #expect(
+                workMeter.retainedIntermediateRows > sessionBaselineRows
+            )
+            #expect(
+                workMeter.retainedIntermediateBytes > sessionBaselineBytes
+            )
             let foreignExecution = ReadExecutionContext(
                 options: options,
                 monotonicClock: scenario.container.monotonicClock,
@@ -258,17 +290,19 @@ struct SPARQLFunctionTransactionTests {
                 throws: DatabasePreparedSQLSelectError.workMeterMismatch
             ) {
                 _ = try await prepared.execute(
-                    in: context,
-                    execution: foreignExecution,
-                    transaction: transaction
+                    in: session,
+                    execution: foreignExecution
                 )
             }
-            #expect(workMeter.retainedIntermediateRows > 0)
-            #expect(workMeter.retainedIntermediateBytes > 0)
+            #expect(
+                workMeter.retainedIntermediateRows > sessionBaselineRows
+            )
+            #expect(
+                workMeter.retainedIntermediateBytes > sessionBaselineBytes
+            )
             return try await prepared.execute(
-                in: context,
-                execution: execution,
-                transaction: transaction
+                in: session,
+                execution: execution
             )
         }
 

@@ -19,8 +19,8 @@ struct CompositionMemberSnapshotBindingTests {
         let readerAuthorization: AuthorizationContext
     }
 
-    @Test("Member context reuses the snapshot transaction and remains read-only")
-    func memberContextReusesSnapshotTransaction() async throws {
+    @Test("Member session reuses the snapshot transaction and remains read-only")
+    func memberSessionReusesSnapshotTransaction() async throws {
         let fixture = try await makeFixture()
         defer { await fixture.container.shutdown() }
         let source = try fixture.container.session(
@@ -28,35 +28,27 @@ struct CompositionMemberSnapshotBindingTests {
         ).composition(bases: [fixture.baseID])
 
         try await source.withReadSnapshot { snapshot in
-            let member = try #require(snapshot.lease.members.first)
-            try await source.withMemberContext(
+            let member = try #require(snapshot.members.first)
+            try await source.withMemberReadSession(
                 member,
-                in: snapshot
-            ) { context, snapshotTransaction in
+                in: snapshot,
+                workMeter: DatabaseWorkMeter(
+                    budget: ExecutionBudget(),
+                    monotonicClock: fixture.container.monotonicClock
+                )
+            ) { session in
                 let binding = try #require(
                     ActiveDatabaseTransactionContext.binding
                 )
                 #expect(
-                    Self.sameTransaction(
+                    Self.sameAdmittedStorage(
                         binding.transaction,
-                        snapshotTransaction
+                        session.transaction
                     )
                 )
-
-                let reusedSnapshot = try await context.indexQueryContext
-                    .withTransaction { transaction in
-                        Self.sameTransaction(
-                            transaction,
-                            snapshotTransaction
-                        )
-                    }
-                #expect(reusedSnapshot)
-
-                await #expect(throws: DatabaseGrantAuthorizationError.self) {
-                    try await context.withExecutionTransaction(
-                        requiredAccess: .write
-                    ) { _ in () }
-                }
+                #expect(
+                    session.transaction as? any TransactionAccess == nil
+                )
             }
         }
     }
@@ -141,11 +133,11 @@ struct CompositionMemberSnapshotBindingTests {
         )
     }
 
-    private static func sameTransaction(
+    private static func sameAdmittedStorage(
         _ lhs: any TransactionAccess,
-        _ rhs: any TransactionAccess
+        _ rhs: DatabaseReadTransaction
     ) -> Bool {
-        ObjectIdentifier(lhs as AnyObject) == ObjectIdentifier(rhs as AnyObject)
+        rhs.storageAccess.matches(lhs)
     }
 }
 #endif

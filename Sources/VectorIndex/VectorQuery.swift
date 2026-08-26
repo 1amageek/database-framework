@@ -276,8 +276,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         )
 
         // Check for VectorIndexConfiguration
-        let configs = queryContext.context.container.runtimeConfiguration
-            .indexConfigurations(named: indexName)
+        let configs = try queryContext.indexConfigurations(named: indexName)
         let runtimePolicy = try VectorRuntimePolicy.resolve(in: configs)
 
         return try await queryContext.withReadableIndex(
@@ -324,7 +323,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
                     queryVector: queryVector,
                     k: k,
                     searchParams: searchParams,
-                    transaction: transaction
+                    transaction: transaction.storageTransaction
                 )
 
             case .flat:
@@ -339,7 +338,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
                 primaryKeysWithDistances = try await maintainer.search(
                     queryVector: queryVector,
                     k: k,
-                    transaction: transaction
+                    transaction: transaction.storageTransaction
                 )
 
             case .ivf(let ivfParams):
@@ -360,7 +359,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
                 primaryKeysWithDistances = try await maintainer.search(
                     queryVector: queryVector,
                     k: k,
-                    transaction: transaction
+                    transaction: transaction.storageTransaction
                 )
 
             case .pq(let pqParams):
@@ -381,7 +380,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
                 primaryKeysWithDistances = try await maintainer.search(
                     queryVector: queryVector,
                     k: k,
-                    transaction: transaction
+                    transaction: transaction.storageTransaction
                 )
             }
 
@@ -456,8 +455,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         )
 
         // Resolve the vector policy retained by the operation's schema lease.
-        let configs = queryContext.context.container.runtimeConfiguration
-            .indexConfigurations(named: indexName)
+        let configs = try queryContext.indexConfigurations(named: indexName)
         let runtimePolicy = try VectorRuntimePolicy.resolve(in: configs)
 
         // Get HNSW parameters if configured
@@ -508,12 +506,12 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
             )
 
             // Fetch each HNSW candidate before evaluating the application predicate.
-            let fetchItem: @Sendable (Tuple, any TransactionAccess) async throws -> T? = { primaryKey, tx in
+            let fetchItem: @Sendable (Tuple, any TransactionAccess) async throws -> T? = { primaryKey, _ in
                 let items = try await self.queryContext
                     .fetchItemsPreservingOrder(
                         ids: [primaryKey],
                         type: T.self,
-                        transaction: tx
+                        transaction: transaction
                     )
                 guard items.count == 1, let item = items[0] else {
                     throw VectorQueryError.indexedItemMissing(
@@ -531,7 +529,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
                 predicate: predicate,
                 fetchItem: fetchItem,
                 postFilterParameters: self.postFilterParameters,
-                transaction: transaction
+                transaction: transaction.storageTransaction
             )
 
             // Fetch items for results
@@ -750,7 +748,9 @@ public struct PolymorphicVectorQueryBuilder<Member: Persistable & Polymorphable>
 
     /// Execute the polymorphic vector search and return page metadata.
     public func executePage() async throws -> PolymorphicQueryPage {
-        try await base.executePage(accessPath: .index(try makeIndexScan()))
+        try await base.executePage { schema in
+            .index(try makeIndexScan(in: schema))
+        }
     }
 
     /// Execute the polymorphic vector search and return the first result.
@@ -758,7 +758,7 @@ public struct PolymorphicVectorQueryBuilder<Member: Persistable & Polymorphable>
         try await executePage().results.first
     }
 
-    private func makeIndexScan() throws -> IndexScanSource {
+    private func makeIndexScan(in schema: Schema) throws -> IndexScanSource {
         guard let vector = queryVector else {
             throw VectorQueryError.noQueryVector
         }
@@ -778,16 +778,17 @@ public struct PolymorphicVectorQueryBuilder<Member: Persistable & Polymorphable>
         ]
 
         return IndexScanSource(
-            indexName: try buildIndexName(),
+            indexName: try buildIndexName(in: schema),
             indexType: .vector,
             parameters: parameters
         )
     }
 
-    private func buildIndexName() throws -> String {
+    private func buildIndexName(in schema: Schema) throws -> String {
         if let resolvedIndexName = try base.resolveIndexName(
             indexType: .vector,
-            fieldName: fieldName
+            fieldName: fieldName,
+            in: schema
         ) {
             return resolvedIndexName
         }

@@ -37,76 +37,67 @@ extension DatabaseContext {
         )
     }
 
-    func scanPolymorphicItems(
+    /// Scans polymorphic rows after validating the session's sealed list and
+    /// field authorization. Row-level policy is still evaluated for every
+    /// decoded model because it may depend on stored data.
+    package func scanPolymorphicItems(
         group: PolymorphicGroup,
-        configuration: TransactionConfiguration = .default,
-        limit: Int? = nil,
-        offset: Int? = nil,
-        orderBy: [String]? = nil
+        selectQuery: SelectQuery,
+        session: DatabaseReadSession
     ) async throws -> [PolymorphicEntity] {
-        let typeMap = try polymorphicTypeMap(for: group)
-
-        try authorizePolymorphicListAccess(
+        try session.requirePolymorphicReadAuthorization(
             group: group,
-            limit: limit,
-            offset: offset,
-            orderBy: orderBy
+            selectQuery: selectQuery
         )
-
-        return try await withStorageAccess(
-            requiredAccess: .read,
-            configuration: configuration
-        ) { transaction in
-            guard let subspace = try await self.container
-                .openPolymorphicDirectory(
-                    for: group.identifier,
-                    transaction: transaction
-                ) else {
-                return []
-            }
-            let itemSubspace = subspace.subspace(SubspaceKey.items)
-            let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
-            let storage = self.container.itemStorageFactory.make(transaction: transaction, blobsSubspace: blobsSubspace)
-            let (begin, end) = itemSubspace.range()
-            var entities: [PolymorphicEntity] = []
-
-            var iterator = storage.scan(
-                begin: begin,
-                end: end,
-                snapshot: true
-            ).makeAsyncIterator()
-            while let (key, data) = try await iterator.next() {
-                let tuple = try itemSubspace.unpack(key)
-                guard tuple.count > 0 else {
-                    throw PolymorphicRuntimeError.invalidStoredIdentifier
-                }
-                let typeCodeValue = try tuple.value(at: 0)
-                guard case .signedInteger(let typeCode) = typeCodeValue else {
-                    throw PolymorphicRuntimeError.invalidStoredIdentifier
-                }
-                guard let runtime = typeMap[typeCode] else {
-                    throw PolymorphicRuntimeError.unknownTypeCode(typeCode)
-                }
-                let persistedModel = try DataAccess.deserializePersistedModel(
-                    data,
-                    expectedEntity: runtime.entity.name
-                )
-                let item = try runtime.canonicalized(persistedModel)
-                try self.container.securityDelegate?.evaluateGet(
-                    item,
-                    fields: nil
-                )
-                entities.append(
-                    PolymorphicEntity(
-                        item: item,
-                        typeName: runtime.entity.name,
-                        typeCode: typeCode,
-                        polymorphicIdentifier: tuple
-                    )
-                )
-            }
-            return entities
+        let transaction = session.transaction
+        let typeMap = try session.polymorphicTypeMap(for: group)
+        guard let subspace = try await container.openPolymorphicDirectory(
+            for: group.identifier,
+            transaction: transaction.storageAccess
+        ) else {
+            return []
         }
+        let itemSubspace = subspace.subspace(SubspaceKey.items)
+        let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
+        let storage = container.itemStorageFactory.make(
+            transaction: transaction.storageAccess,
+            blobsSubspace: blobsSubspace
+        )
+        let (begin, end) = itemSubspace.range()
+        var entities: [PolymorphicEntity] = []
+        var iterator = storage.scan(
+            begin: begin,
+            end: end,
+            snapshot: true
+        ).makeAsyncIterator()
+        while let (key, data) = try await iterator.next() {
+            let tuple = try itemSubspace.unpack(key)
+            guard tuple.count > 0 else {
+                throw PolymorphicRuntimeError.invalidStoredIdentifier
+            }
+            let typeCodeValue = try tuple.value(at: 0)
+            guard case .signedInteger(let typeCode) = typeCodeValue else {
+                throw PolymorphicRuntimeError.invalidStoredIdentifier
+            }
+            guard let runtime = typeMap[typeCode] else {
+                throw PolymorphicRuntimeError.unknownTypeCode(typeCode)
+            }
+            let persistedModel = try DataAccess.deserializePersistedModel(
+                data,
+                expectedEntity: runtime.entity.name
+            )
+            let item = try runtime.canonicalized(persistedModel)
+            try session.authorizeGet(item)
+            entities.append(
+                PolymorphicEntity(
+                    item: item,
+                    typeName: runtime.entity.name,
+                    typeCode: typeCode,
+                    polymorphicIdentifier: tuple
+                )
+            )
+        }
+        return entities
     }
 
     public func fetchPolymorphicItems(

@@ -16,15 +16,13 @@ public struct CompositionQueryPlanner: Sendable {
         }
 
         func execute(
-            context: DatabaseContext,
+            session: DatabaseReadSession,
             query: SelectQuery,
-            execution: ReadExecutionContext,
-            transaction: any TransactionAccess
+            execution: ReadExecutionContext
         ) async throws -> QueryResponse {
-            try await context.query(
+            try await session.executeCanonical(
                 query,
-                execution: execution,
-                transaction: transaction
+                execution: execution
             )
         }
 
@@ -44,14 +42,14 @@ public struct CompositionQueryPlanner: Sendable {
     }
 
     private struct MemberCursor: Sendable {
-        let member: DatabaseBaseLease
+        let member: DatabaseCompositionMember
         var continuation: QueryContinuation?
         var rows: [DatabaseEngine.QueryRow]
         var nextRowIndex: Int
         var reachedEnd: Bool
         var reservation: DatabaseIntermediateReservation?
 
-        init(member: DatabaseBaseLease) {
+        init(member: DatabaseCompositionMember) {
             self.member = member
             self.continuation = nil
             self.rows = []
@@ -277,8 +275,8 @@ public struct CompositionQueryPlanner: Sendable {
 
         try await source.withReadSnapshot { snapshot in
             let metadata = CompositionQueryMetadata(
-                composition: snapshot.lease.resolution,
-                basePlacementGenerations: snapshot.lease
+                composition: snapshot.metadata.resolution,
+                basePlacementGenerations: snapshot.metadata
                     .basePlacementGenerations,
                 schemaGeneration: source.container.schemaGeneration,
                 consistency: .federated(try await snapshot.readPoints())
@@ -511,16 +509,16 @@ public struct CompositionQueryPlanner: Sendable {
         memberExecutor: any CompositionMemberQueryExecutor,
         emit: @Sendable @escaping (CompositionQueryEvent) async throws -> Bool
     ) async throws {
-        guard let leftMember = snapshot.lease.member(
-            identifiedBy: plan.leftBaseID
-        ) else {
+        guard let leftMember = snapshot.members.first(where: {
+            $0.baseID == plan.leftBaseID
+        }) else {
             throw CompositionQueryError.unsupportedPlan(
                 "the left Base is not a member of the selected Composition"
             )
         }
-        guard let rightMember = snapshot.lease.member(
-            identifiedBy: plan.rightBaseID
-        ) else {
+        guard let rightMember = snapshot.members.first(where: {
+            $0.baseID == plan.rightBaseID
+        }) else {
             throw CompositionQueryError.unsupportedPlan(
                 "the right Base is not a member of the selected Composition"
             )
@@ -618,7 +616,7 @@ public struct CompositionQueryPlanner: Sendable {
 
     private func collectCrossBaseInput(
         query: SelectQuery,
-        member: DatabaseBaseLease,
+        member: DatabaseCompositionMember,
         options: CompositionQueryExecutionOptions,
         source: CompositionDataSource,
         snapshot: DatabaseCompositionReadSnapshot,
@@ -847,7 +845,7 @@ public struct CompositionQueryPlanner: Sendable {
             reduced: false,
             dataset: query.dataset
         )
-        let memberCount = max(1, snapshot.lease.members.count)
+        let memberCount = max(1, snapshot.members.count)
         let mergeOrdering: MergeOrdering?
         if try Self.vectorIndexScan(query) != nil {
             mergeOrdering = .vectorDistance
@@ -908,12 +906,12 @@ public struct CompositionQueryPlanner: Sendable {
                 maximumLocalPageSize
             )
         )
-        var cursors = snapshot.lease.members.map(MemberCursor.init(member:))
+        var cursors = snapshot.members.map(MemberCursor.init(member:))
         var sequence: UInt64 = 0
 
         func prepared(
             _ row: DatabaseEngine.QueryRow,
-            member: DatabaseBaseLease
+            member: DatabaseCompositionMember
         ) throws -> OriginRow {
             let qualifiedRow = try memberExecutor.prepare(
                 row,
@@ -1063,12 +1061,13 @@ public struct CompositionQueryPlanner: Sendable {
             cursor.releaseConsumedPage()
             guard !cursor.reachedEnd else { return nil }
             let previousContinuation = cursor.continuation
-            let response = try await source.withMemberContext(
+            let response = try await source.withMemberReadSession(
                 cursor.member,
-                in: snapshot
-            ) { databaseContext, transaction in
+                in: snapshot,
+                workMeter: workMeter
+            ) { session in
                 try await memberExecutor.execute(
-                    context: databaseContext,
+                    session: session,
                     query: query,
                     execution: try localExecution(
                         options: options,
@@ -1076,8 +1075,7 @@ public struct CompositionQueryPlanner: Sendable {
                         pageSize: pageSize,
                         workMeter: workMeter,
                         source: source
-                    ),
-                    transaction: transaction
+                    )
                 )
             }
             guard response.continuation == nil
@@ -1158,7 +1156,7 @@ public struct CompositionQueryPlanner: Sendable {
                 "maximumIntermediateRows exceeds the current runtime range"
             )
         }
-        for member in snapshot.lease.members {
+        for member in snapshot.members {
             var cursor = MemberCursor(member: member)
             while let row = try await nextRow(
                 cursor: &cursor,
@@ -1211,7 +1209,7 @@ public struct CompositionQueryPlanner: Sendable {
             OriginRow(
                 row: row,
                 origin: .derived(
-                    contributors: snapshot.lease.resolution.bases
+                    contributors: snapshot.metadata.resolution.bases
                 ),
                 sequence: 0,
                 fingerprint: try CanonicalRowFingerprint.compute(

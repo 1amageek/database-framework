@@ -11,31 +11,28 @@ public enum GraphTableReadExecutors {
 
 private struct RuntimeGraphTableSourceExecutor: GraphTableSourceExecutor {
     func executeInTransaction(
-        context: DatabaseContext,
+        session: DatabaseReadSession,
         graphTableSource: GraphTableSource,
         options: ReadExecutionContext,
-        partitions: FieldObject,
-        transaction: any TransactionAccess
+        partitions: FieldObject
     ) async throws -> DatabaseRetainedQueryRows {
         try GraphTableExecutor.validate(graphTableSource)
         guard let resolution = try PropertyGraphReadResolver.resolve(
             graphName: graphTableSource.graphName,
-            schema: context.container.schema
+            schema: session.schema
         ) else {
             throw CanonicalReadError.unsupportedSource(
                 try PropertyGraphReadResolver.errorMessage(
                     graphName: graphTableSource.graphName,
-                    schema: context.container.schema
+                    schema: session.schema
                 )
             )
         }
-        let queryContext = context.indexQueryContext
-        guard let index = try await queryContext.readableIndex(
+        guard let index = try await session.readableIndex(
             named: resolution.indexDescriptor.name,
             indexType: resolution.indexDescriptor.type,
             forEntityName: resolution.entity.name,
-            partitions: partitions,
-            transaction: transaction
+            partitions: partitions
         ) else {
             return try DatabaseRetainedQueryRowsBuilder(
                 workMeter: options.workMeter,
@@ -47,7 +44,7 @@ private struct RuntimeGraphTableSourceExecutor: GraphTableSourceExecutor {
             indexSubspace: index.subspace,
             graphTableSource: graphTableSource
         ).execute(
-            transaction: transaction,
+            transaction: session.transaction.storageTransaction,
             workMeter: options.workMeter
         )
     }

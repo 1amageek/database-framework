@@ -2,6 +2,7 @@
 import DatabaseKit
 import DatabaseRuntime
 import StorageKit
+import Synchronization
 import TestSupport
 import Testing
 @_spi(DatabaseExecution) @_spi(Testing) @testable import DatabaseEngine
@@ -37,41 +38,125 @@ struct CompositionSnapshotAuthorizationIsolationTests {
             try await outsiderSource.withReadSnapshot { _ in () }
         }
         try await readerSource.withReadSnapshot { snapshot in
-            let member = try #require(snapshot.lease.members.first)
+            let member = try #require(snapshot.members.first)
             await #expect(throws: DatabaseCompositionAccessError.self) {
-                try await outsiderSource.withMemberContext(
+                try await outsiderSource.withMemberReadSession(
                     member,
-                    in: snapshot
-                ) { _, _ in () }
+                    in: snapshot,
+                    workMeter: DatabaseWorkMeter(
+                        budget: ExecutionBudget(),
+                        monotonicClock: fixture.container.monotonicClock
+                    )
+                ) { _ in () }
             }
         }
     }
 
-    @Test("Snapshot transaction rejects mutation and foreign member leases")
-    func snapshotRejectsMutationAndForeignMember() async throws {
+    @Test("Escaped snapshot revokes member lifecycle authority")
+    func escapedSnapshotRevokesMemberLifecycleAuthority() async throws {
         let fixture = try await makeFixture()
         defer { await fixture.container.shutdown() }
         let firstSource = try fixture.container.session(
             authorization: fixture.readerAuthorization
         ).composition(bases: [fixture.firstBaseID])
-        let secondSource = try fixture.container.session(
-            authorization: fixture.readerAuthorization
-        ).composition(bases: [fixture.secondBaseID])
-        let secondLease = try await secondSource.acquireReadLease()
-        let foreignMember = try #require(secondLease.members.first)
-
-        try await firstSource.withReadSnapshot { snapshot in
-            let member = try #require(snapshot.lease.members.first)
-            let transaction = try snapshot.transaction(for: member)
-            #expect(throws: DatabaseReadTransactionError.self) {
-                try transaction.setValue(
-                    ByteString(utf8: "value"),
-                    for: ByteString(utf8: "composition-read-snapshot")
-                )
-            }
+        let snapshot = try await firstSource.withReadSnapshot { snapshot in
+            let foreignMember = DatabaseCompositionMember(
+                baseID: fixture.secondBaseID
+            )
             #expect(throws: DatabaseCompositionAccessError.self) {
-                _ = try snapshot.transaction(for: foreignMember)
+                _ = try snapshot.vault.memberAccess(for: foreignMember)
             }
+            return snapshot
+        }
+        let member = try #require(snapshot.members.first)
+        #expect(throws: DatabaseCompositionAccessError.self) {
+            _ = try snapshot.vault.memberAccess(for: member)
+        }
+    }
+
+    @Test("Snapshot drains an admitted member read before transaction exit")
+    func snapshotDrainsInFlightMemberRead() async throws {
+        let storage = ControlledStorageEngine(base: InMemoryEngine())
+        let fixture = try await makeFixture(storageEngine: storage)
+        defer { await fixture.container.shutdown() }
+        let source = try fixture.container.session(
+            authorization: fixture.readerAuthorization
+        ).composition(bases: [fixture.firstBaseID])
+        let readKey = ByteString(utf8: "in-flight-member-read")
+        let barrier = storage.control.suspendNextValueRead(for: readKey)
+        let probe = CompositionSnapshotDrainProbe()
+
+        let snapshotTask = Task {
+            defer { probe.markSnapshotFinished() }
+            try await source.withReadSnapshot { snapshot in
+                let member = try #require(snapshot.members.first)
+                probe.record(snapshot: snapshot, member: member)
+                let task = Task {
+                    try await source.withMemberReadSession(
+                        member,
+                        in: snapshot,
+                        workMeter: DatabaseWorkMeter(
+                            budget: ExecutionBudget(),
+                            monotonicClock: fixture.container.monotonicClock
+                        )
+                    ) { session in
+                        try await session.transaction.getValue(
+                            for: readKey,
+                            snapshot: true
+                        )
+                    }
+                }
+                probe.record(memberRead: task)
+                let monitor = try await barrier.waitUntilEntered(
+                    beforeCompletionOf: task
+                )
+                probe.record(memberReadCompletionMonitor: monitor)
+            }
+        }
+
+        let snapshotCompletionMonitor = try await barrier.waitUntilEntered(
+            beforeCompletionOf: snapshotTask
+        )
+        do {
+            let (snapshot, member) = try #require(
+                probe.snapshotAndMember()
+            )
+            while true {
+                do {
+                    let access = try snapshot.vault.memberAccess(
+                        for: member
+                    )
+                    access.operationLease.end()
+                    await Task.yield()
+                } catch is DatabaseCompositionAccessError {
+                    break
+                }
+            }
+            #expect(!probe.snapshotFinished)
+
+            barrier.release()
+            try await snapshotTask.value
+            await snapshotCompletionMonitor.value
+            let read = try #require(probe.memberRead)
+            #expect(try await read.value == nil)
+            let readCompletionMonitor = try #require(
+                probe.memberReadCompletionMonitor
+            )
+            await readCompletionMonitor.value
+            #expect(probe.snapshotFinished)
+        } catch {
+            barrier.release()
+            snapshotTask.cancel()
+            _ = await snapshotTask.result
+            if let read = probe.memberRead {
+                read.cancel()
+                _ = await read.result
+            }
+            if let monitor = probe.memberReadCompletionMonitor {
+                await monitor.value
+            }
+            await snapshotCompletionMonitor.value
+            throw error
         }
     }
 
@@ -94,12 +179,18 @@ struct CompositionSnapshotAuthorizationIsolationTests {
         )
 
         await #expect(throws: DatabaseGrantAuthorizationError.self) {
-            try await firstContext.executeCanonicalRead { transaction in
-                try await secondContext.executeCanonicalQuery(
-                    query,
-                    execution: execution,
-                    transaction: transaction
-                )
+            try await firstContext.withReadSnapshot(
+                workMeter: execution.workMeter
+            ) { _ in
+                try await DatabaseReadSession.withSession(
+                    context: secondContext,
+                    workMeter: execution.workMeter
+                ) { session in
+                    try await session.executeCanonical(
+                        query,
+                        execution: execution
+                    )
+                }
             }
         }
     }
@@ -198,17 +289,23 @@ struct CompositionSnapshotAuthorizationIsolationTests {
 
         let response = try await context.withExecutionTransaction(
             requiredAccess: .all
-        ) { transaction in
-            try await context.executeCanonicalQuery(
-                query,
-                execution: execution,
-                transaction: transaction.storageAccess
-            )
+        ) { _ in
+            try await DatabaseReadSession.withSession(
+                context: context,
+                workMeter: execution.workMeter
+            ) { session in
+                try await session.executeCanonical(
+                    query,
+                    execution: execution
+                )
+            }
         }
         #expect(response.rows.isEmpty)
     }
 
-    private func makeFixture() async throws -> Fixture {
+    private func makeFixture(
+        storageEngine: any StorageEngine = InMemoryEngine()
+    ) async throws -> Fixture {
         let domainID = try DatabaseStorageDomain.ID(
             "composition-authorization-isolation"
         )
@@ -232,7 +329,7 @@ struct CompositionSnapshotAuthorizationIsolationTests {
                 try DatabaseStorageDomain(
                     id: domainID,
                     namespacePath: ["tests", "composition-authorization"],
-                    storageEngine: InMemoryEngine()
+                    storageEngine: storageEngine
                 )
             ],
             placements: [
@@ -306,6 +403,67 @@ struct CompositionSnapshotAuthorizationIsolationTests {
             readerAuthorization: .authenticated(reader),
             outsiderAuthorization: .authenticated(outsider)
         )
+    }
+}
+
+private final class CompositionSnapshotDrainProbe: Sendable {
+    private struct State: Sendable {
+        var snapshot: DatabaseCompositionReadSnapshot?
+        var member: DatabaseCompositionMember?
+        var memberRead: Task<ByteString?, any Error>?
+        var memberReadCompletionMonitor: Task<Void, Never>?
+        var snapshotFinished = false
+    }
+
+    private let state = Mutex(State())
+
+    var snapshotFinished: Bool {
+        state.withLock { $0.snapshotFinished }
+    }
+
+    var memberRead: Task<ByteString?, any Error>? {
+        state.withLock { $0.memberRead }
+    }
+
+    var memberReadCompletionMonitor: Task<Void, Never>? {
+        state.withLock { $0.memberReadCompletionMonitor }
+    }
+
+    func record(
+        snapshot: DatabaseCompositionReadSnapshot,
+        member: DatabaseCompositionMember
+    ) {
+        state.withLock { state in
+            state.snapshot = snapshot
+            state.member = member
+        }
+    }
+
+    func record(memberRead: Task<ByteString?, any Error>) {
+        state.withLock { $0.memberRead = memberRead }
+    }
+
+    func record(memberReadCompletionMonitor: Task<Void, Never>) {
+        state.withLock {
+            $0.memberReadCompletionMonitor = memberReadCompletionMonitor
+        }
+    }
+
+    func markSnapshotFinished() {
+        state.withLock { $0.snapshotFinished = true }
+    }
+
+    func snapshotAndMember() -> (
+        DatabaseCompositionReadSnapshot,
+        DatabaseCompositionMember
+    )? {
+        state.withLock { state in
+            guard let snapshot = state.snapshot,
+                  let member = state.member else {
+                return nil
+            }
+            return (snapshot, member)
+        }
     }
 }
 #endif

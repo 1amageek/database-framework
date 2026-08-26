@@ -89,7 +89,7 @@ package struct DatabasePartitionCatalog: Sendable {
     package func contains(
         entity: String,
         partitions: FieldObject,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Bool {
         try validate(entity: entity, partitions: partitions)
         let entry = DatabasePartitionCatalogEntry(

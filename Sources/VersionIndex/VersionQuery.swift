@@ -158,7 +158,7 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
             return try await maintainer.getVersionHistory(
                 primaryKey: pk,
                 limit: self.limitCount,
-                transaction: transaction
+                transaction: transaction.storageTransaction
             )
         }
 

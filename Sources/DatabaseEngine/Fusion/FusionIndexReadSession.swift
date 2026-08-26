@@ -32,9 +32,7 @@ final class FusionIndexReadSession: FusionIndexReadAccess, Sendable {
 
     init(
         index: ReadableIndex,
-        transaction: any TransactionReadAccess,
-        snapshot: Bool,
-        workMeter: DatabaseWorkMeter
+        admission: FusionIndexReadAdmission
     ) throws {
         let cursorRegistryLayout = try DatabaseRetainedHashTableLayout.validated(
             containerByteCount: UInt64(
@@ -47,18 +45,37 @@ final class FusionIndexReadSession: FusionIndexReadAccess, Sendable {
             )
         )
         self.index = index
-        self.workMeter = workMeter
-        self.snapshot = snapshot
+        self.workMeter = admission.workMeter
+        self.snapshot = admission.snapshot
         self.cursorRegistryLayout = cursorRegistryLayout
-        self.cursorRegistryReservation = try workMeter.reserveIntermediate(
+        self.cursorRegistryReservation = try admission.workMeter
+            .reserveIntermediate(
             bytes: cursorRegistryLayout.containerByteCount,
             at: .indexScan
         )
         let range = try index.subspace.prefixRange()
         self.lowerBound = range.begin
         self.upperBound = range.end
-        self.state = Mutex(State(transaction: transaction))
+        self.state = Mutex(State(transaction: admission.transaction))
     }
+
+    #if DEBUG
+    static func testing(
+        index: ReadableIndex,
+        transaction: any TransactionReadAccess,
+        snapshot: Bool,
+        workMeter: DatabaseWorkMeter
+    ) throws -> FusionIndexReadSession {
+        try FusionIndexReadSession(
+            index: index,
+            admission: FusionIndexReadAdmission.testing(
+                transaction: transaction,
+                snapshot: snapshot,
+                workMeter: workMeter
+            )
+        )
+    }
+    #endif
 
     func getValue(key: ByteString) async throws -> FusionIndexReadValue? {
         let transaction = try beginOperation()

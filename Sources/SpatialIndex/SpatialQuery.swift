@@ -326,7 +326,7 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
                 level: level,
                 encoding: encoding,
                 indexSubspace: readableIndex.subspace,
-                transaction: transaction
+                transaction: transaction.storageTransaction
             )
         }
 
@@ -761,14 +761,14 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
             )
 
             // Scan cells with per-iteration limit to prevent DoS
-            let scanResult: SpatialScanResult? = try await queryContext
+            let scanResult: SpatialScanResult = try await queryContext
                 .withReadableIndex(
                     named: indexName,
                     indexType: descriptor.type,
                     for: T.self
                 ) { readableIndex, transaction in
                 guard let readableIndex else {
-                    return nil
+                    return SpatialScanResult(keys: [], limitReason: nil)
                 }
                 let scanner = SpatialCellScanner(
                     indexSubspace: readableIndex.subspace,
@@ -778,17 +778,9 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
                 let (keys, scanLimitReason) = try await scanner.scan(
                     plan: plan,
                     limit: knnMaxKeysPerIteration,
-                    transaction: transaction
+                    transaction: transaction.storageTransaction
                 )
                 return SpatialScanResult(keys: keys, limitReason: scanLimitReason)
-            }
-            guard let scanResult else {
-                return SpatialKNNResult(
-                    items: [],
-                    k: k,
-                    searchRadiusMeters: lastUsedRadiusMeters,
-                    limitReason: nil
-                )
             }
 
             totalKeysScanned += scanResult.keys.count
@@ -957,7 +949,7 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
             return try await knnSearch.findKNearest(
                 k: k,
                 from: center,
-                transaction: transaction
+                transaction: transaction.storageTransaction
             )
         }
 

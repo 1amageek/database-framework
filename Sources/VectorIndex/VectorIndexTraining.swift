@@ -1,4 +1,4 @@
-import DatabaseEngine
+@_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseKit
 import StorageKit
 
@@ -39,12 +39,14 @@ extension IndexQueryContext {
             )
         }
 
-        try await withReadableIndex(
-            named: indexName,
-            indexType: .vector,
-            for: type,
-            configuration: configuration
-        ) { readableIndex, transaction in
+        try await context.withTransaction(configuration: configuration) {
+            transaction in
+            let readableIndex = try await self.readableIndex(
+                named: indexName,
+                indexType: .vector,
+                for: type,
+                transaction: transaction.executionStorageAccess
+            )
             guard let readableIndex else {
                 throw VectorIndexError.invalidStructure(
                     "Vector index is not readable; complete migration before training"
@@ -73,7 +75,7 @@ extension IndexQueryContext {
                     trainingResourceLimits: resourceLimits
                 )
                 try await maintainer.trainStoredVectors(
-                    transaction: transaction
+                    transaction: transaction.executionStorageAccess
                 )
             case .pq(let parameters):
                 let maintainer = try PQIndexMaintainer<Model>(
@@ -89,7 +91,9 @@ extension IndexQueryContext {
                     ),
                     trainingResourceLimits: resourceLimits
                 )
-                try await maintainer.train(transaction: transaction)
+                try await maintainer.train(
+                    transaction: transaction.executionStorageAccess
+                )
             case .flat, .hnsw:
                 throw VectorIndexError.invalidArgument(
                     "Only IVF and PQ vector indexes require training"

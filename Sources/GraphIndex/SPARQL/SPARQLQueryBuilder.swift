@@ -461,7 +461,7 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
             )
             return try await executor.executeInTransaction(
                 pattern: graphPattern,
-                transaction: transaction,
+                transaction: transaction.storageTransaction,
                 limit: needsAllResults ? nil : limitCount,
                 offset: needsAllResults ? 0 : offsetCount,
                 workMeter: workMeter

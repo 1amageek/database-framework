@@ -647,7 +647,7 @@ public struct StronglyConnectedComponentsQuery<Edge: Persistable>: Sendable {
                 return missing()
             }
             let snapshot = GraphReadSnapshot(
-                transaction: transaction,
+                transaction: transaction.storageTransaction,
                 monotonicClock: queryContext.context.container.monotonicClock
             )
             let finder = SCCFinder(

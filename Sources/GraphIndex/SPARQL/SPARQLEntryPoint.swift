@@ -267,7 +267,7 @@ extension DatabaseContext {
                 )
                 return try await executor.executeInTransaction(
                     pattern: pattern,
-                    transaction: transaction,
+                    transaction: transaction.storageTransaction,
                     limit: needsAllResults ? nil : limit,
                     offset: needsAllResults ? 0 : offset,
                     workMeter: workMeter
@@ -383,7 +383,7 @@ extension DatabaseContext {
                 )
                 return try await executor.executeInTransaction(
                     selectPlan: plan,
-                    transaction: transaction,
+                    transaction: transaction.storageTransaction,
                     workMeter: workMeter
                 )
             }

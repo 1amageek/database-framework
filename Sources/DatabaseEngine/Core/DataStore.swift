@@ -4,8 +4,7 @@
 // Storage backends conform to StorageEngine. DataStore is the higher-level
 // model persistence contract consumed by query and statistics services.
 //
-// Security: DataStore uses DataStoreSecurityDelegate for access control.
-// Auth context is obtained via TaskLocal (AuthContextKey.current).
+// Authorization is an implementation-owned operation policy.
 
 import DatabaseKit
 
@@ -15,32 +14,13 @@ import DatabaseKit
 /// The canonical runtime implementation applies schema, security, query, and
 /// mutation semantics on top of an injected engine.
 ///
-/// **Security**:
-/// DataStore holds a security delegate that evaluates permissions.
-/// Auth context is obtained via `AuthContextKey.current` (TaskLocal).
-///
-/// ```swift
-/// // Set auth context per request
-/// try await AuthContextKey.$current.withValue(userAuth) {
-///     let context = session.base(baseID).newContext()
-///     try await context.save()  // Security evaluated via delegate
-/// }
-/// ```
-///
 public protocol DataStore: AnyObject, Sendable {
-
-    // MARK: - Security
-
-    /// Security delegate for access control evaluation
-    ///
-    /// If nil, security evaluation is skipped.
-    var securityDelegate: (any DataStoreSecurityDelegate)? { get }
 
     // MARK: - Fetch Operations
 
     /// Fetch models matching a query
     ///
-    /// Security: LIST operation is evaluated via securityDelegate.
+    /// Authorization: LIST access is evaluated before storage execution.
     ///
     /// This method should:
     /// - Evaluate LIST security (limit, offset, orderBy)
@@ -56,7 +36,7 @@ public protocol DataStore: AnyObject, Sendable {
 
     /// Fetch a single model by ID
     ///
-    /// Security: GET operation is evaluated via securityDelegate after fetch.
+    /// Authorization: GET access is evaluated before returning a model.
     ///
     /// - Parameters:
     ///   - type: The model type
@@ -67,7 +47,7 @@ public protocol DataStore: AnyObject, Sendable {
 
     /// Fetch all models of a type
     ///
-    /// Security: LIST operation is evaluated via securityDelegate.
+    /// Authorization: LIST access is evaluated before storage execution.
     ///
     /// **Note**: Use with caution for large datasets.
     /// Consider using `fetch(_:Query)` with pagination instead.
@@ -79,7 +59,7 @@ public protocol DataStore: AnyObject, Sendable {
 
     /// Fetch count of models matching a query
     ///
-    /// Security: LIST operation is evaluated via securityDelegate.
+    /// Authorization: LIST access is evaluated before storage execution.
     ///
     /// This method may be optimized to avoid loading full model data.
     ///
@@ -92,7 +72,7 @@ public protocol DataStore: AnyObject, Sendable {
 
     /// Execute batch save and delete operations
     ///
-    /// Security (evaluated via securityDelegate):
+    /// Authorization:
     /// - CREATE operation is evaluated for new entities
     /// - UPDATE operation is evaluated for existing entities (with old and new values)
     /// - DELETE operation is evaluated for entities being deleted

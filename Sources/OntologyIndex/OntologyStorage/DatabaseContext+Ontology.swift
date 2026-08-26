@@ -157,7 +157,10 @@ public struct OntologyContextAPI: Sendable {
     public func get(iri: String) async throws -> OWLOntology? {
         try await withStore { store in
             try await context.indexQueryContext.withTransaction { transaction in
-                try await store.reconstruct(iri: iri, transaction: transaction)
+                try await store.reconstruct(
+                    iri: iri,
+                    transaction: transaction.storageTransaction
+                )
             }
         }
     }
@@ -171,7 +174,7 @@ public struct OntologyContextAPI: Sendable {
             try await context.indexQueryContext.withTransaction { transaction in
                 try await store.getMetadata(
                     ontologyIRI: iri,
-                    transaction: transaction
+                    transaction: transaction.storageTransaction
                 )
             }
         }
@@ -185,7 +188,9 @@ public struct OntologyContextAPI: Sendable {
     public func list() async throws -> [String] {
         try await withStore { store in
             try await context.indexQueryContext.withTransaction { transaction in
-                try await store.listOntologies(transaction: transaction)
+                try await store.listOntologies(
+                    transaction: transaction.storageTransaction
+                )
             }
         }
     }
@@ -282,7 +287,7 @@ public struct OntologyContextAPI: Sendable {
                 try await store.getSuperClasses(
                     of: classIRI,
                     ontologyIRI: ontologyIRI,
-                    transaction: transaction
+                    transaction: transaction.storageTransaction
                 )
             }
         }
@@ -303,7 +308,7 @@ public struct OntologyContextAPI: Sendable {
                 try await store.getSubClasses(
                     of: classIRI,
                     ontologyIRI: ontologyIRI,
-                    transaction: transaction
+                    transaction: transaction.storageTransaction
                 )
             }
         }
@@ -324,7 +329,7 @@ public struct OntologyContextAPI: Sendable {
                 try await store.getSuperProperties(
                     of: propertyIRI,
                     ontologyIRI: ontologyIRI,
-                    transaction: transaction
+                    transaction: transaction.storageTransaction
                 )
             }
         }
@@ -345,7 +350,7 @@ public struct OntologyContextAPI: Sendable {
                 try await store.isTransitive(
                     property: propertyIRI,
                     ontologyIRI: ontologyIRI,
-                    transaction: transaction
+                    transaction: transaction.storageTransaction
                 )
             }
         }
@@ -366,7 +371,7 @@ public struct OntologyContextAPI: Sendable {
                 try await store.getInverse(
                     of: propertyIRI,
                     ontologyIRI: ontologyIRI,
-                    transaction: transaction
+                    transaction: transaction.storageTransaction
                 )
             }
         }
@@ -387,7 +392,7 @@ public struct OntologyContextAPI: Sendable {
                 try await store.getPropertyChains(
                     for: propertyIRI,
                     ontologyIRI: ontologyIRI,
-                    transaction: transaction
+                    transaction: transaction.storageTransaction
                 )
             }
         }
@@ -433,7 +438,7 @@ public struct OntologyContextAPI: Sendable {
                             try await validator.validateClass(
                                 classIRI,
                                 in: ontologyIRI,
-                                transaction: transaction
+                                transaction: transaction.storageTransaction
                             )
                         } catch let error as OntologyValidationError {
                             collected.append(error)
@@ -449,7 +454,7 @@ public struct OntologyContextAPI: Sendable {
                             try await validator.validateObjectProperty(
                                 propertyIRI,
                                 in: ontologyIRI,
-                                transaction: transaction
+                                transaction: transaction.storageTransaction
                             )
                         } catch let error as OntologyValidationError {
                             collected.append(error)
@@ -463,13 +468,13 @@ public struct OntologyContextAPI: Sendable {
                                 try await validator.validateObjectProperty(
                                     property.iri,
                                     in: ontologyIRI,
-                                    transaction: transaction
+                                    transaction: transaction.storageTransaction
                                 )
                             } else {
                                 try await validator.validateDataProperty(
                                     property.iri,
                                     in: ontologyIRI,
-                                    transaction: transaction
+                                    transaction: transaction.storageTransaction
                                 )
                             }
                         } catch let error as OntologyValidationError {

@@ -186,7 +186,7 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
             }
             let primaryKeys = try await maintainer.primaryKeys(
                 for: resultBitmap,
-                transaction: transaction
+                transaction: transaction.storageTransaction
             )
             let items = try await self.queryContext.fetchItemsPreservingOrder(
                 ids: primaryKeys,
@@ -255,7 +255,11 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
     private func withResolvedBitmap<R: Sendable>(
         configuration: TransactionConfiguration,
         missing: @Sendable @escaping () -> R,
-        _ body: @escaping @Sendable (RoaringBitmap, BitmapIndexReader, any TransactionAccess) async throws -> R
+        _ body: @escaping @Sendable (
+            RoaringBitmap,
+            BitmapIndexReader,
+            DatabaseReadTransaction
+        ) async throws -> R
     ) async throws -> R {
         guard let op = operation else {
             throw BitmapQueryError.noOperation
@@ -287,15 +291,24 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
             let bitmap: RoaringBitmap
             switch op {
             case .equals(let value):
-                bitmap = try await reader.bitmap(for: [value], transaction: transaction)
+                bitmap = try await reader.bitmap(
+                    for: [value],
+                    transaction: transaction.storageTransaction
+                )
 
             case .in(let values):
                 let valueSets = values.map { [$0] as [any TupleElement] }
-                bitmap = try await reader.union(of: valueSets, transaction: transaction)
+                bitmap = try await reader.union(
+                    of: valueSets,
+                    transaction: transaction.storageTransaction
+                )
 
             case .and(let valueSets):
                 let converted = valueSets.map { $0 as [any TupleElement] }
-                bitmap = try await reader.intersection(of: converted, transaction: transaction)
+                bitmap = try await reader.intersection(
+                    of: converted,
+                    transaction: transaction.storageTransaction
+                )
             }
 
             return try await body(bitmap, reader, transaction)

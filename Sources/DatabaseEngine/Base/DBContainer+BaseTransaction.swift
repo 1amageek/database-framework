@@ -33,7 +33,11 @@ extension DBContainer {
                 : storageAccess
             let transaction = DatabaseTransaction(
                 storageAccess: admittedStorageAccess,
-                container: self
+                container: self,
+                readPolicy: DatabaseReadPolicy(
+                    schemaLease: self.acquireActiveSchemaLease(),
+                    authorization: authorization
+                )
             )
             return try await RequestAuthorization.$context.withValue(
                 authorization

@@ -108,9 +108,10 @@ struct SchemaRuntimeGenerationTests {
             )
             await probe.markCompleted()
         }
-        for _ in 0..<20 {
+        while container.pendingSchemaDrainWaiterCount == 0 {
             await Task.yield()
         }
+        #expect(container.pendingSchemaDrainWaiterCount == 1)
         let completedBeforeRelease = await probe.completed
         #expect(!completedBeforeRelease)
 
@@ -171,15 +172,69 @@ struct SchemaRuntimeGenerationTests {
                 olderThan: targetGeneration
             )
         }
-        for _ in 0..<20 {
+        while container.pendingSchemaDrainWaiterCount == 0 {
             await Task.yield()
         }
+        #expect(container.pendingSchemaDrainWaiterCount == 1)
         waiter.cancel()
         await #expect(throws: CancellationError.self) {
             try await waiter.value
         }
 
         oldLease = nil
+        try await container.waitForSchemaLeases(
+            olderThan: targetGeneration
+        )
+
+        await container.shutdown()
+        engine.requestShutdown()
+        await engine.waitUntilShutdown()
+    }
+
+    @Test("Operation-local store releases its schema generation")
+    func operationStoreReleasesSchemaGeneration() async throws {
+        let engine = InMemoryEngine()
+        let schema = try Schema(
+            entities: [try SchemaRuntimeGenerationEntity.schemaEntity],
+            version: Schema.Version(1, 0, 0)
+        )
+        let initialRuntime = try Self.runtime(
+            searchBudget: 10,
+            physicalRevision: 1
+        )
+        let container = try await DBContainer.open(
+            for: schema,
+            configuration: .testing(
+                storageEngine: RetainedSchemaRuntimeEngine(engine)
+            ),
+            runtimeConfiguration: initialRuntime,
+            security: .testingDisabled
+        )
+        let context = container.testBaseContext()
+
+        _ = try await context.fetch(SchemaRuntimeGenerationEntity.self)
+            .execute()
+
+        let oldGeneration = container.schemaGeneration
+        let targetRuntime = try Self.runtime(
+            searchBudget: 40,
+            physicalRevision: 1
+        )
+        let prepared = try container.prepareSchemaGeneration(
+            schema,
+            runtimeConfiguration: targetRuntime
+        )
+        let targetGeneration = oldGeneration + 1
+        container.publishSchemaGeneration(
+            schema,
+            fingerprint: try SchemaManifest(schema: schema).fingerprint(),
+            indexPhysicalFingerprint: prepared.indexPhysicalFingerprint,
+            executionRuntimeFingerprint: prepared.executionRuntimeFingerprint,
+            runtimeConfiguration: targetRuntime,
+            indexPhysicalLayouts: prepared.indexPhysicalLayouts,
+            generation: targetGeneration
+        )
+
         try await container.waitForSchemaLeases(
             olderThan: targetGeneration
         )

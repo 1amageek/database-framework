@@ -196,10 +196,12 @@ public final class DBContainer: Sendable {
     /// Security configuration
     public let securityConfiguration: SecurityConfiguration
 
-    /// Security delegate for DataStore operations
+    /// Security delegate used by the generation-bound read policy.
     ///
-    /// Created from securityConfiguration and uses TaskLocal for auth context.
-    public var securityDelegate: (any DataStoreSecurityDelegate)? {
+    /// The policy supplies the captured authorization context when invoking
+    /// this legacy delegate adapter; ambient task state never grants or
+    /// suppresses a read decision.
+    package var securityDelegate: (any DataStoreSecurityDelegate)? {
         activeSchemaLease.securityDelegate
     }
 
@@ -1167,6 +1169,10 @@ public final class DBContainer: Sendable {
         )
     }
 
+    package var pendingSchemaDrainWaiterCount: Int {
+        schemaGenerationStore.pendingDrainWaiterCount
+    }
+
     /// Retains the generation already bound to the current operation, or the
     /// published generation when no operation scope exists.
     package func acquireActiveSchemaLease() -> DatabaseSchemaLease {
@@ -1654,7 +1660,7 @@ public final class DBContainer: Sendable {
         named indexName: String,
         for type: Model.Type,
         path: AnyDirectoryPath? = nil,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Subspace? {
         try await readableIndexSubspace(
             named: indexName,
@@ -1668,7 +1674,7 @@ public final class DBContainer: Sendable {
         named indexName: String,
         for entity: Schema.Entity,
         path: AnyDirectoryPath? = nil,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Subspace? {
         let entity = try canonicalEntity(entity)
         let directoryPath: AnyDirectoryPath
@@ -1770,15 +1776,58 @@ public final class DBContainer: Sendable {
         for type: T.Type,
         path: DirectoryPath<T> = DirectoryPath()
     ) async throws -> DatabaseDataStore {
-        let entity = try schemaEntity(named: T.persistableType)
+        try await store(
+            for: type,
+            path: path,
+            readPolicy: try readPolicyForCurrentOperation()
+        )
+    }
+
+    package func store<T: Persistable>(
+        for type: T.Type,
+        path: DirectoryPath<T> = DirectoryPath(),
+        readPolicy: DatabaseReadPolicy
+    ) async throws -> DatabaseDataStore {
+        guard let entity = readPolicy.schema.entity(named: T.persistableType)
+        else {
+            throw ContainerSchemaError.entityNotFound(T.persistableType)
+        }
         let subspace = try await resolveDirectory(for: type, path: path)
         try await initializeIndexStates(for: entity, subspace: subspace)
         return DatabaseDataStore(
             container: self,
             subspace: subspace,
             entity: entity,
+            readPolicy: readPolicy,
             securityDelegate: securityDelegate,
-            indexConfigurations: runtimeConfiguration.indexConfigurations
+            indexConfigurations: readPolicy.indexConfigurations
+        )
+    }
+
+    /// Builds a read-only store without creating directory, partition-catalog,
+    /// or index lifecycle metadata. The returned store performs all reads on
+    /// the transaction supplied by its caller.
+    package func readStore<T: Persistable>(
+        for type: T.Type,
+        path: DirectoryPath<T> = DirectoryPath(),
+        readPolicy: DatabaseReadPolicy
+    ) throws -> DatabaseDataStore {
+        guard let entity = readPolicy.schema.entity(named: T.persistableType)
+        else {
+            throw ContainerSchemaError.entityNotFound(T.persistableType)
+        }
+        let directoryPath = try AnyDirectoryPath(path)
+        try directoryPath.validate()
+        let subspace = try operationDataSubspace(
+            relativePath: directoryPath.resolve()
+        )
+        return DatabaseDataStore(
+            container: self,
+            subspace: subspace,
+            entity: entity,
+            readPolicy: readPolicy,
+            securityDelegate: securityDelegate,
+            indexConfigurations: readPolicy.indexConfigurations
         )
     }
 
@@ -1800,15 +1849,31 @@ public final class DBContainer: Sendable {
         for entity: Schema.Entity,
         path: AnyDirectoryPath? = nil
     ) async throws -> DatabaseDataStore {
-        let entity = try canonicalEntity(entity)
+        try await store(
+            for: entity,
+            path: path,
+            readPolicy: try readPolicyForCurrentOperation()
+        )
+    }
+
+    internal func store(
+        for entity: Schema.Entity,
+        path: AnyDirectoryPath? = nil,
+        readPolicy: DatabaseReadPolicy
+    ) async throws -> DatabaseDataStore {
+        let entity = try schemaEntity(
+            matching: entity,
+            declaredIn: readPolicy.schema
+        )
         let subspace = try await resolveDirectory(for: entity, path: path)
         try await initializeIndexStates(for: entity, subspace: subspace)
         return DatabaseDataStore(
             container: self,
             subspace: subspace,
             entity: entity,
+            readPolicy: readPolicy,
             securityDelegate: securityDelegate,
-            indexConfigurations: runtimeConfiguration.indexConfigurations
+            indexConfigurations: readPolicy.indexConfigurations
         )
     }
 
@@ -1819,9 +1884,14 @@ public final class DBContainer: Sendable {
         path: AnyDirectoryPath? = nil,
         transaction: any TransactionAccess
     ) async throws -> DatabaseDataStore {
-        let entity = try canonicalEntity(entity)
+        let readPolicy = try readPolicyForCurrentOperation()
+        let entity = try schemaEntity(
+            matching: entity,
+            declaredIn: readPolicy.schema
+        )
         let subspace = try await resolveDirectory(
             for: entity,
+            declaredIn: readPolicy.schema,
             path: path,
             transaction: transaction
         )
@@ -1834,8 +1904,9 @@ public final class DBContainer: Sendable {
             container: self,
             subspace: subspace,
             entity: entity,
+            readPolicy: readPolicy,
             securityDelegate: securityDelegate,
-            indexConfigurations: runtimeConfiguration.indexConfigurations
+            indexConfigurations: readPolicy.indexConfigurations
         )
     }
 
@@ -1997,7 +2068,7 @@ public final class DBContainer: Sendable {
     /// metadata. An absent directory represents an empty projection.
     package func openPolymorphicDirectory(
         for identifier: String,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Subspace? {
         let group = try polymorphicGroup(identifier: identifier)
         let path = try group.resolvedDirectoryPath()
@@ -2011,7 +2082,7 @@ public final class DBContainer: Sendable {
     package func readablePolymorphicIndex(
         _ descriptor: IndexDeclaration<String>,
         in group: PolymorphicGroup,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> ReadablePolymorphicIndex? {
         guard group.indexes.contains(descriptor) else {
             throw IndexQueryContextError.polymorphicIndexNotFound(

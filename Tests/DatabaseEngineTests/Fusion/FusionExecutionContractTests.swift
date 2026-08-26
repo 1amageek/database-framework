@@ -3,6 +3,7 @@ import DatabaseTypes
 import DatabaseRuntime
 import ScalarIndex
 import StorageKit
+import Synchronization
 import TestSupport
 import Testing
 
@@ -22,7 +23,116 @@ private struct FusionExecutionContractItem {
     var value: Int64
 }
 
-@Suite("Fusion execution contracts")
+@Persistable
+private struct FusionAuthorizationCountingItem: SecurityPolicy {
+    #Index(
+        .ordered(
+            name: "fusion_authorization_counting_value",
+            keys: [.ascending(\FusionAuthorizationCountingItem.value)],
+            unique: false
+        )
+    )
+
+    static let queryDecisionCount = Mutex(0)
+    static let queryLimits = Mutex<[UInt64?]>([])
+    static let readDecisionCount = Mutex(0)
+
+    var id: String
+    var value: Int64
+
+    static func permitsRead(
+        of resource: borrowing FusionAuthorizationCountingItem,
+        in context: borrowing AuthorizationContext
+    ) -> Bool {
+        _ = resource
+        _ = context
+        readDecisionCount.withLock { $0 += 1 }
+        return true
+    }
+
+    static func permitsQuery(
+        _ query: borrowing SecurityQuery,
+        in context: borrowing AuthorizationContext
+    ) -> Bool {
+        _ = query
+        _ = context
+        queryDecisionCount.withLock { $0 += 1 }
+        queryLimits.withLock { $0.append(query.limit) }
+        return true
+    }
+
+    static func permitsCreate(
+        _ newResource: borrowing FusionAuthorizationCountingItem,
+        in context: borrowing AuthorizationContext
+    ) -> Bool {
+        _ = newResource
+        _ = context
+        return true
+    }
+
+    static func permitsUpdate(
+        from resource: borrowing FusionAuthorizationCountingItem,
+        to newResource: borrowing FusionAuthorizationCountingItem,
+        in context: borrowing AuthorizationContext
+    ) -> Bool {
+        _ = resource
+        _ = newResource
+        _ = context
+        return true
+    }
+
+    static func permitsDelete(
+        _ resource: borrowing FusionAuthorizationCountingItem,
+        in context: borrowing AuthorizationContext
+    ) -> Bool {
+        _ = resource
+        _ = context
+        return true
+    }
+}
+
+@Persistable
+private struct FusionProjectedAuthorizationItem: SecurityPolicy {
+    #Index(
+        .ordered(
+            name: "fusion_projected_authorization_value",
+            keys: [.ascending(\FusionProjectedAuthorizationItem.value)],
+            unique: false
+        )
+    )
+
+    @Restricted(read: .roles(["fusion-secret-reader"]))
+    var id: String = ""
+    var value: Int64 = 0
+
+    static func permitsRead(
+        of resource: borrowing FusionProjectedAuthorizationItem,
+        in context: borrowing AuthorizationContext
+    ) -> Bool { true }
+
+    static func permitsQuery(
+        _ query: borrowing SecurityQuery,
+        in context: borrowing AuthorizationContext
+    ) -> Bool { true }
+
+    static func permitsCreate(
+        _ newResource: borrowing FusionProjectedAuthorizationItem,
+        in context: borrowing AuthorizationContext
+    ) -> Bool { true }
+
+    static func permitsUpdate(
+        from resource: borrowing FusionProjectedAuthorizationItem,
+        to newResource: borrowing FusionProjectedAuthorizationItem,
+        in context: borrowing AuthorizationContext
+    ) -> Bool { true }
+
+    static func permitsDelete(
+        _ resource: borrowing FusionProjectedAuthorizationItem,
+        in context: borrowing AuthorizationContext
+    ) -> Bool { true }
+}
+
+@Suite("Fusion execution contracts", .serialized)
 struct FusionExecutionContractTests {
     @Test("Candidate domain and match sink enforce identity score and lifetime")
     func matchSinkEnforcesContract() throws {
@@ -322,7 +432,7 @@ struct FusionExecutionContractTests {
         }
 
         try await engine.withTransaction { transaction in
-            let session = try FusionIndexReadSession(
+            let session = try FusionIndexReadSession.testing(
                 index: ReadableIndex(
                     descriptor: descriptor,
                     physicalLayout: try IndexPhysicalLayout(
@@ -455,6 +565,79 @@ struct FusionExecutionContractTests {
             }
             #expect(engine.transactionCount == baselineTransactions)
         }
+    }
+
+    @Test("Fusion relational inputs reject nested queries before admission")
+    func relationalInputsRejectNestedQueries() async throws {
+        let schema = try Schema(
+            entities: [try FusionExecutionContractItem.schemaEntity]
+        )
+        let scalarProvider = ScalarIndexMaintainerProvider()
+        var entityRuntime = try EntityRuntimeDefinition(
+            FusionExecutionContractItem.self
+        )
+        try entityRuntime.register(scalarProvider)
+        let engine = TransactionCountingInMemoryEngine()
+        let container = try await DBContainer.open(
+            for: schema,
+            configuration: .testing(storageEngine: engine),
+            runtimeConfiguration: try DatabaseRuntimeConfiguration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "fusion-relational-subquery-tests",
+                    revision: 1
+                ),
+                indexMaintainerProviderDescriptors: [
+                    .init(describing: scalarProvider),
+                ],
+                entityRuntimes: [entityRuntime.registration()]
+            ),
+            security: .testingDisabled
+        )
+        defer { await container.shutdown() }
+        let baselineTransactions = engine.transactionCount
+        let nested = SelectQuery(
+            projection: .items([
+                ProjectionItem(.literal(.int(1)), alias: "value"),
+            ]),
+            source: .values([[.int(1)]], columnNames: ["seed"])
+        )
+        let query = SelectQuery(
+            projection: .all,
+            source: .table(
+                TableRef(FusionExecutionContractItem.persistableType)
+            ),
+            accessPath: .fusion(
+                FusionSource(stages: [
+                    FusionStageSource(inputs: [
+                        FusionInput(
+                            operation: .filter(.exists(nested))
+                        ),
+                    ]),
+                    FusionStageSource(inputs: [
+                        FusionInput(
+                            operation: .index(
+                                FusionIndexSource(
+                                    selection: .named(
+                                        name: "fusion_contract_value",
+                                        type: .ordered
+                                    )
+                                )
+                            ),
+                            scoring: .position,
+                            requirement: .candidates
+                        ),
+                    ]),
+                ])
+            )
+        )
+
+        await #expect {
+            _ = try await container.testBaseContext().query(query)
+        } throws: { error in
+            error as? FusionExecutionError
+                == .relationalSubqueryNotSupported
+        }
+        #expect(engine.transactionCount == baselineTransactions)
     }
 
     @Test("Candidate set algebra preserves one canonical payload per identity")
@@ -760,11 +943,13 @@ struct FusionExecutionContractTests {
         )
 
         await #expect {
-            _ = try await context.executeCanonicalRead { transaction in
-                try await context.executeCanonicalQuery(
+            _ = try await context.withReadSnapshot(
+                workMeter: execution.workMeter
+            ) { snapshot in
+                try await context.querySessionBound(
                     query,
                     execution: execution,
-                    transaction: transaction
+                    session: snapshot.session
                 )
             }
         } throws: { error in
@@ -772,6 +957,625 @@ struct FusionExecutionContractTests {
         }
         #expect(execution.workMeter.retainedIntermediateRows == 0)
         #expect(execution.workMeter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("Feature validation occurs once before Fusion execution")
+    func featureValidationOccursOnce() async throws {
+        let schema = try Schema(
+            entities: [try FusionExecutionContractItem.schemaEntity]
+        )
+        let scalarProvider = ScalarIndexMaintainerProvider()
+        var entityRuntime = try EntityRuntimeDefinition(
+            FusionExecutionContractItem.self
+        )
+        try entityRuntime.register(scalarProvider)
+        let executor = ValidationCountingFusionReadExecutor()
+        let container = try await DBContainer.open(
+            for: schema,
+            configuration: .testing(storageEngine: InMemoryEngine()),
+            runtimeConfiguration: try DatabaseRuntimeConfiguration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "fusion-single-validation-tests",
+                    revision: 1
+                ),
+                indexMaintainerProviderDescriptors: [
+                    .init(describing: scalarProvider),
+                ],
+                fusionIndexReadExecutors: [executor],
+                entityRuntimes: [entityRuntime.registration()]
+            ),
+            security: .testingDisabled
+        )
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        try context.insert(FusionExecutionContractItem(id: "one", value: 1))
+        try await context.save()
+
+        await #expect {
+            _ = try await context.query(
+                SelectQuery(
+                    projection: .all,
+                    source: .table(
+                        TableRef(FusionExecutionContractItem.persistableType)
+                    ),
+                    accessPath: .fusion(
+                        FusionSource(stages: [
+                            FusionStageSource(inputs: [
+                                FusionInput(
+                                    operation: .index(
+                                        FusionIndexSource(
+                                            selection: .named(
+                                                name: "fusion_contract_value",
+                                                type: .ordered
+                                            )
+                                        )
+                                    ),
+                                    scoring: .position
+                                ),
+                            ]),
+                        ])
+                    )
+                )
+            )
+        } throws: { error in
+            error as? FusionExecutionError == .executionContractViolation
+        }
+        #expect(executor.validationCount == 1)
+    }
+
+    @Test("Fusion query authorization is decided once")
+    func queryAuthorizationOccursOnce() async throws {
+        let schema = try Schema(
+            entities: [try FusionAuthorizationCountingItem.schemaEntity]
+        )
+        let scalarProvider = ScalarIndexMaintainerProvider()
+        var entityRuntime = try EntityRuntimeDefinition(
+            FusionAuthorizationCountingItem.self
+        )
+        try entityRuntime.register(scalarProvider)
+        let executor = ValidationCountingFusionReadExecutor()
+        let container = try await DBContainer.open(
+            for: schema,
+            configuration: .testing(storageEngine: InMemoryEngine()),
+            runtimeConfiguration: try DatabaseRuntimeConfiguration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "fusion-single-authorization-tests",
+                    revision: 1
+                ),
+                indexMaintainerProviderDescriptors: [
+                    .init(describing: scalarProvider),
+                ],
+                fusionIndexReadExecutors: [executor],
+                entityRuntimes: [entityRuntime.registration()],
+                authorizationPolicies: [
+                    AuthorizationPolicyHandler(
+                        FusionAuthorizationCountingItem.self
+                    ),
+                ]
+            ),
+            security: .enabled()
+        )
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        try context.insert(
+            FusionAuthorizationCountingItem(id: "one", value: 1)
+        )
+        try await context.save()
+        FusionAuthorizationCountingItem.queryDecisionCount.withLock { $0 = 0 }
+        FusionAuthorizationCountingItem.queryLimits.withLock {
+            $0.removeAll(keepingCapacity: false)
+        }
+        FusionAuthorizationCountingItem.readDecisionCount.withLock { $0 = 0 }
+
+        await #expect {
+            _ = try await context.query(
+                SelectQuery(
+                    projection: .all,
+                    source: .table(
+                        TableRef(
+                            FusionAuthorizationCountingItem.persistableType
+                        )
+                    ),
+                    accessPath: .fusion(
+                        FusionSource(stages: [
+                            FusionStageSource(inputs: [
+                                FusionInput(
+                                    operation: .index(
+                                        FusionIndexSource(
+                                            selection: .named(
+                                                name: "fusion_authorization_counting_value",
+                                                type: .ordered
+                                            )
+                                        )
+                                    ),
+                                    scoring: .position
+                                ),
+                            ]),
+                        ])
+                    )
+                )
+            )
+        } throws: { error in
+            error as? FusionExecutionError == .executionContractViolation
+        }
+        #expect(
+            FusionAuthorizationCountingItem.queryDecisionCount.withLock { $0 }
+                == 1
+        )
+        #expect(executor.validationCount == 1)
+    }
+
+    @Test("Fusion materialization preserves the sealed field projection")
+    func fusionMaterializationPreservesSealedFieldSet() async throws {
+        let schema = try Schema(
+            entities: [try FusionProjectedAuthorizationItem.schemaEntity]
+        )
+        let scalarProvider = ScalarIndexMaintainerProvider()
+        var entityRuntime = try EntityRuntimeDefinition(
+            FusionProjectedAuthorizationItem.self
+        )
+        try entityRuntime.register(scalarProvider)
+        let executor = FixedFusionReadExecutor(
+            primaryKey: try primaryKey("one")
+        )
+        let container = try await DBContainer.open(
+            for: schema,
+            configuration: .testing(storageEngine: InMemoryEngine()),
+            runtimeConfiguration: try DatabaseRuntimeConfiguration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "fusion-projected-authorization-tests",
+                    revision: 1
+                ),
+                indexMaintainerProviderDescriptors: [
+                    .init(describing: scalarProvider),
+                ],
+                fusionIndexReadExecutors: [executor],
+                entityRuntimes: [entityRuntime.registration()],
+                authorizationPolicies: [
+                    AuthorizationPolicyHandler(
+                        FusionProjectedAuthorizationItem.self
+                    ),
+                ]
+            ),
+            security: .enabled()
+        )
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        try context.insert(
+            FusionProjectedAuthorizationItem(id: "one", value: 42)
+        )
+        try await context.save()
+
+        let response = try await context.query(
+            SelectQuery(
+                projection: .items([
+                    ProjectionItem(
+                        .column(ColumnRef(column: "value"))
+                    )
+                ]),
+                source: .table(
+                    TableRef(FusionProjectedAuthorizationItem.persistableType)
+                ),
+                accessPath: .fusion(
+                    FusionSource(stages: [
+                        FusionStageSource(inputs: [
+                            FusionInput(
+                                operation: .index(
+                                    FusionIndexSource(
+                                        selection: .named(
+                                            name:
+                                                "fusion_projected_authorization_value",
+                                            type: .ordered
+                                        )
+                                    )
+                                ),
+                                scoring: .position
+                            ),
+                        ]),
+                    ])
+                )
+            )
+        )
+
+        #expect(response.rows.count == 1)
+        #expect(response.rows[0].fields == ["value": .int64(42)])
+    }
+
+    @Test("Missing Fusion entities are disclosed only after list authorization")
+    func missingEntityDisclosureFollowsAuthorization() async throws {
+        let schema = try Schema(
+            entities: [try FusionAuthorizationCountingItem.schemaEntity]
+        )
+        let scalarProvider = ScalarIndexMaintainerProvider()
+        var entityRuntime = try EntityRuntimeDefinition(
+            FusionAuthorizationCountingItem.self
+        )
+        try entityRuntime.register(scalarProvider)
+        let runtime = try DatabaseRuntimeConfiguration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(
+                identifier: "fusion-missing-entity-authorization-tests",
+                revision: 1
+            ),
+            indexMaintainerProviderDescriptors: [
+                .init(describing: scalarProvider),
+            ],
+            entityRuntimes: [entityRuntime.registration()],
+            authorizationPolicies: [
+                AuthorizationPolicyHandler(
+                    FusionAuthorizationCountingItem.self
+                ),
+            ]
+        )
+        let query = SelectQuery(
+            projection: .all,
+            source: .table(TableRef("fusion_missing_entity")),
+            accessPath: .fusion(
+                FusionSource(stages: [
+                    FusionStageSource(inputs: [
+                        FusionInput(
+                            operation: .index(
+                                FusionIndexSource(
+                                    selection: .named(
+                                        name: "fusion_hidden_index",
+                                        type: .ordered
+                                    )
+                                )
+                            ),
+                            scoring: .position
+                        ),
+                    ]),
+                ])
+            )
+        )
+
+        let secured = try await DBContainer.open(
+            for: schema,
+            configuration: .testing(storageEngine: InMemoryEngine()),
+            runtimeConfiguration: runtime,
+            security: .enabled()
+        )
+        do {
+            defer { await secured.shutdown() }
+            do {
+                _ = try await secured.testBaseContext().query(query)
+                Issue.record("Expected list authorization to reject the query")
+            } catch let error as SecurityError {
+                #expect(error.operation == .list)
+                #expect(error.targetType == "fusion_missing_entity")
+            } catch {
+                Issue.record("Unexpected pre-authorization error: \(error)")
+            }
+        }
+
+        let unsecured = try await DBContainer.open(
+            for: schema,
+            configuration: .testing(storageEngine: InMemoryEngine()),
+            runtimeConfiguration: runtime,
+            security: .testingDisabled
+        )
+        defer { await unsecured.shutdown() }
+        await #expect {
+            _ = try await unsecured.testBaseContext().query(query)
+        } throws: { error in
+            guard case .unsupportedSource(let message) =
+                error as? CanonicalReadError else {
+                return false
+            }
+            return message.contains("fusion_missing_entity")
+        }
+    }
+
+    @Test("Relational Fusion execution reuses its query authorization")
+    func relationalExecutionReusesQueryAuthorization() async throws {
+        let schema = try Schema(
+            entities: [try FusionAuthorizationCountingItem.schemaEntity]
+        )
+        let scalarProvider = ScalarIndexMaintainerProvider()
+        var entityRuntime = try EntityRuntimeDefinition(
+            FusionAuthorizationCountingItem.self
+        )
+        try entityRuntime.register(scalarProvider)
+        let container = try await DBContainer.open(
+            for: schema,
+            configuration: .testing(storageEngine: InMemoryEngine()),
+            runtimeConfiguration: try DatabaseRuntimeConfiguration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "fusion-relational-authorization-tests",
+                    revision: 1
+                ),
+                indexMaintainerProviderDescriptors: [
+                    .init(describing: scalarProvider),
+                ],
+                entityRuntimes: [entityRuntime.registration()],
+                authorizationPolicies: [
+                    AuthorizationPolicyHandler(
+                        FusionAuthorizationCountingItem.self
+                    ),
+                ]
+            ),
+            security: .enabled()
+        )
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        try context.insert(
+            FusionAuthorizationCountingItem(id: "one", value: 1)
+        )
+        try await context.save()
+        FusionAuthorizationCountingItem.queryDecisionCount.withLock { $0 = 0 }
+        FusionAuthorizationCountingItem.queryLimits.withLock {
+            $0.removeAll(keepingCapacity: false)
+        }
+        FusionAuthorizationCountingItem.readDecisionCount.withLock { $0 = 0 }
+
+        let query = SelectQuery(
+                projection: .all,
+                source: .table(
+                    TableRef(FusionAuthorizationCountingItem.persistableType)
+                ),
+                accessPath: .fusion(
+                    FusionSource(stages: [
+                        FusionStageSource(inputs: [
+                            FusionInput(
+                                operation: .filter(
+                                    .greaterThan(
+                                        .column(ColumnRef(column: "value")),
+                                        .literal(.int(0))
+                                    )
+                                ),
+                                limit: 1
+                            ),
+                        ]),
+                        FusionStageSource(inputs: [
+                            FusionInput(
+                                operation: .order([
+                                    SortKey(
+                                        .column(ColumnRef(column: "value")),
+                                        direction: .descending
+                                    ),
+                                ]),
+                                scoring: .position,
+                                requirement: .candidates
+                            ),
+                        ]),
+                    ])
+                )
+            )
+        let analysisExecution = ReadExecutionContext(
+            options: .default,
+            monotonicClock: container.monotonicClock
+        )
+        let requirementCount = try await context.withDataOperation {
+            try FusionPreflight.resolveGraph(
+                query,
+                context: context,
+                workMeter: analysisExecution.workMeter
+            ).listAuthorizationRequirements.count
+        }
+        #expect(requirementCount == 1)
+
+        let response = try await context.query(query)
+
+        #expect(response.rows.map { $0.fields["id"] } == [.string("one")])
+        #expect(
+            FusionAuthorizationCountingItem.queryDecisionCount.withLock { $0 }
+                == 1
+        )
+        #expect(
+            FusionAuthorizationCountingItem.queryLimits.withLock { $0 }
+                == [nil]
+        )
+        #expect(
+            FusionAuthorizationCountingItem.readDecisionCount.withLock { $0 }
+                == 1
+        )
+    }
+
+    @Test("Prepared Fusion lookup binds each exact logical list requirement")
+    func preparedLookupBindsExactLogicalListRequirement() async throws {
+        let schema = try Schema(
+            entities: [try FusionExecutionContractItem.schemaEntity]
+        )
+        let scalarProvider = ScalarIndexMaintainerProvider()
+        var entityRuntime = try EntityRuntimeDefinition(
+            FusionExecutionContractItem.self
+        )
+        try entityRuntime.register(scalarProvider)
+        let fusionExecutor = FixedFusionReadExecutor(
+            primaryKey: try primaryKey("one")
+        )
+        let container = try await DBContainer.open(
+            for: schema,
+            configuration: .testing(storageEngine: InMemoryEngine()),
+            runtimeConfiguration: try DatabaseRuntimeConfiguration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "fusion-logical-requirement-binding-tests",
+                    revision: 1
+                ),
+                indexMaintainerProviderDescriptors: [
+                    .init(describing: scalarProvider),
+                ],
+                fusionIndexReadExecutors: [fusionExecutor],
+                entityRuntimes: [
+                    entityRuntime.registration(),
+                ]
+            ),
+            security: .testingDisabled
+        )
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        try context.insert(
+            FusionExecutionContractItem(id: "one", value: 1)
+        )
+        try await context.save()
+
+        let source = FusionSource(stages: [
+            FusionStageSource(inputs: [
+                FusionInput(
+                    operation: .index(
+                        FusionIndexSource(
+                            selection: .named(
+                                name: "fusion_contract_value",
+                                type: .ordered
+                            )
+                        )
+                    ),
+                    scoring: .position
+                ),
+            ]),
+        ])
+        func nestedQuery(limit: UInt64) -> SelectQuery {
+            SelectQuery(
+                projection: .all,
+                source: .table(
+                    TableRef(FusionExecutionContractItem.persistableType)
+                ),
+                accessPath: .fusion(source),
+                limit: limit
+            )
+        }
+        let response = try await context.query(
+            SelectQuery(
+                projection: .items([
+                    ProjectionItem(
+                        .exists(nestedQuery(limit: 1)),
+                        alias: "first"
+                    ),
+                    ProjectionItem(
+                        .exists(nestedQuery(limit: 2)),
+                        alias: "second"
+                    ),
+                ]),
+                source: .values(
+                    [[.int(1)]],
+                    columnNames: ["seed"]
+                )
+            )
+        )
+
+        #expect(response.rows.count == 1)
+        #expect(response.rows[0].fields["first"] == .bool(true))
+        #expect(response.rows[0].fields["second"] == .bool(true))
+    }
+
+    @Test("Authorization evidence cannot cross principals")
+    func authorizationEvidenceIsPrincipalBound() async throws {
+        let schema = try Schema(
+            entities: [try FusionExecutionContractItem.schemaEntity]
+        )
+        let scalarProvider = ScalarIndexMaintainerProvider()
+        var entityRuntime = try EntityRuntimeDefinition(
+            FusionExecutionContractItem.self
+        )
+        try entityRuntime.register(scalarProvider)
+        let container = try await DBContainer.open(
+            for: schema,
+            configuration: .testing(storageEngine: InMemoryEngine()),
+            runtimeConfiguration: try DatabaseRuntimeConfiguration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "fusion-authorization-binding-tests",
+                    revision: 1
+                ),
+                indexMaintainerProviderDescriptors: [
+                    .init(describing: scalarProvider),
+                ],
+                entityRuntimes: [entityRuntime.registration()]
+            ),
+            security: .testingDisabled
+        )
+        defer { await container.shutdown() }
+        let admitted = container.testBaseContext(
+            authorization: .authenticated(
+                Principal(identifier: "fusion-admitted")
+            )
+        )
+
+        try await admitted.withDataOperation {
+            let policy = try admitted.readPolicy()
+            let authorization = try policy.authorizeRead(
+                listRequirements: [],
+                fields: DatabaseFieldReadAuthorizationPlan(
+                    fieldsByEntity: [:]
+                )
+            )
+            let foreignPolicy = DatabaseReadPolicy(
+                schemaLease: container.acquireActiveSchemaLease(),
+                authorization: .authenticated(
+                    Principal(identifier: "fusion-foreign")
+                )
+            )
+            #expect(
+                throws: DatabaseReadSessionError.authorizationMismatch
+            ) {
+                try foreignPolicy.validate(authorization)
+            }
+        }
+    }
+
+    @Test("Parent session revokes an escaped Fusion index lease")
+    func parentSessionRevokesEscapedIndexLease() async throws {
+        let schema = try Schema(
+            entities: [try FusionExecutionContractItem.schemaEntity]
+        )
+        let scalarProvider = ScalarIndexMaintainerProvider()
+        var entityRuntime = try EntityRuntimeDefinition(
+            FusionExecutionContractItem.self
+        )
+        try entityRuntime.register(scalarProvider)
+        let container = try await DBContainer.open(
+            for: schema,
+            configuration: .testing(storageEngine: InMemoryEngine()),
+            runtimeConfiguration: try DatabaseRuntimeConfiguration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "fusion-parent-lease-tests",
+                    revision: 1
+                ),
+                indexMaintainerProviderDescriptors: [
+                    .init(describing: scalarProvider),
+                ],
+                entityRuntimes: [entityRuntime.registration()]
+            ),
+            security: .testingDisabled
+        )
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        try context.insert(FusionExecutionContractItem(id: "one", value: 1))
+        try await context.save()
+        let meter = makeMeter()
+        let entity = try FusionExecutionContractItem.schemaEntity
+        let descriptor = try #require(entity.indexes.first)
+
+        let escaped: any FusionIndexReadAccess = try await context
+            .withStorageAccess(requiredAccess: .read) { _ in
+                try await DatabaseReadSession.withSession(
+                    context: context,
+                    workMeter: meter
+                ) { session in
+                    let index = try #require(
+                        await session.readableIndex(
+                            named: descriptor.name,
+                            indexType: descriptor.type,
+                            forEntityName: entity.name,
+                            partitions: FieldObject()
+                        )
+                    )
+                    return try await session.withFusionIndexReadLease(
+                        index: index,
+                        snapshot: false,
+                        workMeter: meter
+                    ) { lease in
+                        lease as any FusionIndexReadAccess
+                    }
+                }
+            }
+
+        await #expect {
+            _ = try await escaped.getValue(key: escaped.index.subspace.prefix)
+        } throws: { error in
+            error as? FusionExecutionContractError
+                == .indexReadSessionInvalidated(index: descriptor.name)
+        }
+        #expect(meter.retainedIntermediateRows == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
     }
 
     @Test("Sanitization preserves nested cleanup failures")
@@ -915,6 +1719,67 @@ private struct ContractFailingFusionReadExecutor: FusionIndexReadExecutor {
     let indexType: IndexType = .ordered
 
     func validate(_ request: FusionIndexValidationRequest) throws {}
+
+    func executeUnrestricted(
+        _ request: FusionIndexReadRequest,
+        output: FusionMatchSink
+    ) async throws -> FusionInputCoverage {
+        throw FusionExecutionContractError.invalidScoreSignal
+    }
+
+    func executeRestricted(
+        _ request: FusionIndexReadRequest,
+        candidates: FusionCandidateDomain,
+        output: FusionMatchSink
+    ) async throws -> FusionInputCoverage {
+        throw FusionExecutionContractError.invalidScoreSignal
+    }
+}
+
+private struct FixedFusionReadExecutor: FusionIndexReadExecutor {
+    let indexType: IndexType = .ordered
+    let primaryKey: ByteString
+
+    func validate(_ request: FusionIndexValidationRequest) throws {}
+
+    func executeUnrestricted(
+        _ request: FusionIndexReadRequest,
+        output: FusionMatchSink
+    ) async throws -> FusionInputCoverage {
+        try output.submit(primaryKey: primaryKey, numericSignal: nil)
+        return .exhausted
+    }
+
+    func executeRestricted(
+        _ request: FusionIndexReadRequest,
+        candidates: FusionCandidateDomain,
+        output: FusionMatchSink
+    ) async throws -> FusionInputCoverage {
+        if try candidates.contains(
+            primaryKey: primaryKey,
+            workMeter: request.workMeter
+        ) {
+            try output.submit(primaryKey: primaryKey, numericSignal: nil)
+        }
+        return .exhausted
+    }
+}
+
+private final class ValidationCountingFusionReadExecutor:
+    FusionIndexReadExecutor,
+    Sendable
+{
+    let indexType: IndexType = .ordered
+
+    private let count = Mutex(0)
+
+    var validationCount: Int {
+        count.withLock { $0 }
+    }
+
+    func validate(_ request: FusionIndexValidationRequest) throws {
+        count.withLock { $0 += 1 }
+    }
 
     func executeUnrestricted(
         _ request: FusionIndexReadRequest,

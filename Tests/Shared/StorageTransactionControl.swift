@@ -15,12 +15,27 @@ public final class StorageTransactionControl: Sendable {
         case suspend(StorageOperationBarrier)
     }
 
+    private struct PendingValueReadBarrier: Sendable {
+        let key: ByteString?
+        let barrier: StorageOperationBarrier
+    }
+
     private struct State: Sendable {
         var pendingCommitDirective: PendingCommitDirective?
+        var valueReadBarriers: [PendingValueReadBarrier] = []
         var rangeAdvanceBarriers: [StorageOperationBarrier] = []
         var interceptedMutationKeys: [ByteString] = []
+        var suspendedValueReadCount = 0
+        var maximumSuspendedValueReadCount = 0
         var suspendedRangeAdvanceCount = 0
         var maximumSuspendedRangeAdvanceCount = 0
+        var valueReadCount = 0
+        var keyReadCount = 0
+        var openedRangeCursorCount = 0
+        var namespaceReadCount = 0
+        var readVersionCount = 0
+        var rangeMetadataReadCount = 0
+        var finishedRangeCursorCount = 0
     }
 
     private let state = Mutex(State())
@@ -44,6 +59,35 @@ public final class StorageTransactionControl: Sendable {
         return barrier
     }
 
+    /// Suspends one completed backend value read before the value crosses the
+    /// controlled transaction boundary. This lets cancellation tests prove
+    /// the caller's post-suspension checkpoint and retained-owner cleanup.
+    @discardableResult
+    public func suspendNextValueRead() -> StorageOperationBarrier {
+        suspendNextValueRead(for: nil)
+    }
+
+    /// Suspends the next completed read of one exact storage key. Reads of
+    /// framework metadata do not consume this barrier.
+    @discardableResult
+    public func suspendNextValueRead(
+        for key: ByteString
+    ) -> StorageOperationBarrier {
+        suspendNextValueRead(for: Optional(key))
+    }
+
+    private func suspendNextValueRead(
+        for key: ByteString?
+    ) -> StorageOperationBarrier {
+        let barrier = StorageOperationBarrier()
+        state.withLock { state in
+            state.valueReadBarriers.append(
+                PendingValueReadBarrier(key: key, barrier: barrier)
+            )
+        }
+        return barrier
+    }
+
     @discardableResult
     public func suspendNextRangeAdvance() -> StorageOperationBarrier {
         let barrier = StorageOperationBarrier()
@@ -59,6 +103,57 @@ public final class StorageTransactionControl: Sendable {
 
     public var maximumSuspendedRangeAdvanceCount: Int {
         state.withLock { $0.maximumSuspendedRangeAdvanceCount }
+    }
+
+    public var maximumSuspendedValueReadCount: Int {
+        state.withLock { $0.maximumSuspendedValueReadCount }
+    }
+
+    public var dataReadOperationCount: Int {
+        state.withLock {
+            $0.valueReadCount
+                + $0.keyReadCount
+                + $0.openedRangeCursorCount
+                + $0.namespaceReadCount
+                + $0.readVersionCount
+                + $0.rangeMetadataReadCount
+        }
+    }
+
+    public var openedRangeCursorCount: Int {
+        state.withLock { $0.openedRangeCursorCount }
+    }
+
+    public var finishedRangeCursorCount: Int {
+        state.withLock { $0.finishedRangeCursorCount }
+    }
+
+    func recordRangeCursorOpened() {
+        state.withLock { $0.openedRangeCursorCount += 1 }
+    }
+
+    func recordValueRead() {
+        state.withLock { $0.valueReadCount += 1 }
+    }
+
+    func recordKeyRead() {
+        state.withLock { $0.keyReadCount += 1 }
+    }
+
+    func recordNamespaceRead() {
+        state.withLock { $0.namespaceReadCount += 1 }
+    }
+
+    func recordReadVersion() {
+        state.withLock { $0.readVersionCount += 1 }
+    }
+
+    func recordRangeMetadataRead() {
+        state.withLock { $0.rangeMetadataReadCount += 1 }
+    }
+
+    func recordRangeCursorFinished() {
+        state.withLock { $0.finishedRangeCursorCount += 1 }
     }
 
     func commitDirective(
@@ -103,6 +198,31 @@ public final class StorageTransactionControl: Sendable {
         state.withLock { state in
             precondition(state.suspendedRangeAdvanceCount > 0)
             state.suspendedRangeAdvanceCount -= 1
+        }
+    }
+
+    func suspendValueReadIfRequested(for key: ByteString) async {
+        let barrier = state.withLock { state -> StorageOperationBarrier? in
+            guard let index = state.valueReadBarriers.firstIndex(
+                where: { $0.key == nil || $0.key == key }
+            ) else {
+                return nil
+            }
+            let barrier = state.valueReadBarriers.remove(at: index).barrier
+            state.suspendedValueReadCount += 1
+            state.maximumSuspendedValueReadCount = max(
+                state.maximumSuspendedValueReadCount,
+                state.suspendedValueReadCount
+            )
+            return barrier
+        }
+        guard let barrier else {
+            return
+        }
+        await barrier.enterAndWait()
+        state.withLock { state in
+            precondition(state.suspendedValueReadCount > 0)
+            state.suspendedValueReadCount -= 1
         }
     }
 }

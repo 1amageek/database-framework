@@ -10,57 +10,47 @@ extension DatabaseContext {
         offset: Int = 0,
         startingAfterIdentifier: ByteString? = nil,
         workMeter: DatabaseWorkMeter? = nil,
-        configuration: TransactionConfiguration,
-        transaction: (any TransactionAccess)?
+        transaction: DatabaseReadTransaction,
+        authorizationRequirement: DatabaseListReadAuthorizationRequirement? = nil
     ) async throws -> [PersistedModel] {
         let partition = try CanonicalPartitionBinding.makeAnyBinding(
             for: entity,
             partitions: partitions
         )
-        if let transaction {
-            #if DATABASE_MULTI_BASE
-            _ = try requireOperationDataRoot()
-            #endif
-            let databaseTransaction = DatabaseTransaction(
-                storageAccess: transaction,
-                container: container
-            )
-            return try await databaseTransaction.scanPersistedModels(
-                entity: entity.name,
-                partition: partition,
-                limit: limit,
-                offset: offset,
-                startingAfterIdentifier: startingAfterIdentifier,
-                workMeter: workMeter
-            )
-        }
-        return try await withTransaction(
-            requiredAccess: .read,
-            configuration: configuration
-        ) {
-            transaction in
-            try await transaction.scanPersistedModels(
-                entity: entity.name,
-                partition: partition,
-                limit: limit,
-                offset: offset,
-                startingAfterIdentifier: startingAfterIdentifier,
-                workMeter: workMeter
-            )
-        }
+        #if DATABASE_MULTI_BASE
+        _ = try requireOperationDataRoot()
+        #endif
+        let databaseTransaction = DatabaseTransaction(
+            storageAccess: transaction.storageAccess,
+            container: container,
+            readPolicy: try readPolicy(),
+            readAuthorization: transaction.authorization
+        )
+        return try await databaseTransaction.scanPersistedModels(
+            entity: entity.name,
+            partition: partition,
+            limit: limit,
+            offset: offset,
+            startingAfterIdentifier: startingAfterIdentifier,
+            workMeter: workMeter,
+            authorizationRequirement: authorizationRequirement
+        )
     }
 
     /// Fetch canonical entities in index order on the caller-owned transaction.
     /// A missing primary-key target is retained as `nil` so an index reader can
     /// report physical index corruption instead of silently dropping a row.
-    package func fetchPersistedModelsPreservingOrder(
+    func fetchPersistedModelsPreservingOrder<PrimaryKeys>(
         entity: Schema.Entity,
-        primaryKeys: [Tuple],
+        primaryKeys: PrimaryKeys,
         partitions: FieldObject,
-        transaction: any TransactionAccess,
+        transaction: DatabaseReadTransaction,
         snapshot: Bool,
-        workMeter: DatabaseWorkMeter
-    ) async throws -> DatabaseRetainedPersistedModels {
+        workMeter: DatabaseWorkMeter,
+        admittedFieldNames: Set<String>
+    ) async throws -> DatabaseRetainedPersistedModels
+    where PrimaryKeys: Collection & Sendable,
+        PrimaryKeys.Element == Tuple {
         #if DATABASE_MULTI_BASE
         _ = try requireOperationDataRoot()
         #endif
@@ -69,8 +59,10 @@ extension DatabaseContext {
             partitions: partitions
         )
         let databaseTransaction = DatabaseTransaction(
-            storageAccess: transaction,
-            container: container
+            storageAccess: transaction.storageAccess,
+            container: container,
+            readPolicy: try readPolicy(),
+            readAuthorization: transaction.authorization
         )
         let arrayFootprint = try DatabaseIntermediateCollectionMeter
             .arrayFootprint(
@@ -86,19 +78,20 @@ extension DatabaseContext {
             repeating: nil,
             count: primaryKeys.count
         )
-        for index in primaryKeys.indices {
+        for (offset, index) in primaryKeys.indices.enumerated() {
             // DatabaseTransaction deliberately rejects overlapping operations.
             // Preserve one serial transaction snapshot until StorageKit owns a
             // backend-neutral batch-read contract.
             try workMeter.consume(at: .storageRow)
-            models[index] = try await databaseTransaction
+            models[offset] = try await databaseTransaction
                 .loadRetainedPersistedModel(
                 entity: entity.name,
                 id: primaryKeys[index],
                 partition: partition,
                 snapshot: snapshot,
-                workMeter: workMeter
-                )
+                workMeter: workMeter,
+                fields: admittedFieldNames
+            )
         }
         return DatabaseRetainedPersistedModels(
             entries: models,
@@ -122,33 +115,9 @@ extension DatabaseContext {
         entityName: String,
         selectQuery: SelectQuery
     ) throws {
-        let limit = try canonicalWindowValue(
-            selectQuery.limit,
-            parameter: "limit"
+        try readPolicy().authorizeCanonicalListAccess(
+            entityName: entityName,
+            selectQuery: selectQuery
         )
-        let offset = try canonicalWindowValue(
-            selectQuery.offset,
-            parameter: "offset"
-        )
-        try container.securityDelegate?.evaluateList(
-            entity: entityName,
-            limit: limit,
-            offset: offset,
-            orderBy: try selectQuery.requiredOrderByColumnNames()
-        )
-    }
-
-    private func canonicalWindowValue(
-        _ value: UInt64?,
-        parameter: String
-    ) throws -> Int? {
-        guard let value else { return nil }
-        guard let result = Int(exactly: value) else {
-            throw CanonicalReadError.paginationValueExceedsRuntimeRange(
-                name: parameter,
-                value: value
-            )
-        }
-        return result
     }
 }

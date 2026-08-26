@@ -226,7 +226,7 @@ public struct PageRankQueryBuilder<T: Persistable>: Sendable {
             }
             let computer = PageRankComputer(
                 snapshot: GraphReadSnapshot(
-                transaction: transaction,
+                transaction: transaction.storageTransaction,
                 monotonicClock: queryContext.context.container.monotonicClock
             ),
                 subspace: resolvedIndex.indexSubspace,
@@ -261,7 +261,7 @@ public struct PageRankQueryBuilder<T: Persistable>: Sendable {
             }
             let computer = PageRankComputer(
                 snapshot: GraphReadSnapshot(
-                transaction: transaction,
+                transaction: transaction.storageTransaction,
                 monotonicClock: queryContext.context.container.monotonicClock
             ),
                 subspace: resolvedIndex.indexSubspace,
@@ -382,7 +382,7 @@ public struct CommunityDetectionQueryBuilder<T: Persistable>: Sendable {
             }
             let detector = CommunityDetector(
                 snapshot: GraphReadSnapshot(
-                transaction: transaction,
+                transaction: transaction.storageTransaction,
                 monotonicClock: queryContext.context.container.monotonicClock
             ),
                 subspace: resolvedIndex.indexSubspace,
@@ -414,7 +414,7 @@ public struct CommunityDetectionQueryBuilder<T: Persistable>: Sendable {
             }
             let detector = CommunityDetector(
                 snapshot: GraphReadSnapshot(
-                transaction: transaction,
+                transaction: transaction.storageTransaction,
                 monotonicClock: queryContext.context.container.monotonicClock
             ),
                 subspace: resolvedIndex.indexSubspace,

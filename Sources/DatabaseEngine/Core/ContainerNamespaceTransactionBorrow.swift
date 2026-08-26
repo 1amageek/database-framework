@@ -6,13 +6,26 @@ struct ContainerNamespaceTransactionBorrow {
     let transaction: any TransactionAccess
 
     private let operationLease: DatabaseStorageOperationLease
+    private let readScopeOperationLease: DatabaseReadScopeOperationLease?
 
     init(
         transaction: any TransactionAccess,
-        operationLease: DatabaseStorageOperationLease
+        operationLease: DatabaseStorageOperationLease,
+        readScopeOperationLease: DatabaseReadScopeOperationLease? = nil
     ) {
         self.transaction = transaction
         self.operationLease = operationLease
+        self.readScopeOperationLease = readScopeOperationLease
+    }
+
+    func retainingReadScope(
+        _ lease: DatabaseReadScopeOperationLease?
+    ) -> ContainerNamespaceTransactionBorrow {
+        ContainerNamespaceTransactionBorrow(
+            transaction: transaction,
+            operationLease: operationLease,
+            readScopeOperationLease: lease
+        )
     }
 
     /// Ends the lexical borrow after the asynchronous backend call. The
@@ -23,5 +36,6 @@ struct ContainerNamespaceTransactionBorrow {
             operationLease.belongs(to: lifecycle),
             "A namespace transaction borrow must retain its container operation"
         )
+        readScopeOperationLease?.end()
     }
 }

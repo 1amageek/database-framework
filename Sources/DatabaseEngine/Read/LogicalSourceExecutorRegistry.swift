@@ -4,53 +4,41 @@ import StorageKit
 
 public protocol GraphTableSourceExecutor: Sendable {
     func executeInTransaction(
-        context: DatabaseContext,
+        session: DatabaseReadSession,
         graphTableSource: GraphTableSource,
         options: ReadExecutionContext,
-        partitions: FieldObject,
-        transaction: any TransactionAccess
+        partitions: FieldObject
     ) async throws -> DatabaseRetainedQueryRows
 }
 
 public protocol SPARQLSourceExecutor: Sendable {
-    func execute(
-        context: DatabaseContext,
+    func executeInTransaction(
+        session: DatabaseReadSession,
         selectQuery: SelectQuery,
         options: ReadExecutionContext,
         partitions: FieldObject
-    ) async throws -> QueryResponse
-
-    func executeInTransaction(
-        context: DatabaseContext,
-        selectQuery: SelectQuery,
-        options: ReadExecutionContext,
-        partitions: FieldObject,
-        transaction: any TransactionAccess
-    ) async throws -> QueryResponse
+    ) async throws -> DatabaseRetainedQueryRows
 
     func executeAskInTransaction(
-        context: DatabaseContext,
+        session: DatabaseReadSession,
         askQuery: AskQuery,
         options: ReadExecutionContext,
-        partitions: FieldObject,
-        transaction: any TransactionAccess
+        partitions: FieldObject
     ) async throws -> Bool
 
     func executeConstructInTransaction(
-        context: DatabaseContext,
+        session: DatabaseReadSession,
         constructQuery: ConstructQuery,
         nodeNamespace: GraphResultNodeNamespace,
         options: ReadExecutionContext,
-        partitions: FieldObject,
-        transaction: any TransactionAccess
+        partitions: FieldObject
     ) async throws -> DatabaseRetainedRDFGraph
 
     func executeDescribeInTransaction(
-        context: DatabaseContext,
+        session: DatabaseReadSession,
         describeQuery: DescribeQuery,
         options: ReadExecutionContext,
-        partitions: FieldObject,
-        transaction: any TransactionAccess
+        partitions: FieldObject
     ) async throws -> DatabaseRetainedRDFGraph
 
 }

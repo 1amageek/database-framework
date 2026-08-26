@@ -7,7 +7,7 @@ public struct RDFDatasetSourcePlanner: Sendable {
     public static func plan(
         namedGraph: RDFGraphName,
         queryContext: IndexQueryContext,
-        transaction: any TransactionAccess
+        transaction: DatabaseReadTransaction
     ) async throws -> [RDFDatasetSource] {
         var sources: [RDFDatasetSource] = []
 

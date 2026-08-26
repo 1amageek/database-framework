@@ -200,7 +200,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
                 matchingIds = try await self.searchPhrase(
                     indexName: indexName,
                     indexSubspace: readableIndex.subspace,
-                    transaction: transaction
+                    transaction: transaction.storageTransaction
                 )
             } else {
                 matchingIds = try await self.searchFullText(
@@ -208,7 +208,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
                     matchMode: self.matchMode,
                     configuration: indexConfiguration,
                     indexSubspace: readableIndex.subspace,
-                    transaction: transaction
+                    transaction: transaction.storageTransaction
                 )
             }
             var items = try await self.fetchIndexedItems(
@@ -308,7 +308,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
                 matchingIds = try await self.searchPhrase(
                     indexName: indexName,
                     indexSubspace: readableIndex.subspace,
-                    transaction: transaction
+                    transaction: transaction.storageTransaction
                 )
             } else {
                 matchingIds = try await self.searchFullText(
@@ -316,7 +316,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
                     matchMode: self.matchMode,
                     configuration: indexConfiguration,
                     indexSubspace: readableIndex.subspace,
-                    transaction: transaction
+                    transaction: transaction.storageTransaction
                 )
             }
             let allItems = try await self.fetchIndexedItems(
@@ -644,7 +644,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
                 terms: self.searchTerms,
                 matchMode: self.matchMode,
                 bm25Params: self.bm25Params,
-                transaction: transaction,
+                transaction: transaction.storageTransaction,
                 limit: self.fetchLimit
             )
 
@@ -666,7 +666,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     private func fetchIndexedItems(
         ids: [Tuple],
         indexName: String,
-        transaction: any TransactionAccess
+        transaction: DatabaseReadTransaction
     ) async throws -> [T] {
         let fetched = try await queryContext.fetchItemsPreservingOrder(
             ids: ids,
@@ -935,7 +935,9 @@ public struct PolymorphicFullTextQueryBuilder<Member: Persistable & Polymorphabl
             return PolymorphicQueryPage(results: [], continuation: nil, metadata: [:])
         }
 
-        return try await base.executePage(accessPath: .index(try makeIndexScan()))
+        return try await base.executePage { schema in
+            .index(try makeIndexScan(in: schema))
+        }
     }
 
     /// Execute the polymorphic full-text search and return the first result.
@@ -943,7 +945,7 @@ public struct PolymorphicFullTextQueryBuilder<Member: Persistable & Polymorphabl
         try await executePage().results.first
     }
 
-    private func makeIndexScan() throws -> IndexScanSource {
+    private func makeIndexScan(in schema: Schema) throws -> IndexScanSource {
         var parameters: [String: FieldValue] = [
             FullTextReadParameter.fieldName: .string(field.name),
             FullTextReadParameter.terms: .array(searchTerms.map(FieldValue.string)),
@@ -965,16 +967,17 @@ public struct PolymorphicFullTextQueryBuilder<Member: Persistable & Polymorphabl
         }
 
         return IndexScanSource(
-            indexName: try buildIndexName(),
+            indexName: try buildIndexName(in: schema),
             indexType: .text(.fullText),
             parameters: parameters
         )
     }
 
-    private func buildIndexName() throws -> String {
+    private func buildIndexName(in schema: Schema) throws -> String {
         if let resolvedIndexName = try base.resolveIndexName(
             indexType: .text(.fullText),
-            fieldName: field.name
+            fieldName: field.name,
+            in: schema
         ) {
             return resolvedIndexName
         }

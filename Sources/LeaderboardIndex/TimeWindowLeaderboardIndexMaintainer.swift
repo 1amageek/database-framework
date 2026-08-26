@@ -536,7 +536,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
     public func getTopK(
         k: Int,
         grouping: [any TupleElement]? = nil,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(pk: Tuple, score: Int64)] {
         let currentWindowId = currentWindowId()
 
@@ -560,7 +560,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
         k: Int,
         windowId: Int64,
         grouping: [any TupleElement]? = nil,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(pk: Tuple, score: Int64)] {
         // Build range for this window (optionally with grouping)
         var prefixElements: [any TupleElement] = [windowId]
@@ -632,7 +632,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
     public func getRank(
         pk: Tuple,
         grouping: [any TupleElement]? = nil,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Int? {
         let currentWindowId = currentWindowId()
 
@@ -683,7 +683,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
     /// - Parameter transaction: The transaction to use
     /// - Returns: Array of window IDs (newest first)
     public func getAvailableWindows(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [Int64] {
         let range = metaSubspace.subspace("start").range()
         var windowIds: [Int64] = []
@@ -737,7 +737,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
     public func getBottomK(
         k: Int,
         grouping: [any TupleElement]? = nil,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(pk: Tuple, score: Int64)] {
         let currentWindowId = currentWindowId()
 
@@ -763,7 +763,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
         k: Int,
         windowId: Int64,
         grouping: [any TupleElement]? = nil,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(pk: Tuple, score: Int64)] {
         // Build range for this window (optionally with grouping)
         var prefixElements: [any TupleElement] = [windowId]
@@ -843,7 +843,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
     public func getPercentile(
         _ percentile: Double,
         grouping: [any TupleElement]? = nil,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Int64? {
         let currentWindowId = currentWindowId()
 
@@ -867,7 +867,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
         _ percentile: Double,
         windowId: Int64,
         grouping: [any TupleElement]? = nil,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Int64? {
         guard percentile >= 0 && percentile <= 1 else {
             return nil
@@ -907,7 +907,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
     private func getTotalCount(
         windowId: Int64,
         grouping: [any TupleElement]?,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Int {
         var prefixElements: [any TupleElement] = [windowId]
         if let g = grouping {
@@ -972,7 +972,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
     public func getRankDense(
         pk: Tuple,
         grouping: [any TupleElement]? = nil,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Int? {
         let currentWindowId = currentWindowId()
 
@@ -1008,7 +1008,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
         pk: Tuple,
         strategy: RankingStrategy,
         grouping: [any TupleElement]? = nil,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Int? {
         switch strategy {
         case .competition:
@@ -1023,7 +1023,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: PersistedEntityValue>: 
         score: Int64,
         windowId: Int64,
         grouping: [any TupleElement]?,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Int {
         var prefixElements: [any TupleElement] = [windowId]
         if let g = grouping {

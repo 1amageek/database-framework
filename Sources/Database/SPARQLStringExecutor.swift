@@ -36,7 +36,6 @@ public func executeSPARQLString(
     sources: [RDFDatasetSource],
     monotonicClock: any StorageMonotonicClock,
     wallClock: any WallClock,
-    transaction: (any TransactionAccess)? = nil,
     compilationLimits: SPARQLExpressionCompilationLimits = .default,
     budget: ExecutionBudget
 ) async throws -> SPARQLResult {
@@ -50,7 +49,6 @@ public func executeSPARQLString(
         sources: sources,
         monotonicClock: monotonicClock,
         wallClock: wallClock,
-        transaction: transaction,
         compilationLimits: compilationLimits,
         workMeter: workMeter
     )
@@ -72,7 +70,6 @@ func _executeSPARQLString(
     sources: [RDFDatasetSource],
     monotonicClock: any StorageMonotonicClock,
     wallClock: any WallClock,
-    transaction: (any TransactionAccess)? = nil,
     compilationLimits: SPARQLExpressionCompilationLimits,
     workMeter: DatabaseWorkMeter
 ) async throws -> SPARQLResult {
@@ -87,19 +84,10 @@ func _executeSPARQLString(
         sources: sources
     )
     let startTime = monotonicClock.now
-    let executionResult: ([VariableBinding], ExecutionStatistics)
-    if let transaction {
-        executionResult = try await executor.executeInTransaction(
-            selectPlan: plan,
-            transaction: transaction,
-            workMeter: workMeter
-        )
-    } else {
-        executionResult = try await executor.execute(
-            selectPlan: plan,
-            workMeter: workMeter
-        )
-    }
+    let executionResult = try await executor.execute(
+        selectPlan: plan,
+        workMeter: workMeter
+    )
     var (bindings, statistics) = executionResult
     statistics.durationNs = DatabaseMonotonicMeasurement.nanoseconds(
         from: startTime,
@@ -121,11 +109,10 @@ func _executeSPARQLString(
 /// graph result storage in the shared request budget across suspension.
 func _executeRetainedSPARQLString(
     _ sparql: String,
-    database: any StorageEngine,
     sources: [RDFDatasetSource],
     monotonicClock: any StorageMonotonicClock,
     wallClock: any WallClock,
-    transaction: any TransactionAccess,
+    transaction: DatabaseReadTransaction,
     compilationLimits: SPARQLExpressionCompilationLimits,
     workMeter: DatabaseWorkMeter
 ) async throws -> SPARQLRetainedResult {
@@ -134,15 +121,14 @@ func _executeRetainedSPARQLString(
         compilationLimits: compilationLimits
     )
     let executor = SPARQLQueryExecutor(
-        database: database,
         monotonicClock: monotonicClock,
         wallClock: wallClock,
-        sources: sources
+        datasetScanner: IndexedRDFDatasetScanner(sources: sources)
     )
     let startTime = monotonicClock.now
     let result = try await executor.executeRetainedInTransaction(
         selectPlan: plan,
-        transaction: transaction,
+        transaction: transaction.storageTransaction,
         workMeter: workMeter
     )
     return result.recordingDuration(

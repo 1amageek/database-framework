@@ -263,7 +263,7 @@ public struct ShortestPathQueryBuilder<T: Persistable>: Sendable {
             }
             let finder = ShortestPathFinder(
                 snapshot: GraphReadSnapshot(
-                transaction: transaction,
+                transaction: transaction.storageTransaction,
                 monotonicClock: queryContext.context.container.monotonicClock
             ),
                 subspace: resolvedIndex.indexSubspace,
@@ -316,7 +316,7 @@ public struct ShortestPathQueryBuilder<T: Persistable>: Sendable {
             }
             let finder = ShortestPathFinder(
                 snapshot: GraphReadSnapshot(
-                transaction: transaction,
+                transaction: transaction.storageTransaction,
                 monotonicClock: queryContext.context.container.monotonicClock
             ),
                 subspace: resolvedIndex.indexSubspace,

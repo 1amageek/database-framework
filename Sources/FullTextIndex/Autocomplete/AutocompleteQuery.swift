@@ -61,7 +61,7 @@ public struct AutocompleteQueryBuilder<Item: Persistable>: Sendable {
                 field: resolved.field.name,
                 prefix: searchPrefix,
                 limit: fetchLimit,
-                transaction: transaction
+                transaction: transaction.storageTransaction
             )
         }
     }
@@ -86,7 +86,7 @@ public struct AutocompleteQueryBuilder<Item: Persistable>: Sendable {
             return try await reader.popularTerms(
                 field: resolved.field.name,
                 limit: fetchLimit,
-                transaction: transaction
+                transaction: transaction.storageTransaction
             )
         }
     }

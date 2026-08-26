@@ -23,7 +23,7 @@ public struct SPARQLQueryExecutor: Sendable {
 
     // MARK: - Properties
 
-    let database: any StorageEngine
+    let database: (any StorageEngine)?
     let monotonicClock: any StorageMonotonicClock
     let wallClock: any WallClock
     let datasetScanner: any RDFDatasetScanner
@@ -104,6 +104,37 @@ public struct SPARQLQueryExecutor: Sendable {
         propertyPathConfiguration: ExecutionPropertyPathConfiguration = .default
     ) {
         self.database = database
+        self.monotonicClock = monotonicClock
+        self.wallClock = wallClock
+        self.datasetScanner = datasetScanner
+        self.readMode = readMode
+        self.dataset = dataset
+        self.functionRegistry = functionRegistry
+        self.ontologyContext = ontologyContext
+        self.propertyPathConfiguration = propertyPathConfiguration
+        self.workMeter = nil
+        self.expressionContext = nil
+        self.subqueryCache = nil
+        self.nestedExpressionStatistics = nil
+    }
+
+    /// Initializes an executor for a caller-owned transaction.
+    ///
+    /// Transaction-bound execution never creates a storage transaction. The
+    /// engine is therefore absent on this path so a logical-source adapter
+    /// cannot acquire ambient transaction authority.
+    @_spi(DatabaseExecution)
+    public init(
+        monotonicClock: any StorageMonotonicClock,
+        wallClock: any WallClock,
+        datasetScanner: any RDFDatasetScanner,
+        readMode: RDFDatasetReadMode = .snapshot,
+        dataset: SPARQLExecutionDataset = .implicit,
+        functionRegistry: SPARQLFunctionRegistry = .empty,
+        ontologyContext: OntologyContext? = nil,
+        propertyPathConfiguration: ExecutionPropertyPathConfiguration = .default
+    ) {
+        self.database = nil
         self.monotonicClock = monotonicClock
         self.wallClock = wallClock
         self.datasetScanner = datasetScanner

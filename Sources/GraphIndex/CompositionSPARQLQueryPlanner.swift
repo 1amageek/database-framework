@@ -15,18 +15,18 @@ private struct CompositionSPARQLMemberQueryExecutor:
     }
 
     func execute(
-        context: DatabaseContext,
+        session: DatabaseReadSession,
         query: SelectQuery,
-        execution: ReadExecutionContext,
-        transaction: any TransactionAccess
+        execution: ReadExecutionContext
     ) async throws -> QueryResponse {
-        try await sourceExecutor.executeInTransaction(
-            context: context,
+        let authorizedSession = try session.admittingRDFDatasetRead()
+        let rows = try await sourceExecutor.executeInTransaction(
+            session: authorizedSession,
             selectQuery: query,
             options: execution,
-            partitions: graphPartitions,
-            transaction: transaction
+            partitions: graphPartitions
         )
+        return QueryResponse(rows: rows.promoteToOutput())
     }
 
     func prepare(

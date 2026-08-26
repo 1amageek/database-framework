@@ -54,6 +54,7 @@ public final class ControlledStorageEngine<Base: StorageEngine>:
         transaction: any TransactionAccess
     ) async throws -> Subspace {
         let controlled = try controlledTransaction(from: transaction)
+        control.recordNamespaceRead()
         let subspace = try await base.namespaceResolver.resolveOrCreate(
             path: path,
             transaction: controlled.base
@@ -66,7 +67,8 @@ public final class ControlledStorageEngine<Base: StorageEngine>:
         path: [String],
         transaction: any TransactionAccess
     ) async throws -> Subspace {
-        try await base.namespaceResolver.resolveExisting(
+        control.recordNamespaceRead()
+        return try await base.namespaceResolver.resolveExisting(
             path: path,
             transaction: try controlledTransaction(from: transaction).base
         )
@@ -76,7 +78,8 @@ public final class ControlledStorageEngine<Base: StorageEngine>:
         path: [String],
         transaction: any TransactionAccess
     ) async throws -> Bool {
-        try await base.namespaceResolver.namespaceExists(
+        control.recordNamespaceRead()
+        return try await base.namespaceResolver.namespaceExists(
             path: path,
             transaction: try controlledTransaction(from: transaction).base
         )
@@ -91,6 +94,7 @@ public final class ControlledStorageEngine<Base: StorageEngine>:
                 "The controlled storage backend has no namespace catalog"
             )
         }
+        control.recordNamespaceRead()
         return try await namespaceCatalog.listNamespaces(
             path: path,
             transaction: try controlledTransaction(from: transaction).base
@@ -184,18 +188,31 @@ public final class ControlledStorageEngine<Base: StorageEngine>:
             for key: ByteString,
             snapshot: Bool
         ) async throws -> ByteString? {
-            try await base.getValue(for: key, snapshot: snapshot)
+            control.recordValueRead()
+            let value = try await base.getValue(
+                for: key,
+                snapshot: snapshot
+            )
+            await control.suspendValueReadIfRequested(for: key)
+            return value
         }
 
         public func getValue(for key: ByteString) async throws -> ByteString? {
-            try await base.getValue(for: key)
+            control.recordValueRead()
+            let value = try await base.getValue(for: key)
+            await control.suspendValueReadIfRequested(for: key)
+            return value
         }
 
         public func getKey(
             selector: KeySelector,
             snapshot: Bool
         ) async throws -> ByteString? {
-            try await base.getKey(selector: selector, snapshot: snapshot)
+            control.recordKeyRead()
+            return try await base.getKey(
+                selector: selector,
+                snapshot: snapshot
+            )
         }
 
         public func rangeCursor(
@@ -206,6 +223,7 @@ public final class ControlledStorageEngine<Base: StorageEngine>:
             snapshot: Bool,
             streamingMode: StreamingMode
         ) -> KeyValueCursor {
+            control.recordRangeCursorOpened()
             let cursor = base.rangeCursor(
                 from: begin,
                 to: end,
@@ -265,7 +283,8 @@ public final class ControlledStorageEngine<Base: StorageEngine>:
         }
 
         public func getReadVersion() async throws -> Int64 {
-            try await base.getReadVersion()
+            control.recordReadVersion()
+            return try await base.getReadVersion()
         }
 
         public func setOption(forOption option: TransactionOption) throws {
@@ -302,7 +321,8 @@ public final class ControlledStorageEngine<Base: StorageEngine>:
             beginKey: ByteString,
             endKey: ByteString
         ) async throws -> Int {
-            try await base.getEstimatedRangeSizeBytes(
+            control.recordRangeMetadataRead()
+            return try await base.getEstimatedRangeSizeBytes(
                 beginKey: beginKey,
                 endKey: endKey
             )
@@ -313,7 +333,8 @@ public final class ControlledStorageEngine<Base: StorageEngine>:
             endKey: ByteString,
             chunkSize: Int
         ) async throws -> [ByteString] {
-            try await base.getRangeSplitPoints(
+            control.recordRangeMetadataRead()
+            return try await base.getRangeSplitPoints(
                 beginKey: beginKey,
                 endKey: endKey,
                 chunkSize: chunkSize
@@ -375,6 +396,7 @@ public final class ControlledStorageEngine<Base: StorageEngine>:
             var base: KeyValueCursor
             let control: StorageTransactionControl
             var isAdmitted = false
+            var isFinished = false
 
             mutating func next() async throws -> Element? {
                 if !isAdmitted {
@@ -387,6 +409,9 @@ public final class ControlledStorageEngine<Base: StorageEngine>:
             mutating func finish(
                 isolation actor: isolated (any Actor)?
             ) async throws {
+                guard !isFinished else { return }
+                isFinished = true
+                defer { control.recordRangeCursorFinished() }
                 try await base.finish()
             }
         }

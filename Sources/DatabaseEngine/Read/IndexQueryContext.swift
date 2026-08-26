@@ -137,6 +137,22 @@ public struct IndexQueryContext: Sendable {
 
     // MARK: - Storage Access
 
+    /// Retains one schema and authorization generation across feature-owned
+    /// read planning and execution.
+    package func withReadOperation<Result: Sendable>(
+        _ operation: @Sendable () async throws -> Result
+    ) async throws -> Result {
+        try await context.withDataOperation(operation)
+    }
+
+    /// Resolves runtime policy from the generation retained by the current
+    /// read operation without exposing the container runtime registry.
+    package func indexConfigurations(
+        named indexName: String
+    ) throws -> [any IndexRuntimeConfiguration] {
+        try context.readPolicy().indexConfigurations(named: indexName)
+    }
+
     /// Resolves and admits a declared index using only the caller's transaction.
     ///
     /// This API does not create a directory or initialize index state. `nil`
@@ -145,7 +161,44 @@ public struct IndexQueryContext: Sendable {
         named indexName: String,
         indexType: IndexType,
         for type: T.Type,
-        transaction: any TransactionAccess
+        transaction: DatabaseReadTransaction
+    ) async throws -> ReadableIndex? {
+        try await readableIndex(
+            named: indexName,
+            indexType: indexType,
+            for: type,
+            transaction: transaction.storageAccess,
+            authorizedBy: transaction.authorization
+        )
+    }
+
+    /// Resolves a declared index for a caller-owned read-only transaction.
+    ///
+    /// This overload preserves direct read semantics for storage capabilities
+    /// that do not carry DatabaseEngine's sealed authorization proof. Canonical
+    /// execution uses the DatabaseReadTransaction overload above so its proof
+    /// is forwarded explicitly.
+    public func readableIndex<T: Persistable>(
+        named indexName: String,
+        indexType: IndexType,
+        for type: T.Type,
+        transaction: any TransactionReadAccess
+    ) async throws -> ReadableIndex? {
+        try await readableIndex(
+            named: indexName,
+            indexType: indexType,
+            for: type,
+            transaction: transaction,
+            authorizedBy: nil
+        )
+    }
+
+    package func readableIndex<T: Persistable>(
+        named indexName: String,
+        indexType: IndexType,
+        for type: T.Type,
+        transaction: any TransactionReadAccess,
+        authorizedBy authorization: DatabaseReadAuthorization? = nil
     ) async throws -> ReadableIndex? {
         #if DATABASE_MULTI_BASE
         _ = try context.requireOperationDataRoot()
@@ -158,10 +211,23 @@ public struct IndexQueryContext: Sendable {
         guard let entity = schema.entitiesByName[T.persistableType] else {
             throw IndexQueryContextError.entityNotFound(T.persistableType)
         }
-        try context.authorizeIndexFieldRead(
-            entity: entity,
-            descriptor: descriptor
-        )
+        if let authorization {
+            try context.readPolicy().validate(authorization)
+            let required = DatabaseFieldReadAuthorizationPlan.index(
+                entity: entity,
+                descriptor: descriptor
+            )
+            guard required.isCovered(
+                by: authorization.fields.fieldsByEntity
+            ) else {
+                throw FusionExecutionError.executionContractViolation
+            }
+        } else {
+            try context.authorizeIndexFieldRead(
+                entity: entity,
+                descriptor: descriptor
+            )
+        }
         let path: AnyDirectoryPath?
         if let binding = try partitionBinding(for: type) {
             path = try AnyDirectoryPath(binding)
@@ -192,7 +258,47 @@ public struct IndexQueryContext: Sendable {
         indexType: IndexType,
         forEntityName entityName: String,
         partitions: FieldObject,
-        transaction: any TransactionAccess
+        transaction: DatabaseReadTransaction
+    ) async throws -> ReadableIndex? {
+        try await readableIndex(
+            named: indexName,
+            indexType: indexType,
+            forEntityName: entityName,
+            partitions: partitions,
+            transaction: transaction.storageAccess,
+            authorizedBy: transaction.authorization
+        )
+    }
+
+    /// Resolves a declared index for a caller-owned read-only transaction.
+    ///
+    /// Direct callers retain the existing policy evaluation path; an admitted
+    /// DatabaseReadTransaction uses the overload above to carry its proof.
+    public func readableIndex(
+        named indexName: String,
+        indexType: IndexType,
+        forEntityName entityName: String,
+        partitions: FieldObject,
+        transaction: any TransactionReadAccess
+    ) async throws -> ReadableIndex? {
+        try await readableIndex(
+            named: indexName,
+            indexType: indexType,
+            forEntityName: entityName,
+            partitions: partitions,
+            transaction: transaction,
+            authorizedBy: nil
+        )
+    }
+
+    package func readableIndex(
+        named indexName: String,
+        indexType: IndexType,
+        forEntityName entityName: String,
+        partitions: FieldObject,
+        transaction: any TransactionReadAccess,
+        authorizedBy authorization: DatabaseReadAuthorization?
+            = nil
     ) async throws -> ReadableIndex? {
         #if DATABASE_MULTI_BASE
         _ = try context.requireOperationDataRoot()
@@ -205,10 +311,23 @@ public struct IndexQueryContext: Sendable {
         guard let entity = schema.entitiesByName[entityName] else {
             throw IndexQueryContextError.entityNotFound(entityName)
         }
-        try context.authorizeIndexFieldRead(
-            entity: entity,
-            descriptor: descriptor
-        )
+        if let authorization {
+            try context.readPolicy().validate(authorization)
+            let required = DatabaseFieldReadAuthorizationPlan.index(
+                entity: entity,
+                descriptor: descriptor
+            )
+            guard required.isCovered(
+                by: authorization.fields.fieldsByEntity
+            ) else {
+                throw FusionExecutionError.executionContractViolation
+            }
+        } else {
+            try context.authorizeIndexFieldRead(
+                entity: entity,
+                descriptor: descriptor
+            )
+        }
         let path = try CanonicalPartitionBinding.makeAnyBinding(
             for: entity,
             partitions: partitions
@@ -238,7 +357,7 @@ public struct IndexQueryContext: Sendable {
         configuration: TransactionConfiguration = .default,
         _ operation: @Sendable @escaping (
             ReadableIndex?,
-            any TransactionAccess
+            DatabaseReadTransaction
         ) async throws -> Result
     ) async throws -> Result {
         try await withTransaction(configuration: configuration) { transaction in
@@ -262,7 +381,7 @@ public struct IndexQueryContext: Sendable {
         configuration: TransactionConfiguration = .default,
         _ operation: @Sendable @escaping (
             ReadableIndex?,
-            any TransactionAccess
+            DatabaseReadTransaction
         ) async throws -> Result
     ) async throws -> Result {
         try await withTransaction(configuration: configuration) { transaction in
@@ -279,12 +398,12 @@ public struct IndexQueryContext: Sendable {
 
     /// Bind raw storage reads to one already-admitted transaction.
     package func storageReader(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) -> TransactionStorageReader {
         TransactionStorageReader(transaction: transaction)
     }
 
-    /// Execute a closure within a transaction
+    /// Execute a closure with a container-owned, read-only transaction handle.
     ///
     /// Uses `context.withStorageAccess()` internally to benefit from
     /// `ReadVersionCache` while withholding lifecycle authority.
@@ -293,13 +412,39 @@ public struct IndexQueryContext: Sendable {
     /// - Returns: Result of the closure
     public func withTransaction<R: Sendable>(
         configuration: TransactionConfiguration = .default,
-        _ body: @Sendable @escaping (any TransactionAccess) async throws -> R
+        workMeter: DatabaseWorkMeter? = nil,
+        _ body: @Sendable @escaping (DatabaseReadTransaction) async throws -> R
     ) async throws -> R {
+        try await withSession(
+            configuration: configuration,
+            workMeter: workMeter
+        ) { session in
+            try await body(session.transaction)
+        }
+    }
+
+    /// Executes one operation with the session that owns its read snapshot,
+    /// request meter, authorization generation, and revocation lifecycle.
+    @_spi(DatabaseExecution)
+    public func withSession<R: Sendable>(
+        configuration: TransactionConfiguration = .default,
+        workMeter: DatabaseWorkMeter? = nil,
+        _ body: @Sendable @escaping (DatabaseReadSession) async throws -> R
+    ) async throws -> R {
+        let sessionWorkMeter = workMeter ?? DatabaseWorkMeter(
+            budget: ExecutionBudget(),
+            monotonicClock: context.container.monotonicClock
+        )
         return try await context.withStorageAccess(
             requiredAccess: .read,
             configuration: configuration
-        ) { transaction in
-            try await body(transaction)
+        ) { _ in
+            try await DatabaseReadSession.withSession(
+                context: context,
+                workMeter: sessionWorkMeter
+            ) { session in
+                try await body(session)
+            }
         }
     }
 
@@ -332,41 +477,43 @@ public struct IndexQueryContext: Sendable {
         type: T.Type,
         cachePolicy: CachePolicy = .server
     ) async throws -> [T] {
-        // Security: Evaluate LIST before fetching
-        try context.container.securityDelegate?.evaluateList(
-            entity: T.persistableType,
-            limit: ids.count,
-            offset: nil,
-            orderBy: nil
-        )
+        try await context.withDataOperation { [self] in
+            let readPolicy = try context.readPolicy()
+            try readPolicy.authorizeList(
+                entityName: T.persistableType,
+                limit: ids.count,
+                offset: nil,
+                orderBy: nil
+            )
 
-        var results: [T] = []
+            var results: [T] = []
 
-        // Use partition binding if available
-        if let binding = try partitionBinding(for: type) {
-            for identifierTuple in ids {
-                if let item = try await context.model(
-                    forIdentifierTuple: identifierTuple,
-                    as: type,
-                    partition: binding,
-                    cachePolicy: cachePolicy
-                ) {
-                    results.append(item)
+            // Use partition binding if available
+            if let binding = try partitionBinding(for: type) {
+                for identifierTuple in ids {
+                    if let item = try await context.model(
+                        forIdentifierTuple: identifierTuple,
+                        as: type,
+                        partition: binding,
+                        cachePolicy: cachePolicy
+                    ) {
+                        results.append(item)
+                    }
+                }
+            } else {
+                for identifierTuple in ids {
+                    if let item = try await context.model(
+                        forIdentifierTuple: identifierTuple,
+                        as: type,
+                        cachePolicy: cachePolicy
+                    ) {
+                        results.append(item)
+                    }
                 }
             }
-        } else {
-            for identifierTuple in ids {
-                if let item = try await context.model(
-                    forIdentifierTuple: identifierTuple,
-                    as: type,
-                    cachePolicy: cachePolicy
-                ) {
-                    results.append(item)
-                }
-            }
+
+            return results
         }
-
-        return results
     }
 
     /// Fetches application-level identifiers without erasing their declared
@@ -376,38 +523,41 @@ public struct IndexQueryContext: Sendable {
         type: T.Type,
         cachePolicy: CachePolicy = .server
     ) async throws -> [T] {
-        try context.container.securityDelegate?.evaluateList(
-            entity: T.persistableType,
-            limit: identifiers.count,
-            offset: nil,
-            orderBy: nil
-        )
+        try await context.withDataOperation { [self] in
+            let readPolicy = try context.readPolicy()
+            try readPolicy.authorizeList(
+                entityName: T.persistableType,
+                limit: identifiers.count,
+                offset: nil,
+                orderBy: nil
+            )
 
-        var results: [T] = []
-        results.reserveCapacity(identifiers.count)
-        if let binding = try partitionBinding(for: type) {
-            for identifier in identifiers {
-                if let item = try await context.model(
-                    for: identifier,
-                    as: type,
-                    partition: binding,
-                    cachePolicy: cachePolicy
-                ) {
-                    results.append(item)
+            var results: [T] = []
+            results.reserveCapacity(identifiers.count)
+            if let binding = try partitionBinding(for: type) {
+                for identifier in identifiers {
+                    if let item = try await context.model(
+                        for: identifier,
+                        as: type,
+                        partition: binding,
+                        cachePolicy: cachePolicy
+                    ) {
+                        results.append(item)
+                    }
+                }
+            } else {
+                for identifier in identifiers {
+                    if let item = try await context.model(
+                        for: identifier,
+                        as: type,
+                        cachePolicy: cachePolicy
+                    ) {
+                        results.append(item)
+                    }
                 }
             }
-        } else {
-            for identifier in identifiers {
-                if let item = try await context.model(
-                    for: identifier,
-                    as: type,
-                    cachePolicy: cachePolicy
-                ) {
-                    results.append(item)
-                }
-            }
+            return results
         }
-        return results
     }
 
     /// Fetch items by their IDs, preserving input order (nil for missing).
@@ -427,63 +577,67 @@ public struct IndexQueryContext: Sendable {
         type: T.Type,
         cachePolicy: CachePolicy = .server
     ) async throws -> [T?] {
-        try context.container.securityDelegate?.evaluateList(
-            entity: T.persistableType,
-            limit: ids.count,
-            offset: nil,
-            orderBy: nil
-        )
+        try await context.withDataOperation { [self] in
+            let readPolicy = try context.readPolicy()
+            try readPolicy.authorizeList(
+                entityName: T.persistableType,
+                limit: ids.count,
+                offset: nil,
+                orderBy: nil
+            )
 
-        var results: [T?] = []
-        results.reserveCapacity(ids.count)
+            var results: [T?] = []
+            results.reserveCapacity(ids.count)
 
-        if let binding = try partitionBinding(for: type) {
-            for identifierTuple in ids {
-                let item = try await context.model(
-                    forIdentifierTuple: identifierTuple,
-                    as: type,
-                    partition: binding,
-                    cachePolicy: cachePolicy
-                )
-                results.append(item)
+            if let binding = try partitionBinding(for: type) {
+                for identifierTuple in ids {
+                    let item = try await context.model(
+                        forIdentifierTuple: identifierTuple,
+                        as: type,
+                        partition: binding,
+                        cachePolicy: cachePolicy
+                    )
+                    results.append(item)
+                }
+            } else {
+                for identifierTuple in ids {
+                    let item = try await context.model(
+                        forIdentifierTuple: identifierTuple,
+                        as: type,
+                        cachePolicy: cachePolicy
+                    )
+                    results.append(item)
+                }
             }
-        } else {
-            for identifierTuple in ids {
-                let item = try await context.model(
-                    forIdentifierTuple: identifierTuple,
-                    as: type,
-                    cachePolicy: cachePolicy
-                )
-                results.append(item)
-            }
+
+            return results
         }
-
-        return results
     }
 
     /// Fetches index-emitted identifiers without opening nested transactions.
     /// The caller owns the transaction and therefore the read snapshot.
-    package func fetchItemsPreservingOrder<T: Persistable>(
-        ids: [Tuple],
+    package func fetchItemsPreservingOrder<
+        T: Persistable,
+        Identifiers: Collection & Sendable
+    >(
+        ids: Identifiers,
         type: T.Type,
-        transaction: any TransactionAccess
-    ) async throws -> [T?] {
-        try context.container.securityDelegate?.evaluateList(
-            entity: T.persistableType,
+        transaction: DatabaseReadTransaction
+    ) async throws -> [T?] where Identifiers.Element == Tuple {
+        try context.readPolicy().authorizeList(
+            entityName: T.persistableType,
             limit: ids.count,
             offset: nil,
             orderBy: nil
         )
 
-        let partitionValues = partitions ?? FieldObject()
         var results: [T?] = []
         results.reserveCapacity(ids.count)
         for identifierTuple in ids {
             results.append(
-                try await context.model(
-                    forIdentifierTuple: identifierTuple,
-                    as: type,
-                    partitions: partitionValues,
+                try await fetchItem(
+                    id: identifierTuple,
+                    type: type,
                     transaction: transaction
                 )
             )
@@ -533,16 +687,24 @@ public struct IndexQueryContext: Sendable {
     public func fetchItem<T: Persistable>(
         id: Tuple,
         type: T.Type,
-        transaction: any TransactionAccess
+        transaction: DatabaseReadTransaction
     ) async throws -> T? {
         #if DATABASE_MULTI_BASE
         _ = try context.requireOperationDataRoot()
         #endif
+        let readPolicy = try context.readPolicy()
         let store: DatabaseDataStore
         if let binding = try partitionBinding(for: type) {
-            store = try await context.container.store(for: type, path: binding)
+            store = try context.container.readStore(
+                for: type,
+                path: binding,
+                readPolicy: readPolicy
+            )
         } else {
-            store = try await context.container.store(for: type)
+            store = try context.container.readStore(
+                for: type,
+                readPolicy: readPolicy
+            )
         }
         _ = try PersistableIdentifierKeyCodec.value(
             from: id,
@@ -551,7 +713,7 @@ public struct IndexQueryContext: Sendable {
         return try await store.fetchByIdentifierTupleInTransaction(
             type,
             identifier: id,
-            transaction: transaction,
+            transaction: transaction.storageAccess,
             snapshot: true
         )
     }
@@ -588,9 +750,8 @@ public struct IndexQueryContext: Sendable {
 
         return try await context.withDataOperation { [self] in
 
-        // Security: Evaluate LIST before fetching
-        try context.container.securityDelegate?.evaluateList(
-            entity: T.persistableType,
+        try context.readPolicy().authorizeList(
+            entityName: T.persistableType,
             limit: ids.count,
             offset: nil,
             orderBy: nil
@@ -617,12 +778,9 @@ public struct IndexQueryContext: Sendable {
             try await fetcher.fetch(primaryKeys: ids, transaction: transaction)
         }
 
-        // Security: Evaluate GET for each fetched item
+        let readPolicy = try context.readPolicy()
         for item in items {
-            try context.container.securityDelegate?.evaluateGet(
-                try PersistedModel(item),
-                fields: nil
-            )
+            try readPolicy.authorizeGet(try PersistedModel(item))
         }
 
         return items

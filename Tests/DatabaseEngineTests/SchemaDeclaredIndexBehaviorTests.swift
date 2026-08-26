@@ -337,10 +337,11 @@ struct SchemaDeclaredIndexBehaviorTests {
     func callerOwnedTransactionExecutesCommonTableExpressions() async throws {
         let scenario = try await makeScenario()
         let context = scenario.container.testBaseContext()
-        try context.insert(
-            CatalogItem(id: "first", category: "books", title: "First")
+        let item = CatalogItem(
+            id: "uncommitted",
+            category: "books",
+            title: "Uncommitted"
         )
-        try await context.save()
 
         let cte = NamedSubquery(
             name: "selected_items",
@@ -364,21 +365,30 @@ struct SchemaDeclaredIndexBehaviorTests {
             monotonicClock: scenario.container.monotonicClock
         )
 
-        let response = try await context.executeCanonicalRead { transaction in
-            try await context.executeCanonicalQuery(
-                query,
-                execution: execution,
-                transaction: transaction
-            )
+        let response = try await context.withTransaction { writeTransaction in
+            try await writeTransaction.save(item, precondition: .notExists)
+            return try await context.withReadSnapshot(
+                workMeter: execution.workMeter
+            ) { snapshot in
+                try await context.querySessionBound(
+                    query,
+                    execution: execution,
+                    session: snapshot.session
+                )
+            }
         }
 
         #expect(response.rows.count == 1)
-        #expect(response.rows[0].fields["identifier"] == .string("first"))
+        #expect(
+            response.rows[0].fields["identifier"]
+                == .string("uncommitted")
+        )
     }
 
     @Test("Canonical reads validate structure before reading data")
     func canonicalReadsValidateStructureBeforeDataAccess() async throws {
-        let scenario = try await makeScenario()
+        let storage = ControlledStorageEngine(base: InMemoryEngine())
+        let scenario = try await makeScenario(storageEngine: storage)
         let context = scenario.container.testBaseContext()
         try context.insert(
             CatalogItem(id: "first", category: "books", title: "First")
@@ -395,16 +405,15 @@ struct SchemaDeclaredIndexBehaviorTests {
             projection: .all,
             source: .table(TableRef(CatalogItem.persistableType))
         )
+        let readsBeforeQuery = storage.control.dataReadOperationCount
 
         await #expect(throws: QueryStructuralValidationError.self) {
-            _ = try await context.executeCanonicalRead { transaction in
-                try await context.executeCanonicalQuery(
-                    query,
-                    execution: execution,
-                    transaction: transaction
-                )
-            }
+            _ = try await context.query(
+                query,
+                execution: execution
+            )
         }
+        #expect(storage.control.dataReadOperationCount == readsBeforeQuery)
         #expect(execution.workMeter.consumedRows == 0)
         #expect(execution.workMeter.retainedIntermediateRows == 0)
         #expect(execution.workMeter.retainedIntermediateBytes == 0)
@@ -678,7 +687,9 @@ struct SchemaDeclaredIndexBehaviorTests {
         )
     }
 
-    private func makeScenario() async throws -> CatalogIndexScenario {
+    private func makeScenario(
+        storageEngine: any StorageEngine = InMemoryEngine()
+    ) async throws -> CatalogIndexScenario {
         let indexName = "catalog_items_by_category"
         let descriptor = try IndexDescriptor(
             entityName: CatalogItem.persistableType,
@@ -688,7 +699,6 @@ struct SchemaDeclaredIndexBehaviorTests {
             ),
             fieldSchemas: try CatalogItem.fieldSchemas
         )
-        let engine = InMemoryEngine()
         let schema = try Schema(
             entities: [
                 try Schema.Entity(
@@ -699,7 +709,7 @@ struct SchemaDeclaredIndexBehaviorTests {
         )
         let container = try await DBContainer.open(
             for: schema,
-            configuration: .testing(storageEngine: engine),
+            configuration: .testing(storageEngine: storageEngine),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
                 executionIdentity: DatabaseExecutionRuntimeIdentity(
                     identifier: "database-tests",
@@ -717,7 +727,6 @@ struct SchemaDeclaredIndexBehaviorTests {
         let store = try await container.testBaseStore(for: CatalogItem.self)
         return CatalogIndexScenario(
             container: container,
-            engine: engine,
             store: store,
             indexName: indexName
         )
@@ -726,7 +735,6 @@ struct SchemaDeclaredIndexBehaviorTests {
 
 private struct CatalogIndexScenario: Sendable {
     let container: DBContainer
-    let engine: InMemoryEngine
     let store: DatabaseDataStore
     let indexName: String
 
@@ -749,7 +757,7 @@ private struct CatalogIndexScenario: Sendable {
         } else {
             range = indexSubspace.range()
         }
-        return try await engine.withTransaction { transaction in
+        return try await container.engine.withTransaction { transaction in
             try await transaction.collectRange(
                 begin: range.begin,
                 end: range.end,
@@ -762,7 +770,7 @@ private struct CatalogIndexScenario: Sendable {
         let itemSubspace = store.itemSubspace.subspace(
             CatalogItem.persistableType
         )
-        try await engine.withTransaction { transaction in
+        try await container.engine.withTransaction { transaction in
             for id in ids {
                 try transaction.setValue(
                     [0xFF],

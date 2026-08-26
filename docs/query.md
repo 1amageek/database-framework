@@ -50,7 +50,9 @@ semantics.
 Fusion combines staged, context-free inputs using the public `FusionQuery`
 contract. DatabaseKit owns the plan; DatabaseEngine owns candidate flow,
 transaction lifetime, score composition, and output. Each index module owns
-only its physical read algorithm.
+only its physical read algorithm. The complete admission, authorization,
+session, failure, and performance contract is defined by
+[`fusion-execution-design.md`](fusion-execution-design.md).
 
 ~~~swift
 let query = FusionQuery<Document> {
@@ -76,6 +78,10 @@ Field authorization completes before index-selection errors or feature
 availability are reported. `Search(field)` requires an exact single-field
 full-text index because a multi-field full-text index stores combined postings
 and cannot correctly represent a field-isolated search.
+
+Execution receives one sealed, authorized Fusion execution bound to one read
+session. It does not receive a raw query plus an ambient authorization value,
+and feature readers receive only parent-issued index read leases.
 
 ## Error Behavior
 

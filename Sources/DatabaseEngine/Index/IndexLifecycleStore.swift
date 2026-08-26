@@ -446,7 +446,7 @@ package final class IndexLifecycleStore: Sendable {
     /// method by the partition catalog and therefore never reach admission.
     func validateReadableForRead(
         _ indexNames: [String],
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws {
         for indexName in indexNames {
             guard let currentState = try await storedState(
@@ -601,7 +601,7 @@ package final class IndexLifecycleStore: Sendable {
     /// present value must contain exactly one known `IndexState` byte.
     private func storedState(
         of indexName: String,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         snapshot: Bool
     ) async throws -> IndexState? {
         let stateKey = try makeStateKey(for: indexName)

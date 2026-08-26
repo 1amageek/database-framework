@@ -4,6 +4,36 @@ import DatabaseEngine
 import StorageKit
 
 extension SPARQLQueryExecutor {
+    init(
+        database: (any StorageEngine)?,
+        monotonicClock: any StorageMonotonicClock,
+        wallClock: any WallClock,
+        datasetScanner: any RDFDatasetScanner,
+        readMode: RDFDatasetReadMode,
+        dataset: SPARQLExecutionDataset,
+        functionRegistry: SPARQLFunctionRegistry,
+        ontologyContext: OntologyContext?,
+        propertyPathConfiguration: ExecutionPropertyPathConfiguration,
+        workMeter: DatabaseWorkMeter?,
+        expressionContext: SPARQLQueryExpressionContext?,
+        subqueryCache: SPARQLSubqueryResultCache?,
+        nestedExpressionStatistics: SPARQLNestedExpressionStatistics?
+    ) {
+        self.database = database
+        self.monotonicClock = monotonicClock
+        self.wallClock = wallClock
+        self.datasetScanner = datasetScanner
+        self.readMode = readMode
+        self.dataset = dataset
+        self.functionRegistry = functionRegistry
+        self.ontologyContext = ontologyContext
+        self.propertyPathConfiguration = propertyPathConfiguration
+        self.workMeter = workMeter
+        self.expressionContext = expressionContext
+        self.subqueryCache = subqueryCache
+        self.nestedExpressionStatistics = nestedExpressionStatistics
+    }
+
     /// Returns an executor over the same dataset with ontology-aware paths.
     public func withOntology(_ context: OntologyContext?) -> Self {
         Self(
@@ -15,7 +45,11 @@ extension SPARQLQueryExecutor {
             dataset: dataset,
             functionRegistry: functionRegistry,
             ontologyContext: context,
-            propertyPathConfiguration: propertyPathConfiguration
+            propertyPathConfiguration: propertyPathConfiguration,
+            workMeter: nil,
+            expressionContext: nil,
+            subqueryCache: nil,
+            nestedExpressionStatistics: nil
         )
     }
 
@@ -46,7 +80,11 @@ extension SPARQLQueryExecutor {
             dataset: dataset,
             functionRegistry: functionRegistry,
             ontologyContext: ontologyContext,
-            propertyPathConfiguration: propertyPathConfiguration
+            propertyPathConfiguration: propertyPathConfiguration,
+            workMeter: nil,
+            expressionContext: nil,
+            subqueryCache: nil,
+            nestedExpressionStatistics: nil
         )
     }
 

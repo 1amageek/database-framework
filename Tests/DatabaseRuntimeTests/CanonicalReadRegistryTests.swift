@@ -12,8 +12,14 @@ struct CanonicalReadRegistryTests {
     private struct EmptyPolymorphicReadExecutor: PolymorphicIndexReadExecutor {
         let indexType: IndexType = .custom("test.polymorphic.runtime")
 
+        func additionalRequiredFieldNames(
+            indexScan: IndexScanSource
+        ) throws -> Set<String> {
+            []
+        }
+
         func executeRows(
-            context: DatabaseContext,
+            session: DatabaseReadSession,
             selectQuery: SelectQuery,
             index: IndexDeclaration<String>,
             indexScan: IndexScanSource,

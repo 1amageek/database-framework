@@ -107,7 +107,7 @@ package enum PropertyGraphIndexResolver {
         _ declaration: DeclaredPropertyGraphIndex,
         for type: T.Type,
         in context: IndexQueryContext,
-        transaction: any TransactionAccess
+        transaction: DatabaseReadTransaction
     ) async throws -> ResolvedPropertyGraphIndex? {
         guard declaration.entityName == T.persistableType else {
             throw PropertyGraphIndexResolutionError.entityOwnershipMismatch(

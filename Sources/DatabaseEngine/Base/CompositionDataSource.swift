@@ -151,9 +151,12 @@ public struct CompositionDataSource: Sendable {
         )
     }
 
-    /// Acquires and authorizes every member for metadata-only resolution.
+    /// Authorizes every member while capturing value-only Composition metadata.
+    /// Base leases are retained only for this authorization operation and do
+    /// not escape in the returned value.
     @_spi(DatabaseExecution)
-    public func acquireReadLease() async throws -> DatabaseCompositionLease {
+    public func acquireReadMetadata() async throws
+        -> DatabaseCompositionReadMetadata {
         let lease = try await acquireLease()
         do {
             for member in lease.members {
@@ -167,7 +170,7 @@ public struct CompositionDataSource: Sendable {
                     ) { _ in () }
                 }
             }
-            return lease
+            return DatabaseCompositionReadMetadata(lease: lease)
         } catch is CancellationError {
             throw CancellationError()
         } catch is DatabaseGrantAuthorizationError {
@@ -181,14 +184,13 @@ public struct CompositionDataSource: Sendable {
     /// same all-member authorization contract as execution.
     @_spi(DatabaseExecution)
     public func resolve() async throws -> CompositionResolution {
-        try await acquireReadLease().resolution
+        try await acquireReadMetadata().resolution
     }
 
     /// Opens one read transaction per physical domain and keeps all of them
     /// alive until the federated operation finishes. Every member Grant is
     /// checked before `operation` can observe data.
-    @_spi(DatabaseExecution)
-    public func withReadSnapshot<Result: Sendable>(
+    package func withReadSnapshot<Result: Sendable>(
         _ operation: @escaping @Sendable (
             DatabaseCompositionReadSnapshot
         ) async throws -> Result
@@ -273,17 +275,26 @@ public struct CompositionDataSource: Sendable {
                     transaction: transaction
                 )
             }
-            let result = try await operation(
-                DatabaseCompositionReadSnapshot(
-                    lease: lease,
-                    sourceIdentity: sourceIdentity,
-                    authorization: authorization,
-                    transactions: transactions.mapValues {
-                        ReadAuthorizedTransactionAccess.admitted($0)
-                    },
-                    readPoints: readPoints
-                )
+            let snapshot = DatabaseCompositionReadSnapshot(
+                lease: lease,
+                sourceIdentity: sourceIdentity,
+                authorization: authorization,
+                transactions: transactions.mapValues {
+                    DatabaseReadTransaction(
+                        storageAccess: ReadAuthorizedTransactionAccess
+                            .admittedReadAccess($0)
+                    )
+                },
+                readPoints: readPoints
             )
+            let result: Result
+            do {
+                result = try await operation(snapshot)
+            } catch {
+                await snapshot.vault.invalidateAndDrain()
+                throw error
+            }
+            await snapshot.vault.invalidateAndDrain()
             for entry in owned {
                 try await entry.transaction.commit()
                 committedCount += 1
@@ -320,28 +331,26 @@ public struct CompositionDataSource: Sendable {
     /// Executes one member-local read against the transaction captured by the
     /// federated snapshot. The caller receives neither a container nor a
     /// transaction capable of resolving a different Base.
-    @_spi(DatabaseExecution)
-    public func withMemberContext<Result: Sendable>(
-        _ member: DatabaseBaseLease,
+    package func withMemberReadSession<Result: Sendable>(
+        _ member: DatabaseCompositionMember,
         in snapshot: DatabaseCompositionReadSnapshot,
+        workMeter: DatabaseWorkMeter,
         _ operation: @Sendable @escaping (
-            DatabaseContext,
-            any TransactionAccess
-        ) async throws -> Result
-    ) async throws -> Result {
-        guard snapshot.sourceIdentity === sourceIdentity,
-              snapshot.lease.selection == selection,
-              snapshot.lease.members.contains(where: { $0 === member }) else {
+            DatabaseReadSession
+        ) async throws -> sending Result
+    ) async throws -> sending Result {
+        guard snapshot.sourceIdentity === sourceIdentity else {
             throw DatabaseCompositionAccessError.unavailable(selection)
         }
-        let transaction = try snapshot.transaction(for: member)
-        return try await container.withBaseLease(member) {
+        let access = try snapshot.vault.memberAccess(for: member)
+        defer { access.operationLease.end() }
+        return try await container.withBaseLease(access.lease) {
             let context = container.session(
                 authorization: snapshot.authorization
             ).base(member.baseID).newContext()
             let executionBinding = try DatabaseTransactionExecutionBinding(
                 context: context,
-                transaction: transaction,
+                transaction: access.transaction.storageAccess,
                 grantedAccess: .read,
                 databaseTransaction: nil
             )
@@ -351,7 +360,11 @@ public struct CompositionDataSource: Sendable {
                 try await ActiveDatabaseTransactionContext.$binding.withValue(
                     executionBinding
                 ) {
-                    try await operation(context, transaction)
+                    try await DatabaseReadSession.withSession(
+                        context: context,
+                        workMeter: workMeter,
+                        operation
+                    )
                 }
             }
         }
@@ -377,6 +390,7 @@ public struct CompositionDataSource: Sendable {
         }
         return max(1, min(maximumRows, maximumIntermediateRows / 4, 256))
     }
+
 }
 
 #endif

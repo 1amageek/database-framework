@@ -110,6 +110,24 @@ public struct ReadExecutionContext: Sendable {
     public var consistency: ReadConsistency? { options.consistency }
     public var continuation: QueryContinuation? { options.continuation }
 
+    package func withoutExternalPageWindow() -> Self {
+        Self(
+            options: options.withoutExternalPageWindow(),
+            workMeter: workMeter,
+            queryStructuralLimits: queryStructuralLimits
+        )
+    }
+
+    private init(
+        options: ReadExecutionOptions,
+        workMeter: DatabaseWorkMeter,
+        queryStructuralLimits: QueryStructuralLimits
+    ) {
+        self.options = options
+        self.workMeter = workMeter
+        self.queryStructuralLimits = queryStructuralLimits
+    }
+
     public func resolvePageSize() throws -> Int? {
         guard options.appliesExternalPageWindow else {
             return nil

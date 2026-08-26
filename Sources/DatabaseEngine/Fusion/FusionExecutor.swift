@@ -8,27 +8,19 @@ enum FusionExecutor {
     static let scoreAnnotation = "fusion.score"
 
     static func execute(
-        context: DatabaseContext,
-        selectQuery: SelectQuery,
-        tableRef: TableRef,
-        entity: Schema.Entity,
-        source: FusionSource,
-        plan: FusionPreparedPlan,
-        preparedQueryGraph: FusionPreparedQueryGraph,
-        options: ReadExecutionContext,
-        transaction: any TransactionAccess
+        _ execution: FusionExecution
     ) async throws -> IndexReadResult {
         var candidates: FusionCandidateDomain?
         var scoredInputs = try DatabaseRetainedArrayBuilder<FusionScoredInput>(
-            workMeter: options.workMeter,
+            workMeter: execution.options.workMeter,
             stage: .projection,
             layout: try DatabaseRetainedArrayLayout.forElement(
                 FusionScoredInput.self
             ),
-            expectedCount: source.scoredInputCount
+            expectedCount: execution.source.scoredInputCount
         )
 
-        for stage in plan.stages {
+        for stage in execution.plan.stages {
             let incoming = candidates
             var stageCandidates: FusionCandidateDomain?
             for input in stage.inputs {
@@ -36,24 +28,19 @@ enum FusionExecutor {
                 if incoming?.isEmpty == true {
                     result = try emptyResult(
                         for: input,
-                        workMeter: options.workMeter
+                        workMeter: execution.options.workMeter
                     )
                 } else {
                     result = try await execute(
                         input,
                         incoming: incoming,
-                        context: context,
-                        tableRef: tableRef,
-                        entity: entity,
-                        preparedQueryGraph: preparedQueryGraph,
-                        options: options,
-                        transaction: transaction
+                        execution: execution
                     )
                 }
                 if let existing = stageCandidates {
                     stageCandidates = try existing.union(
                         result.candidates,
-                        workMeter: options.workMeter
+                        workMeter: execution.options.workMeter
                     )
                 } else {
                     stageCandidates = result.candidates
@@ -72,7 +59,7 @@ enum FusionExecutor {
             if let incoming {
                 resolvedStage = try resolvedStage.intersection(
                     incoming,
-                    workMeter: options.workMeter
+                    workMeter: execution.options.workMeter
                 )
             }
             candidates = resolvedStage
@@ -86,39 +73,10 @@ enum FusionExecutor {
         return try FusionScoreComposer.compose(
             candidates: candidates,
             scoredInputs: retainedScoredInputs,
-            strategy: source.strategy,
-            maximumResultCount: try scoringOutputPrefixLimit(selectQuery),
-            workMeter: options.workMeter
+            strategy: execution.source.strategy,
+            maximumResultCount: execution.maximumResultCount,
+            workMeter: execution.options.workMeter
         )
-    }
-
-    private static func scoringOutputPrefixLimit(
-        _ query: SelectQuery
-    ) throws -> Int? {
-        guard let limit = query.limit,
-              query.filter == nil,
-              query.groupBy == nil,
-              query.having == nil,
-              query.orderBy?.isEmpty != false,
-              !query.distinct,
-              !query.reduced else {
-            return nil
-        }
-        let offset = query.offset ?? 0
-        let (prefix, overflow) = limit.addingReportingOverflow(offset)
-        guard !overflow else {
-            throw CanonicalReadError.paginationValueExceedsRuntimeRange(
-                name: "limit + offset",
-                value: UInt64.max
-            )
-        }
-        guard let result = Int(exactly: prefix) else {
-            throw CanonicalReadError.paginationValueExceedsRuntimeRange(
-                name: "limit + offset",
-                value: prefix
-            )
-        }
-        return result
     }
 
     private struct InputExecutionResult: Sendable {
@@ -129,12 +87,7 @@ enum FusionExecutor {
     private static func execute(
         _ input: FusionPreparedPlan.Input,
         incoming: FusionCandidateDomain?,
-        context: DatabaseContext,
-        tableRef: TableRef,
-        entity: Schema.Entity,
-        preparedQueryGraph: FusionPreparedQueryGraph,
-        options: ReadExecutionContext,
-        transaction: any TransactionAccess
+        execution: FusionExecution
     ) async throws -> InputExecutionResult {
         if input.requirement == .candidates, incoming == nil {
             throw FusionExecutionError.requiredCandidates(
@@ -146,33 +99,24 @@ enum FusionExecutor {
         case .filter(let expression):
             let query = SelectQuery(
                 projection: .all,
-                source: .table(tableRef),
+                source: .table(execution.plan.tableRef),
                 filter: expression,
                 limit: input.limit.map(UInt64.init)
             )
             let response: CanonicalRetainedQueryResponse
             if let incoming {
-                response = try await context
-                    .executeFusionCandidateRelationalRows(
-                        incoming,
-                        query: query,
-                        options: options,
-                        transaction: transaction,
-                        preparedFusionGraph: preparedQueryGraph
-                    )
-            } else {
-                response = try await context.executeFusionRelationalRows(
-                    query,
-                    options: options,
-                    transaction: transaction,
-                    preparedFusionGraph: preparedQueryGraph
+                response = try await execution.executeCandidateRelationalRows(
+                    incoming,
+                    query: query
                 )
+            } else {
+                response = try await execution.executeRelationalRows(query)
             }
             return InputExecutionResult(
                 candidates: try FusionCandidateDomain.make(
                     rows: response.visibleRows,
-                    entity: entity,
-                    workMeter: options.workMeter
+                    entity: execution.plan.entity,
+                    workMeter: execution.options.workMeter
                 ),
                 scored: nil
             )
@@ -182,24 +126,20 @@ enum FusionExecutor {
             }
             let query = SelectQuery(
                 projection: .all,
-                source: .table(tableRef),
+                source: .table(execution.plan.tableRef),
                 orderBy: sortKeys,
                 limit: input.limit.map(UInt64.init)
             )
-            let response = try await context
-                .executeFusionCandidateRelationalRows(
-                    incoming,
-                    query: query,
-                    options: options,
-                    transaction: transaction,
-                    preparedFusionGraph: preparedQueryGraph
-                )
+            let response = try await execution.executeCandidateRelationalRows(
+                incoming,
+                query: query
+            )
             let limit = input.limit ?? incoming.count
             let sink = try FusionMatchSink(
                 candidates: incoming,
                 scoring: scoring,
                 limit: limit,
-                workMeter: options.workMeter
+                workMeter: execution.options.workMeter
             )
             do {
                 for row in response.visibleRows {
@@ -218,8 +158,8 @@ enum FusionExecutor {
                 return InputExecutionResult(
                     candidates: try FusionCandidateDomain.make(
                         rows: response.visibleRows,
-                        entity: entity,
-                        workMeter: options.workMeter
+                        entity: execution.plan.entity,
+                        workMeter: execution.options.workMeter
                     ),
                     scored: FusionScoredInput(
                         scoring: scoring,
@@ -237,11 +177,7 @@ enum FusionExecutor {
                 executor: executor,
                 input: input,
                 incoming: incoming,
-                context: context,
-                tableRef: tableRef,
-                entity: entity,
-                options: options,
-                transaction: transaction
+                execution: execution
             )
         case .connected(
             let source,
@@ -256,12 +192,7 @@ enum FusionExecutor {
                 executor: executor,
                 input: input,
                 incoming: incoming,
-                context: context,
-                tableRef: tableRef,
-                entity: entity,
-                preparedQueryGraph: preparedQueryGraph,
-                options: options,
-                transaction: transaction
+                execution: execution
             )
         }
     }
@@ -273,30 +204,22 @@ enum FusionExecutor {
         executor: any FusionConnectedReadExecutor,
         input: FusionPreparedPlan.Input,
         incoming: FusionCandidateDomain?,
-        context: DatabaseContext,
-        tableRef: TableRef,
-        entity: Schema.Entity,
-        preparedQueryGraph: FusionPreparedQueryGraph,
-        options: ReadExecutionContext,
-        transaction: any TransactionAccess
+        execution: FusionExecution
     ) async throws -> InputExecutionResult {
         let candidatePool: FusionCandidateDomain
         if let incoming {
             candidatePool = incoming
         } else {
-            let response = try await context.executeFusionRelationalRows(
+            let response = try await execution.executeRelationalRows(
                 SelectQuery(
                     projection: .all,
-                    source: .table(tableRef)
-                ),
-                options: options,
-                transaction: transaction,
-                preparedFusionGraph: preparedQueryGraph
+                    source: .table(execution.plan.tableRef)
+                )
             )
             candidatePool = try FusionCandidateDomain.make(
                 rows: response.visibleRows,
-                entity: entity,
-                workMeter: options.workMeter
+                entity: execution.plan.entity,
+                workMeter: execution.options.workMeter
             )
         }
 
@@ -305,22 +228,19 @@ enum FusionExecutor {
             candidates: candidatePool,
             scoring: input.scoring,
             limit: limit,
-            workMeter: options.workMeter
+            workMeter: execution.options.workMeter
         )
         let connectedSink = try FusionConnectedMatchSink(
             candidates: candidatePool,
             resultFieldName: source.resultField.name,
             limit: limit,
-            workMeter: options.workMeter
+            workMeter: execution.options.workMeter
         )
-        guard let readableIndex = try await context.indexQueryContext
-            .readableIndex(
-                named: descriptor.name,
-                indexType: descriptor.type,
-                forEntityName: edgeEntity.name,
-                partitions: source.edgePartitions,
-                transaction: transaction
-            ) else {
+        guard let readableIndex = try await execution.readableIndex(
+            descriptor: descriptor,
+            entity: edgeEntity,
+            partitions: source.edgePartitions
+        ) else {
             connectedSink.invalidate()
             matchSink.invalidate()
             throw FusionExecutionError.indexNotReadable(
@@ -328,77 +248,43 @@ enum FusionExecutor {
                 name: descriptor.name
             )
         }
-        let session = try FusionIndexReadSession(
-            index: readableIndex,
-            transaction: transaction,
-            snapshot: CanonicalReadExecution.resolve(
-                requested: options.consistency,
-                default: .serializable
-            ).consistency == .snapshot,
-            workMeter: options.workMeter
-        )
-        let request = FusionConnectedReadRequest(
-            source: source,
-            access: session,
-            workMeter: options.workMeter
-        )
-
-        let coverage: FusionInputCoverage
-        let emittedCount: Int
-        do {
-            coverage = try await executor.execute(
-                request,
-                output: connectedSink
+        return try await execution.withIndexReadLease(
+            index: readableIndex
+        ) { lease in
+            let request = FusionConnectedReadRequest(
+                source: source,
+                access: lease,
+                workMeter: execution.options.workMeter
             )
-            emittedCount = try connectedSink.freeze(into: matchSink)
-        } catch {
-            let executionError = error
-            connectedSink.invalidate()
-            matchSink.invalidate()
             do {
-                try await session.invalidate()
-            } catch {
-                throw StorageRangeCleanupError(
-                    iterationError: executionError,
-                    cleanupError: error
+                let coverage = try await executor.execute(
+                    request,
+                    output: connectedSink
                 )
-            }
-            throw executionError
-        }
-
-        let result: FusionIndexReadResult
-        do {
-            result = try matchSink.freeze(coverage: coverage)
-        } catch {
-            let freezeError = error
-            matchSink.invalidate()
-            do {
-                try await session.invalidate()
-            } catch {
-                throw StorageRangeCleanupError(
-                    iterationError: freezeError,
-                    cleanupError: error
+                let emittedCount = try connectedSink.freeze(into: matchSink)
+                let result = try matchSink.freeze(coverage: coverage)
+                guard emittedCount == result.matches.count else {
+                    throw FusionExecutionContractError.executionContractViolation
+                }
+                if coverage == .satisfiedLimit, emittedCount != limit {
+                    throw FusionExecutionContractError.invalidInputCoverage
+                }
+                return InputExecutionResult(
+                    candidates: try FusionCandidateDomain.make(
+                        selecting: result.matches.lazy.map(\.primaryKey),
+                        from: candidatePool,
+                        workMeter: execution.options.workMeter
+                    ),
+                    scored: input.scoring.map {
+                        FusionScoredInput(scoring: $0, result: result)
+                    }
                 )
+            } catch {
+                connectedSink.invalidate()
+                matchSink.invalidate()
+                throw error
             }
-            throw freezeError
         }
-        try await session.invalidate()
-        guard emittedCount == result.matches.count else {
-            throw FusionExecutionContractError.executionContractViolation
-        }
-        if coverage == .satisfiedLimit, emittedCount != limit {
-            throw FusionExecutionContractError.invalidInputCoverage
-        }
-        return InputExecutionResult(
-            candidates: try FusionCandidateDomain.make(
-                selecting: result.matches.lazy.map(\.primaryKey),
-                from: candidatePool,
-                workMeter: options.workMeter
-            ),
-            scored: input.scoring.map {
-                FusionScoredInput(scoring: $0, result: result)
-            }
-        )
     }
 
     private static func executeIndex(
@@ -407,123 +293,73 @@ enum FusionExecutor {
         executor: any FusionIndexReadExecutor,
         input: FusionPreparedPlan.Input,
         incoming: FusionCandidateDomain?,
-        context: DatabaseContext,
-        tableRef: TableRef,
-        entity: Schema.Entity,
-        options: ReadExecutionContext,
-        transaction: any TransactionAccess
+        execution: FusionExecution
     ) async throws -> InputExecutionResult {
         let limit = try input.limit
             ?? incoming?.count
-            ?? options.workMeter.storageReadLimitWithSentinel()
+            ?? execution.options.workMeter.storageReadLimitWithSentinel()
         let sink = try FusionMatchSink(
             candidates: incoming,
             scoring: input.scoring,
             limit: limit,
-            workMeter: options.workMeter
+            workMeter: execution.options.workMeter
         )
-        guard let readableIndex = try await context.indexQueryContext
-            .readableIndex(
-                named: descriptor.name,
-                indexType: descriptor.type,
-                forEntityName: entity.name,
-                partitions: tableRef.partitions,
-                transaction: transaction
-            ) else {
+        guard let readableIndex = try await execution.readableIndex(
+            descriptor: descriptor,
+            entity: execution.plan.entity,
+            partitions: execution.plan.tableRef.partitions
+        ) else {
             sink.invalidate()
             throw FusionExecutionError.indexNotReadable(
-                entity: entity.name,
+                entity: execution.plan.entity.name,
                 name: descriptor.name
             )
         }
-
-        let session = try FusionIndexReadSession(
-            index: readableIndex,
-            transaction: transaction,
-            snapshot: CanonicalReadExecution.resolve(
-                requested: options.consistency,
-                default: .serializable
-            ).consistency == .snapshot,
-            workMeter: options.workMeter
-        )
-        let request = FusionIndexReadRequest(
-            source: source,
-            scoring: input.scoring,
-            limit: limit,
-            access: session,
-            workMeter: options.workMeter,
-            timestamp: context.container.wallClock.now
-        )
-        let coverage: FusionInputCoverage
-        do {
-            if let incoming {
-                coverage = try await executor.executeRestricted(
-                    request,
-                    candidates: incoming,
-                    output: sink
-                )
-            } else {
-                coverage = try await executor.executeUnrestricted(
-                    request,
-                    output: sink
-                )
-            }
-        } catch {
-            let executionError = error
-            sink.invalidate()
+        let result = try await execution.withIndexReadLease(
+            index: readableIndex
+        ) { lease in
+            let request = FusionIndexReadRequest(
+                source: source,
+                scoring: input.scoring,
+                limit: limit,
+                access: lease,
+                workMeter: execution.options.workMeter,
+                timestamp: execution.wallClock.now
+            )
             do {
-                try await session.invalidate()
+                let coverage: FusionInputCoverage
+                if let incoming {
+                    coverage = try await executor.executeRestricted(
+                        request,
+                        candidates: incoming,
+                        output: sink
+                    )
+                } else {
+                    coverage = try await executor.executeUnrestricted(
+                        request,
+                        output: sink
+                    )
+                }
+                let result = try sink.freeze(coverage: coverage)
+                if coverage == .satisfiedLimit,
+                   result.matches.count != limit {
+                    throw FusionExecutionContractError.invalidInputCoverage
+                }
+                return result
             } catch {
-                throw StorageRangeCleanupError(
-                    iterationError: executionError,
-                    cleanupError: error
-                )
+                sink.invalidate()
+                throw error
             }
-            throw executionError
-        }
-        // Revoke the feature's output authority before the first cleanup
-        // suspension. The immutable result alone retains admitted matches.
-        let result: FusionIndexReadResult
-        do {
-            result = try sink.freeze(coverage: coverage)
-        } catch {
-            let freezeError = error
-            sink.invalidate()
-            do {
-                try await session.invalidate()
-            } catch {
-                throw StorageRangeCleanupError(
-                    iterationError: freezeError,
-                    cleanupError: error
-                )
-            }
-            throw freezeError
-        }
-        do {
-            try await session.invalidate()
-        } catch {
-            throw error
-        }
-        if coverage == .satisfiedLimit,
-           result.matches.count != limit {
-            throw FusionExecutionContractError.invalidInputCoverage
         }
         let domain: FusionCandidateDomain
         if let incoming {
             domain = try FusionCandidateDomain.make(
                 selecting: result.matches.lazy.map(\.primaryKey),
                 from: incoming,
-                workMeter: options.workMeter
+                workMeter: execution.options.workMeter
             )
         } else {
-            domain = try await materializeUnrestrictedCandidates(
-                result.matches,
-                context: context,
-                tableRef: tableRef,
-                entity: entity,
-                options: options,
-                transaction: transaction
-            )
+            domain = try await execution.materializeCandidates(result)
         }
         return InputExecutionResult(
             candidates: domain,
@@ -531,55 +367,6 @@ enum FusionExecutor {
                 FusionScoredInput(scoring: $0, result: result)
             }
         )
-    }
-
-    private static func materializeUnrestrictedCandidates(
-        _ matches: [FusionIndexMatch],
-        context: DatabaseContext,
-        tableRef: TableRef,
-        entity: Schema.Entity,
-        options: ReadExecutionContext,
-        transaction: any TransactionAccess
-    ) async throws -> FusionCandidateDomain {
-        var builder = try DatabaseRetainedArrayBuilder<Tuple>(
-            workMeter: options.workMeter,
-            stage: .storageRow,
-            layout: try DatabaseRetainedArrayLayout.forElement(Tuple.self),
-            expectedCount: matches.count
-        )
-        for match in matches {
-            try builder.append(
-                footprint: DatabaseIntermediateFootprint(
-                    rows: 1,
-                    bytes: UInt64(match.primaryKey.count) + 64
-                )
-            ) {
-                try Tuple(packed: match.primaryKey)
-            }
-        }
-        let primaryKeys = try builder.finish().moveToSharedOwnership(
-            at: .storageRow
-        )
-        return try await primaryKeys.withElements { primaryKeys in
-            let snapshot = CanonicalReadExecution.resolve(
-                requested: options.consistency,
-                default: .serializable
-            ).consistency == .snapshot
-            let models = try await context.fetchPersistedModelsPreservingOrder(
-                entity: entity,
-                primaryKeys: primaryKeys,
-                partitions: tableRef.partitions,
-                transaction: transaction,
-                snapshot: snapshot,
-                workMeter: options.workMeter
-            )
-            return try FusionCandidateDomain.make(
-                models: models,
-                primaryKeys: primaryKeys,
-                entity: entity,
-                workMeter: options.workMeter
-            )
-        }
     }
 
     private static func emptyResult(

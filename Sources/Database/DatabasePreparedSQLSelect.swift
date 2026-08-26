@@ -24,21 +24,20 @@ public struct DatabasePreparedSQLSelect: Sendable {
     /// Dynamic literals therefore cannot outlive the reservation retained by
     /// this owner. Preparation and execution must share one request meter.
     public func execute(
-        in context: DatabaseContext,
+        in session: DatabaseReadSession,
         execution: ReadExecutionContext,
-        graphPartitions: FieldObject = FieldObject(),
-        transaction: any TransactionAccess
+        graphPartitions: FieldObject = FieldObject()
     ) async throws -> QueryResponse {
         guard execution.workMeter === workMeter else {
             throw DatabasePreparedSQLSelectError.workMeterMismatch
         }
         let lifetimeOwner = retainedStorage
         defer { withExtendedLifetime(lifetimeOwner) {} }
-        return try await context.executeCanonicalQuery(
+        return try await session.executeCanonical(
             query,
             execution: execution,
-            graphPartitions: graphPartitions,
-            transaction: transaction
+            graphPartitions: graphPartitions
         )
     }
+
 }

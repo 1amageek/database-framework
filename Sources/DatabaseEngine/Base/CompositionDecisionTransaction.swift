@@ -20,7 +20,7 @@ public final class CompositionDecisionTransaction: Sendable {
     private let writerTransaction: DatabaseTransaction
     private let operationGate = TransactionOperationGate()
 
-    package init(
+    init(
         container: DBContainer,
         authorization: AuthorizationContext,
         lease: DatabaseCompositionLease,

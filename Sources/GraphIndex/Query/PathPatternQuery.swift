@@ -159,14 +159,14 @@ public struct PathPatternQueryBuilder<T: Persistable>: Sendable {
                 return []
             }
             let snapshot = GraphReadSnapshot(
-                transaction: transaction,
+                transaction: transaction.storageTransaction,
                 monotonicClock: queryContext.context.container.monotonicClock
             )
             return try await executePaths(
                 source: .identifier(source),
                 target: targetNode.map(GraphIdentity.identifier),
                 scanner: resolvedIndex.scanner(snapshot: snapshot),
-                transaction: transaction
+                transaction: transaction.storageTransaction
             )
         }
     }
@@ -194,14 +194,14 @@ public struct PathPatternQueryBuilder<T: Persistable>: Sendable {
                 return []
             }
             let snapshot = GraphReadSnapshot(
-                transaction: transaction,
+                transaction: transaction.storageTransaction,
                 monotonicClock: queryContext.context.container.monotonicClock
             )
             return try await executeEndNodes(
                 source: .identifier(source),
                 target: targetNode.map(GraphIdentity.identifier),
                 scanner: resolvedIndex.scanner(snapshot: snapshot),
-                transaction: transaction
+                transaction: transaction.storageTransaction
             )
         }
         return try identities.map { try $0.requirePropertyGraphIdentifier() }

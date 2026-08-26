@@ -356,7 +356,7 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
             )
             return try await executor.executeInTransaction(
                 pattern: groupByPattern,
-                transaction: transaction,
+                transaction: transaction.storageTransaction,
                 limit: nil,
                 offset: 0,
                 workMeter: workMeter

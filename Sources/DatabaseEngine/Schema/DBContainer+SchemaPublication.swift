@@ -306,7 +306,11 @@ extension DBContainer {
             #endif
             let databaseTransaction = DatabaseTransaction(
                 storageAccess: transaction,
-                container: self
+                container: self,
+                readPolicy: DatabaseReadPolicy(
+                    schemaLease: publishedLease,
+                    authorization: authorization
+                )
             )
             do {
                 if let stored = try await Self.loadSchemaPublication(

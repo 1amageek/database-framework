@@ -429,22 +429,23 @@ struct SPARQLFunctionIntegrationTests {
                 monotonicClock: container.monotonicClock,
                 workMeter: workMeter
             )
-            return try await context.indexQueryContext.withTransaction {
-                transaction in
+            return try await context.indexQueryContext.withSession(
+                workMeter: workMeter
+            ) {
+                session in
                 let retainedStorage = try DatabasePreparedSQLSelectStorage(
                     workMeter: workMeter
                 )
                 let rewriter = SPARQLFunctionRewriter(
                     context: context,
                     workMeter: workMeter,
-                    transaction: transaction,
+                    transaction: session.transaction,
                     retainedStorage: retainedStorage
                 )
                 let prepared = try await rewriter.rewritePrepared(query)
                 return try await prepared.execute(
-                    in: context,
-                    execution: execution,
-                    transaction: transaction
+                    in: session,
+                    execution: execution
                 )
             }
         }

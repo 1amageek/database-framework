@@ -29,6 +29,8 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
     }
 
     private let container: DBContainer
+    private let readPolicy: DatabaseReadPolicy
+    private let readAuthorization: DatabaseReadAuthorization?
     private let mutationMaintenanceService: PersistableMutationMaintenanceService
     private let operationGate = TransactionOperationGate()
     private var validationGate: TransactionOperationGate?
@@ -49,10 +51,33 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
     @_spi(DatabaseExecution)
     public init(
         storageAccess: any TransactionAccess,
-        container: DBContainer
+        container: DBContainer,
+        authorization: AuthorizationContext
     ) {
         self.storageAccess = storageAccess
         self.container = container
+        self.readPolicy = DatabaseReadPolicy(
+            schemaLease: container.acquireActiveSchemaLease(),
+            authorization: authorization
+        )
+        self.readAuthorization = nil
+        self.mutationMaintenanceService =
+            PersistableMutationMaintenanceService(
+                maintainers: container.runtimeConfiguration
+                    .persistableMutationMaintainers
+            )
+    }
+
+    package init(
+        storageAccess: any TransactionAccess,
+        container: DBContainer,
+        readPolicy: DatabaseReadPolicy,
+        readAuthorization: DatabaseReadAuthorization? = nil
+    ) {
+        self.storageAccess = storageAccess
+        self.container = container
+        self.readPolicy = readPolicy
+        self.readAuthorization = readAuthorization
         self.mutationMaintenanceService =
             PersistableMutationMaintenanceService(
                 maintainers: container.runtimeConfiguration
@@ -138,8 +163,8 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             guard limit > 0, limit < Int.max else {
                 throw DatabaseTransactionError.invalidLimit(limit)
             }
-            try container.securityDelegate?.evaluateList(
-                entity: Model.persistableType,
+            try readPolicy.authorizeList(
+                entityName: Model.persistableType,
                 limit: limit,
                 offset: nil,
                 orderBy: nil
@@ -208,10 +233,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
                 )
                 let canonicalModel = try runtime.canonicalized(persistedModel)
                 let model = try canonicalModel.decode(as: Model.self)
-                try container.securityDelegate?.evaluateGet(
-                    canonicalModel,
-                    fields: nil
-                )
+                try readPolicy.authorizeGet(canonicalModel)
                 models.append(model)
             }
 
@@ -332,13 +354,15 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
     public func loadPersistedModel(
         entity: String,
         id: Tuple,
-        partition: AnyDirectoryPath?
+        partition: AnyDirectoryPath?,
+        fields: Set<String>? = nil
     ) async throws -> PersistedModel? {
         try await performOperation { _ in
             try await loadPersistedModelUnchecked(
                 entity: entity,
                 id: id,
-                partition: partition
+                partition: partition,
+                fields: fields
             )
         }
     }
@@ -348,7 +372,8 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         id: Tuple,
         partition: AnyDirectoryPath?,
         snapshot: Bool,
-        workMeter: DatabaseWorkMeter
+        workMeter: DatabaseWorkMeter,
+        fields: Set<String>? = nil
     ) async throws -> DatabaseRetainedPersistedModels.Entry? {
         try await performOperation { _ in
             try await loadRetainedPersistedModelUnchecked(
@@ -356,7 +381,8 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
                 id: id,
                 partition: partition,
                 snapshot: snapshot,
-                workMeter: workMeter
+                workMeter: workMeter,
+                fields: fields
             )
         }
     }
@@ -380,7 +406,8 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         limit: Int,
         offset: Int = 0,
         startingAfterIdentifier: ByteString? = nil,
-        workMeter: DatabaseWorkMeter? = nil
+        workMeter: DatabaseWorkMeter? = nil,
+        authorizationRequirement: DatabaseListReadAuthorizationRequirement? = nil
     ) async throws -> [PersistedModel] {
         try await performOperation { _ in
             try await scanPersistedModelsUnchecked(
@@ -389,7 +416,8 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
                 limit: limit,
                 offset: offset,
                 startingAfterIdentifier: startingAfterIdentifier,
-                workMeter: workMeter
+                workMeter: workMeter,
+                authorizationRequirement: authorizationRequirement
             )
         }
     }
@@ -905,7 +933,8 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
     private func loadPersistedModelUnchecked(
         entity: String,
         id: Tuple,
-        partition: AnyDirectoryPath?
+        partition: AnyDirectoryPath?,
+        fields: Set<String>? = nil
     ) async throws -> PersistedModel? {
         let runtime = try entityRuntime(named: entity)
         if runtime.entity.hasDynamicDirectory, partition == nil {
@@ -933,10 +962,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             expectedEntity: entity
         )
         let model = try runtime.canonicalized(persistedModel)
-        try container.securityDelegate?.evaluateGet(
-            model,
-            fields: nil
-        )
+        try readPolicy.authorizeGet(model, fields: fields)
         return model
     }
 
@@ -945,7 +971,8 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         id: Tuple,
         partition: AnyDirectoryPath?,
         snapshot: Bool,
-        workMeter: DatabaseWorkMeter
+        workMeter: DatabaseWorkMeter,
+        fields: Set<String>?
     ) async throws -> DatabaseRetainedPersistedModels.Entry? {
         let runtime = try entityRuntime(named: entity)
         if runtime.entity.hasDynamicDirectory, partition == nil {
@@ -1016,10 +1043,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             workMeter: workMeter,
             decodeScratchByteCount: decodedFootprint.transientByteCount
         )
-        try container.securityDelegate?.evaluateGet(
-            admitted.model,
-            fields: nil
-        )
+        try readPolicy.authorizeGet(admitted.model, fields: fields)
         try workMeter.checkpoint(at: .storageRow)
         // The decoded source model ended with the helper scope. Only the
         // separately measured canonical model remains retained by the entry.
@@ -1070,7 +1094,8 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         limit: Int,
         offset: Int,
         startingAfterIdentifier: ByteString?,
-        workMeter: DatabaseWorkMeter?
+        workMeter: DatabaseWorkMeter?,
+        authorizationRequirement: DatabaseListReadAuthorizationRequirement?
     ) async throws -> [PersistedModel] {
         guard limit > 0 else {
             throw DatabaseTransactionError.invalidLimit(limit)
@@ -1085,12 +1110,29 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
                 fields: runtime.entity.dynamicFieldNames
             )
         }
-        try container.securityDelegate?.evaluateList(
-            entity: runtime.entity.name,
-            limit: limit,
-            offset: nil,
-            orderBy: nil
-        )
+        let authorizedFields: Set<String>?
+        if let readAuthorization {
+            try readPolicy.validate(readAuthorization)
+            guard let authorizationRequirement,
+                  authorizationRequirement.entityName == runtime.entity.name,
+                  readAuthorization.covers(
+                    listRequirement: authorizationRequirement
+                  ),
+                  let fields = readAuthorization.fields.fieldsByEntity[
+                    runtime.entity.name
+                  ] else {
+                throw DatabaseReadSessionError.authorizationMismatch
+            }
+            authorizedFields = fields
+        } else {
+            try readPolicy.authorizeList(
+                entityName: runtime.entity.name,
+                limit: limit,
+                offset: nil,
+                orderBy: nil
+            )
+            authorizedFields = nil
+        }
         guard let subspaces = try await openSubspaces(
             for: runtime.entity,
             partition: partition
@@ -1140,10 +1182,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             )
             let model = try runtime.canonicalized(persistedModel)
             try workMeter?.checkpoint(at: .storageRow)
-            try container.securityDelegate?.evaluateGet(
-                model,
-                fields: nil
-            )
+            try readPolicy.authorizeGet(model, fields: authorizedFields)
             models.append(model)
         }
         return models
@@ -1176,8 +1215,8 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             )
         }
         let storageLimit = maximumRows + 1
-        try container.securityDelegate?.evaluateList(
-            entity: runtime.entity.name,
+        try readPolicy.authorizeList(
+            entityName: runtime.entity.name,
             limit: storageLimit,
             offset: nil,
             orderBy: nil
@@ -1225,10 +1264,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             )
             let model = try runtime.canonicalized(persistedModel)
             try workMeter.checkpoint(at: .storageRow)
-            try container.securityDelegate?.evaluateGet(
-                model,
-                fields: nil
-            )
+            try readPolicy.authorizeGet(model)
             guard sourceRowCount < maximumRows else {
                 return DatabaseRetainedEntityMutationScan(
                     changes: changes.finish(),
@@ -1446,22 +1482,17 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         let runtime = try entityRuntime(named: Model.persistableType)
         let canonicalModel = try runtime.canonicalized(persistedModel)
         let model = try canonicalModel.decode(as: Model.self)
-        try container.securityDelegate?.evaluateGet(
-            canonicalModel,
-            fields: nil
-        )
+        try readPolicy.authorizeGet(canonicalModel)
         return model
     }
 
     private func entityRuntime(
         named entity: String
     ) throws -> EntityRuntimeRegistration {
-        guard container.schema.entity(named: entity) != nil else {
+        guard readPolicy.schema.entity(named: entity) != nil else {
             throw DatabaseTransactionError.unknownEntity(entity)
         }
-        guard let runtime = container.runtimeConfiguration.entityRuntimes.registration(
-            named: entity
-        ) else {
+        guard let runtime = readPolicy.entityRuntime(named: entity) else {
             throw DatabaseTransactionError.entityHasNoPersistableType(entity)
         }
         return runtime

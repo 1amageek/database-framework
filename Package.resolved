@@ -39,7 +39,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/storage-kit.git",
       "state" : {
-        "revision" : "3b7ef845b315fcb5d858bbe4d1ca36d5ab9c080e"
+        "revision" : "26ec36c61561bb0bf3fd1f7b16575fe0b0973399"
       }
     },
     {

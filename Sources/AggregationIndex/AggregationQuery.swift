@@ -692,7 +692,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         subspace: Subspace,
         idExpression: KeyExpression,
         aggregation: AggregationSpec,
-        transaction: any TransactionAccess
+        transaction: DatabaseReadTransaction
     ) async throws -> [(grouping: [FieldValue], value: FieldValue?)] {
         switch aggregation.type {
         case .count:
@@ -701,7 +701,9 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
                 subspace: subspace,
                 idExpression: idExpression
             )
-            let counts = try await maintainer.getAllCounts(transaction: transaction)
+            let counts = try await maintainer.getAllCounts(
+                transaction: transaction.storageTransaction
+            )
             return counts.map { ($0.grouping, FieldValue.int64($0.count)) }
 
         case .sum:
@@ -738,7 +740,9 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
                 idExpression: idExpression,
                 precision: precision
             )
-            let distincts = try await maintainer.getAllDistinctCounts(transaction: transaction)
+            let distincts = try await maintainer.getAllDistinctCounts(
+                transaction: transaction.storageTransaction
+            )
             return try distincts.map { result in
                 guard result.estimated >= 0 else {
                     throw AggregationQueryError.invalidIndexDefinition(index.name)
@@ -764,7 +768,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
             )
             let percentiles = try await maintainer.getAllPercentiles(
                 percentiles: [p],
-                transaction: transaction
+                transaction: transaction.storageTransaction
             )
             return try percentiles.map { result in
                 guard let value = result.values[p] else {
@@ -802,7 +806,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
-        transaction: any TransactionAccess
+        transaction: DatabaseReadTransaction
     ) async throws -> [(grouping: [FieldValue], value: FieldValue?)] {
         switch valueType {
 
@@ -837,14 +841,16 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
-        transaction: any TransactionAccess
+        transaction: DatabaseReadTransaction
     ) async throws -> [(grouping: [FieldValue], value: FieldValue?)] {
         let maintainer = SumIndexMaintainer<T, Value>(
             index: index,
             subspace: subspace,
             idExpression: idExpression
         )
-        let sums = try await maintainer.getAllSums(transaction: transaction)
+        let sums = try await maintainer.getAllSums(
+            transaction: transaction.storageTransaction
+        )
         return try sums.map { result in
             try CanonicalAggregationReducer.validate(
                 value: result.sum,
@@ -859,7 +865,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
-        transaction: any TransactionAccess
+        transaction: DatabaseReadTransaction
     ) async throws -> [(grouping: [FieldValue], value: FieldValue?)] {
         switch valueType {
 
@@ -894,7 +900,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
-        transaction: any TransactionAccess
+        transaction: DatabaseReadTransaction
     ) async throws -> [(grouping: [FieldValue], value: FieldValue?)] {
         let maintainer = AverageIndexMaintainer<T, Value>(
             index: index,
@@ -902,7 +908,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
             idExpression: idExpression
         )
         let averages = try await maintainer.getAllAverages(
-            transaction: transaction
+            transaction: transaction.storageTransaction
         )
         return try averages.map { result in
             try CanonicalAggregationReducer.validate(
@@ -918,7 +924,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
-        transaction: any TransactionAccess
+        transaction: DatabaseReadTransaction
     ) async throws -> [(grouping: [FieldValue], value: FieldValue?)] {
         switch valueType {
 
@@ -957,14 +963,16 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
-        transaction: any TransactionAccess
+        transaction: DatabaseReadTransaction
     ) async throws -> [(grouping: [FieldValue], value: FieldValue?)] {
         let maintainer = MinIndexMaintainer<T, Value>(
             index: index,
             subspace: subspace,
             idExpression: idExpression
         )
-        let values = try await maintainer.getAllMins(transaction: transaction)
+        let values = try await maintainer.getAllMins(
+            transaction: transaction.storageTransaction
+        )
         return try values.map { result in
             let value = try CanonicalAggregationReducer.fieldValue(
                 result.min,
@@ -979,7 +987,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
-        transaction: any TransactionAccess
+        transaction: DatabaseReadTransaction
     ) async throws -> [(grouping: [FieldValue], value: FieldValue?)] {
         switch valueType {
 
@@ -1018,14 +1026,16 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         index: ResolvedIndex,
         subspace: Subspace,
         idExpression: KeyExpression,
-        transaction: any TransactionAccess
+        transaction: DatabaseReadTransaction
     ) async throws -> [(grouping: [FieldValue], value: FieldValue?)] {
         let maintainer = MaxIndexMaintainer<T, Value>(
             index: index,
             subspace: subspace,
             idExpression: idExpression
         )
-        let values = try await maintainer.getAllMaxs(transaction: transaction)
+        let values = try await maintainer.getAllMaxs(
+            transaction: transaction.storageTransaction
+        )
         return try values.map { result in
             let value = try CanonicalAggregationReducer.fieldValue(
                 result.max,

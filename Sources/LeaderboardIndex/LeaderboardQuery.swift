@@ -383,7 +383,7 @@ public struct LeaderboardQueryBuilder<T: Persistable>: Sendable {
         missing: @Sendable @escaping () -> Result,
         _ operation: @Sendable @escaping (
             TimeWindowLeaderboardIndexMaintainer<T>,
-            any TransactionAccess
+            any TransactionReadAccess
         ) async throws -> Result
     ) async throws -> Result {
         return try await queryContext.withReadableIndex(

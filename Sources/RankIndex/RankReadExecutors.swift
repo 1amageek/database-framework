@@ -53,8 +53,14 @@ private func validatePercentile(_ value: Double) throws {
 private struct RankReadExecutor: IndexReadExecutor {
     let indexType: IndexType = .rank
 
+    func additionalRequiredFieldNames(
+        indexScan: IndexScanSource
+    ) throws -> Set<String> {
+        []
+    }
+
     func executeRows(
-        context: DatabaseContext,
+        session: DatabaseReadSession,
         selectQuery: SelectQuery,
         index: IndexDescriptor,
         indexScan: IndexScanSource,
@@ -62,83 +68,80 @@ private struct RankReadExecutor: IndexReadExecutor {
         options: ReadExecutionContext,
         partitions: FieldObject
     ) async throws -> IndexReadResult {
+        let transaction = session.transaction.storageTransaction
         let parameters = IndexReadParameters(indexScan.parameters)
         let fieldName = try parameters.requireString(
             named: RankReadParameter.fieldName
         )
 
-        let execution = CanonicalReadExecution.resolve(
-            requested: options.consistency,
-            default: .snapshot
-        )
         guard index.type == indexType,
             index.fieldNames == [fieldName] else {
             throw RankReadError.invalidParameter(RankReadParameter.fieldName)
         }
-        try context.authorizeCanonicalListAccess(
+        try session.requireCanonicalIndexReadAuthorization(
             entity: entity,
-            selectQuery: selectQuery
+            index: index,
+            selectQuery: selectQuery,
+            additionalFieldNames: []
         )
-        return try await context.indexQueryContext.withReadableIndex(
+        guard let readableIndex = try await session.readableIndex(
             named: index.name,
             indexType: indexType,
             forEntityName: entity.name,
-            partitions: partitions,
-            configuration: execution.transactionConfiguration
-        ) { readableIndex, transaction -> IndexReadResult in
-            guard let readableIndex else { return .empty }
-            let rankedKeys = try await scanRanked(
-                indexSubspace: readableIndex.subspace,
-                transaction: transaction,
-                parameters: parameters,
-                workMeter: options.workMeter
-            )
-            let rankedKeyReservation = try reserveRankedKeys(
-                rankedKeys,
-                workMeter: options.workMeter
-            )
-            defer { rankedKeyReservation.release() }
-            let primaryKeys = rankedKeys.map { $0.primaryKey }
-            let primaryKeyReservation = try DatabaseIntermediateCollectionMeter
-                .reserveTuples(
-                    primaryKeys,
-                    workMeter: options.workMeter,
-                    stage: .indexScan
-                )
-            defer { primaryKeyReservation.release() }
-            let fetched = try await context.fetchPersistedModelsPreservingOrder(
-                entity: entity,
-                primaryKeys: primaryKeys,
-                partitions: partitions,
-                transaction: transaction,
-                snapshot: execution.consistency == .snapshot,
-                workMeter: options.workMeter
-            )
-            guard fetched.count == rankedKeys.count else {
-                throw RankReadError.fetchedEntityCountMismatch(
-                    expected: rankedKeys.count,
-                    actual: fetched.count
-                )
-            }
-            return try IndexReadResult.build(
+            partitions: partitions
+        ) else {
+            return .empty
+        }
+        let rankedKeys = try await scanRanked(
+            indexSubspace: readableIndex.subspace,
+            transaction: transaction,
+            parameters: parameters,
+            workMeter: options.workMeter
+        )
+        let rankedKeyReservation = try reserveRankedKeys(
+            rankedKeys,
+            workMeter: options.workMeter
+        )
+        defer { rankedKeyReservation.release() }
+        let primaryKeys = rankedKeys.map { $0.primaryKey }
+        let primaryKeyReservation = try DatabaseIntermediateCollectionMeter
+            .reserveTuples(
+                primaryKeys,
                 workMeter: options.workMeter,
-                expectedCount: rankedKeys.count
-            ) { rows in
-                for (rankedKey, item) in zip(rankedKeys, fetched) {
-                    guard let item else {
-                        throw RankReadError.missingFetchedEntity(
-                            primaryKey: rankedKey.primaryKey.pack()
-                        )
-                    }
-                    try rows.append(
-                        try IndexReadRow.materializing(
-                            item,
-                            annotations: [
-                                "rank": .int64(Int64(rankedKey.rank))
-                            ]
-                        )
+                stage: .indexScan
+            )
+        defer { primaryKeyReservation.release() }
+        let fetched = try await session.fetchPersistedModelsPreservingOrder(
+            entity: entity,
+            primaryKeys: primaryKeys,
+            partitions: partitions,
+            snapshot: options.consistency == .snapshot,
+            workMeter: options.workMeter
+        )
+        guard fetched.count == rankedKeys.count else {
+            throw RankReadError.fetchedEntityCountMismatch(
+                expected: rankedKeys.count,
+                actual: fetched.count
+            )
+        }
+        return try IndexReadResult.build(
+            workMeter: options.workMeter,
+            expectedCount: rankedKeys.count
+        ) { rows in
+            for (rankedKey, item) in zip(rankedKeys, fetched) {
+                guard let item else {
+                    throw RankReadError.missingFetchedEntity(
+                        primaryKey: rankedKey.primaryKey.pack()
                     )
                 }
+                try rows.append(
+                    try IndexReadRow.materializing(
+                        item,
+                        annotations: [
+                            "rank": .int64(Int64(rankedKey.rank))
+                        ]
+                    )
+                )
             }
         }
     }
@@ -225,8 +228,14 @@ private struct RankReadExecutor: IndexReadExecutor {
 private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
     let indexType: IndexType = .rank
 
+    func additionalRequiredFieldNames(
+        indexScan: IndexScanSource
+    ) throws -> Set<String> {
+        []
+    }
+
     func executeRows(
-        context: DatabaseContext,
+        session: DatabaseReadSession,
         selectQuery: SelectQuery,
         index: IndexDeclaration<String>,
         indexScan: IndexScanSource,
@@ -234,6 +243,7 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
         options: ReadExecutionContext,
         partitions: FieldObject
     ) async throws -> IndexReadResult {
+        let transaction = session.transaction.storageTransaction
         let parameters = IndexReadParameters(indexScan.parameters)
         let fieldName = try parameters.requireString(
             named: RankReadParameter.fieldName
@@ -244,97 +254,79 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
                 RankReadParameter.fieldName
             )
         }
-        let execution = CanonicalReadExecution.resolve(
-            requested: options.consistency,
-            default: .snapshot
-        )
-        let orderByFields = try selectQuery.requiredOrderByColumnNames()
-        try context.authorizePolymorphicListAccess(
+        try session.requireCanonicalPolymorphicIndexReadAuthorization(
+            index: index,
             group: group,
-            limit: try runtimeInteger(
-                selectQuery.limit,
-                parameter: "limit"
-            ),
-            offset: try runtimeInteger(
-                selectQuery.offset,
-                parameter: "offset"
-            ),
-            orderBy: orderByFields
+            selectQuery: selectQuery,
+            additionalFieldNames: []
         )
 
-        return try await context
-            .executeCanonicalRead(
-                configuration: execution.transactionConfiguration
-            ) { transaction in
-            guard let readableIndex = try await context.container
-                .readablePolymorphicIndex(
-                    index,
-                    in: group,
-                    transaction: transaction
-                ) else {
-                return .empty
-            }
-            let rankedKeys = try await scanRanked(
-                indexSubspace: readableIndex.subspace,
-                transaction: transaction,
-                parameters: parameters,
-                workMeter: options.workMeter
-            )
-            let rankedKeyReservation = try reserveRankedKeys(
-                rankedKeys,
-                workMeter: options.workMeter
-            )
-            defer { rankedKeyReservation.release() }
-            let primaryKeys = rankedKeys.map { $0.primaryKey }
-            let primaryKeyReservation = try DatabaseIntermediateCollectionMeter
-                .reserveTuples(
-                    primaryKeys,
-                    workMeter: options.workMeter,
-                    stage: .indexScan
-                )
-            defer { primaryKeyReservation.release() }
-            let entities = try await context.fetchPolymorphicItemsPreservingOrder(
-                group: group,
-                ids: primaryKeys,
-                transaction: transaction,
-                workMeter: options.workMeter
-            )
-            let entityReservation = try DatabaseIntermediateCollectionMeter
-                .reservePolymorphicEntities(
-                    entities,
-                    workMeter: options.workMeter,
-                    stage: .indexScan
-                )
-            defer { entityReservation.release() }
-            guard rankedKeys.count == entities.count else {
-                throw RankReadError.fetchedEntityCountMismatch(
-                    expected: rankedKeys.count,
-                    actual: entities.count
-                )
-            }
-            return try IndexReadResult.build(
+        guard let readableIndex = try await session.readablePolymorphicIndex(
+            index,
+            in: group
+        ) else {
+            return .empty
+        }
+        let rankedKeys = try await scanRanked(
+            indexSubspace: readableIndex.subspace,
+            transaction: transaction,
+            parameters: parameters,
+            workMeter: options.workMeter
+        )
+        let rankedKeyReservation = try reserveRankedKeys(
+            rankedKeys,
+            workMeter: options.workMeter
+        )
+        defer { rankedKeyReservation.release() }
+        let primaryKeys = rankedKeys.map { $0.primaryKey }
+        let primaryKeyReservation = try DatabaseIntermediateCollectionMeter
+            .reserveTuples(
+                primaryKeys,
                 workMeter: options.workMeter,
-                expectedCount: rankedKeys.count
-            ) { rows in
-                for (rankedKey, entity) in zip(rankedKeys, entities) {
-                    guard let entity else {
-                        throw RankReadError.missingFetchedEntity(
-                            primaryKey: rankedKey.primaryKey.pack()
-                        )
-                    }
-                    try rows.append(
-                        try IndexReadRow.materializing(
-                            entity.item,
-                            annotations: [
-                                PolymorphicRowAnnotation.typeName:
-                                    .string(entity.typeName),
-                                PolymorphicRowAnnotation.typeCode:
-                                    .int64(entity.typeCode),
-                                "rank": .int64(Int64(rankedKey.rank)),
-                                ]
-                            )
+                stage: .indexScan
+            )
+        defer { primaryKeyReservation.release() }
+        let entities = try await session.fetchPolymorphicItemsPreservingOrder(
+            group: group,
+            ids: primaryKeys,
+            snapshot: options.consistency == .snapshot,
+            workMeter: options.workMeter
+        )
+        let entityReservation = try DatabaseIntermediateCollectionMeter
+            .reservePolymorphicEntities(
+                entities,
+                workMeter: options.workMeter,
+                stage: .indexScan
+            )
+        defer { entityReservation.release() }
+        guard rankedKeys.count == entities.count else {
+            throw RankReadError.fetchedEntityCountMismatch(
+                expected: rankedKeys.count,
+                actual: entities.count
+            )
+        }
+        return try IndexReadResult.build(
+            workMeter: options.workMeter,
+            expectedCount: rankedKeys.count
+        ) { rows in
+            for (rankedKey, entity) in zip(rankedKeys, entities) {
+                guard let entity else {
+                    throw RankReadError.missingFetchedEntity(
+                        primaryKey: rankedKey.primaryKey.pack()
                     )
                 }
+                try rows.append(
+                    try IndexReadRow.materializing(
+                        entity.item,
+                        annotations: [
+                            PolymorphicRowAnnotation.typeName:
+                                .string(entity.typeName),
+                            PolymorphicRowAnnotation.typeCode:
+                                .int64(entity.typeCode),
+                            "rank": .int64(Int64(rankedKey.rank)),
+                        ]
+                    )
+                )
             }
         }
     }
@@ -414,19 +406,6 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
         default:
             throw RankReadError.invalidParameter(RankReadParameter.mode)
         }
-    }
-
-    private func runtimeInteger(
-        _ value: UInt64?,
-        parameter: String
-    ) throws -> Int? {
-        guard let value else {
-            return nil
-        }
-        guard let result = Int(exactly: value) else {
-            throw RankReadError.invalidParameter(parameter)
-        }
-        return result
     }
 
 }
