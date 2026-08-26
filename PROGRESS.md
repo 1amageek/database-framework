@@ -1,26 +1,82 @@
 # Progress
 
-- [x] Sprint 1: FoundationDB scenario lifecycle ownership (`3546f4fe`)
-- [x] Sprint 2: Trait-independent test graph (`05e2f1eb`)
-- [x] Sprint 3: Deterministic concurrency and durable atomicity evidence (`426aeee1`)
-- [x] Sprint 4: Canonical graph execution contract (`6e6123c8`)
-- [ ] Sprint 5: Engine-owned read session
-  - [ ] Review transitive admission, descendant draining, schema-generation binding, authorization, snapshot, and cancellation on the production path; fix only violations of this contract
-  - [ ] Run one consolidated standard and `MultiBase` focused suite after the implementation is stable
-  - [ ] Commit the coherent read-session change
-- [ ] Sprint 6: Retained result and byte lifetime ownership
-  - [ ] Keep every escaped Version payload charged for its complete element lifetime
-  - [ ] Review SQL, RDF, polymorphic, and Version allocation, copy, retention, release, cancellation, and failure paths; fix only violations of retained-result ownership
-  - [ ] Run one consolidated lifetime suite after the implementation is stable
-  - [ ] Commit the coherent retained-lifetime change
-- [ ] Sprint 7: Specialized index canonical read contracts
-  - [ ] Compile the specialized-index production and direct test targets
-  - [ ] Review public semantics, authorization, corruption failure, resource ownership, and zero-copy behavior; fix only violations of the specialized-index contract
-  - [ ] Run one consolidated specialized-index suite after the implementation is stable
-  - [ ] Commit the coherent specialized-index change
-- [ ] Integrated verification
-  - [ ] Audit incomplete implementations, conditional synchronization, unsafe ownership, dependency direction, and local path dependencies
-  - [ ] Reconcile intentional test additions in `scripts/docker/versions.env` and `.github/workflows/ci.yml`
-  - [ ] Run each affected GraphIndexes, SQLite, PostgreSQL, FoundationDB, and macOS parity lane once
-  - [ ] Complete the final production review and resolve every finding
-  - [ ] Confirm coherent sprint commits and no task-external unpushed commit, then push the current branch
+- [x] DF-01 FoundationDB scenario lifecycle is owned and deterministic (`3546f4fe`) `depends:none` `parallel:none`
+- [x] DF-02 Test discovery is independent of optional backend traits (`05e2f1eb`) `depends:none` `parallel:none`
+- [x] DF-03 Concurrency and durable atomicity evidence is deterministic (`426aeee1`) `depends:none` `parallel:none`
+- [x] DF-04 Canonical graph execution rejects disconnected and ambiguous plans (`6e6123c8`) `depends:none` `parallel:none`
+- [ ] DF-06A StorageKit publishes a committed and pushed bounded point-read contract whose final read-your-writes value is rejected before disclosure when it exceeds the caller limit, without changing storage topology or persisted formats `depends:none` `parallel:none`
+  - [ ] DF-06A.1 `TransactionReadAccess` and `Transaction` define negative-limit rejection, missing-value behavior, exact observed and maximum metadata, and non-poisoning caller-limit failure while preserving cancellation and backend failures `depends:none` `parallel:none`
+  - [ ] DF-06A.2 InMemory, SQLite, PostgreSQL, FoundationDB, and Cloudflare enforce the bound at their earliest supported pre-disclosure boundary, and PostgreSQL applies the bound to the final local-write and atomic-replay result instead of an intermediate persisted base value `depends:DF-06A.1` `parallel:none`
+  - [ ] DF-06A.3 Production review finds no P0/P1 violation in read-your-writes ordering, atomic replay, transaction poisoning, exact error metadata, large-value copies, cancellation, or backend-specific result presence `depends:DF-06A.2` `parallel:none`
+  - [ ] DF-06A.4 The focused bounded-read suites pass on every changed backend, including a real PostgreSQL service and post-rejection same-transaction reads, with reviewed expected counts and zero failures, skips, expected failures, runtime warnings, or internal tool errors `depends:DF-06A.3` `parallel:none`
+  - [ ] DF-06A.5 The StorageKit bounded-read change and its tests are one coherent commit and are pushed normally to the current branch upstream, with no unrelated commit, tag, release, or deployment `depends:DF-06A.4` `parallel:none`
+- [ ] DF-05 The latest source has one committed schema-bound read-session and authorization contract, isolated from retained-resource and bounded-read changes without changing schema, wire, storage, or persisted-value semantics `depends:DF-04` `parallel:none`
+  - [ ] DF-05.1 The mixed worktree is partitioned so every DF-05 hunk belongs only to authorization, session provenance, transaction access, snapshot binding, descendant lifetime, or required-field admission, while every later-task hunk remains intact and uncommitted `depends:DF-04` `parallel:none`
+  - [ ] DF-05.2 Fusion performs one bounded logical analysis and one authorization decision, and every SQL, SPARQL, graph, ontology, aggregation, leaderboard, spatial, and specialized-index execution path receives only the resulting session-owned transaction, snapshot, policy, work meter, and parent-issued child capability `depends:DF-05.1` `parallel:none`
+  - [ ] DF-05.3 Feature-owned fields and exact concrete, index, and polymorphic requirements enter the sealed preflight proof before storage access, while cancellation, cursor draining, schema invalidation, and child release remain owned by the root session lifecycle `depends:DF-05.2` `parallel:none`
+  - [ ] DF-05.4 Production review of the isolated latest-source path finds no P0/P1 violation in authorization order, proof identity, ambient authority, repeated resolution, foreign-session use, pre-authorization disclosure, cancellation, or descendant draining `depends:DF-05.3` `parallel:none`
+  - [ ] DF-05.5 One focused standard and `MultiBase` authorization/session batch passes on the reviewed source with its reviewed expected count and zero failures, skips, expected failures, runtime warnings, or internal tool errors `depends:DF-05.4` `parallel:none`
+  - [ ] DF-05.6 The isolated authorization/session change and its progress state are one coherent commit, and the remaining worktree contains no omitted DF-05 requirement or accidental loss of later-task work `depends:DF-05.5` `parallel:none`
+- [ ] DF-06B DatabaseFramework atomically admits each bounded point read before suspension and retains its exact charge with the returned bytes in one committed boundary `depends:DF-06A,DF-05` `parallel:none`
+  - [ ] DF-06B.1 DatabaseFramework pins the reviewed pushed StorageKit revision and exposes no local-path or unpublished dependency evidence `depends:DF-06A,DF-05` `parallel:none`
+  - [ ] DF-06B.2 A point-read allowance is atomically reserved before backend dispatch, shrunk to the returned byte length, attached to the returned owner, and released exactly once on missing values, failure, cancellation, or final owner release, eliminating the quote-await-claim race `depends:DF-06B.1` `parallel:none`
+  - [ ] DF-06B.3 Framework error mapping accepts only the matching StorageKit over-limit error and issued maximum, while mismatched metadata and backend contract failures remain explicit typed failures `depends:DF-06B.2` `parallel:none`
+  - [ ] DF-06B.4 Production review finds no P0/P1 violation in atomic admission, concurrent meter claims, owner lifetime, zero-copy transfer, error provenance, cancellation, or transaction usability `depends:DF-06B.3` `parallel:none`
+  - [ ] DF-06B.5 Focused success, missing, over-limit, concurrent-claim, cancellation, backend-mismatch, and release tests pass with their reviewed expected count and zero failures, skips, expected failures, runtime warnings, or internal tool errors `depends:DF-06B.4` `parallel:none`
+  - [ ] DF-06B.6 The Framework bounded-read admission and dependency pin are one coherent commit with its progress state and no retained-consumer implementation `depends:DF-06B.5` `parallel:none`
+- [ ] DF-06C The shared retained-resource foundation is committed as one owner and reservation contract without query-language or specialized-index policy `depends:DF-06B` `parallel:none`
+  - [ ] DF-06C.1 Retained buffers, arrays, builders, primary-key collections, query rows, RDF graphs, and stored models preserve one originating meter, exact reservation transfer, scoped borrowing, and exactly-once release while rejecting foreign-meter composition `depends:DF-06B` `parallel:none`
+  - [ ] DF-06C.2 Purpose-bound materialization and destination insertion replace raw Copyable callbacks or separable value-and-reservation APIs, and no pointer, row, tuple, quad, model, or collection view can outlive its owner `depends:DF-06C.1` `parallel:none`
+  - [ ] DF-06C.3 Independent footprint fixtures falsify under-accounting for collection storage, identifiers, tuples, decoded models, annotations, and destination owners before consumer migrations rely on them `depends:DF-06C.2` `parallel:none`
+  - [ ] DF-06C.4 Production review finds no P0/P1 violation in allocation-before-admission, copy, move, borrow, meter provenance, failure, cancellation, or deallocation `depends:DF-06C.3` `parallel:none`
+  - [ ] DF-06C.5 Focused owner, foreign-meter, footprint-boundary, failure, cancellation, and release tests pass with their reviewed expected count and zero failures, skips, expected failures, runtime warnings, or internal tool errors `depends:DF-06C.4` `parallel:none`
+  - [ ] DF-06C.6 The retained-resource foundation and its progress state are one coherent commit containing no consumer-specific policy `depends:DF-06C.5` `parallel:none`
+- [ ] DF-06D Canonical SQL and relational-row execution are committed with retained source and destination ownership and unchanged query semantics `depends:DF-06C` `parallel:none`
+  - [ ] DF-06D.1 SQL preparation and canonical relational scans transfer retained rows directly without raw array promotion, post-hoc re-retention, duplicate intermediate rows, or unadmitted collection allocation `depends:DF-06C` `parallel:none`
+  - [ ] DF-06D.2 Production review finds no P0/P1 violation in row footprint, ordering, authorization, destination admission, copy, failure, cancellation, or release `depends:DF-06D.1` `parallel:none`
+  - [ ] DF-06D.3 Focused SQL and canonical-row budget and lifetime tests pass with their reviewed expected count and zero failures, skips, expected failures, runtime warnings, or internal tool errors `depends:DF-06D.2` `parallel:none`
+  - [ ] DF-06D.4 The SQL and canonical-row migration and its progress state are one coherent commit `depends:DF-06D.3` `parallel:none`
+- [ ] DF-06E RDF, SPARQL, graph-table, and Composition execution are committed with retained graph ownership and exact overlapping workspace admission `depends:DF-06C` `parallel:none`
+  - [ ] DF-06E.1 SPARQL SELECT, RDF sources, and graph-table execution transfer retained rows, values, and quads through purpose-bound APIs without copied raw payload escape or post-hoc re-retention `depends:DF-06C` `parallel:none`
+  - [ ] DF-06E.2 Composition admits both the qualified quad and its encoded identity while source and destination ownership overlap, merges contributors without an unadmitted temporary collection, and preserves snapshot and authorization isolation `depends:DF-06E.1` `parallel:none`
+  - [ ] DF-06E.3 Production review finds no P0/P1 violation in RDF value footprint, query-form materialization, workspace accounting, contributor merge, same-meter provenance, failure, cancellation, or release `depends:DF-06E.2` `parallel:none`
+  - [ ] DF-06E.4 Focused SPARQL, RDF, graph-table, and Composition budget and lifetime tests pass with their reviewed expected count and zero failures, skips, expected failures, runtime warnings, or internal tool errors `depends:DF-06E.3` `parallel:none`
+  - [ ] DF-06E.5 The RDF, SPARQL, graph-table, and Composition migration and its progress state are one coherent commit `depends:DF-06E.4` `parallel:none`
+- [ ] DF-06F Polymorphic scans are committed with retained entity and collection ownership and unchanged type-selection semantics `depends:DF-06C` `parallel:none`
+  - [ ] DF-06F.1 Each decoded polymorphic entity, identifier, type annotation, model, and aggregate collection is admitted before allocation and exposed only through destination-bound materialization, comparison, or string transfer on the originating meter `depends:DF-06C` `parallel:none`
+  - [ ] DF-06F.2 A deterministic scan-level test reaches collection admission before cursor creation, and canonical source construction creates neither an unadmitted flattened row nor a duplicate intermediate representation `depends:DF-06F.1` `parallel:none`
+  - [ ] DF-06F.3 Production review finds no P0/P1 violation in runtime type resolution, authorization, ordering, footprint, foreign-meter rejection, failure, cancellation, or release `depends:DF-06F.2` `parallel:none`
+  - [ ] DF-06F.4 Focused polymorphic scan, budget, authorization, and lifetime tests pass with their reviewed expected count and zero failures, skips, expected failures, runtime warnings, or internal tool errors `depends:DF-06F.3` `parallel:none`
+  - [ ] DF-06F.5 The polymorphic migration and its progress state are one coherent commit `depends:DF-06F.4` `parallel:none`
+- [ ] DF-06G Bitmap reads are committed with bounded storage access and retained bitmap and primary-key ownership without changing bitmap query semantics `depends:DF-06C` `parallel:none`
+  - [ ] DF-06G.1 Bitmap data and identifier mappings use bounded point reads, reject foreign source and destination meters, and expose no raw bitmap or tuple beyond its retained owner `depends:DF-06C` `parallel:none`
+  - [ ] DF-06G.2 Production review finds no P0/P1 violation in bitmap decoding, identifier ordering, authorization, point-read admission, copy, failure, cancellation, or release `depends:DF-06G.1` `parallel:none`
+  - [ ] DF-06G.3 Focused bitmap owner, bound, ordering, authorization, and release tests pass with their reviewed expected count and zero failures, skips, expected failures, runtime warnings, or internal tool errors `depends:DF-06G.2` `parallel:none`
+  - [ ] DF-06G.4 The Bitmap migration and its progress state are one coherent commit `depends:DF-06G.3` `parallel:none`
+- [ ] DF-06H Rank reads are committed with retained ordered primary-key ownership and unchanged ranking semantics `depends:DF-06C` `parallel:none`
+  - [ ] DF-06H.1 Every rank entry keeps its primary-key payload coupled to its reservation through ordered fetch and row materialization, with no raw tuple subscript or callback escape `depends:DF-06C` `parallel:none`
+  - [ ] DF-06H.2 Production review finds no P0/P1 violation in entry decoding, rank ordering, authorization, footprint, failure, cancellation, or release `depends:DF-06H.1` `parallel:none`
+  - [ ] DF-06H.3 Focused rank owner, ordering, malformed-entry, authorization, failure, and release tests pass with their reviewed expected count and zero failures, skips, expected failures, runtime warnings, or internal tool errors `depends:DF-06H.2` `parallel:none`
+  - [ ] DF-06H.4 The Rank migration and its progress state are one coherent commit `depends:DF-06H.3` `parallel:none`
+- [ ] DF-06I FullText reads are committed with one-meter result, facet, model, and destination ownership and unchanged scoring semantics `depends:DF-06C` `parallel:none`
+  - [ ] DF-06I.1 Plain, scored, faceted, and autocomplete outputs use purpose-specific retained materialization, admit result and facet collections before allocation, and reject foreign-meter aggregation `depends:DF-06C` `parallel:none`
+  - [ ] DF-06I.2 Production review finds no P0/P1 violation in scoring, facet counts, ordering, authorization, footprint, failure, cancellation, or release `depends:DF-06I.1` `parallel:none`
+  - [ ] DF-06I.3 Focused FullText scoring, facet, owner, budget, failure, cancellation, and release tests pass with their reviewed expected count and zero failures, skips, expected failures, runtime warnings, or internal tool errors `depends:DF-06I.2` `parallel:none`
+  - [ ] DF-06I.4 The FullText migration and its progress state are one coherent commit `depends:DF-06I.3` `parallel:none`
+- [ ] DF-06J Vector reads are committed with retained tuple, normalization, and match ownership across Flat, IVF, PQ, and HNSW without changing vector-search semantics `depends:DF-06C` `parallel:none`
+  - [ ] DF-06J.1 Every persisted point read, normalization array, tuple transformation, candidate collection, and match aggregate is admitted before use, retains its originating meter, and rejects cross-meter composition `depends:DF-06C` `parallel:none`
+  - [ ] DF-06J.2 HNSW normalization and search transfer retained arrays without an uncharged copy, escaped tuple, foreign owner, or silent fallback, while Flat, IVF, and PQ preserve equivalent resource and ordering contracts `depends:DF-06J.1` `parallel:none`
+  - [ ] DF-06J.3 Production review finds no P0/P1 violation in point-read bounds, normalization, candidate ordering, distance semantics, zero-copy borrowing, failure, cancellation, or release `depends:DF-06J.2` `parallel:none`
+  - [ ] DF-06J.4 Focused Flat, IVF, PQ, HNSW, conversion, owner, budget, failure, cancellation, and release tests pass with their reviewed expected count and zero failures, skips, expected failures, runtime warnings, or internal tool errors `depends:DF-06J.3` `parallel:none`
+  - [ ] DF-06J.5 The Vector migration and its progress state are one coherent commit `depends:DF-06J.4` `parallel:none`
+- [ ] DF-06K Version reads are committed with retained history and decoded-model ownership through authorization and final materialization without changing version semantics `depends:DF-06C` `parallel:none`
+  - [ ] DF-06K.1 Version history entries and decoded stored models remain coupled to their originating meter through authorization and footprint-first destination construction, with no separable raw model or history-array escape `depends:DF-06C` `parallel:none`
+  - [ ] DF-06K.2 Production review finds no P0/P1 violation in history ordering, authorization, decoded footprint, destination admission, failure, cancellation, or release `depends:DF-06K.1` `parallel:none`
+  - [ ] DF-06K.3 Focused Version success, authorization failure, budget failure, cancellation, and final-release tests pass with their reviewed expected count and zero failures, skips, expected failures, runtime warnings, or internal tool errors `depends:DF-06K.2` `parallel:none`
+  - [ ] DF-06K.4 The Version migration and its progress state are one coherent commit `depends:DF-06K.3` `parallel:none`
+- [ ] DF-07 Every committed top-level contract passes one final affected-path integration and the current branches are pushed without release operations `depends:DF-01,DF-02,DF-03,DF-04,DF-05,DF-06A,DF-06B,DF-06C,DF-06D,DF-06E,DF-06F,DF-06G,DF-06H,DF-06I,DF-06J,DF-06K` `parallel:none`
+  - [ ] DF-07.1 Final source audit finds no incomplete callable branch, synchronization divergence, unsafe lifetime violation, dependency reversal, obsolete Fusion path, unassigned mixed-worktree hunk, or local path dependency; any contract defect reopens its owning top-level item instead of being patched as integration work `depends:DF-01,DF-02,DF-03,DF-04,DF-05,DF-06A,DF-06B,DF-06C,DF-06D,DF-06E,DF-06F,DF-06G,DF-06H,DF-06I,DF-06J,DF-06K` `parallel:none`
+  - [ ] DF-07.2 Intentional test additions are reconciled only in their executable expected-count owners, and the final committed URL dependency graph resolves the reviewed StorageKit and DatabaseKit revisions `depends:DF-07.1` `parallel:none`
+  - [ ] DF-07.3 The affected StorageKit package/backend targets and DatabaseFramework GraphIndexes, macOS parity, SQLite, PostgreSQL, and FoundationDB lanes each pass once on the final source state with exact configured counts, zero failures, errors, skips, expected failures, compiler or runtime warnings, and clean service teardown `depends:DF-07.2` `parallel:none`
+  - [ ] DF-07.4 Final design-conformance review finds no P0/P1 violation in scope, responsibility, authorization, atomic admission, lifetime, zero-copy behavior, persisted semantics, or dependency direction; any finding reopens its owner and invalidates dependent evidence `depends:DF-07.3` `parallel:none`
+  - [ ] DF-07.5 Integration-only expected-count and progress changes are committed, all task commits contain no task-external unpushed commit, and the current branches are pushed normally to their configured upstreams; tag, release, deployment, and publication remain excluded `depends:DF-07.4` `parallel:none`
