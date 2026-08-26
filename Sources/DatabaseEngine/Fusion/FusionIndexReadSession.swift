@@ -87,11 +87,12 @@ final class FusionIndexReadSession: FusionIndexReadAccess, Sendable {
             stage: .indexScan
         )
         try validatePointKey(key)
-        let value = try await transaction.getValue(
+        let value = try await transaction.readPointValue(
             for: key,
-            snapshot: snapshot
+            snapshot: snapshot,
+            workMeter: workMeter,
+            at: .indexScan
         )
-        try workMeter.checkpoint(at: .indexScan)
         guard let value else { return nil }
         try validateValueSize(value)
         try DatabaseByteProcessingMeter.consume(
@@ -99,16 +100,8 @@ final class FusionIndexReadSession: FusionIndexReadAccess, Sendable {
             workMeter: workMeter,
             stage: .indexScan
         )
-        let reservation = try workMeter.reserveIntermediate(
-            bytes: UInt64(value.count),
-            at: .indexScan
-        )
         return FusionIndexReadValue(
-            bytes: try DatabaseRetainedByteString.make(
-                value,
-                reservation: reservation,
-                at: .indexScan
-            )
+            bytes: value
         )
     }
 

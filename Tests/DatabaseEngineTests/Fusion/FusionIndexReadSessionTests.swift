@@ -54,7 +54,15 @@ struct FusionIndexReadSessionTests {
                         snapshot: snapshot,
                         workMeter: meter
                     )
+                    let expectedPointMaximum = Int(
+                        min(
+                            meter.budget.maximumIntermediateBytes
+                                - meter.retainedIntermediateBytes,
+                            UInt64(Int.max)
+                        )
+                    )
                     #expect(try await session.getValue(key: key)?.bytes == [1])
+                    #expect(recording.pointMaximums == [expectedPointMaximum])
                     let cursor = try session.subspaceCursor(
                         entries,
                         reverse: false
@@ -64,6 +72,7 @@ struct FusionIndexReadSessionTests {
                     try await session.invalidate()
                 }
                 #expect(recording.pointSnapshots == [snapshot])
+                #expect(recording.pointMaximums.count == 1)
                 #expect(recording.rangeSnapshots == [snapshot])
             }
             #expect(meter.retainedIntermediateRows == 0)
@@ -701,6 +710,7 @@ private final class SnapshotRecordingTransaction:
     Sendable {
     private struct State: Sendable {
         var pointSnapshots: [Bool] = []
+        var pointMaximums: [Int] = []
         var rangeSnapshots: [Bool] = []
     }
 
@@ -719,6 +729,10 @@ private final class SnapshotRecordingTransaction:
         state.withLock { $0.pointSnapshots }
     }
 
+    var pointMaximums: [Int] {
+        state.withLock { $0.pointMaximums }
+    }
+
     var rangeSnapshots: [Bool] {
         state.withLock { $0.rangeSnapshots }
     }
@@ -729,6 +743,22 @@ private final class SnapshotRecordingTransaction:
     ) async throws -> ByteString? {
         state.withLock { $0.pointSnapshots.append(snapshot) }
         return try await base.getValue(for: key, snapshot: snapshot)
+    }
+
+    func getValue(
+        for key: ByteString,
+        snapshot: Bool,
+        maximumByteCount: Int
+    ) async throws -> ByteString? {
+        state.withLock { state in
+            state.pointSnapshots.append(snapshot)
+            state.pointMaximums.append(maximumByteCount)
+        }
+        return try await base.getValue(
+            for: key,
+            snapshot: snapshot,
+            maximumByteCount: maximumByteCount
+        )
     }
 
     func getValue(for key: ByteString) async throws -> ByteString? {

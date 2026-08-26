@@ -51,6 +51,18 @@ final class ContainerTransactionAccess: TransactionAccess, Sendable {
         try await transaction.getValue(for: key, snapshot: snapshot)
     }
 
+    func getValue(
+        for key: ByteString,
+        snapshot: Bool,
+        maximumByteCount: Int
+    ) async throws -> ByteString? {
+        try await transaction.getValue(
+            for: key,
+            snapshot: snapshot,
+            maximumByteCount: maximumByteCount
+        )
+    }
+
     func getValue(for key: ByteString) async throws -> ByteString? {
         try await transaction.getValue(for: key)
     }

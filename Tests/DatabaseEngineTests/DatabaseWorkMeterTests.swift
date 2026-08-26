@@ -3,6 +3,7 @@ import DatabaseKit
 import StorageKit
 import Synchronization
 import Testing
+import TestSupport
 @testable import DatabaseEngine
 
 @Suite("Database work meter")
@@ -476,6 +477,388 @@ struct DatabaseWorkMeterTests {
         #expect(meter.retainedIntermediateBytes == 0)
     }
 
+    @Test("concurrent point reads admit before backend dispatch")
+    func concurrentPointReadsAdmitBeforeBackendDispatch() async throws {
+        let storage = ControlledStorageEngine(base: InMemoryEngine())
+        defer { await storage.waitUntilShutdown() }
+        let key = ByteString(utf8: "point-read-race")
+        let nonEmptyKey = ByteString(utf8: "point-read-race-nonempty")
+        let value = ByteString()
+        let nonEmptyValue = ByteString([1, 2, 3, 4])
+        try await storage.withTransaction { transaction in
+            try transaction.setValue(value, for: key)
+            try transaction.setValue(nonEmptyValue, for: nonEmptyKey)
+        }
+        let meter = makeWorkMeter(
+            budget: ExecutionBudget(
+                maximumRows: 4,
+                maximumWorkUnits: 4,
+                maximumIntermediateRows: 4,
+                maximumIntermediateBytes: 8,
+                timeoutMilliseconds: 30_000
+            )
+        )
+        let firstBarrier = storage.control.suspendNextBoundedValueRead(for: key)
+        let secondBarrier = storage.control.suspendNextBoundedValueRead(
+            for: nonEmptyKey
+        )
+        let first = Task {
+            try await storage.withTransaction { transaction in
+                try await transaction.readPointValue(
+                    for: key,
+                    snapshot: true,
+                    workMeter: meter,
+                    at: .indexScan
+                )
+            }
+        }
+        let firstMonitor = try await firstBarrier.waitUntilEntered(
+            beforeCompletionOf: first
+        )
+        #expect {
+            try meter.reserveIntermediate(bytes: 1, at: .projection)
+        } throws: { error in
+            error as? DatabaseWorkLimitError
+                == .maximumIntermediateBytes(
+                    stage: .projection,
+                    consumed: 8,
+                    requested: 1,
+                    maximum: 8
+                )
+        }
+        let second = Task {
+            try await storage.withTransaction { transaction in
+                try await transaction.readPointValue(
+                    for: nonEmptyKey,
+                    snapshot: true,
+                    workMeter: meter,
+                    at: .indexScan
+                )
+            }
+        }
+        let secondMonitor = try await secondBarrier.waitUntilEntered(
+            beforeCompletionOf: second
+        )
+
+        #expect(storage.control.boundedValueReadMaximums.count == 2)
+        #expect(
+            storage.control.boundedValueReadMaximums.reduce(0, +) <= 8
+        )
+        #expect(
+            storage.control.boundedValueReadMaximums.sorted() == [0, 8]
+        )
+
+        firstBarrier.release()
+        secondBarrier.release()
+        switch await first.result {
+        case .success(let value):
+            #expect(value == ByteString())
+        case .failure(let error):
+            Issue.record("First empty point read failed: \(error)")
+        }
+        switch await second.result {
+        case .success(let value):
+            Issue.record("Second non-empty point read succeeded: \(value)")
+        case .failure(let error):
+            #expect(
+                error as? DatabaseWorkLimitError
+                    == .maximumIntermediateBytes(
+                        stage: .indexScan,
+                        consumed: 8,
+                        requested: 4,
+                        maximum: 8
+                    )
+            )
+        }
+        await firstMonitor.value
+        await secondMonitor.value
+        #expect(meter.pendingPointReadBytes == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("successful point reads retain only the returned value bytes")
+    func successfulPointReadTransfersReturnedBytes() async throws {
+        let storage = ControlledStorageEngine(base: InMemoryEngine())
+        defer { await storage.waitUntilShutdown() }
+        let key = ByteString(utf8: "point-read-success")
+        let expected = ByteString([1, 2, 3, 4])
+        try await storage.withTransaction { transaction in
+            try transaction.setValue(expected, for: key)
+        }
+        let meter = makeWorkMeter(
+            budget: ExecutionBudget(
+                maximumIntermediateBytes: 8
+            )
+        )
+
+        var value: ByteString? = try await storage.withTransaction {
+            transaction in
+            try await transaction.readPointValue(
+                for: key,
+                snapshot: true,
+                workMeter: meter,
+                at: .indexScan
+            )
+        }
+
+        let expectedAddress = try #require(expected.withUnsafeBytes { buffer in
+            buffer.baseAddress.map { UInt(bitPattern: $0) }
+        })
+        let actualAddress = try #require(value?.withUnsafeBytes { buffer in
+            buffer.baseAddress.map { UInt(bitPattern: $0) }
+        })
+
+        #expect(value == expected)
+        #expect(value?.isStorageSelfContained == true)
+        #expect(value?.retainedByteCount == value?.count)
+        #expect(actualAddress == expectedAddress)
+        #expect(storage.control.boundedValueReadMaximums == [8])
+        #expect(meter.pendingPointReadBytes == 0)
+        #expect(meter.retainedIntermediateBytes == 4)
+        var alias = value
+        value = nil
+        #expect(alias == expected)
+        #expect(meter.retainedIntermediateBytes == 4)
+        alias = nil
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("missing point reads release their pending allowance")
+    func missingPointReadReleasesAllowance() async throws {
+        let storage = ControlledStorageEngine(base: InMemoryEngine())
+        defer { await storage.waitUntilShutdown() }
+        let meter = makeWorkMeter(
+            budget: ExecutionBudget(
+                maximumIntermediateBytes: 8
+            )
+        )
+
+        let value: ByteString? = try await storage.withTransaction {
+            transaction in
+            try await transaction.readPointValue(
+                for: ByteString(utf8: "point-read-missing"),
+                snapshot: true,
+                workMeter: meter,
+                at: .indexScan
+            )
+        }
+
+        #expect(value == nil)
+        #expect(storage.control.boundedValueReadMaximums == [8])
+        #expect(meter.pendingPointReadBytes == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("matching storage over-limit maps without poisoning the transaction")
+    func matchingPointReadOverLimitPreservesTransaction() async throws {
+        let storage = ControlledStorageEngine(base: InMemoryEngine())
+        defer { await storage.waitUntilShutdown() }
+        let key = ByteString(utf8: "point-read-over-limit")
+        let expected = ByteString([1, 2, 3, 4])
+        let transaction = try storage.createTransaction()
+        try transaction.setValue(expected, for: key)
+        let meter = makeWorkMeter(
+            budget: ExecutionBudget(
+                maximumIntermediateBytes: 2
+            )
+        )
+
+        var failure: (any Error)?
+        do {
+            _ = try await transaction.readPointValue(
+                for: key,
+                snapshot: true,
+                workMeter: meter,
+                at: .indexScan
+            )
+        } catch {
+            failure = error
+        }
+
+        #expect(
+            failure as? DatabaseWorkLimitError
+                == .maximumIntermediateBytes(
+                    stage: .indexScan,
+                    consumed: 0,
+                    requested: 4,
+                    maximum: 2
+                )
+        )
+        #expect(transaction.storageFailure == nil)
+        #expect(meter.pendingPointReadBytes == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+        #expect(try await transaction.getValue(for: key, snapshot: true) == expected)
+        try await transaction.cancel()
+    }
+
+    @Test("cancellation releases the allowance and leaves the transaction usable")
+    func cancelledPointReadReleasesAllowance() async throws {
+        let storage = ControlledStorageEngine(base: InMemoryEngine())
+        defer { await storage.waitUntilShutdown() }
+        let key = ByteString(utf8: "point-read-cancel")
+        let expected = ByteString([5, 6, 7, 8])
+        let setup = try storage.createTransaction()
+        try setup.setValue(expected, for: key)
+        try await setup.commit()
+
+        let transaction = try storage.createTransaction()
+        let meter = makeWorkMeter(
+            budget: ExecutionBudget(
+                maximumIntermediateBytes: 8
+            )
+        )
+        let barrier = storage.control.suspendNextValueRead(for: key)
+        let task = Task {
+            try await transaction.readPointValue(
+                for: key,
+                snapshot: true,
+                workMeter: meter,
+                at: .indexScan
+            )
+        }
+        let monitor = try await barrier.waitUntilEntered(
+            beforeCompletionOf: task
+        )
+        task.cancel()
+        barrier.release()
+
+        switch await task.result {
+        case .success:
+            Issue.record("Cancelled point read completed successfully")
+        case .failure(let error):
+            #expect(error is CancellationError)
+        }
+        await monitor.value
+        #expect(meter.pendingPointReadBytes == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+        #expect(transaction.storageFailure == nil)
+        #expect(try await transaction.getValue(for: key, snapshot: true) == expected)
+        try await transaction.cancel()
+    }
+
+    @Test("mismatched storage over-limit metadata remains a storage error")
+    func mismatchedPointReadOverLimitPreservesStorageError() async throws {
+        let errors = [
+            StorageError.pointReadValueTooLarge(
+                observedByteCount: 5,
+                maximumByteCount: 999
+            ),
+            StorageError.pointReadValueTooLarge(
+                observedByteCount: 4,
+                maximumByteCount: 8
+            ),
+            StorageError(
+                code: .backendFailure,
+                operation: .read,
+                backend: .inMemory,
+                message: "scripted read failure"
+            )
+        ]
+
+        for expected in errors {
+            let transaction = ScriptedPointReadTransaction(
+                outcome: .failure(expected)
+            )
+            let meter = makeWorkMeter(
+                budget: ExecutionBudget(
+                    maximumIntermediateBytes: 8
+                )
+            )
+
+            var failure: (any Error)?
+            do {
+                _ = try await transaction.readPointValue(
+                    for: ByteString(utf8: "point-read-mismatch"),
+                    snapshot: true,
+                    workMeter: meter,
+                    at: .indexScan
+                )
+            } catch {
+                failure = error
+            }
+
+            #expect(failure as? StorageError == expected)
+            #expect(meter.pendingPointReadBytes == 0)
+            #expect(meter.retainedIntermediateBytes == 0)
+        }
+    }
+
+    @Test("a backend over-return is an explicit contract failure")
+    func backendOverReturnFailsExplicitly() async throws {
+        let transaction = ScriptedPointReadTransaction(
+            outcome: .success(ByteString([1, 2, 3, 4, 5, 6, 7, 8, 9]))
+        )
+        let meter = makeWorkMeter(
+            budget: ExecutionBudget(
+                maximumIntermediateBytes: 8
+            )
+        )
+
+        var failure: (any Error)?
+        do {
+            _ = try await transaction.readPointValue(
+                for: ByteString(utf8: "point-read-over-return"),
+                snapshot: true,
+                workMeter: meter,
+                at: .indexScan
+            )
+        } catch {
+            failure = error
+        }
+
+        guard let error = failure as? StorageError else {
+            Issue.record("Expected a StorageError contract failure")
+            return
+        }
+        #expect(error.code == .backendContractViolation)
+        #expect(error.operation == .read)
+        #expect(
+            error.byteLimitViolation == StorageByteLimitViolation(
+                resource: .value,
+                observedByteCount: 9,
+                maximumByteCount: 8,
+                measurement: .exact
+            )
+        )
+        #expect(error.underlyingDescription?.contains("observedByteCount=9") == true)
+        #expect(error.underlyingDescription?.contains("maximumByteCount=8") == true)
+        #expect(!(failure is DatabaseWorkLimitError))
+        #expect(meter.pendingPointReadBytes == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("point-read completion atomically shrinks the issued allowance")
+    func pointReadCompletionTransfersExactReturnedBytes() throws {
+        let meter = makeWorkMeter(
+            budget: ExecutionBudget(
+                maximumIntermediateBytes: 8
+            )
+        )
+        let allowance = try meter.admitPointRead(at: .indexScan)
+        #expect(allowance.issuedByteCount == 8)
+        #expect(meter.pendingPointReadBytes == 8)
+
+        let reservation = try allowance.complete(returnedByteCount: 4)
+        #expect(meter.pendingPointReadBytes == 0)
+        #expect(meter.retainedIntermediateBytes == 4)
+        reservation.release()
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("point-read admission clamps the backend maximum to Int")
+    func pointReadAdmissionClampsToIntMaximum() throws {
+        let meter = makeWorkMeter(
+            budget: ExecutionBudget(
+                maximumIntermediateBytes: UInt64.max
+            )
+        )
+        let allowance = try meter.admitPointRead(at: .indexScan)
+        #expect(allowance.issuedByteCount == Int.max)
+        #expect(meter.pendingPointReadBytes == UInt64(Int.max))
+        allowance.release()
+        #expect(meter.pendingPointReadBytes == 0)
+    }
+
     private enum ClaimResult: Equatable {
         case admitted
         case rejected
@@ -505,6 +888,69 @@ private final class ManualWorkMeterClock: StorageMonotonicClock, Sendable {
             if instant < deadline {
                 instant = deadline
             }
+        }
+    }
+}
+
+private final class ScriptedPointReadTransaction:
+    TransactionReadAccess,
+    Sendable
+{
+    enum Outcome: Sendable {
+        case failure(StorageError)
+        case success(ByteString?)
+    }
+
+    let transactionDomain = StorageTransactionDomain()
+    private let outcome: Outcome
+
+    init(outcome: Outcome) {
+        self.outcome = outcome
+    }
+
+    func getValue(
+        for key: ByteString,
+        snapshot: Bool
+    ) async throws -> ByteString? {
+        try result()
+    }
+
+    func getValue(
+        for key: ByteString,
+        snapshot: Bool,
+        maximumByteCount: Int
+    ) async throws -> ByteString? {
+        try result()
+    }
+
+    func getValue(for key: ByteString) async throws -> ByteString? {
+        try result()
+    }
+
+    func getKey(
+        selector: KeySelector,
+        snapshot: Bool
+    ) async throws -> ByteString? {
+        nil
+    }
+
+    func rangeCursor(
+        from begin: KeySelector,
+        to end: KeySelector,
+        limit: Int,
+        reverse: Bool,
+        snapshot: Bool,
+        streamingMode: StreamingMode
+    ) -> KeyValueCursor {
+        KeyValueCursor(validatingScope: {})
+    }
+
+    private func result() throws -> ByteString? {
+        switch outcome {
+        case .failure(let error):
+            throw error
+        case .success(let value):
+            return value
         }
     }
 }

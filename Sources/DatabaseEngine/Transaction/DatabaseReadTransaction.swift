@@ -49,6 +49,18 @@ public struct DatabaseReadTransaction: TransactionReadAccess, Sendable {
         )
     }
 
+    public func getValue(
+        for key: ByteString,
+        snapshot: Bool,
+        maximumByteCount: Int
+    ) async throws -> ByteString? {
+        try await storageAccess.getValue(
+            for: key,
+            snapshot: snapshot,
+            maximumByteCount: maximumByteCount
+        )
+    }
+
     public func getValue(for key: ByteString) async throws -> ByteString? {
         try await storageAccess.getValue(for: key)
     }

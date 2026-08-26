@@ -197,6 +197,24 @@ public final class ControlledStorageEngine<Base: StorageEngine>:
             return value
         }
 
+        public func getValue(
+            for key: ByteString,
+            snapshot: Bool,
+            maximumByteCount: Int
+        ) async throws -> ByteString? {
+            control.recordBoundedValueRead(
+                maximumByteCount: maximumByteCount
+            )
+            await control.suspendBoundedValueReadIfRequested(for: key)
+            let value = try await base.getValue(
+                for: key,
+                snapshot: snapshot,
+                maximumByteCount: maximumByteCount
+            )
+            await control.suspendValueReadIfRequested(for: key)
+            return value
+        }
+
         public func getValue(for key: ByteString) async throws -> ByteString? {
             control.recordValueRead()
             let value = try await base.getValue(for: key)

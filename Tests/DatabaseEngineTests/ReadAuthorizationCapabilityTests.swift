@@ -592,6 +592,25 @@ struct ReadAuthorizationCapabilityTests {
         }
     }
 
+    @Test("Read transactions forward the caller's bounded point-read maximum")
+    func readTransactionForwardsBoundedPointReadMaximum() async throws {
+        let (container, control) = try await makeControlledContainer()
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        let key = ByteString(utf8: "bounded-read-forwarding")
+
+        try await context.indexQueryContext.withTransaction { transaction in
+            let value = try await transaction.getValue(
+                for: key,
+                snapshot: true,
+                maximumByteCount: 7
+            )
+            #expect(value == nil)
+        }
+
+        #expect(control.boundedValueReadMaximums == [7])
+    }
+
     @Test("Read snapshot metadata does not expose configuration authority")
     func readSnapshotMetadataPreservesAttenuation() async throws {
         let container = try await makeContainer()

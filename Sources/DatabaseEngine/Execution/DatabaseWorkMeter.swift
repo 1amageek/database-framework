@@ -8,6 +8,7 @@ public final class DatabaseWorkMeter: Sendable {
         var consumedWorkUnits: UInt64 = 0
         var retainedIntermediateRows: UInt64 = 0
         var retainedIntermediateBytes: UInt64 = 0
+        var pendingPointReadBytes: UInt64 = 0
         var peakIntermediateRows: UInt64 = 0
         var peakIntermediateBytes: UInt64 = 0
     }
@@ -93,6 +94,46 @@ public final class DatabaseWorkMeter: Sendable {
         }
     }
 
+    /// Atomically admits the maximum bytes that one bounded point read may
+    /// return. The pending allowance is part of the same request-wide budget
+    /// as retained intermediate bytes, so concurrent reads cannot all issue
+    /// the same stale remaining maximum before their backend awaits.
+    func admitPointRead(
+        at stage: DatabaseWorkStage
+    ) throws -> DatabasePointReadAllowance {
+        try state.withLock { state in
+            try ensureDatabaseTaskIsActive()
+            try checkDeadline(at: stage)
+            let maximumBytes = budget.maximumIntermediateBytes
+            let (retainedAndPending, overflow) = state.retainedIntermediateBytes
+                .addingReportingOverflow(state.pendingPointReadBytes)
+            precondition(
+                !overflow,
+                "Point-read intermediate accounting overflowed"
+            )
+            guard retainedAndPending <= maximumBytes else {
+                throw DatabaseWorkLimitError.maximumIntermediateBytes(
+                    stage: stage,
+                    consumed: retainedAndPending,
+                    requested: 0,
+                    maximum: maximumBytes
+                )
+            }
+            let issuedByteCount = Int(
+                min(
+                    maximumBytes - retainedAndPending,
+                    UInt64(Int.max)
+                )
+            )
+            state.pendingPointReadBytes += UInt64(issuedByteCount)
+            return DatabasePointReadAllowance(
+                workMeter: self,
+                issuedByteCount: issuedByteCount,
+                consumedByteCount: retainedAndPending
+            )
+        }
+    }
+
     public var consumedRows: UInt32 {
         state.withLock { $0.consumedRows }
     }
@@ -107,6 +148,10 @@ public final class DatabaseWorkMeter: Sendable {
 
     public var retainedIntermediateBytes: UInt64 {
         state.withLock { $0.retainedIntermediateBytes }
+    }
+
+    var pendingPointReadBytes: UInt64 {
+        state.withLock { $0.pendingPointReadBytes }
     }
 
     public var peakIntermediateRows: UInt64 {
@@ -147,10 +192,24 @@ public final class DatabaseWorkMeter: Sendable {
                 )
             }
             let maximumBytes = budget.maximumIntermediateBytes
-            guard bytes <= maximumBytes - state.retainedIntermediateBytes else {
+            let (retainedAndPending, overflow) = state.retainedIntermediateBytes
+                .addingReportingOverflow(state.pendingPointReadBytes)
+            precondition(
+                !overflow,
+                "Intermediate byte accounting overflowed"
+            )
+            guard retainedAndPending <= maximumBytes else {
                 throw DatabaseWorkLimitError.maximumIntermediateBytes(
                     stage: stage,
-                    consumed: state.retainedIntermediateBytes,
+                    consumed: retainedAndPending,
+                    requested: bytes,
+                    maximum: maximumBytes
+                )
+            }
+            guard bytes <= maximumBytes - retainedAndPending else {
+                throw DatabaseWorkLimitError.maximumIntermediateBytes(
+                    stage: stage,
+                    consumed: retainedAndPending,
                     requested: bytes,
                     maximum: maximumBytes
                 )
@@ -165,6 +224,78 @@ public final class DatabaseWorkMeter: Sendable {
                 state.peakIntermediateBytes,
                 state.retainedIntermediateBytes
             )
+        }
+    }
+
+    /// Completes a pending point-read allowance by transferring exactly the
+    /// returned value bytes into retained intermediate ownership. The pending
+    /// allowance is removed and the retained count is updated while one mutex
+    /// is held, so no concurrent claim can observe a partially completed read.
+    func completePointRead(
+        issuedByteCount: Int,
+        returnedByteCount: Int
+    ) throws -> DatabaseIntermediateReservation {
+        try state.withLock { state in
+            precondition(
+                issuedByteCount >= 0 && returnedByteCount >= 0,
+                "Point-read byte counts must be non-negative"
+            )
+            let issued = UInt64(issuedByteCount)
+            let returned = UInt64(returnedByteCount)
+            precondition(
+                issued <= state.pendingPointReadBytes,
+                "Point-read completion exceeds pending admission"
+            )
+            guard returned <= issued else {
+                throw StorageError(
+                    code: .backendContractViolation,
+                    operation: .read,
+                    backend: .unknown,
+                    message: "Bounded point read returned more bytes than admitted",
+                    underlyingDescription: "observedByteCount=\(returned) maximumByteCount=\(issued)",
+                    byteLimitViolation: StorageByteLimitViolation(
+                        resource: .value,
+                        observedByteCount: returned,
+                        maximumByteCount: issued,
+                        measurement: .exact
+                    )
+                )
+            }
+            let (newRetainedBytes, overflow) = state.retainedIntermediateBytes
+                .addingReportingOverflow(returned)
+            precondition(
+                !overflow && newRetainedBytes <= budget.maximumIntermediateBytes,
+                "Point-read completion exceeds intermediate byte budget"
+            )
+            state.pendingPointReadBytes -= issued
+            state.retainedIntermediateBytes = newRetainedBytes
+            state.peakIntermediateBytes = max(
+                state.peakIntermediateBytes,
+                newRetainedBytes
+            )
+            return DatabaseIntermediateReservation(
+                workMeter: self,
+                rows: 0,
+                bytes: returned
+            )
+        }
+    }
+
+    /// Releases a pending point-read allowance exactly once. The allowance
+    /// object serializes calls so this method only receives valid linear
+    /// releases from its owner.
+    func releasePointRead(issuedByteCount: Int) {
+        precondition(
+            issuedByteCount >= 0,
+            "Point-read byte counts must be non-negative"
+        )
+        state.withLock { state in
+            let issued = UInt64(issuedByteCount)
+            precondition(
+                issued <= state.pendingPointReadBytes,
+                "Point-read release exceeds pending admission"
+            )
+            state.pendingPointReadBytes -= issued
         }
     }
 

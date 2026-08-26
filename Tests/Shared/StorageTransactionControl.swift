@@ -23,6 +23,7 @@ public final class StorageTransactionControl: Sendable {
     private struct State: Sendable {
         var pendingCommitDirective: PendingCommitDirective?
         var valueReadBarriers: [PendingValueReadBarrier] = []
+        var boundedValueReadBarriers: [PendingValueReadBarrier] = []
         var rangeAdvanceBarriers: [StorageOperationBarrier] = []
         var interceptedMutationKeys: [ByteString] = []
         var suspendedValueReadCount = 0
@@ -30,6 +31,7 @@ public final class StorageTransactionControl: Sendable {
         var suspendedRangeAdvanceCount = 0
         var maximumSuspendedRangeAdvanceCount = 0
         var valueReadCount = 0
+        var boundedValueReadMaximums: [Int] = []
         var keyReadCount = 0
         var openedRangeCursorCount = 0
         var namespaceReadCount = 0
@@ -88,6 +90,22 @@ public final class StorageTransactionControl: Sendable {
         return barrier
     }
 
+    /// Suspends a bounded read before it reaches the backend. This boundary
+    /// lets concurrent-admission tests observe the exact maximum dispatched
+    /// to each backend call, including a zero-byte allowance.
+    @discardableResult
+    public func suspendNextBoundedValueRead(
+        for key: ByteString
+    ) -> StorageOperationBarrier {
+        let barrier = StorageOperationBarrier()
+        state.withLock { state in
+            state.boundedValueReadBarriers.append(
+                PendingValueReadBarrier(key: key, barrier: barrier)
+            )
+        }
+        return barrier
+    }
+
     @discardableResult
     public func suspendNextRangeAdvance() -> StorageOperationBarrier {
         let barrier = StorageOperationBarrier()
@@ -120,6 +138,10 @@ public final class StorageTransactionControl: Sendable {
         }
     }
 
+    public var boundedValueReadMaximums: [Int] {
+        state.withLock { $0.boundedValueReadMaximums }
+    }
+
     public var openedRangeCursorCount: Int {
         state.withLock { $0.openedRangeCursorCount }
     }
@@ -134,6 +156,13 @@ public final class StorageTransactionControl: Sendable {
 
     func recordValueRead() {
         state.withLock { $0.valueReadCount += 1 }
+    }
+
+    func recordBoundedValueRead(maximumByteCount: Int) {
+        state.withLock { state in
+            state.valueReadCount += 1
+            state.boundedValueReadMaximums.append(maximumByteCount)
+        }
     }
 
     func recordKeyRead() {
@@ -209,6 +238,31 @@ public final class StorageTransactionControl: Sendable {
                 return nil
             }
             let barrier = state.valueReadBarriers.remove(at: index).barrier
+            state.suspendedValueReadCount += 1
+            state.maximumSuspendedValueReadCount = max(
+                state.maximumSuspendedValueReadCount,
+                state.suspendedValueReadCount
+            )
+            return barrier
+        }
+        guard let barrier else {
+            return
+        }
+        await barrier.enterAndWait()
+        state.withLock { state in
+            precondition(state.suspendedValueReadCount > 0)
+            state.suspendedValueReadCount -= 1
+        }
+    }
+
+    func suspendBoundedValueReadIfRequested(for key: ByteString) async {
+        let barrier = state.withLock { state -> StorageOperationBarrier? in
+            guard let index = state.boundedValueReadBarriers.firstIndex(
+                where: { $0.key == key }
+            ) else {
+                return nil
+            }
+            let barrier = state.boundedValueReadBarriers.remove(at: index).barrier
             state.suspendedValueReadCount += 1
             state.maximumSuspendedValueReadCount = max(
                 state.maximumSuspendedValueReadCount,

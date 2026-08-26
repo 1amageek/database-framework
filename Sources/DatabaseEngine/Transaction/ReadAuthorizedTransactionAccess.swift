@@ -240,6 +240,23 @@ final class ReadAuthorizedTransactionAccess:
         return value
     }
 
+    func getValue(
+        for key: ByteString,
+        snapshot: Bool,
+        maximumByteCount: Int
+    ) async throws -> ByteString? {
+        let operation = try beginScopeOperation?()
+        defer { operation?.end() }
+        try validate(operation: operation)
+        let value = try await resolveTransaction().getValue(
+            for: key,
+            snapshot: snapshot,
+            maximumByteCount: maximumByteCount
+        )
+        try validate(operation: operation)
+        return value
+    }
+
     func getValue(for key: ByteString) async throws -> ByteString? {
         let operation = try beginScopeOperation?()
         defer { operation?.end() }
