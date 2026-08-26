@@ -146,24 +146,24 @@ public struct CompositionRDFQueryPlanner: Sendable {
                         }
                         var memberSequence = memberSequenceStart
                         for index in 0..<graph.count {
-                            let quad = try graph.withElement(at: index) {
-                                value in
-                                try CompositionRDFIdentity.qualifyBlankNodes(
-                                    in: copy value,
-                                    baseID: member.baseID
-                                )
-                            }
                             let currentSequence = memberSequence
                             let next = memberSequence.addingReportingOverflow(1)
                             guard !next.overflow else {
                                 throw CompositionQueryError.workspaceCorrupted
                             }
                             memberSequence = next.partialValue
-                            try await workspace.insert(
-                                try Self.row(from: quad),
-                                origin: .source(member.baseID),
-                                sequence: currentSequence
-                            )
+                            try await graph.withElement(at: index) { value in
+                                let qualifiedQuad = try CompositionRDFIdentity
+                                    .qualifyBlankNodes(
+                                        in: copy value,
+                                        baseID: member.baseID
+                                    )
+                                try await workspace.insert(
+                                    try Self.row(from: qualifiedQuad),
+                                    origin: .source(member.baseID),
+                                    sequence: currentSequence
+                                )
+                            }
                         }
                         return memberSequence
                     }

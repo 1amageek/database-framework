@@ -128,6 +128,12 @@ struct RetainedPersistedModelResourceTests {
                     workMeter: meter
                 )
             )
+            var independentFootprint: UInt64 = 0
+            try entry.withModel { model in
+                independentFootprint = try PersistableFieldFrameCodec
+                    .retainedFootprint(of: model)
+            }
+            #expect(entry.retainedModelFootprint.bytes == independentFootprint)
             #expect(
                 meter.retainedIntermediateBytes
                     == entry.retainedModelFootprint.bytes
@@ -406,10 +412,11 @@ struct RetainedPersistedModelResourceTests {
                     workMeter: meter
                 )
             )
-            #expect(
-                entry.model.value(forFieldNamed: ownerID.name)
-                    == .string("schema-owner")
-            )
+            var ownerValue: FieldValue?
+            entry.withModel { model in
+                ownerValue = model.value(forFieldNamed: ownerID.name)
+            }
+            #expect(ownerValue == .string("schema-owner"))
             withExtendedLifetime(entry) {}
         }
         #expect(
@@ -481,6 +488,92 @@ struct RetainedPersistedModelResourceTests {
         #expect(meter.retainedIntermediateBytes == 0)
     }
 
+    @Test("retained model decode failure releases every admission")
+    func retainedModelDecodeFailureReleasesEveryAdmission() async throws {
+        let entity = try RetainedPersistedModelResourceItem.schemaEntity
+        let container = try await makeResourceContainer()
+        defer { await container.shutdown() }
+        try await writeRawPayload(
+            ByteString([0xFF]),
+            id: "malformed-retained-model",
+            container: container
+        )
+
+        let meter = makeMeter(maximumIntermediateBytes: 64 * 1_024)
+        await #expect {
+            try await container.testBaseContext().withTransaction(
+                requiredAccess: .read
+            ) { transaction in
+                _ = try await transaction.loadRetainedPersistedModel(
+                    entity: entity.name,
+                    id: Tuple("malformed-retained-model"),
+                    partition: nil,
+                    snapshot: false,
+                    workMeter: meter
+                )
+            }
+        } throws: { error in
+            error as? PersistableFieldFrameError == .invalidMagic
+        }
+
+        #expect(meter.retainedIntermediateRows == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("retained model cancellation releases every admission")
+    func retainedModelCancellationReleasesEveryAdmission() async throws {
+        let type = RetainedPersistedModelResourceItem.self
+        let runtime = try EntityRuntimeDefinition(type).registration()
+        let id = type.fields.id.identity
+        let payload = type.fields.payload.identity
+        let model = try PersistedModel(
+            entity: type.persistableType,
+            fields: [
+                try PersistableField(
+                    number: try #require(UInt32(exactly: id.number)),
+                    name: id.name,
+                    value: .string("cancelled-retained-model")
+                ),
+                try PersistableField(
+                    number: try #require(UInt32(exactly: payload.number)),
+                    name: payload.name,
+                    value: .string("decoded-before-cancellation")
+                ),
+            ]
+        )
+        let bytes = try PersistableStorageCodec.encode(model)
+        let meter = makeMeter(maximumIntermediateBytes: 64 * 1_024)
+        let barrier = StorageOperationBarrier()
+        let task = Task {
+            let retained = try DatabaseRetainedStoredModel.decode(
+                bytes,
+                entity: type.persistableType,
+                runtime: runtime,
+                workMeter: meter,
+                stage: .storageRow
+            )
+            await barrier.enterAndWait()
+            try Task.checkCancellation()
+            withExtendedLifetime(retained) {}
+        }
+        let completionMonitor = try await barrier.waitUntilEntered(
+            beforeCompletionOf: task
+        )
+        #expect(meter.retainedIntermediateRows == 0)
+        #expect(meter.retainedIntermediateBytes > 0)
+
+        task.cancel()
+        barrier.release()
+        await completionMonitor.value
+        await #expect {
+            try await task.value
+        } throws: { error in
+            error is CancellationError
+        }
+        #expect(meter.retainedIntermediateRows == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
     private func writeStoredModel<Model: Persistable>(
         _ model: PersistedModel,
         id: String,
@@ -499,6 +592,46 @@ struct RetainedPersistedModelResourceTests {
                 configuration: .v1
             ).write(bytes, for: items.pack(Tuple(id)))
         }
+    }
+
+    private func writeRawPayload(
+        _ bytes: ByteString,
+        id: String,
+        container: DBContainer
+    ) async throws {
+        let root = try await container.testBaseDirectory(
+            for: RetainedPersistedModelResourceItem.self
+        )
+        let items = root.subspace(SubspaceKey.items)
+            .subspace(RetainedPersistedModelResourceItem.persistableType)
+        let blobs = root.subspace(SubspaceKey.blobs)
+        try await container.engine.withTransaction { transaction in
+            try await ItemStorage(
+                transaction: transaction,
+                blobsSubspace: blobs,
+                configuration: .v1
+            ).write(bytes, for: items.pack(Tuple(id)))
+        }
+    }
+
+    private func makeResourceContainer() async throws -> DBContainer {
+        let entity = try RetainedPersistedModelResourceItem.schemaEntity
+        return try await DBContainer.open(
+            for: try Schema(entities: [entity]),
+            configuration: .testing(storageEngine: InMemoryEngine()),
+            runtimeConfiguration: try DatabaseRuntimeConfiguration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "retained-model-resource-contract-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [
+                    try EntityRuntimeDefinition(
+                        RetainedPersistedModelResourceItem.self
+                    ).registration()
+                ]
+            ),
+            security: .testingDisabled
+        )
     }
 
     private func makeMeter(

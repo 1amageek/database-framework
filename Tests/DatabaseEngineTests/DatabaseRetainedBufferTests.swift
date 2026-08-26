@@ -531,6 +531,177 @@ struct DatabaseRetainedBufferTests {
         }
     }
 
+    @Test("retained buffers and shared arrays expose one originating meter")
+    func retainedOwnersExposeOriginatingMeter() throws {
+        let meter = makeMeter(rows: 2, bytes: 32)
+        do {
+            let builder = try makeTwoElementBuilder(meter: meter)
+            let retained = builder.finish()
+            #expect(retained.workMeter === meter)
+
+            let shared = try retained.moveToSharedOwnership(at: .subqueryCache)
+            #expect(shared.workMeter === meter)
+            #expect(shared.count == 2)
+            #expect(meter.retainedIntermediateRows == 2)
+            #expect(meter.retainedIntermediateBytes == 15)
+        }
+
+        #expect(meter.retainedIntermediateRows == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("retained query rows use a void scoped borrow and preserve ownership")
+    func retainedQueryRowsUseVoidScopedBorrow() throws {
+        let meter = makeMeter(
+            rows: 16,
+            bytes: 16_384,
+            workUnits: 16
+        )
+        do {
+            var builder = try DatabaseRetainedQueryRowsBuilder(
+                workMeter: meter,
+                stage: .projection
+            )
+            try builder.append(
+                QueryRow(fields: ["value": .string("retained-row")])
+            )
+            let rows = builder.finish()
+            #expect(rows.workMeter === meter)
+
+            rows.withElement(at: 0) { row in
+                #expect(row.fields["value"] == .string("retained-row"))
+            }
+            #expect(meter.retainedIntermediateRows == 1)
+            let shared = try rows.moveToSharedOwnership(at: .joinCandidate)
+            #expect(shared.workMeter === meter)
+            #expect(shared.count == 1)
+        }
+
+        #expect(meter.retainedIntermediateRows == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("retained RDF graphs use a void scoped borrow and preserve ownership")
+    func retainedRDFGraphsUseVoidScopedBorrow() throws {
+        let meter = makeMeter(
+            rows: 16,
+            bytes: 16_384,
+            workUnits: 16
+        )
+        do {
+            var builder = try DatabaseRetainedRDFGraphBuilder(workMeter: meter)
+            let expected = try graphQuad(identifier: 7)
+            try builder.append(expected)
+            let graph = builder.finish()
+            #expect(graph.workMeter === meter)
+
+            graph.withElement(at: 0) { quad in
+                #expect(quad == expected)
+            }
+            #expect(meter.retainedIntermediateRows == 1)
+            let shared = try graph.moveToSharedOwnership(at: .joinCandidate)
+            #expect(shared.workMeter === meter)
+            #expect(shared.count == 1)
+        }
+
+        #expect(meter.retainedIntermediateRows == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("shared aliases release transferred reservations exactly once")
+    func sharedAliasesReleaseTransferredReservationExactlyOnce() throws {
+        let meter = makeMeter(rows: 2, bytes: 32)
+        do {
+            let retained = try makeTwoElementBuilder(meter: meter).finish()
+            let shared = try retained.moveToSharedOwnership(at: .subqueryCache)
+            #expect(meter.retainedIntermediateBytes == 15)
+
+            do {
+                let alias = shared
+                #expect(alias.workMeter === meter)
+                #expect(alias.count == 2)
+                #expect(meter.retainedIntermediateBytes == 15)
+            }
+            #expect(meter.retainedIntermediateBytes == 15)
+        }
+
+        #expect(meter.retainedIntermediateRows == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("shared owner admission has an exact byte boundary")
+    func sharedOwnerAdmissionHasExactByteBoundary() throws {
+        let layout = try testLayout()
+        let retainedBytes = layout.containerByteCount
+            + layout.elementCapacitySlotByteCount
+            + 4
+        let exactSharedBytes = retainedBytes + layout.sharedOwnerByteCount
+
+        do {
+            let meter = makeMeter(
+                rows: 1,
+                bytes: exactSharedBytes - 1
+            )
+            var builder = try DatabaseRetainedArrayBuilder<Int>(
+                workMeter: meter,
+                stage: .subqueryCache,
+                layout: layout,
+                expectedCount: 1
+            )
+            try builder.append(
+                footprint: DatabaseIntermediateFootprint(rows: 1, bytes: 4)
+            ) {
+                7
+            }
+            let retained = builder.finish()
+
+            #expect {
+                _ = try retained.prepareToShare(at: .subqueryCache)
+            } throws: { error in
+                error as? DatabaseWorkLimitError
+                    == .maximumIntermediateBytes(
+                        stage: .subqueryCache,
+                        consumed: retainedBytes,
+                        requested: layout.sharedOwnerByteCount,
+                        maximum: exactSharedBytes - 1
+                    )
+            }
+            retained.withElement(at: 0) { element in
+                #expect(element == 7)
+            }
+            #expect(meter.retainedIntermediateBytes == retainedBytes)
+        }
+
+        do {
+            let meter = makeMeter(rows: 1, bytes: exactSharedBytes)
+            var builder = try DatabaseRetainedArrayBuilder<Int>(
+                workMeter: meter,
+                stage: .subqueryCache,
+                layout: layout,
+                expectedCount: 1
+            )
+            try builder.append(
+                footprint: DatabaseIntermediateFootprint(rows: 1, bytes: 4)
+            ) {
+                7
+            }
+            let retained = builder.finish()
+            let admission = try retained.prepareToShare(at: .subqueryCache)
+            let shared = retained.share(using: admission)
+            #expect(shared.workMeter === meter)
+            #expect(meter.retainedIntermediateBytes == exactSharedBytes)
+
+            do {
+                let alias = shared
+                alias.withElement(at: 0) { element in
+                    #expect(element == 7)
+                }
+                #expect(meter.retainedIntermediateBytes == exactSharedBytes)
+            }
+            #expect(meter.retainedIntermediateBytes == exactSharedBytes)
+        }
+    }
+
     @Test("retained RDF graph rejects a second row and releases every claim")
     func retainedRDFGraphLimitFailureReleasesClaims() throws {
         let meter = DatabaseWorkMeter(
@@ -594,12 +765,13 @@ struct DatabaseRetainedBufferTests {
 
     private func makeMeter(
         rows: UInt32,
-        bytes: UInt64
+        bytes: UInt64,
+        workUnits: UInt64 = 1
     ) -> DatabaseWorkMeter {
         DatabaseWorkMeter(
             budget: ExecutionBudget(
                 maximumRows: 1,
-                maximumWorkUnits: 1,
+                maximumWorkUnits: workUnits,
                 maximumIntermediateRows: rows,
                 maximumIntermediateBytes: bytes,
                 timeoutMilliseconds: 30_000

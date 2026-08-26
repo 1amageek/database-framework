@@ -15,22 +15,31 @@ public struct DatabaseRetainedQueryRows: ~Copyable, Sendable {
 
     public var count: Int { storage.count }
     public var isEmpty: Bool { storage.isEmpty }
+    package var workMeter: DatabaseWorkMeter { storage.workMeter }
 
-    package borrowing func withElement<Result, Failure: Error>(
+    package borrowing func withElement<Failure: Error>(
         at index: Int,
-        _ body: (borrowing QueryRow) throws(Failure) -> Result
-    ) throws(Failure) -> Result {
+        _ body: (borrowing QueryRow) throws(Failure) -> Void
+    ) throws(Failure) {
         try storage.withElement(at: index, body)
     }
 
-    package borrowing func withElement<Result, Failure: Error>(
+    package borrowing func withElement<Failure: Error>(
         at index: Int,
-        _ body: (borrowing QueryRow) async throws(Failure) -> Result
-    ) async throws(Failure) -> Result {
+        _ body: (borrowing QueryRow) async throws(Failure) -> Void
+    ) async throws(Failure) {
         try await storage.withElement(at: index, body)
     }
 
     public consuming func promoteToOutput() -> [QueryRow] {
         storage.promoteToOutput()
+    }
+
+    /// Moves the unique row storage into immutable shared ownership without
+    /// releasing its originating request reservation.
+    package consuming func moveToSharedOwnership(
+        at stage: DatabaseWorkStage
+    ) throws -> DatabaseSharedRetainedArray<QueryRow> {
+        try storage.moveToSharedOwnership(at: stage)
     }
 }

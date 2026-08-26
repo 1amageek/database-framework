@@ -859,6 +859,143 @@ struct DatabaseWorkMeterTests {
         #expect(meter.pendingPointReadBytes == 0)
     }
 
+    @Test("whole-child absorption rejects a foreign meter before mutation")
+    func wholeChildAbsorptionRejectsForeignMeterBeforeMutation() throws {
+        let destinationMeter = makeWorkMeter(
+            budget: ExecutionBudget(
+                maximumIntermediateRows: 4,
+                maximumIntermediateBytes: 16
+            )
+        )
+        let foreignMeter = makeWorkMeter(
+            budget: ExecutionBudget(
+                maximumIntermediateRows: 4,
+                maximumIntermediateBytes: 16
+            )
+        )
+        let destination = try destinationMeter.reserveIntermediate(
+            rows: 1,
+            bytes: 4,
+            at: .projection
+        )
+        let foreign = try foreignMeter.reserveIntermediate(
+            rows: 1,
+            bytes: 2,
+            at: .projection
+        )
+
+        #expect {
+            try destination.absorbAll(from: foreign)
+        } throws: { error in
+            error as? DatabaseIntermediateReservationError
+                == .workMeterMismatch
+        }
+        #expect(destinationMeter.retainedIntermediateRows == 1)
+        #expect(destinationMeter.retainedIntermediateBytes == 4)
+        #expect(foreignMeter.retainedIntermediateRows == 1)
+        #expect(foreignMeter.retainedIntermediateBytes == 2)
+
+        #expect {
+            try destination.absorbAll(from: destination)
+        } throws: { error in
+            error as? DatabaseIntermediateReservationError
+                == .transferToSelf
+        }
+        #expect(destinationMeter.retainedIntermediateRows == 1)
+        #expect(destinationMeter.retainedIntermediateBytes == 4)
+
+        let releasedChild = try destination.reserveChild(
+            rows: 1,
+            bytes: 1,
+            at: .projection
+        )
+        releasedChild.release()
+        #expect {
+            try destination.absorbAll(from: releasedChild)
+        } throws: { error in
+            error as? DatabaseIntermediateReservationError
+                == .alreadyReleased
+        }
+        #expect(destinationMeter.retainedIntermediateRows == 1)
+        #expect(destinationMeter.retainedIntermediateBytes == 4)
+        #expect(foreignMeter.retainedIntermediateRows == 1)
+        #expect(foreignMeter.retainedIntermediateBytes == 2)
+
+        destination.release()
+        #expect(destinationMeter.retainedIntermediateRows == 0)
+        #expect(destinationMeter.retainedIntermediateBytes == 0)
+        foreign.release()
+        #expect(foreignMeter.retainedIntermediateRows == 0)
+        #expect(foreignMeter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("whole-child absorption transfers ownership without changing totals")
+    func completeChildAbsorptionTransfersOwnership() throws {
+        let meter = makeWorkMeter(
+            budget: ExecutionBudget(
+                maximumIntermediateRows: 3,
+                maximumIntermediateBytes: 12
+            )
+        )
+        let retainedOwner = try meter.reserveIntermediate(
+            rows: 1,
+            bytes: 4,
+            at: .indexScan
+        )
+        let decodedOwner = try retainedOwner.reserveChild(
+            rows: 1,
+            bytes: 2,
+            at: .indexScan
+        )
+        try decodedOwner.reserveAdditional(
+            rows: 1,
+            bytes: 6,
+            at: .indexScan
+        )
+
+        #expect(meter.retainedIntermediateRows == 3)
+        #expect(meter.retainedIntermediateBytes == 12)
+
+        try retainedOwner.absorbAll(from: decodedOwner)
+
+        #expect(meter.retainedIntermediateRows == 3)
+        #expect(meter.retainedIntermediateBytes == 12)
+        #expect(meter.peakIntermediateRows == 3)
+        #expect(meter.peakIntermediateBytes == 12)
+
+        #expect {
+            try decodedOwner.reserveAdditional(
+                bytes: 1,
+                at: .indexScan
+            )
+        } throws: { error in
+            error as? DatabaseIntermediateReservationError
+                == .alreadyReleased
+        }
+        #expect {
+            try decodedOwner.releasePartial(bytes: 1)
+        } throws: { error in
+            error as? DatabaseIntermediateReservationError
+                == .alreadyReleased
+        }
+        #expect {
+            try retainedOwner.absorbAll(from: decodedOwner)
+        } throws: { error in
+            error as? DatabaseIntermediateReservationError
+                == .alreadyReleased
+        }
+        #expect(meter.retainedIntermediateRows == 3)
+        #expect(meter.retainedIntermediateBytes == 12)
+
+        decodedOwner.release()
+        #expect(meter.retainedIntermediateRows == 3)
+        #expect(meter.retainedIntermediateBytes == 12)
+
+        retainedOwner.release()
+        #expect(meter.retainedIntermediateRows == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
     private enum ClaimResult: Equatable {
         case admitted
         case rejected

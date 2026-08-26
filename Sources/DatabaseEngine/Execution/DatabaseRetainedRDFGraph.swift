@@ -16,13 +16,28 @@ public struct DatabaseRetainedRDFGraph: ~Copyable, Sendable {
 
     public var count: Int { storage.count }
     public var isEmpty: Bool { storage.isEmpty }
+    package var workMeter: DatabaseWorkMeter { storage.workMeter }
 
-    @_spi(DatabaseExecution)
-    public borrowing func withElement<Result, Failure: Error>(
+    package borrowing func withElement<Failure: Error>(
         at index: Int,
-        _ body: (borrowing RDFQuad) throws(Failure) -> Result
-    ) throws(Failure) -> Result {
+        _ body: (borrowing RDFQuad) throws(Failure) -> Void
+    ) throws(Failure) {
         try storage.withElement(at: index, body)
+    }
+
+    package borrowing func withElement<Failure: Error>(
+        at index: Int,
+        _ body: (borrowing RDFQuad) async throws(Failure) -> Void
+    ) async throws(Failure) {
+        try await storage.withElement(at: index, body)
+    }
+
+    /// Moves retained graph storage into immutable shared ownership without
+    /// releasing its originating request reservation.
+    package consuming func moveToSharedOwnership(
+        at stage: DatabaseWorkStage
+    ) throws -> DatabaseSharedRetainedArray<RDFQuad> {
+        try storage.moveToSharedOwnership(at: stage)
     }
 
     @_spi(DatabaseExecution)

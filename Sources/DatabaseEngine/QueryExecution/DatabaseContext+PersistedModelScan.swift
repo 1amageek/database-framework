@@ -93,7 +93,7 @@ extension DatabaseContext {
                 fields: admittedFieldNames
             )
         }
-        return DatabaseRetainedPersistedModels(
+        return try DatabaseRetainedPersistedModels(
             entries: models,
             arrayReservation: reservation
         )

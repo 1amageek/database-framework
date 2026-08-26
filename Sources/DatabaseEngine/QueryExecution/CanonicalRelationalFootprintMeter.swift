@@ -98,6 +98,23 @@ package enum CanonicalRelationalFootprintMeter {
         )
     }
 
+    /// Measures one retained field-value payload without creating a temporary
+    /// row. Destination container storage remains the destination owner's
+    /// responsibility.
+    package static func valueFootprint(
+        of value: borrowing FieldValue,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> DatabaseIntermediateFootprint {
+        DatabaseIntermediateFootprint(
+            bytes: try StorageValueDecoder.retainedFootprint(
+                of: copy value,
+                workMeter: workMeter,
+                stage: stage
+            )
+        )
+    }
+
     package static func footprint(
         of model: PersistedModel,
         workMeter: DatabaseWorkMeter
@@ -168,6 +185,26 @@ package enum CanonicalRelationalFootprintMeter {
                     name: name,
                     value: value,
                     workMeter: workMeter
+                )
+            )
+        )
+    }
+
+    /// Extends an independently measured footprint without allocating a
+    /// dynamic annotation-name `String` before destination admission.
+    package static func footprint(
+        _ existing: DatabaseIntermediateFootprint,
+        appendingAnnotationNamed name: StaticString,
+        value: FieldValue,
+        workMeter: DatabaseWorkMeter
+    ) throws -> DatabaseIntermediateFootprint {
+        try existing.adding(
+            DatabaseIntermediateFootprint(
+                bytes: try retainedEntryByteCount(
+                    nameUTF8Count: name.utf8CodeUnitCount,
+                    value: value,
+                    workMeter: workMeter,
+                    stage: .projection
                 )
             )
         )

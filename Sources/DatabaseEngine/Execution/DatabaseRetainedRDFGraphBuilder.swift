@@ -4,7 +4,7 @@ import DatabaseKit
 public struct DatabaseRetainedRDFGraphBuilder: ~Copyable {
     private var storage: DatabaseRetainedArrayBuilder<RDFQuad>
     private let footprintMeter: DatabaseRDFQuadFootprintMeter
-    private let workMeter: DatabaseWorkMeter
+    package let workMeter: DatabaseWorkMeter
 
     public init(
         workMeter: DatabaseWorkMeter,

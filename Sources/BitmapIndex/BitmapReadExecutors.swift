@@ -153,13 +153,19 @@ private struct BitmapReadExecutor: IndexReadExecutor {
             ordering: .unordered,
             expectedCount: fetched.count
         ) { rows in
-            for (primaryKey, model) in zip(primaryKeys, fetched) {
-                guard let model else {
+            for (primaryKey, retained) in zip(primaryKeys, fetched) {
+                guard let retained else {
                     throw BitmapReadError.missingFetchedEntity(
                         primaryKey.pack()
                     )
                 }
-                try rows.append(try IndexReadRow.materializing(model))
+                try retained.withModel { model in
+                    try rows.append(
+                        footprint: retained.queryRowFootprint
+                    ) {
+                        try IndexReadRow.materializing(model)
+                    }
+                }
             }
         }
     }

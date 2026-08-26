@@ -63,8 +63,8 @@ public final class DatabaseIntermediateReservation: Sendable {
     /// Transfers an admitted portion from a linear child claim into this
     /// retained owner without changing the request-wide total.
     ///
-    /// The lock order is always retained owner followed by admission child.
-    /// No framework path acquires these two reservation locks in reverse.
+    /// Both reservations use the same object-identity lock order as whole
+    /// transfers, preventing lock inversion across the two transfer APIs.
     package func absorbGuaranteedPartial(
         from child: DatabaseIntermediateReservation,
         rows: UInt64 = 0,
@@ -75,34 +75,102 @@ public final class DatabaseIntermediateReservation: Sendable {
             workMeter === child.workMeter,
             "Reservations belong to different request meters"
         )
-        state.withLock { destination in
+        withStatesLocked(with: child) { destination, source in
             precondition(
                 !destination.isReleased,
                 "Cannot absorb into an already released reservation"
             )
-            child.state.withLock { source in
-                precondition(
-                    !source.isReleased,
-                    "Cannot absorb an already released reservation"
-                )
-                precondition(
-                    rows <= source.rows && bytes <= source.bytes,
-                    "Absorption exceeds the child reservation"
-                )
-                let (newRows, rowOverflow) = destination.rows
-                    .addingReportingOverflow(rows)
-                let (newBytes, byteOverflow) = destination.bytes
-                    .addingReportingOverflow(bytes)
-                precondition(
-                    !rowOverflow && !byteOverflow,
-                    "Absorbed reservation exceeds UInt64"
-                )
-                source.rows -= rows
-                source.bytes -= bytes
-                destination.rows = newRows
-                destination.bytes = newBytes
+            precondition(
+                !source.isReleased,
+                "Cannot absorb an already released reservation"
+            )
+            precondition(
+                rows <= source.rows && bytes <= source.bytes,
+                "Absorption exceeds the child reservation"
+            )
+            let (newRows, rowOverflow) = destination.rows
+                .addingReportingOverflow(rows)
+            let (newBytes, byteOverflow) = destination.bytes
+                .addingReportingOverflow(bytes)
+            precondition(
+                !rowOverflow && !byteOverflow,
+                "Absorbed reservation exceeds UInt64"
+            )
+            source.rows -= rows
+            source.bytes -= bytes
+            destination.rows = newRows
+            destination.bytes = newBytes
+        }
+    }
+
+    /// Transfers one child's complete live claim into this owner.
+    ///
+    /// Validation precedes either mutation. Reservation locks are acquired in
+    /// object-identity order so two concurrent transfers cannot invert their
+    /// lock order. The request-wide meter is not changed because ownership,
+    /// rather than the amount retained, is the only state transition.
+    package func absorbAll(
+        from child: DatabaseIntermediateReservation
+    ) throws {
+        guard self !== child else {
+            throw DatabaseIntermediateReservationError.transferToSelf
+        }
+        guard workMeter === child.workMeter else {
+            throw DatabaseIntermediateReservationError.workMeterMismatch
+        }
+
+        try withStatesLocked(with: child) { destination, source in
+            try Self.transferAll(
+                from: &source,
+                to: &destination
+            )
+        }
+    }
+
+    private func withStatesLocked<Result, Failure: Error>(
+        with other: DatabaseIntermediateReservation,
+        _ body: (inout State, inout State) throws(Failure) -> Result
+    ) throws(Failure) -> Result {
+        if ObjectIdentifier(self) < ObjectIdentifier(other) {
+            return try state.withLock {
+                (ownState: inout State) throws(Failure) -> Result in
+                try other.state.withLock {
+                    (otherState: inout State) throws(Failure) -> Result in
+                    try body(&ownState, &otherState)
+                }
             }
         }
+        return try other.state.withLock {
+            (otherState: inout State) throws(Failure) -> Result in
+            try state.withLock {
+                (ownState: inout State) throws(Failure) -> Result in
+                try body(&ownState, &otherState)
+            }
+        }
+    }
+
+    private static func transferAll(
+        from source: inout State,
+        to destination: inout State
+    ) throws {
+        guard !source.isReleased, !destination.isReleased else {
+            throw DatabaseIntermediateReservationError.alreadyReleased
+        }
+        let (rows, rowOverflow) = destination.rows.addingReportingOverflow(
+            source.rows
+        )
+        let (bytes, byteOverflow) = destination.bytes.addingReportingOverflow(
+            source.bytes
+        )
+        precondition(
+            !rowOverflow && !byteOverflow,
+            "Reservation transfer exceeds UInt64"
+        )
+        destination.rows = rows
+        destination.bytes = bytes
+        source.rows = 0
+        source.bytes = 0
+        source.isReleased = true
     }
 
     /// Releases a successfully claimed portion when the corresponding owner

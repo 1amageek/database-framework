@@ -111,28 +111,6 @@ private func reserveFullTextScoredTuples(
     )
 }
 
-private func reserveFullTextModels(
-    _ models: [PersistedModel],
-    workMeter: DatabaseWorkMeter
-) throws -> DatabaseIntermediateReservation {
-    var footprint = DatabaseIntermediateFootprint(
-        bytes: UInt64(MemoryLayout<[PersistedModel]>.stride)
-    )
-    for model in models {
-        footprint = try footprint.adding(
-            CanonicalRelationalFootprintMeter.footprint(
-                of: try QueryRowCodec.encode(model),
-                workMeter: workMeter
-            )
-        )
-    }
-    return try workMeter.reserveIntermediate(
-        rows: footprint.rows,
-        bytes: footprint.bytes,
-        at: .indexScan
-    )
-}
-
 private func reserveFullTextEntities(
     _ entities: [PolymorphicEntity],
     workMeter: DatabaseWorkMeter
@@ -158,29 +136,6 @@ private func reserveFullTextEntities(
     }
     return try workMeter.reserveIntermediate(
         rows: footprint.rows,
-        bytes: footprint.bytes,
-        at: .indexScan
-    )
-}
-
-private func reserveFullTextScoredModels(
-    _ results: [(item: PersistedModel, score: Double)],
-    workMeter: DatabaseWorkMeter
-) throws -> DatabaseIntermediateReservation {
-    var footprint = try DatabaseIntermediateCollectionMeter.arrayFootprint(
-        count: results.count,
-        element: (item: PersistedModel, score: Double).self
-    )
-    for result in results {
-        footprint = try footprint.adding(
-            CanonicalRelationalFootprintMeter.footprint(
-                of: try QueryRowCodec.encode(result.item),
-                workMeter: workMeter
-            )
-        )
-    }
-    return try workMeter.reserveIntermediate(
-        rows: UInt64(results.count),
         bytes: footprint.bytes,
         at: .indexScan
     )
@@ -400,7 +355,7 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                 FullTextReadParameter.facetLimit,
                 from: indexScan.parameters
             ) ?? 10
-            let result = try await executeFacetedSearch(
+            return try await executeFacetedSearch(
                 session: session,
                 entity: entity,
                 configuration: configuration,
@@ -414,34 +369,6 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                 execution: execution,
                 workMeter: options.workMeter
             )
-            let itemReservation = try reserveFullTextModels(
-                result.items,
-                workMeter: options.workMeter
-            )
-            defer { itemReservation.release() }
-            let facetReservation = try reserveFullTextFacets(
-                result.facets,
-                workMeter: options.workMeter
-            )
-            defer { facetReservation.release() }
-            let metadataAdmission = try reserveFullTextFacetMetadataAdmission(
-                result.facets,
-                workMeter: options.workMeter
-            )
-            defer { metadataAdmission.release() }
-            let metadata = try facetMetadata(
-                totalCount: result.totalCount,
-                facets: result.facets
-            )
-            return try IndexReadResult.build(
-                workMeter: options.workMeter,
-                metadata: metadata,
-                expectedCount: result.items.count
-            ) { rows in
-                for item in result.items {
-                    try rows.append(try IndexReadRow.materializing(item))
-                }
-            }
         }
 
         if returnScores {
@@ -451,7 +378,7 @@ private struct FullTextReadExecutor: IndexReadExecutor {
             let b = indexScan.parameters[
                 FullTextReadParameter.bm25B
             ]?.float64Value ?? Double(BM25Parameters.default.b)
-            let results = try await executeScoredSearch(
+            return try await executeScoredSearch(
                 session: session,
                 entity: entity,
                 configuration: configuration,
@@ -467,29 +394,9 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                 execution: execution,
                 workMeter: options.workMeter
             )
-            let resultReservation = try reserveFullTextScoredModels(
-                results,
-                workMeter: options.workMeter
-            )
-            defer { resultReservation.release() }
-            return try IndexReadResult.build(
-                workMeter: options.workMeter,
-                expectedCount: results.count
-            ) { rows in
-                for result in results {
-                    try rows.append(
-                        try IndexReadRow.materializing(
-                            result.item,
-                            annotations: [
-                                "score": .float64(result.score)
-                            ]
-                        )
-                    )
-                }
-            }
         }
 
-        let results = try await executePlainSearch(
+        return try await executePlainSearch(
             session: session,
             entity: entity,
             configuration: configuration,
@@ -501,19 +408,6 @@ private struct FullTextReadExecutor: IndexReadExecutor {
             execution: execution,
             workMeter: options.workMeter
         )
-        let resultReservation = try reserveFullTextModels(
-            results,
-            workMeter: options.workMeter
-        )
-        defer { resultReservation.release() }
-        return try IndexReadResult.build(
-            workMeter: options.workMeter,
-            expectedCount: results.count
-        ) { rows in
-            for item in results {
-                try rows.append(try IndexReadRow.materializing(item))
-            }
-        }
     }
 
     private func executePlainSearch(
@@ -527,7 +421,7 @@ private struct FullTextReadExecutor: IndexReadExecutor {
         partitions: FieldObject,
         execution: CanonicalReadExecution,
         workMeter: DatabaseWorkMeter
-    ) async throws -> [PersistedModel] {
+    ) async throws -> IndexReadResult {
         let search = PolymorphicFullTextReadExecutor()
         guard let readableIndex = try await session.readableIndex(
             named: index.name,
@@ -535,7 +429,7 @@ private struct FullTextReadExecutor: IndexReadExecutor {
             forEntityName: entity.name,
             partitions: partitions
         ) else {
-            return []
+            return .empty
         }
         let transaction = session.transaction.storageTransaction
         do {
@@ -578,16 +472,25 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                 snapshot: execution.consistency == .snapshot,
                 workMeter: workMeter
             )
-            let modelArrayAdmission = try reserveFullTextArrayCopy(
-                count: fetched.count,
-                element: PersistedModel.self,
-                workMeter: workMeter
-            )
-            defer { modelArrayAdmission.release() }
-            return try requireModels(
+            try requireModels(
                 identifiers: limited,
                 fetched: fetched
             )
+            return try IndexReadResult.build(
+                workMeter: workMeter,
+                expectedCount: fetched.count
+            ) { rows in
+                for index in fetched.indices {
+                    try withRequiredModel(
+                        at: index,
+                        in: fetched
+                    ) { model, footprint in
+                        try rows.append(footprint: footprint) {
+                            try IndexReadRow.materializing(model)
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -603,7 +506,7 @@ private struct FullTextReadExecutor: IndexReadExecutor {
         partitions: FieldObject,
         execution: CanonicalReadExecution,
         workMeter: DatabaseWorkMeter
-    ) async throws -> [(item: PersistedModel, score: Double)] {
+    ) async throws -> IndexReadResult {
         let search = PolymorphicFullTextReadExecutor()
         guard let readableIndex = try await session.readableIndex(
             named: index.name,
@@ -611,7 +514,7 @@ private struct FullTextReadExecutor: IndexReadExecutor {
             forEntityName: entity.name,
             partitions: partitions
         ) else {
-            return []
+            return .empty
         }
         let transaction = session.transaction.storageTransaction
         do {
@@ -643,33 +546,39 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                 snapshot: execution.consistency == .snapshot,
                 workMeter: workMeter
             )
-            let modelArrayAdmission = try reserveFullTextArrayCopy(
-                count: fetched.count,
-                element: PersistedModel.self,
-                workMeter: workMeter
-            )
-            defer { modelArrayAdmission.release() }
-            let models = try requireModels(
+            try requireModels(
                 identifiers: identifiers,
                 fetched: fetched
             )
-            let modelReservation = try reserveFullTextModels(
-                models,
-                workMeter: workMeter
-            )
-            defer { modelReservation.release() }
-            let combinedReservation = try reserveFullTextArrayCopy(
-                count: models.count,
-                element: (item: PersistedModel, score: Double).self,
-                workMeter: workMeter
-            )
-            defer { combinedReservation.release() }
-            var combined: [(item: PersistedModel, score: Double)] = []
-            combined.reserveCapacity(models.count)
-            for (model, score) in zip(models, scored) {
-                combined.append((item: model, score: score.score))
+            return try IndexReadResult.build(
+                workMeter: workMeter,
+                expectedCount: fetched.count
+            ) { rows in
+                for index in fetched.indices {
+                    try withRequiredModel(
+                        at: index,
+                        in: fetched
+                    ) { model, footprint in
+                        let score = FieldValue.float64(scored[index].score)
+                        let annotationName: StaticString = "score"
+                        let annotatedFootprint = try
+                            CanonicalRelationalFootprintMeter.footprint(
+                                footprint,
+                                appendingAnnotationNamed: annotationName,
+                                value: score,
+                                workMeter: workMeter
+                            )
+                        try rows.append(footprint: annotatedFootprint) {
+                            try IndexReadRow.materializing(
+                                model,
+                                annotations: [
+                                    "score": score
+                                ]
+                            )
+                        }
+                    }
+                }
             }
-            return combined
         }
     }
 
@@ -686,11 +595,7 @@ private struct FullTextReadExecutor: IndexReadExecutor {
         partitions: FieldObject,
         execution: CanonicalReadExecution,
         workMeter: DatabaseWorkMeter
-    ) async throws -> (
-        items: [PersistedModel],
-        facets: [String: [(value: String, count: Int64)]],
-        totalCount: Int
-    ) {
+    ) async throws -> IndexReadResult {
         guard facetLimit >= 0 else {
             throw FullTextReadError.invalidParameter(
                 FullTextReadParameter.facetLimit
@@ -703,7 +608,11 @@ private struct FullTextReadExecutor: IndexReadExecutor {
             forEntityName: entity.name,
             partitions: partitions
         ) else {
-            return (items: [], facets: [:], totalCount: 0)
+            return try IndexReadResult.build(
+                workMeter: workMeter,
+                metadata: try facetMetadata(totalCount: 0, facets: [:]),
+                expectedCount: 0
+            ) { _ in }
         }
         let transaction = session.transaction.storageTransaction
         do {
@@ -738,21 +647,10 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                 snapshot: execution.consistency == .snapshot,
                 workMeter: workMeter
             )
-            let modelArrayAdmission = try reserveFullTextArrayCopy(
-                count: fetched.count,
-                element: PersistedModel.self,
-                workMeter: workMeter
-            )
-            defer { modelArrayAdmission.release() }
-            let allModels = try requireModels(
+            try requireModels(
                 identifiers: identifiers,
                 fetched: fetched
             )
-            let modelReservation = try reserveFullTextModels(
-                allModels,
-                workMeter: workMeter
-            )
-            defer { modelReservation.release() }
             var facets: [String: [(value: String, count: Int64)]] = [:]
             let facetOutputReservation = try workMeter.reserveIntermediate(
                 bytes: UInt64(
@@ -773,23 +671,28 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                     at: .indexScan
                 )
                 defer { countsReservation.release() }
-                for model in allModels {
-                    try workMeter.consume(at: .indexScan)
-                    for value in try FullTextFieldValueExtractor.strings(
-                        from: model,
-                        entity: entity.name,
-                        field: FieldIdentity(
-                            name: field.name,
-                            number: field.fieldNumber
-                        )
-                    ) where !value.isEmpty {
-                        if counts[value] == nil {
-                            try reserveFullTextFacetEntry(
-                                value,
-                                in: countsReservation
+                for index in fetched.indices {
+                    try withRequiredModel(
+                        at: index,
+                        in: fetched
+                    ) { model, _ in
+                        try workMeter.consume(at: .indexScan)
+                        for value in try FullTextFieldValueExtractor.strings(
+                            from: model,
+                            entity: entity.name,
+                            field: FieldIdentity(
+                                name: field.name,
+                                number: field.fieldNumber
                             )
+                        ) where !value.isEmpty {
+                            if counts[value] == nil {
+                                try reserveFullTextFacetEntry(
+                                    value,
+                                    in: countsReservation
+                                )
+                            }
+                            counts[value, default: 0] += 1
                         }
-                        counts[value, default: 0] += 1
                     }
                 }
                 let bucketScratch = try workMeter.reserveIntermediate(
@@ -826,43 +729,71 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                 let visibleBuckets = Array(buckets.prefix(facetLimit))
                 facets[fieldName] = visibleBuckets
             }
-            let visibleCount = min(limit ?? allModels.count, allModels.count)
-            let itemCopyReservation = try reserveFullTextArrayCopy(
-                count: visibleCount,
-                element: PersistedModel.self,
+            let metadataAdmission = try reserveFullTextFacetMetadataAdmission(
+                facets,
                 workMeter: workMeter
             )
-            defer { itemCopyReservation.release() }
-            return (
-                items: try limitIdentifiers(allModels, limit: limit),
-                facets: facets,
-                totalCount: allModels.count
+            defer { metadataAdmission.release() }
+            let metadata = try facetMetadata(
+                totalCount: fetched.count,
+                facets: facets
             )
+            let visibleCount = min(limit ?? fetched.count, fetched.count)
+            return try IndexReadResult.build(
+                workMeter: workMeter,
+                metadata: metadata,
+                expectedCount: visibleCount
+            ) { rows in
+                for index in 0..<visibleCount {
+                    try withRequiredModel(
+                        at: index,
+                        in: fetched
+                    ) { model, footprint in
+                        try rows.append(footprint: footprint) {
+                            try IndexReadRow.materializing(model)
+                        }
+                    }
+                }
+            }
         }
     }
 
-    private func requireModels<Models: Collection>(
+    private func requireModels(
         identifiers: [Tuple],
-        fetched: Models
-    ) throws -> [PersistedModel]
-    where Models.Element == PersistedModel? {
+        fetched: DatabaseRetainedPersistedModels
+    ) throws {
         guard identifiers.count == fetched.count else {
             throw FullTextReadError.fetchedItemCountMismatch(
                 expected: identifiers.count,
                 actual: fetched.count
             )
         }
-        var models: [PersistedModel] = []
-        models.reserveCapacity(fetched.count)
-        for (identifier, model) in zip(identifiers, fetched) {
-            guard let model else {
+        for (identifier, retained) in zip(identifiers, fetched) {
+            guard case .some = retained else {
                 throw FullTextReadError.missingFetchedEntity(
                     identifier.pack()
                 )
             }
-            models.append(model)
         }
-        return models
+    }
+
+    private func withRequiredModel<Failure: Error>(
+        at index: Int,
+        in fetched: DatabaseRetainedPersistedModels,
+        _ body: (
+            borrowing PersistedModel,
+            DatabaseIntermediateFootprint
+        ) throws(Failure) -> Void
+    ) throws(Failure) {
+        guard let retained = fetched[index] else {
+            preconditionFailure(
+                "Validated full-text result contains a missing model"
+            )
+        }
+        try retained.withModel {
+            (model: borrowing PersistedModel) throws(Failure) in
+            try body(model, retained.queryRowFootprint)
+        }
     }
 
     private func limitIdentifiers<Value>(

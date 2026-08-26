@@ -24,6 +24,7 @@ package struct DatabaseRetainedBuffer<Element: Sendable>: ~Copyable, Sendable {
 
     package var count: Int { elements.count }
     package var isEmpty: Bool { elements.isEmpty }
+    package var workMeter: DatabaseWorkMeter { reservation.workMeter }
 
     package borrowing func withSpan<Result, Failure: Error>(
         _ body: (Span<Element>) throws(Failure) -> Result

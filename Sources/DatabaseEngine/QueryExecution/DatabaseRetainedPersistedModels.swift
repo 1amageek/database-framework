@@ -5,11 +5,41 @@ import DatabaseKit
 package final class DatabaseRetainedPersistedModels:
     RandomAccessCollection,
     Sendable {
-    struct Entry: Sendable {
-        let model: PersistedModel
-        let retainedModelFootprint: DatabaseIntermediateFootprint
-        let queryRowFootprint: DatabaseIntermediateFootprint
-        let reservation: DatabaseIntermediateReservation
+    package struct Entry: Sendable {
+        private let model: PersistedModel
+        package let retainedModelFootprint: DatabaseIntermediateFootprint
+        package let queryRowFootprint: DatabaseIntermediateFootprint
+        private let reservation: DatabaseIntermediateReservation
+
+        package init(
+            model: consuming PersistedModel,
+            retainedModelFootprint: DatabaseIntermediateFootprint,
+            queryRowFootprint: DatabaseIntermediateFootprint,
+            reservation: DatabaseIntermediateReservation
+        ) {
+            self.model = model
+            self.retainedModelFootprint = retainedModelFootprint
+            self.queryRowFootprint = queryRowFootprint
+            self.reservation = reservation
+        }
+
+        package var workMeter: DatabaseWorkMeter {
+            reservation.workMeter
+        }
+
+        package func withModel<Failure: Error>(
+            _ body: (borrowing PersistedModel) throws(Failure) -> Void
+        ) throws(Failure) {
+            try body(model)
+            withExtendedLifetime(reservation) {}
+        }
+
+        package func withModel<Failure: Error>(
+            _ body: (borrowing PersistedModel) async throws(Failure) -> Void
+        ) async throws(Failure) {
+            try await body(model)
+            withExtendedLifetime(reservation) {}
+        }
     }
 
     private let entries: [Entry?]
@@ -18,11 +48,20 @@ package final class DatabaseRetainedPersistedModels:
     init(
         entries: consuming [Entry?],
         arrayReservation: DatabaseIntermediateReservation
-    ) {
+    ) throws {
+        guard entries.allSatisfy({ entry in
+            guard let entry else { return true }
+            return entry.workMeter === arrayReservation.workMeter
+        }) else {
+            throw DatabaseIntermediateReservationError.workMeterMismatch
+        }
         self.entries = entries
         self.arrayReservation = arrayReservation
     }
 
+    package var workMeter: DatabaseWorkMeter {
+        arrayReservation.workMeter
+    }
     package var startIndex: Int { entries.startIndex }
     package var endIndex: Int { entries.endIndex }
     package var count: Int { entries.count }
@@ -30,14 +69,14 @@ package final class DatabaseRetainedPersistedModels:
     package func index(after index: Int) -> Int { index + 1 }
     package func index(before index: Int) -> Int { index - 1 }
 
-    package subscript(position: Int) -> PersistedModel? {
-        entries[position]?.model
+    package subscript(position: Int) -> Entry? {
+        entries[position]
     }
 
-    func withEntry<Result, Failure: Error>(
+    func withEntry<Failure: Error>(
         at index: Int,
-        _ body: (borrowing Entry?) throws(Failure) -> Result
-    ) throws(Failure) -> Result {
+        _ body: (borrowing Entry?) throws(Failure) -> Void
+    ) throws(Failure) {
         try body(entries[index])
     }
 }

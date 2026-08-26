@@ -254,31 +254,40 @@ package struct FusionCandidateDomain: Sendable {
                     precondition(
                         packedPrimaryKey.count == packedPrimaryKeyByteCount
                     )
-                    let row = try QueryRowCodec.encode(retained.model)
-                    guard let identity = row.fields["id"],
-                          identity != .null else {
-                        throw FusionExecutionContractError.missingIdentity(field: "id")
-                    }
-                    let actualPrimaryKey = try PersistableIdentifierKeyCodec
-                        .tuple(forPersistedIdentifier: identity)
-                    _ = try PersistableIdentifierKeyCodec.value(
-                        from: actualPrimaryKey,
-                        expectedType: entity.identifierType
-                    )
-                    // Structural comparison avoids materializing a second
-                    // packed identifier while the retained key is alive.
-                    guard actualPrimaryKey == primaryKey else {
-                        throw FusionExecutionContractError.inconsistentPayload(
-                            packedPrimaryKey
+                    var candidate: Entry?
+                    try retained.withModel { model in
+                        let row = try QueryRowCodec.encode(model)
+                        guard let identity = row.fields["id"],
+                              identity != .null else {
+                            throw FusionExecutionContractError
+                                .missingIdentity(field: "id")
+                        }
+                        let actualPrimaryKey = try PersistableIdentifierKeyCodec
+                            .tuple(forPersistedIdentifier: identity)
+                        _ = try PersistableIdentifierKeyCodec.value(
+                            from: actualPrimaryKey,
+                            expectedType: entity.identifierType
+                        )
+                        // Structural comparison avoids materializing a second
+                        // packed identifier while the retained key is alive.
+                        guard actualPrimaryKey == primaryKey else {
+                            throw FusionExecutionContractError
+                                .inconsistentPayload(packedPrimaryKey)
+                        }
+                        candidate = Entry(
+                            identity: identity,
+                            packedPrimaryKey: packedPrimaryKey,
+                            row: row,
+                            rowFootprint: retained.queryRowFootprint,
+                            retainedFootprint: footprint
                         )
                     }
-                    return Entry(
-                        identity: identity,
-                        packedPrimaryKey: packedPrimaryKey,
-                        row: row,
-                        rowFootprint: retained.queryRowFootprint,
-                        retainedFootprint: footprint
-                    )
+                    guard let candidate else {
+                        preconditionFailure(
+                            "Scoped retained model did not produce a candidate"
+                        )
+                    }
+                    return candidate
                 }
             }
         }

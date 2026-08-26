@@ -134,14 +134,25 @@ private struct RankReadExecutor: IndexReadExecutor {
                         primaryKey: rankedKey.primaryKey.pack()
                     )
                 }
-                try rows.append(
-                    try IndexReadRow.materializing(
-                        item,
-                        annotations: [
-                            "rank": .int64(Int64(rankedKey.rank))
-                        ]
-                    )
-                )
+                try item.withModel { model in
+                    let rank = FieldValue.int64(Int64(rankedKey.rank))
+                    let annotationName: StaticString = "rank"
+                    let footprint = try CanonicalRelationalFootprintMeter
+                        .footprint(
+                            item.queryRowFootprint,
+                            appendingAnnotationNamed: annotationName,
+                            value: rank,
+                            workMeter: options.workMeter
+                        )
+                    try rows.append(footprint: footprint) {
+                        try IndexReadRow.materializing(
+                            model,
+                            annotations: [
+                                "rank": rank
+                            ]
+                        )
+                    }
+                }
             }
         }
     }

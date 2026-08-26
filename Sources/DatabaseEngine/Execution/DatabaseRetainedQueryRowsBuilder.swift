@@ -2,7 +2,7 @@
 /// extension boundary.
 public struct DatabaseRetainedQueryRowsBuilder: ~Copyable {
     private var storage: DatabaseRetainedArrayBuilder<QueryRow>
-    private let workMeter: DatabaseWorkMeter
+    package let workMeter: DatabaseWorkMeter
     private let stage: DatabaseWorkStage
 
     public init(
@@ -22,7 +22,6 @@ public struct DatabaseRetainedQueryRowsBuilder: ~Copyable {
 
     public var count: Int { storage.count }
     public var isEmpty: Bool { storage.isEmpty }
-
     public mutating func append(_ row: consuming QueryRow) throws {
         try workMeter.consume(at: stage)
         let footprint = try CanonicalRelationalFootprintMeter.footprint(

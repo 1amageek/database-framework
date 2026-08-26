@@ -1000,92 +1000,18 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         ) else {
             return nil
         }
-        let decodedFootprint: (
-            retainedByteCount: UInt64,
-            transientByteCount: UInt64
-        )
-        do {
-            // The footprint scan validates borrowed UTF-8 views without
-            // materializing the decoded model before its reservation exists.
-            try DatabaseByteProcessingMeter.consume(
-                byteCount: data.count,
-                workMeter: workMeter,
-                stage: .storageRow
-            )
-            decodedFootprint = try PersistableStorageCodec.decodedFootprint(
-                data,
-                expectedEntity: entity
-            )
-            try workMeter.checkpoint(at: .storageRow)
-        }
-        let reservation = try workMeter.reserveIntermediate(
-            bytes: try DatabaseIntermediateFootprint(
-                bytes: decodedFootprint.retainedByteCount
-            ).adding(
-                DatabaseIntermediateFootprint(
-                    bytes: decodedFootprint.transientByteCount
-                )
-            ).bytes,
-            at: .storageRow
-        )
-
-        try DatabaseByteProcessingMeter.consume(
-            byteCount: data.count,
-            passes: 2,
-            workMeter: workMeter,
-            stage: .storageRow
-        )
-        let admitted = try admitRetainedStoredModel(
+        let retained = try DatabaseRetainedStoredModel.decode(
             data,
             entity: entity,
             runtime: runtime,
-            reservation: reservation,
-            workMeter: workMeter,
-            decodeScratchByteCount: decodedFootprint.transientByteCount
-        )
-        try readPolicy.authorizeGet(admitted.model, fields: fields)
-        try workMeter.checkpoint(at: .storageRow)
-        // The decoded source model ended with the helper scope. Only the
-        // separately measured canonical model remains retained by the entry.
-        reservation.releaseGuaranteedPartial(
-            bytes: decodedFootprint.retainedByteCount
-        )
-        return DatabaseRetainedPersistedModels.Entry(
-            model: admitted.model,
-            retainedModelFootprint: DatabaseIntermediateFootprint(
-                rows: 1,
-                bytes: admitted.retainedByteCount
-            ),
-            queryRowFootprint: try CanonicalRelationalFootprintMeter.footprint(
-                of: admitted.model,
-                workMeter: workMeter
-            ),
-            reservation: reservation
-        )
-    }
-
-    private func admitRetainedStoredModel(
-        _ data: ByteString,
-        entity: String,
-        runtime: EntityRuntimeRegistration,
-        reservation: DatabaseIntermediateReservation,
-        workMeter: DatabaseWorkMeter,
-        decodeScratchByteCount: UInt64
-    ) throws -> (model: PersistedModel, retainedByteCount: UInt64) {
-        let persistedModel = try DataAccess.deserializePersistedModel(
-            data,
-            expectedEntity: entity
-        )
-        // Both frame decoding and PersistedModel construction have completed;
-        // their validation tables no longer overlap canonical adaptation.
-        reservation.releaseGuaranteedPartial(bytes: decodeScratchByteCount)
-        return try CanonicalStoredModelAdmission.admit(
-            persistedModel,
-            runtime: runtime,
-            reservation: reservation,
             workMeter: workMeter,
             stage: .storageRow
         )
+        try retained.withModel { model in
+            try readPolicy.authorizeGet(model, fields: fields)
+        }
+        try workMeter.checkpoint(at: .storageRow)
+        return retained.makeEntry()
     }
 
     private func scanPersistedModelsUnchecked(

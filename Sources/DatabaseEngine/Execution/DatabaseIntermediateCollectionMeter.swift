@@ -55,7 +55,7 @@ package enum DatabaseIntermediateCollectionMeter {
                 DatabaseIntermediateFootprint(
                     rows: 1,
                     bytes: try DatabaseIntermediateFootprint(
-                        bytes: UInt64(tuple.pack().count)
+                        bytes: UInt64(tuple.packedByteCount)
                     ).adding(
                         DatabaseIntermediateFootprint(bytes: 32)
                     ).bytes

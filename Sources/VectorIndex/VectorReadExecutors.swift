@@ -164,36 +164,49 @@ private struct VectorReadExecutor: IndexReadExecutor {
             algorithm: algorithm
         )
         for index in matches.indices {
-            guard let model = fetched[index] else {
+            guard let retained = fetched[index] else {
                 throw VectorReadError.missingFetchedEntity(
                     identifiers[index].pack()
                 )
             }
-            try await validator.validate(
-                primaryKey: identifiers[index],
-                model: model,
-                transaction: transaction,
-                workMeter: options.workMeter
-            )
+            try await retained.withModel { model in
+                try await validator.validate(
+                    primaryKey: identifiers[index],
+                    model: model,
+                    transaction: transaction,
+                    workMeter: options.workMeter
+                )
+            }
         }
         return try IndexReadResult.build(
             workMeter: options.workMeter,
             expectedCount: matches.count
         ) { rows in
-            for (match, item) in zip(matches, fetched) {
-                guard let item else {
+            for (match, retained) in zip(matches, fetched) {
+                guard let retained else {
                     throw VectorReadError.missingFetchedEntity(
                         Tuple(match.primaryKey).pack()
                     )
                 }
-                try rows.append(
-                    try IndexReadRow.materializing(
-                        item,
-                        annotations: [
-                            "distance": .float64(match.distance)
-                        ]
-                    )
-                )
+                try retained.withModel { model in
+                    let distance = FieldValue.float64(match.distance)
+                    let annotationName: StaticString = "distance"
+                    let footprint = try CanonicalRelationalFootprintMeter
+                        .footprint(
+                            retained.queryRowFootprint,
+                            appendingAnnotationNamed: annotationName,
+                            value: distance,
+                            workMeter: options.workMeter
+                        )
+                    try rows.append(footprint: footprint) {
+                        try IndexReadRow.materializing(
+                            model,
+                            annotations: [
+                                "distance": distance
+                            ]
+                        )
+                    }
+                }
             }
         }
     }

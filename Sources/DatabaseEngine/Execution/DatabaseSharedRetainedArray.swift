@@ -55,6 +55,9 @@ package struct DatabaseSharedRetainedArray<Element: Sendable>:
 
     package var count: Int { storage.elements.count }
     package var isEmpty: Bool { storage.elements.isEmpty }
+    package var workMeter: DatabaseWorkMeter {
+        storage.elementReservation.workMeter
+    }
     package var startIndex: Int { storage.elements.startIndex }
     package var endIndex: Int { storage.elements.endIndex }
 
