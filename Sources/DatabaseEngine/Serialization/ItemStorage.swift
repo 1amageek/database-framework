@@ -163,6 +163,51 @@ public struct ItemStorage: Sendable {
         )
     }
 
+    /// Consumes a retained scan while the backend cursor owns the complete
+    /// envelope-to-consumer scope.
+    ///
+    /// The callback runs inside `KeyValueCursor.consume`, so envelope decode,
+    /// caller validation, and destination admission all share one cleanup
+    /// boundary. A decode, cancellation, or callback failure therefore
+    /// awaits cursor cleanup before escaping and preserves a secondary
+    /// cleanup error through `StorageRangeCleanupError`.
+    package func consumeRetainedScan(
+        begin: ByteString,
+        end: ByteString,
+        startingAfter: ByteString? = nil,
+        snapshot: Bool = false,
+        limit: Int = 0,
+        reverse: Bool = false,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage,
+        _ body: (ByteString, ByteString) async throws -> Void
+    ) async throws {
+        guard limit >= 0 else {
+            throw ItemStorageError.invalidScanLimit(limit)
+        }
+
+        var cursor = storageAccess.rangeCursor(
+            from: startingAfter.map(KeySelector.firstGreaterThan)
+                ?? .firstGreaterOrEqual(begin),
+            to: .firstGreaterOrEqual(end),
+            limit: limit,
+            reverse: reverse,
+            snapshot: snapshot,
+            streamingMode: limit > 0 ? .small : .wantAll
+        )
+        try await cursor.consume { key, envelopeBytes in
+            try workMeter.checkpoint(at: stage)
+            let data = try await decodeStoredValueRetained(
+                envelopeBytes,
+                for: key,
+                snapshot: snapshot,
+                workMeter: workMeter,
+                stage: stage
+            )
+            try await body(key, data)
+        }
+    }
+
     /// Storage capability for non-item keys in the same atomic unit.
     public var storageAccess: any TransactionAccess {
         transaction

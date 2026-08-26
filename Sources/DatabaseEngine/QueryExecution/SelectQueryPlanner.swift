@@ -1,25 +1,24 @@
 // SelectQueryPlanner.swift
 // DatabaseEngine - Translate a SelectQuery into a typed Query<T>
-// while tracking which clauses were pushed down so the caller can skip
-// redundant residual evaluation.
+// while tracking which storage windows were pushed down. Predicate and order
+// hints may narrow the physical access path, but canonical execution remains
+// their single semantic evaluator.
 
 import DatabaseKit
 import DatabaseTypes
 
 /// Result of planning a SelectQuery against a concrete Persistable type.
 ///
-/// `typedQuery` carries the pushed-down predicates, sort descriptors, and
-/// limit/offset. `residualFilter` and `residualOrderBy` carry the conjuncts
-/// and sort keys that could not be pushed and must be evaluated in-memory
-/// over the fetched rows. `limitPushed` / `offsetPushed` tell the caller
-/// whether to strip the clauses from the pagination input.
+/// `typedQuery` carries physical access hints and any provably safe storage
+/// window. `residualFilter` and `residualOrderBy` preserve the original
+/// canonical clauses, which are evaluated exactly once after physical
+/// candidate selection. `limitPushed` / `offsetPushed` tell the caller whether
+/// to strip only those already-applied window clauses from pagination.
 struct SelectQueryPushdownPlan<T: Persistable>: Sendable {
     var typedQuery: Query<T>
-    /// Residual filter that must be applied after the fetch.
-    /// `nil` means the filter was fully pushed (or absent).
+    /// Original filter applied once after physical candidate selection.
     var residualFilter: Expression?
-    /// Residual sort keys that must be applied after the fetch.
-    /// `nil` means the orderBy was fully pushed (or absent).
+    /// Original sort keys applied once after physical candidate selection.
     var residualOrderBy: [SortKey]?
     /// Whether `selectQuery.limit` was pushed into `typedQuery.fetchLimit`.
     var limitPushed: Bool
@@ -35,10 +34,10 @@ struct SelectQueryPushdownPlan<T: Persistable>: Sendable {
 /// Translates a `SelectQuery` targeting a single `.table` source into
 /// a `Query<T>` against the concrete Persistable type.
 ///
-/// The planner pushes work into the typed fetch path so that
-/// `DatabaseDataStore.fetchInternalWithTransaction` can engage index selection
-/// and range scans. Anything not convertible is left for residual evaluation
-/// by the caller.
+/// The planner supplies physical hints so DatabaseDataStore can select an
+/// index or range. Those hints do not replace canonical filter or ordering
+/// semantics; the caller applies the original clauses once to the retained
+/// candidate rows.
 ///
 /// Step 2 scope:
 ///   - Filter: partial AND pushdown. Each top-level conjunct is attempted
@@ -177,22 +176,22 @@ enum SelectQueryPlanner {
                     offsetPushed: false,
                     pageWindowPushed: false,
                     visiblePageSize: nil,
-                    stableSnapshotQueryFingerprint: nil
+                    stableSnapshotQueryFingerprint: cursor.queryFingerprint
                 )
             }
             query.executionStartAfterIdentifier = cursor.storagePosition
             query.executionStorageOffset = cursor.storagePosition == nil
                 ? fetchOffset
                 : 0
-            query.fetchLimit = max(
-                1,
-                lookaheadOverflow ? Int.max : withLookahead
-            )
+            query.fetchLimit = visibleCount == 0
+                ? 0
+                : max(1, lookaheadOverflow ? Int.max : withLookahead)
             query.fetchOffset = nil
             query.executionWindowIsPushed = true
             pageWindowPushed = true
             visiblePageSize = visibleCount
         } else if noResidualFilter
+                    && selectQuery.filter == nil
                     && noOrderBy
                     && options.continuation == nil
                     && options.options.pageSize == nil
@@ -213,8 +212,10 @@ enum SelectQueryPlanner {
                     )
                 }
                 query.fetchOffset = offset
+                query.executionStorageOffset = offset
                 offsetPushed = true
             }
+            query.executionWindowIsPushed = limitPushed || offsetPushed
         }
 
         // accessPath: honor an explicit index hint when the caller already chose
@@ -232,8 +233,10 @@ enum SelectQueryPlanner {
 
         return SelectQueryPushdownPlan(
             typedQuery: query,
-            residualFilter: residualFilter,
-            residualOrderBy: residualOrderBy,
+            residualFilter: selectQuery.filter,
+            residualOrderBy: selectQuery.orderBy?.isEmpty == false
+                ? selectQuery.orderBy
+                : nil,
             limitPushed: limitPushed,
             offsetPushed: offsetPushed,
             pageWindowPushed: pageWindowPushed,

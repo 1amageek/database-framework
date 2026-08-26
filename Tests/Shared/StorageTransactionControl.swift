@@ -34,6 +34,7 @@ public final class StorageTransactionControl: Sendable {
         var boundedValueReadMaximums: [Int] = []
         var keyReadCount = 0
         var openedRangeCursorCount = 0
+        var rangeCursorLimits: [Int] = []
         var namespaceReadCount = 0
         var readVersionCount = 0
         var rangeMetadataReadCount = 0
@@ -146,12 +147,19 @@ public final class StorageTransactionControl: Sendable {
         state.withLock { $0.openedRangeCursorCount }
     }
 
+    public var rangeCursorLimits: [Int] {
+        state.withLock { $0.rangeCursorLimits }
+    }
+
     public var finishedRangeCursorCount: Int {
         state.withLock { $0.finishedRangeCursorCount }
     }
 
-    func recordRangeCursorOpened() {
-        state.withLock { $0.openedRangeCursorCount += 1 }
+    func recordRangeCursorOpened(limit: Int) {
+        state.withLock { state in
+            state.openedRangeCursorCount += 1
+            state.rangeCursorLimits.append(limit)
+        }
     }
 
     func recordValueRead() {

@@ -9,10 +9,29 @@ extension DatabaseContext {
         limit: Int,
         offset: Int = 0,
         startingAfterIdentifier: ByteString? = nil,
-        workMeter: DatabaseWorkMeter? = nil,
+        workMeter: DatabaseWorkMeter,
         transaction: DatabaseReadTransaction,
-        authorizationRequirement: DatabaseListReadAuthorizationRequirement? = nil
-    ) async throws -> [PersistedModel] {
+        authorizationRequirement: DatabaseListReadAuthorizationRequirement
+    ) async throws -> DatabaseRetainedPersistedModels {
+        guard limit >= 0 else {
+            throw DatabaseTransactionError.invalidLimit(limit)
+        }
+        guard offset >= 0 else {
+            throw DatabaseTransactionError.invalidLimit(offset)
+        }
+        guard let authorization = transaction.authorization else {
+            throw DatabaseReadSessionError.authorizationMismatch
+        }
+        let policy = try readPolicy()
+        try policy.validate(authorization)
+        guard authorizationRequirement.entityName == entity.name,
+              authorization.covers(
+                  listRequirement: authorizationRequirement
+              ),
+              authorization.fields.fieldsByEntity[entity.name] != nil else {
+            throw DatabaseReadSessionError.authorizationMismatch
+        }
+
         let partition = try CanonicalPartitionBinding.makeAnyBinding(
             for: entity,
             partitions: partitions
@@ -20,11 +39,23 @@ extension DatabaseContext {
         #if DATABASE_MULTI_BASE
         _ = try requireOperationDataRoot()
         #endif
+        if limit == 0 {
+            let empty = try DatabaseRetainedArrayBuilder<
+                DatabaseRetainedPersistedModels.Entry?
+            >(
+                workMeter: workMeter,
+                stage: .storageRow,
+                layout: try DatabaseRetainedArrayLayout.forElement(
+                    DatabaseRetainedPersistedModels.Entry?.self
+                )
+            )
+            return try DatabaseRetainedPersistedModels(buffer: empty.finish())
+        }
         let databaseTransaction = DatabaseTransaction(
             storageAccess: transaction.storageAccess,
             container: container,
-            readPolicy: try readPolicy(),
-            readAuthorization: transaction.authorization
+            readPolicy: policy,
+            readAuthorization: authorization
         )
         return try await databaseTransaction.scanPersistedModels(
             entity: entity.name,

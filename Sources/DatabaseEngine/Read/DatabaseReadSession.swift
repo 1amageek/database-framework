@@ -7,7 +7,7 @@ import Synchronization
 ///
 /// The value crosses only the synchronous mutex boundary used to transfer it
 /// out of an API whose generic result is currently constrained to Copyable.
-private final class DatabaseReadResultBox<
+final class DatabaseReadResultBox<
     Value: ~Copyable & Sendable
 >: Sendable {
     private let storage: Mutex<Value?>
@@ -70,6 +70,12 @@ final class FusionIndexReadAdmission: Sendable {
 /// owned by DatabaseEngine, but it cannot create transactions, mutate storage,
 /// change runtime configuration, or retain container lifecycle authority.
 public struct DatabaseReadSession: Sendable {
+    package static let scopeCursorRegistryContainerByteCount = UInt64(
+        MemoryLayout<[
+            UInt64: @Sendable () async throws -> Void
+        ]>.stride
+    )
+
     private final class Scope: Sendable {
         private typealias CursorCleanup = @Sendable () async throws -> Void
 
@@ -137,7 +143,8 @@ public struct DatabaseReadSession: Sendable {
             let cursorRegistryLayout = try DatabaseRetainedHashTableLayout
                 .validated(
                     containerByteCount: UInt64(
-                        MemoryLayout<[UInt64: CursorCleanup]>.stride
+                        DatabaseReadSession
+                            .scopeCursorRegistryContainerByteCount
                     ),
                     elementCapacitySlotByteCount: UInt64(
                         max(
@@ -946,7 +953,7 @@ public struct DatabaseReadSession: Sendable {
             DatabaseListReadAuthorizationRequirement
     ) async throws -> CanonicalRetainedQueryResponse {
         try scope.requireWorkMeter(options.workMeter)
-        return try await scope.withOperation { owners, operation in
+        return try await scope.withNoncopyableOperation { owners, operation in
             try owners.policy.validate(authorization)
             let result = try await owners.context.executeFusionRelationalRows(
                 query,
@@ -969,7 +976,7 @@ public struct DatabaseReadSession: Sendable {
         authorization: DatabaseReadAuthorization
     ) async throws -> CanonicalRetainedQueryResponse {
         try scope.requireWorkMeter(options.workMeter)
-        return try await scope.withOperation { owners, operation in
+        return try await scope.withNoncopyableOperation { owners, operation in
             try owners.policy.validate(authorization)
             let result = try await owners.context
                 .executeFusionCandidateRelationalRows(

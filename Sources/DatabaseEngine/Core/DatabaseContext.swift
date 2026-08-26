@@ -703,6 +703,61 @@ public final class DatabaseContext: Sendable {
         )
     }
 
+    /// Resolves physical candidates for canonical execution without adapting
+    /// stored rows to the application model type.
+    package func fetchCanonicalPersistedModels<T: Persistable>(
+        _ query: Query<T>,
+        transaction: DatabaseReadTransaction,
+        listRequirement: DatabaseListReadAuthorizationRequirement,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> DatabaseRetainedPersistedModels {
+        try ensureUsable()
+        guard let authorization = transaction.authorization else {
+            throw DatabaseReadSessionError.authorizationMismatch
+        }
+        // Validate the sealed evidence before resolving any physical store.
+        // The read-only store path does not create directories or inspect
+        // index lifecycle state, so a mismatched proof cannot disclose state.
+        let readPolicy = try readPolicy()
+        try readPolicy.validate(authorization)
+        guard listRequirement.entityName == T.persistableType,
+              authorization.covers(listRequirement: listRequirement),
+              authorization.fields.fieldsByEntity[T.persistableType] != nil
+        else {
+            throw DatabaseReadSessionError.authorizationMismatch
+        }
+        #if DATABASE_MULTI_BASE
+        _ = try requireOperationDataRoot()
+        #endif
+
+        let path: DirectoryPath<T>
+        if T.hasDynamicDirectory {
+            guard let binding = query.partitionBinding else {
+                throw DirectoryPathError.dynamicFieldsRequired(
+                    typeName: T.persistableType,
+                    fields: T.directoryFieldNames
+                )
+            }
+            try binding.validate()
+            path = binding
+        } else {
+            path = DirectoryPath<T>()
+        }
+
+        let store = try container.readStore(
+            for: T.self,
+            path: path,
+            readPolicy: readPolicy
+        )
+        return try await store.fetchCanonicalPersistedModels(
+            query,
+            transaction: transaction.storageAccess,
+            authorization: authorization,
+            listRequirement: listRequirement,
+            workMeter: workMeter
+        )
+    }
+
     /// Counts persisted models through a caller-owned storage transaction.
     ///
     /// Composition execution uses this entry point so every partial count is

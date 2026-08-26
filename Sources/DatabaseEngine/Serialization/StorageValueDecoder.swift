@@ -3,6 +3,24 @@ import DatabaseTypes
 
 /// Reconstructs primitive field values from bounded engine storage frames.
 package enum StorageValueDecoder {
+    private static let retainedArrayElementOwnerByteCount: UInt64 = 16
+
+    package static func retainedArrayStorageFootprint(
+        elementCount: Int
+    ) throws -> DatabaseIntermediateFootprint {
+        guard elementCount >= 0 else {
+            preconditionFailure("Array element counts cannot be negative")
+        }
+        return try DatabaseIntermediateFootprint(
+            bytes: UInt64(MemoryLayout<[FieldValue]>.stride)
+        ).adding(
+            try DatabaseIntermediateFootprint(
+                bytes: UInt64(MemoryLayout<FieldValue>.stride)
+                    + retainedArrayElementOwnerByteCount
+            ).multiplied(by: UInt64(elementCount))
+        )
+    }
+
     private enum RetainedFootprintWork {
         case value(FieldValue)
         case object(FieldObject)
@@ -39,12 +57,8 @@ package enum StorageValueDecoder {
             return try DatabaseIntermediateFootprint(bytes: base + 32)
                 .adding(values).bytes
         case .array(let values):
-            var total = try DatabaseIntermediateFootprint(
-                bytes: base + UInt64(MemoryLayout<[FieldValue]>.stride)
-            ).adding(
-                try DatabaseIntermediateFootprint(
-                    bytes: UInt64(MemoryLayout<FieldValue>.stride + 16)
-                ).multiplied(by: UInt64(values.count))
+            var total = try DatabaseIntermediateFootprint(bytes: base).adding(
+                retainedArrayStorageFootprint(elementCount: values.count)
             )
             for child in values {
                 total = try total.adding(
@@ -170,13 +184,9 @@ package enum StorageValueDecoder {
                 case .array(let values):
                     total = try addingFootprints(
                         total,
-                        UInt64(MemoryLayout<[FieldValue]>.stride)
-                    )
-                    total = try addingFootprints(
-                        total,
-                        try DatabaseIntermediateFootprint(
-                            bytes: UInt64(MemoryLayout<FieldValue>.stride + 16)
-                        ).multiplied(by: UInt64(values.count)).bytes
+                        try retainedArrayStorageFootprint(
+                            elementCount: values.count
+                        ).bytes
                     )
                     for child in values.reversed() {
                         try append(.value(child))

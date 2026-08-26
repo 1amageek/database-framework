@@ -55,28 +55,51 @@ public struct IndexReadResult: Sendable {
         case unordered
     }
 
-    package let rows: [IndexReadRow]
+    private let rows: DatabaseSharedRetainedArray<IndexReadRow>?
     public let ordering: Ordering
     public let metadata: [String: FieldValue]
 
-    // Both reservations are reference owners. Copying IndexReadResult shares
-    // their exactly-once release state and therefore cannot double-release the
-    // request ledger.
-    private let rowReservation: DatabaseIntermediateReservation?
     private let metadataReservation: DatabaseIntermediateReservation?
 
     fileprivate init(
-        rows: consuming [IndexReadRow],
+        rows: DatabaseSharedRetainedArray<IndexReadRow>?,
         ordering: Ordering,
         metadata: [String: FieldValue],
-        rowReservation: DatabaseIntermediateReservation?,
         metadataReservation: DatabaseIntermediateReservation?
     ) {
         self.rows = rows
         self.ordering = ordering
         self.metadata = metadata
-        self.rowReservation = rowReservation
         self.metadataReservation = metadataReservation
+    }
+
+    package var count: Int { rows?.count ?? 0 }
+    package var workMeter: DatabaseWorkMeter? {
+        rows?.workMeter ?? metadataReservation?.workMeter
+    }
+    package var retainedMetadataReservation:
+        DatabaseIntermediateReservation? {
+        metadataReservation
+    }
+
+    package func withRow<Failure: Error>(
+        at index: Int,
+        _ body: (borrowing IndexReadRow) throws(Failure) -> Void
+    ) throws(Failure) {
+        guard let rows else {
+            preconditionFailure("An empty index result has no rows")
+        }
+        try rows.withElement(at: index, body)
+    }
+
+    package func withRow<Failure: Error>(
+        at index: Int,
+        _ body: (borrowing IndexReadRow) async throws(Failure) -> Void
+    ) async throws(Failure) {
+        guard let rows else {
+            preconditionFailure("An empty index result has no rows")
+        }
+        try await rows.withElement(at: index, body)
     }
 
     /// Builds a result whose owned rows remain charged to the request budget
@@ -88,7 +111,6 @@ public struct IndexReadResult: Sendable {
     public static func build(
         workMeter: DatabaseWorkMeter,
         ordering: Ordering = .orderedByIndex,
-        metadata: [String: FieldValue] = [:],
         expectedCount: Int = 0,
         _ body: (inout IndexReadResultBuilder) throws -> Void
     ) throws -> IndexReadResult {
@@ -99,16 +121,38 @@ public struct IndexReadResult: Sendable {
         try body(&builder)
         return try builder.finish(
             ordering: ordering,
-            metadata: metadata,
-            workMeter: workMeter
+            metadata: nil
+        )
+    }
+
+    /// Builds rows and transfers metadata that was admitted before its values
+    /// were materialized. The metadata owner and its claim cannot be split at
+    /// this boundary.
+    package static func build(
+        workMeter: DatabaseWorkMeter,
+        ordering: Ordering = .orderedByIndex,
+        metadata: consuming DatabaseRetainedIndexMetadata,
+        expectedCount: Int = 0,
+        _ body: (inout IndexReadResultBuilder) throws -> Void
+    ) throws -> IndexReadResult {
+        guard metadata.workMeter === workMeter else {
+            throw DatabaseIntermediateReservationError.workMeterMismatch
+        }
+        var builder = try IndexReadResultBuilder(
+            workMeter: workMeter,
+            expectedCount: expectedCount
+        )
+        try body(&builder)
+        return try builder.finish(
+            ordering: ordering,
+            metadata: consume metadata
         )
     }
 
     public static let empty = IndexReadResult(
-        rows: [],
+        rows: nil,
         ordering: .orderedByIndex,
         metadata: [:],
-        rowReservation: nil,
         metadataReservation: nil
     )
 }
@@ -160,28 +204,25 @@ public struct IndexReadResultBuilder: ~Copyable {
 
     fileprivate consuming func finish(
         ordering: IndexReadResult.Ordering,
-        metadata: [String: FieldValue],
-        workMeter: DatabaseWorkMeter
+        metadata: consuming DatabaseRetainedIndexMetadata?
     ) throws -> IndexReadResult {
+        let metadataValues: [String: FieldValue]
         let metadataReservation: DatabaseIntermediateReservation?
-        if metadata.isEmpty {
-            metadataReservation = nil
+        if let metadata = consume metadata {
+            let retained = metadata.moveToIndexResult()
+            metadataValues = retained.values
+            metadataReservation = retained.reservation
         } else {
-            let footprint = try CanonicalRelationalFootprintMeter.footprint(
-                of: QueryRow(fields: [:], annotations: metadata),
-                workMeter: workMeter
-            )
-            metadataReservation = try workMeter.reserveIntermediate(
-                bytes: footprint.bytes,
-                at: .indexScan
-            )
+            metadataValues = [:]
+            metadataReservation = nil
         }
-        let retained = storage.finish().moveRetainingReservation()
+        let retained = try storage.finish().moveToSharedOwnership(
+            at: .indexScan
+        )
         return IndexReadResult(
-            rows: retained.elements,
+            rows: retained,
             ordering: ordering,
-            metadata: metadata,
-            rowReservation: retained.reservation,
+            metadata: metadataValues,
             metadataReservation: metadataReservation
         )
     }

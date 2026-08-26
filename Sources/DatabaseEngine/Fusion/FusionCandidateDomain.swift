@@ -2,6 +2,48 @@ import DatabaseKit
 import DatabaseTypes
 import StorageKit
 
+/// Supplies candidate rows through a bounded borrow without coupling
+/// candidate construction to one physical row owner.
+private protocol FusionCandidateRowInput {
+    var count: Int { get }
+
+    func forEachRow(
+        _ body: (borrowing QueryRow) throws -> Void
+    ) throws
+}
+
+private struct FusionCandidateCollectionRowInput<Rows: Collection>:
+    FusionCandidateRowInput
+where Rows.Element == QueryRow {
+    let rows: Rows
+
+    var count: Int { rows.count }
+
+    func forEachRow(
+        _ body: (borrowing QueryRow) throws -> Void
+    ) throws {
+        for row in rows {
+            try body(row)
+        }
+    }
+}
+
+private struct FusionCandidateScopedRowInput: FusionCandidateRowInput {
+    let rows: CanonicalRetainedQueryRowView
+
+    var count: Int { rows.count }
+
+    func forEachRow(
+        _ body: (borrowing QueryRow) throws -> Void
+    ) throws {
+        for position in 0..<rows.count {
+            try rows.withElement(at: position) { row in
+                try body(row)
+            }
+        }
+    }
+}
+
 /// Engine-owned immutable candidate rows for one Fusion stage.
 ///
 /// Feature modules can inspect only canonical primary keys. Materialized rows,
@@ -96,13 +138,41 @@ package struct FusionCandidateDomain: Sendable {
         workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage = .bindingCandidate
     ) throws -> FusionCandidateDomain where Rows.Element == QueryRow {
+        try make(
+            input: FusionCandidateCollectionRowInput(rows: rows),
+            entity: entity,
+            workMeter: workMeter,
+            stage: stage
+        )
+    }
+
+    static func make(
+        rows: CanonicalRetainedQueryRowView,
+        entity: Schema.Entity,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage = .bindingCandidate
+    ) throws -> FusionCandidateDomain {
+        try make(
+            input: FusionCandidateScopedRowInput(rows: rows),
+            entity: entity,
+            workMeter: workMeter,
+            stage: stage
+        )
+    }
+
+    private static func make<Input: FusionCandidateRowInput>(
+        input: Input,
+        entity: Schema.Entity,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> FusionCandidateDomain {
         var builder = try DatabaseRetainedArrayBuilder<Entry>(
             workMeter: workMeter,
             stage: stage,
             layout: try DatabaseRetainedArrayLayout.forElement(Entry.self),
-            expectedCount: rows.count
+            expectedCount: input.count
         )
-        for row in rows {
+        try input.forEachRow { row in
             try workMeter.consume(at: stage)
             guard let identity = row.fields["id"], identity != .null else {
                 throw FusionExecutionContractError.missingIdentity(field: "id")

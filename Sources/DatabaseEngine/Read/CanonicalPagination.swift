@@ -199,27 +199,33 @@ public enum CanonicalQueryPagination {
             )
         }
 
-        let queryFingerprint: ByteString
-        if let prevalidatedQueryFingerprint {
-            queryFingerprint = prevalidatedQueryFingerprint
-        } else {
-            queryFingerprint = try Self.queryFingerprint(
-                selectQuery,
-                scope: options.options.continuationScope,
-                workMeter: options.workMeter
-            )
-        }
-        let resultFingerprint: ByteString? = options.options.continuationSnapshotIsStable
-            ? nil
-            : try resultFingerprint(rows, workMeter: options.workMeter)
-
         let cursor = try options.continuation.map(Cursor.decode(_:))
-        guard cursor?.queryFingerprint == nil
-                || cursor?.queryFingerprint == queryFingerprint,
-              cursor.map({
-                  $0.resultFingerprint == resultFingerprint
-              }) ?? true else {
-            throw CanonicalReadError.invalidContinuation
+        var validatedQueryFingerprint: ByteString?
+        var validatedResultFingerprint: ByteString?
+        if let cursor {
+            let queryFingerprint: ByteString
+            if let prevalidatedQueryFingerprint {
+                queryFingerprint = prevalidatedQueryFingerprint
+            } else {
+                queryFingerprint = try Self.queryFingerprint(
+                    selectQuery,
+                    scope: options.options.continuationScope,
+                    workMeter: options.workMeter
+                )
+            }
+            let resultFingerprint = options.options
+                .continuationSnapshotIsStable
+                ? nil
+                : try Self.resultFingerprint(
+                    rows,
+                    workMeter: options.workMeter
+                )
+            guard cursor.queryFingerprint == queryFingerprint,
+                  cursor.resultFingerprint == resultFingerprint else {
+                throw CanonicalReadError.invalidContinuation
+            }
+            validatedQueryFingerprint = queryFingerprint
+            validatedResultFingerprint = resultFingerprint
         }
         guard let continuationOffset = Int(
             exactly: cursor?.offset ?? 0
@@ -272,10 +278,6 @@ public enum CanonicalQueryPagination {
             lookaheadOverflow ? Int.max : lookaheadCount
         )
         let visibleCount = min(inspectedCount, effectivePageSize)
-        try options.workMeter.consume(
-            UInt64(visibleCount),
-            at: .resultMaterialization
-        )
         let (nextOffset, nextOffsetOverflow) = continuationOffset
             .addingReportingOverflow(visibleCount)
         guard !nextOffsetOverflow else {
@@ -286,14 +288,44 @@ public enum CanonicalQueryPagination {
         } ?? true
         let hasMore = inspectedCount > effectivePageSize
             && withinLogicalLimit
-        let continuation = try hasMore
-            ? Cursor(
+        let continuation: QueryContinuation?
+        if hasMore {
+            let queryFingerprint: ByteString
+            if let validatedQueryFingerprint {
+                queryFingerprint = validatedQueryFingerprint
+            } else if let prevalidatedQueryFingerprint {
+                queryFingerprint = prevalidatedQueryFingerprint
+            } else {
+                queryFingerprint = try Self.queryFingerprint(
+                    selectQuery,
+                    scope: options.options.continuationScope,
+                    workMeter: options.workMeter
+                )
+            }
+            let resultFingerprint: ByteString?
+            if options.options.continuationSnapshotIsStable {
+                resultFingerprint = nil
+            } else if let validatedResultFingerprint {
+                resultFingerprint = validatedResultFingerprint
+            } else {
+                resultFingerprint = try Self.resultFingerprint(
+                    rows,
+                    workMeter: options.workMeter
+                )
+            }
+            continuation = try Cursor(
                 queryFingerprint: queryFingerprint,
                 resultFingerprint: resultFingerprint,
                 storagePosition: continuationPosition,
                 offset: UInt64(nextOffset)
             ).encode()
-            : nil
+        } else {
+            continuation = nil
+        }
+        try options.workMeter.consume(
+            UInt64(visibleCount),
+            at: .resultMaterialization
+        )
         let visible = trimOwnedRows(
             totalCount: rows.count,
             offset: baseOffset,
@@ -306,10 +338,13 @@ public enum CanonicalQueryPagination {
     }
 
     /// Validates a continuation before a stable-snapshot storage window is
-    /// planned and returns its logical offset. This does not inspect result
-    /// rows because the caller-owned read point already fixes their identity.
+    /// planned and returns its logical offset. A non-nil query fingerprint is
+    /// proof that an incoming continuation was validated, independently of
+    /// whether its storage position permits physical window pushdown. This
+    /// does not inspect result rows because the caller-owned read point already
+    /// fixes their identity.
     package struct StableSnapshotCursor: Sendable {
-        package let queryFingerprint: ByteString
+        package let queryFingerprint: ByteString?
         package let offset: Int
         package let storagePosition: ByteString?
     }
@@ -320,7 +355,14 @@ public enum CanonicalQueryPagination {
     ) throws -> StableSnapshotCursor {
         guard options.options.continuationSnapshotIsStable else {
             return StableSnapshotCursor(
-                queryFingerprint: [],
+                queryFingerprint: nil,
+                offset: 0,
+                storagePosition: nil
+            )
+        }
+        guard let continuation = options.continuation else {
+            return StableSnapshotCursor(
+                queryFingerprint: nil,
                 offset: 0,
                 storagePosition: nil
             )
@@ -330,13 +372,6 @@ public enum CanonicalQueryPagination {
             scope: options.options.continuationScope,
             workMeter: options.workMeter
         )
-        guard let continuation = options.continuation else {
-            return StableSnapshotCursor(
-                queryFingerprint: queryFingerprint,
-                offset: 0,
-                storagePosition: nil
-            )
-        }
         let cursor = try Cursor.decode(continuation)
         guard cursor.queryFingerprint == queryFingerprint,
               cursor.resultFingerprint == nil,

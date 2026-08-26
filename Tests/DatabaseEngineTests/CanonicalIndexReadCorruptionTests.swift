@@ -37,23 +37,29 @@ struct CanonicalIndexReadCorruptionTests {
         ).execute()
         #expect(baseline.map(\.id) == [item.id])
 
-        // Plant an index key that carries the indexed value but no primary
-        // key elements: [physical index subspace]/[value] with nothing after it.
+        // Plant an index key whose primary-key suffix starts with an invalid
+        // tuple type code. The indexed value is valid, so the range cursor
+        // reaches the entry before TupleCursor rejects the malformed suffix.
         let categoryElement = try FieldValueTupleCodec.tupleElement(
             for: .string("vv")
         )
         let corruptKey = try scenario.store.indexLifecycleStore
             .indexSubspace(for: scenario.indexName)
             .pack(Tuple(categoryElement))
+            .appending(0xFF)
         try await scenario.engine.withTransaction { transaction in
             try transaction.setValue(ByteString(), for: corruptKey)
         }
 
         do {
-            _ = try await QueryExecutor(
+            _ = try await executeCanonical(
                 context: scenario.container.testBaseContext(),
-                query: rangeQuery
-            ).execute()
+                scenario: scenario,
+                filter: .greaterThan(
+                    .col("category"),
+                    .string("a")
+                )
+            )
             Issue.record("Expected CanonicalReadError.corruptedIndexEntry")
         } catch CanonicalReadError.corruptedIndexEntry(let indexName, _) {
             #expect(indexName == scenario.indexName)
@@ -87,14 +93,40 @@ struct CanonicalIndexReadCorruptionTests {
         }
 
         do {
-            _ = try await scenario.container.testBaseContext()
-                .withFetchedModelsInTransaction(equalityQuery) { models, _ in
-                    models.map(\.id)
-                }
+            _ = try await executeCanonical(
+                context: scenario.container.testBaseContext(),
+                scenario: scenario,
+                filter: .equal(
+                    .col("category"),
+                    .string("vv")
+                )
+            )
             Issue.record("Expected CanonicalReadError.danglingIndexEntry")
         } catch CanonicalReadError.danglingIndexEntry(let indexName, _) {
             #expect(indexName == scenario.indexName)
         }
+    }
+
+    private func executeCanonical(
+        context: DatabaseContext,
+        scenario: CorruptionProbeScenario,
+        filter: Expression
+    ) async throws -> QueryResponse {
+        try await context.query(
+            SelectQuery(
+                projection: .all,
+                source: .table(
+                    TableRef(CorruptionProbeItem.persistableType)
+                ),
+                accessPath: .index(
+                    IndexScanSource(
+                        indexName: scenario.indexName,
+                        indexType: .ordered
+                    )
+                ),
+                filter: filter
+            )
+        )
     }
 
     private func makeScenario() async throws -> CorruptionProbeScenario {

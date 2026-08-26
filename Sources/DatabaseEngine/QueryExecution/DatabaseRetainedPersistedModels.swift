@@ -59,6 +59,16 @@ package final class DatabaseRetainedPersistedModels:
         self.arrayReservation = arrayReservation
     }
 
+    package convenience init(
+        buffer: consuming DatabaseRetainedBuffer<Entry?>
+    ) throws {
+        let retained = buffer.moveRetainingReservation()
+        try self.init(
+            entries: retained.elements,
+            arrayReservation: retained.reservation
+        )
+    }
+
     package var workMeter: DatabaseWorkMeter {
         arrayReservation.workMeter
     }
@@ -78,5 +88,14 @@ package final class DatabaseRetainedPersistedModels:
         _ body: (borrowing Entry?) throws(Failure) -> Void
     ) throws(Failure) {
         try body(entries[index])
+        withExtendedLifetime(arrayReservation) {}
+    }
+
+    func withEntry<Failure: Error>(
+        at index: Int,
+        _ body: (borrowing Entry?) async throws(Failure) -> Void
+    ) async throws(Failure) {
+        try await body(entries[index])
+        withExtendedLifetime(arrayReservation) {}
     }
 }

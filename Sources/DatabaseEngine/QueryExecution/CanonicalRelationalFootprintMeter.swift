@@ -5,6 +5,37 @@ package enum CanonicalRelationalFootprintMeter {
     private static let rowHeaderByteCount: UInt64 = 64
     private static let collectionEntryByteCount: UInt64 = 32
 
+    package static func emptySourceRowFootprint(
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> DatabaseIntermediateFootprint {
+        try sourceRowFootprint(
+            fields: [:],
+            sourceName: nil,
+            annotations: [:],
+            version: nil,
+            workMeter: workMeter,
+            stage: stage
+        )
+    }
+
+    package static func sourceScopeBaseFootprint(
+        nameUTF8Count: Int,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> DatabaseIntermediateFootprint {
+        let bytes = try adding(
+            try adding(collectionEntryByteCount, UInt64(nameUTF8Count)),
+            UInt64(MemoryLayout<[String: FieldValue]>.stride)
+        )
+        try DatabaseByteProcessingMeter.consume(
+            byteCount: bytes,
+            workMeter: workMeter,
+            stage: stage
+        )
+        return DatabaseIntermediateFootprint(bytes: bytes)
+    }
+
     static func footprint(
         of row: CanonicalSourceRow,
         workMeter: DatabaseWorkMeter
@@ -72,6 +103,223 @@ package enum CanonicalRelationalFootprintMeter {
                 UInt64(version.value.utf8.count)
             )
         }
+        return DatabaseIntermediateFootprint(
+            rows: 1,
+            bytes: try adding(rowHeaderByteCount, retainedBytes)
+        )
+    }
+
+    /// Measures the exact retained shape created by
+    /// `CanonicalSourceRow.fromBaseFields` before that shape allocates its
+    /// flattened and scoped dictionaries.
+    package static func sourceRowFootprint(
+        fields: [String: FieldValue],
+        sourceName: String?,
+        annotations: [String: FieldValue],
+        version: PersistableVersionToken?,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage = .projection
+    ) throws -> DatabaseIntermediateFootprint {
+        var retainedBytes: UInt64
+        if let sourceName {
+            retainedBytes = UInt64(
+                MemoryLayout<[String: FieldValue]>.stride
+            )
+            for (name, value) in fields {
+                retainedBytes = try adding(
+                    retainedBytes,
+                    retainedEntryByteCount(
+                        nameUTF8Count: name.utf8.count,
+                        value: value,
+                        workMeter: workMeter,
+                        stage: stage
+                    )
+                )
+                retainedBytes = try adding(
+                    retainedBytes,
+                    retainedEntryByteCount(
+                        nameUTF8Count: sourceName.utf8.count
+                            + 1
+                            + name.utf8.count,
+                        value: value,
+                        workMeter: workMeter,
+                        stage: stage
+                    )
+                )
+            }
+            retainedBytes = try adding(
+                retainedBytes,
+                try adding(
+                    collectionEntryByteCount,
+                    UInt64(sourceName.utf8.count)
+                )
+            )
+            retainedBytes = try adding(
+                retainedBytes,
+                retainedByteCount(
+                    fields: fields,
+                    workMeter: workMeter,
+                    stage: stage
+                )
+            )
+        } else {
+            retainedBytes = try retainedByteCount(
+                fields: fields,
+                workMeter: workMeter,
+                stage: stage
+            )
+        }
+        retainedBytes = try adding(
+            retainedBytes,
+            retainedByteCount(
+                fields: annotations,
+                workMeter: workMeter,
+                stage: stage
+            )
+        )
+        if let version {
+            retainedBytes = try adding(
+                retainedBytes,
+                UInt64(version.value.utf8.count)
+            )
+        }
+        return DatabaseIntermediateFootprint(
+            rows: 1,
+            bytes: try adding(rowHeaderByteCount, retainedBytes)
+        )
+    }
+
+    /// Measures a renamed subquery row before allocating its destination
+    /// dictionaries. Source and target columns are positionally paired.
+    package static func sourceRowFootprint(
+        sourceFields: [String: FieldValue],
+        sourceColumns: [String],
+        targetColumns: [String],
+        sourceName: String,
+        annotations: [String: FieldValue],
+        version: PersistableVersionToken?,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage = .bindingCandidate
+    ) throws -> DatabaseIntermediateFootprint {
+        precondition(sourceColumns.count == targetColumns.count)
+        var flattenedBytes = UInt64(
+            MemoryLayout<[String: FieldValue]>.stride
+        )
+        var scopedBytes = UInt64(
+            MemoryLayout<[String: FieldValue]>.stride
+        )
+        for (sourceColumn, targetColumn) in zip(
+            sourceColumns,
+            targetColumns
+        ) {
+            guard let value = sourceFields[sourceColumn] else {
+                throw CanonicalReadError.unsupportedSelectQuery(
+                    "Subquery output column '\(sourceColumn)' is missing"
+                )
+            }
+            let base = try retainedEntryByteCount(
+                nameUTF8Count: targetColumn.utf8.count,
+                value: value,
+                workMeter: workMeter,
+                stage: stage
+            )
+            flattenedBytes = try adding(flattenedBytes, base)
+            flattenedBytes = try adding(
+                flattenedBytes,
+                retainedEntryByteCount(
+                    nameUTF8Count: sourceName.utf8.count
+                        + 1
+                        + targetColumn.utf8.count,
+                    value: value,
+                    workMeter: workMeter,
+                    stage: stage
+                )
+            )
+            scopedBytes = try adding(scopedBytes, base)
+        }
+        var retainedBytes = try adding(flattenedBytes, scopedBytes)
+        retainedBytes = try adding(
+            retainedBytes,
+            try adding(
+                collectionEntryByteCount,
+                UInt64(sourceName.utf8.count)
+            )
+        )
+        retainedBytes = try adding(
+            retainedBytes,
+            retainedByteCount(
+                fields: annotations,
+                workMeter: workMeter,
+                stage: stage
+            )
+        )
+        if let version {
+            retainedBytes = try adding(
+                retainedBytes,
+                UInt64(version.value.utf8.count)
+            )
+        }
+        return DatabaseIntermediateFootprint(
+            rows: 1,
+            bytes: try adding(rowHeaderByteCount, retainedBytes)
+        )
+    }
+
+    /// Persisted-model variant of the prospective source-row measurement. It
+    /// avoids allocating the QueryRow field dictionary before admission.
+    package static func sourceRowFootprint(
+        of model: borrowing PersistedModel,
+        sourceName: String?,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage = .projection
+    ) throws -> DatabaseIntermediateFootprint {
+        var flattenedBytes = UInt64(
+            MemoryLayout<[String: FieldValue]>.stride
+        )
+        var scopedBytes = UInt64(
+            MemoryLayout<[String: FieldValue]>.stride
+        )
+        for field in model.fields {
+            let base = try retainedEntryByteCount(
+                nameUTF8Count: field.name.utf8.count,
+                value: field.value,
+                workMeter: workMeter,
+                stage: stage
+            )
+            flattenedBytes = try adding(flattenedBytes, base)
+            if let sourceName {
+                flattenedBytes = try adding(
+                    flattenedBytes,
+                    retainedEntryByteCount(
+                        nameUTF8Count: sourceName.utf8.count
+                            + 1
+                            + field.name.utf8.count,
+                        value: field.value,
+                        workMeter: workMeter,
+                        stage: stage
+                    )
+                )
+                scopedBytes = try adding(scopedBytes, base)
+            }
+        }
+        var retainedBytes = flattenedBytes
+        if let sourceName {
+            retainedBytes = try adding(
+                retainedBytes,
+                try adding(
+                    collectionEntryByteCount,
+                    UInt64(sourceName.utf8.count)
+                )
+            )
+            retainedBytes = try adding(retainedBytes, scopedBytes)
+        }
+        retainedBytes = try adding(
+            retainedBytes,
+            UInt64(MemoryLayout<[String: FieldValue]>.stride)
+        )
+        // QueryRowCodec emits a lowercase SHA-256 token for every persisted
+        // model. Its retained textual representation is always 64 UTF-8 bytes.
+        retainedBytes = try adding(retainedBytes, 64)
         return DatabaseIntermediateFootprint(
             rows: 1,
             bytes: try adding(rowHeaderByteCount, retainedBytes)

@@ -193,6 +193,45 @@ struct SchemaDrivenRuntimeSQLiteTests {
             try await save([alice, bob], in: container)
         }
 
+        let stableInitialPage = SelectQuery(
+            projection: .items([
+                ProjectionItem(
+                    .literal(
+                        .langLiteral(
+                            value: "Hello",
+                            language: "EN-US"
+                        )
+                    ),
+                    alias: "label"
+                )
+            ]),
+            source: .table(
+                TableRef(SchemaDrivenRuntimeAccount.persistableType)
+            )
+        )
+        let stablePageOptions = ReadExecutionOptions(
+            pageSize: 10,
+            continuationSnapshotIsStable: true
+        )
+        let compiledStablePage = try await compiled.testBaseContext().query(
+            stableInitialPage,
+            options: stablePageOptions
+        )
+        let schemaDrivenStablePage = try await schemaDriven.testBaseContext()
+            .query(
+                stableInitialPage,
+                options: stablePageOptions
+            )
+        expectEqual(compiledStablePage, schemaDrivenStablePage)
+        #expect(compiledStablePage.rows.count == 2)
+        #expect(compiledStablePage.continuation == nil)
+        guard case .rdfTerm(.literal(let literal))? =
+                compiledStablePage.rows[0].fields["label"] else {
+            Issue.record("Expected a canonical language literal")
+            return
+        }
+        #expect(literal.languageTag?.rawValue == "en-us")
+
         let adults = SelectQuery(
             projection: .all,
             source: .table(TableRef(SchemaDrivenRuntimeAccount.persistableType)),

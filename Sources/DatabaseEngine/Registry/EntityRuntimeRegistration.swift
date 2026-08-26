@@ -261,53 +261,41 @@ public struct EntityRuntimeDefinition: Sendable {
                 indexDescriptors: compiledIndexDescriptors,
                 options: options
             )
-            let items: [Model]
-            if let authorization = transaction.authorization {
-                items = try await context.fetch(
-                    plan.typedQuery,
-                    transaction: transaction.storageAccess,
-                    authorizedBy: authorization,
-                    listRequirement: authorizationRequirement
-                )
-            } else {
-                items = try await context.fetch(
-                    plan.typedQuery,
-                    transaction: transaction.storageAccess
-                )
-            }
-            var retainedRows = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
-                workMeter: options.workMeter,
-                stage: .resultMaterialization,
-                layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self),
-                expectedCount: items.count
+            let models = try await context.fetchCanonicalPersistedModels(
+                plan.typedQuery,
+                transaction: transaction,
+                listRequirement: authorizationRequirement,
+                workMeter: options.workMeter
             )
-            for item in items {
-                try options.workMeter.consume(at: .resultMaterialization)
-                let row = try QueryRowCodec.encode(item)
-                let sourceRow = CanonicalSourceRow.fromBaseFields(
-                    row.fields,
-                    sourceName: sourceName,
-                    annotations: row.annotations,
-                    version: row.version
-                )
-                try retainedRows.append(
-                    footprint: try CanonicalRelationalFootprintMeter.footprint(
-                        of: sourceRow,
-                        workMeter: options.workMeter
-                    ),
-                    make: { sourceRow }
-                )
-            }
-            let rows = try retainedRows.finish().moveToSharedOwnership(
-                at: .resultMaterialization
+            let rows = try Self.canonicalTableRows(
+                from: models,
+                sourceName: sourceName,
+                workMeter: options.workMeter
             )
             let continuationPosition: ByteString?
             if let visiblePageSize = plan.visiblePageSize,
-               items.count > visiblePageSize,
+               models.count > visiblePageSize,
                visiblePageSize > 0 {
-                continuationPosition = try PersistableIdentifierKeyCodec
-                    .tuple(for: items[visiblePageSize - 1])
-                    .pack()
+                var resolved: ByteString?
+                try models.withEntry(at: visiblePageSize - 1) {
+                    entry in
+                    guard let entry else {
+                        throw CanonicalReadError.unsupportedAccessPath(
+                            "Canonical table fetch retained a missing model"
+                        )
+                    }
+                    try entry.withModel { model in
+                        let identity = try Self.identity(
+                            for: model,
+                            entity: entity
+                        )
+                        resolved = try PersistableIdentifierKeyCodec.tuple(
+                            for: identity,
+                            expectedType: entity.identifierType
+                        ).pack()
+                    }
+                }
+                continuationPosition = resolved
             } else {
                 continuationPosition = nil
             }
@@ -914,10 +902,11 @@ public struct EntityRuntimeDefinition: Sendable {
                 "Schema-driven runtime expected table '\(entity.name)'"
             )
         }
-        let stablePageWindow = try schemaDrivenStablePageWindow(
+        let stablePagePlan = try schemaDrivenStablePagePlan(
             selectQuery: selectQuery,
             options: options
         )
+        let stablePageWindow = stablePagePlan.window
         let budgetReadLimit = try options.workMeter.storageReadLimitWithSentinel(
             at: .storageRow
         )
@@ -936,44 +925,32 @@ public struct EntityRuntimeDefinition: Sendable {
             transaction: transaction,
             authorizationRequirement: authorizationRequirement
         )
-        var retainedRows = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
-            workMeter: options.workMeter,
-            stage: .resultMaterialization,
-            layout: try DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self),
-            expectedCount: models.count
-        )
-        for model in models {
-            try options.workMeter.consume(at: .resultMaterialization)
-            let row = try QueryRowCodec.encode(model)
-            let sourceRow = CanonicalSourceRow.fromBaseFields(
-                row.fields,
-                sourceName: sourceName,
-                annotations: row.annotations,
-                version: row.version
-            )
-            try retainedRows.append(
-                footprint: try CanonicalRelationalFootprintMeter.footprint(
-                    of: sourceRow,
-                    workMeter: options.workMeter
-                ),
-                make: { sourceRow }
-            )
-        }
-        let rows = try retainedRows.finish().moveToSharedOwnership(
-            at: .resultMaterialization
+        let rows = try canonicalTableRows(
+            from: models,
+            sourceName: sourceName,
+            workMeter: options.workMeter
         )
         let continuationPosition: ByteString?
         if let stablePageWindow,
            models.count > stablePageWindow.visibleCount,
            stablePageWindow.visibleCount > 0 {
-            let identity = try identity(
-                for: models[stablePageWindow.visibleCount - 1],
-                entity: entity
-            )
-            continuationPosition = try PersistableIdentifierKeyCodec.tuple(
-                for: identity,
-                expectedType: entity.identifierType
-            ).pack()
+            var resolved: ByteString?
+            try models.withEntry(at: stablePageWindow.visibleCount - 1) {
+                entry in
+                guard let entry else {
+                    throw CanonicalReadError.unsupportedAccessPath(
+                        "Canonical table fetch retained a missing model"
+                    )
+                }
+                try entry.withModel { model in
+                    let identity = try identity(for: model, entity: entity)
+                    resolved = try PersistableIdentifierKeyCodec.tuple(
+                        for: identity,
+                        expectedType: entity.identifierType
+                    ).pack()
+                }
+            }
+            continuationPosition = resolved
         } else {
             continuationPosition = nil
         }
@@ -986,28 +963,86 @@ public struct EntityRuntimeDefinition: Sendable {
             pageWindowPushed: stablePageWindow != nil,
             continuationPosition: continuationPosition,
             stableSnapshotQueryFingerprint:
-                stablePageWindow?.queryFingerprint
+                stablePagePlan.queryFingerprint
+        )
+    }
+
+    private static func canonicalTableRows(
+        from models: DatabaseRetainedPersistedModels,
+        sourceName: String,
+        workMeter: DatabaseWorkMeter
+    ) throws -> DatabaseSharedRetainedArray<CanonicalSourceRow> {
+        guard models.workMeter === workMeter else {
+            throw DatabaseIntermediateReservationError.workMeterMismatch
+        }
+        var retainedRows = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
+            workMeter: workMeter,
+            stage: .resultMaterialization,
+            layout: try DatabaseRetainedArrayLayout.forElement(
+                CanonicalSourceRow.self
+            ),
+            expectedCount: models.count
+        )
+        for index in models.indices {
+            try workMeter.consume(at: .resultMaterialization)
+            try models.withEntry(at: index) { entry in
+                guard let entry else {
+                    throw CanonicalReadError.unsupportedAccessPath(
+                        "Canonical table fetch retained a missing model"
+                    )
+                }
+                try entry.withModel { model in
+                    try retainedRows.append(
+                        footprint: try CanonicalRelationalFootprintMeter
+                            .sourceRowFootprint(
+                                of: model,
+                                sourceName: sourceName,
+                                workMeter: workMeter,
+                                stage: .resultMaterialization
+                            ),
+                        make: {
+                            let row = try QueryRowCodec.encode(model)
+                            return CanonicalSourceRow.fromBaseFields(
+                                row.fields,
+                                sourceName: sourceName,
+                                annotations: row.annotations,
+                                version: row.version
+                            )
+                        }
+                    )
+                }
+            }
+        }
+        return try retainedRows.finish().moveToSharedOwnership(
+            at: .resultMaterialization
         )
     }
 
     private struct SchemaDrivenStablePageWindow {
-        let queryFingerprint: ByteString
         let storageOffset: Int
         let fetchLimit: Int
         let visibleCount: Int
         let startingAfterIdentifier: ByteString?
     }
 
-    private static func schemaDrivenStablePageWindow(
+    private struct SchemaDrivenStablePagePlan {
+        let window: SchemaDrivenStablePageWindow?
+        let queryFingerprint: ByteString?
+    }
+
+    private static func schemaDrivenStablePagePlan(
         selectQuery: SelectQuery,
         options: ReadExecutionContext
-    ) throws -> SchemaDrivenStablePageWindow? {
+    ) throws -> SchemaDrivenStablePagePlan {
         guard options.options.continuationSnapshotIsStable,
               selectQuery.filter == nil,
               selectQuery.orderBy?.isEmpty ?? true,
               windowPushdownIsSemanticallySafe(selectQuery),
               let pageSize = try options.resolvePageSize() else {
-            return nil
+            return SchemaDrivenStablePagePlan(
+                window: nil,
+                queryFingerprint: nil
+            )
         }
         let cursor = try CanonicalQueryPagination
             .validatedStableSnapshotCursor(
@@ -1015,7 +1050,10 @@ public struct EntityRuntimeDefinition: Sendable {
                 options: options
             )
         guard options.continuation == nil || cursor.storagePosition != nil else {
-            return nil
+            return SchemaDrivenStablePagePlan(
+                window: nil,
+                queryFingerprint: cursor.queryFingerprint
+            )
         }
         guard let queryOffset = Int(exactly: selectQuery.offset ?? 0) else {
             throw CanonicalReadError.unsupportedSelectQuery(
@@ -1038,12 +1076,16 @@ public struct EntityRuntimeDefinition: Sendable {
         let (fetchLimit, overflow) = visibleCount.addingReportingOverflow(
             wantsLookahead ? 1 : 0
         )
-        return SchemaDrivenStablePageWindow(
-            queryFingerprint: cursor.queryFingerprint,
-            storageOffset: cursor.storagePosition == nil ? queryOffset : 0,
-            fetchLimit: max(1, overflow ? Int.max : fetchLimit),
-            visibleCount: visibleCount,
-            startingAfterIdentifier: cursor.storagePosition
+        return SchemaDrivenStablePagePlan(
+            window: SchemaDrivenStablePageWindow(
+                storageOffset: cursor.storagePosition == nil ? queryOffset : 0,
+                fetchLimit: visibleCount == 0
+                    ? 0
+                    : max(1, overflow ? Int.max : fetchLimit),
+                visibleCount: visibleCount,
+                startingAfterIdentifier: cursor.storagePosition
+            ),
+            queryFingerprint: cursor.queryFingerprint
         )
     }
 

@@ -241,7 +241,7 @@ public final class ControlledStorageEngine<Base: StorageEngine>:
             snapshot: Bool,
             streamingMode: StreamingMode
         ) -> KeyValueCursor {
-            control.recordRangeCursorOpened()
+            control.recordRangeCursorOpened(limit: limit)
             let cursor = base.rangeCursor(
                 from: begin,
                 to: end,

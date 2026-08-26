@@ -205,10 +205,17 @@ private func reserveFullTextFacets(
     )
 }
 
-private func reserveFullTextFacetMetadataAdmission(
+private func retainedFullTextFacetMetadata(
+    totalCount: Int,
     _ facets: [String: [(value: String, count: Int64)]],
     workMeter: DatabaseWorkMeter
-) throws -> DatabaseIntermediateReservation {
+) throws -> DatabaseRetainedIndexMetadata {
+    guard let totalCount = UInt64(exactly: totalCount) else {
+        throw FullTextReadError.invalidResultCount(
+            field: FullTextReadParameter.totalCount,
+            count: Int64(totalCount)
+        )
+    }
     var footprint = DatabaseIntermediateFootprint(
         bytes: UInt64(MemoryLayout<[String: FieldValue]>.stride) + 64
     )
@@ -231,11 +238,33 @@ private func reserveFullTextFacetMetadataAdmission(
             )
         }
     }
-    return try workMeter.reserveIntermediate(
-        rows: footprint.rows,
-        bytes: footprint.bytes,
-        at: .indexScan
-    )
+    return try DatabaseRetainedIndexMetadata.build(
+        workMeter: workMeter,
+        footprint: footprint
+    ) {
+        var metadata: [String: FieldValue] = [
+            FullTextReadParameter.totalCount: .uint64(totalCount)
+        ]
+        for (field, buckets) in facets {
+            metadata[
+                FullTextReadParameter.facetMetadataPrefix + field
+            ] = .array(
+                try buckets.map { bucket in
+                    guard let count = UInt64(exactly: bucket.count) else {
+                        throw FullTextReadError.invalidResultCount(
+                            field: field,
+                            count: bucket.count
+                        )
+                    }
+                    return .array([
+                        .string(bucket.value),
+                        .uint64(count),
+                    ])
+                }
+            )
+        }
+        return metadata
+    }
 }
 
 private func reserveFullTextArrayCopy<Element>(
@@ -608,9 +637,14 @@ private struct FullTextReadExecutor: IndexReadExecutor {
             forEntityName: entity.name,
             partitions: partitions
         ) else {
+            let metadata = try retainedFullTextFacetMetadata(
+                totalCount: 0,
+                [:],
+                workMeter: workMeter
+            )
             return try IndexReadResult.build(
                 workMeter: workMeter,
-                metadata: try facetMetadata(totalCount: 0, facets: [:]),
+                metadata: consume metadata,
                 expectedCount: 0
             ) { _ in }
         }
@@ -729,19 +763,15 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                 let visibleBuckets = Array(buckets.prefix(facetLimit))
                 facets[fieldName] = visibleBuckets
             }
-            let metadataAdmission = try reserveFullTextFacetMetadataAdmission(
+            let metadata = try retainedFullTextFacetMetadata(
+                totalCount: fetched.count,
                 facets,
                 workMeter: workMeter
-            )
-            defer { metadataAdmission.release() }
-            let metadata = try facetMetadata(
-                totalCount: fetched.count,
-                facets: facets
             )
             let visibleCount = min(limit ?? fetched.count, fetched.count)
             return try IndexReadResult.build(
                 workMeter: workMeter,
-                metadata: metadata,
+                metadata: consume metadata,
                 expectedCount: visibleCount
             ) { rows in
                 for index in 0..<visibleCount {
@@ -807,35 +837,6 @@ private struct FullTextReadExecutor: IndexReadExecutor {
             )
         }
         return values.count > limit ? Array(values.prefix(limit)) : values
-    }
-
-    private func facetMetadata(
-        totalCount: Int,
-        facets: [String: [(value: String, count: Int64)]]
-    ) throws -> [String: FieldValue] {
-        guard let totalCount = UInt64(exactly: totalCount) else {
-            throw FullTextReadError.invalidResultCount(
-                field: FullTextReadParameter.totalCount,
-                count: Int64(totalCount)
-            )
-        }
-        var metadata: [String: FieldValue] = [
-            FullTextReadParameter.totalCount: .uint64(totalCount)
-        ]
-        for (field, buckets) in facets {
-            metadata[FullTextReadParameter.facetMetadataPrefix + field] = .array(
-                try buckets.map { bucket in
-                    guard let count = UInt64(exactly: bucket.count) else {
-                        throw FullTextReadError.invalidResultCount(
-                            field: field,
-                            count: bucket.count
-                        )
-                    }
-                    return .array([.string(bucket.value), .uint64(count)])
-                }
-            )
-        }
-        return metadata
     }
 
     private func decodeMatchMode(
@@ -992,18 +993,14 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 workMeter: options.workMeter
             )
             defer { facetReservation.release() }
-            let metadataAdmission = try reserveFullTextFacetMetadataAdmission(
+            let metadata = try retainedFullTextFacetMetadata(
+                totalCount: result.totalCount,
                 result.facets,
                 workMeter: options.workMeter
             )
-            defer { metadataAdmission.release() }
-            let metadata = try facetMetadata(
-                totalCount: result.totalCount,
-                facets: result.facets
-            )
             return try IndexReadResult.build(
                 workMeter: options.workMeter,
-                metadata: metadata,
+                metadata: consume metadata,
                 expectedCount: result.items.count
             ) { rows in
                 for entity in result.items {
@@ -1101,35 +1098,6 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 )
             }
         }
-    }
-
-    private func facetMetadata(
-        totalCount: Int,
-        facets: [String: [(value: String, count: Int64)]]
-    ) throws -> [String: FieldValue] {
-        guard let totalCount = UInt64(exactly: totalCount) else {
-            throw FullTextReadError.invalidResultCount(
-                field: FullTextReadParameter.totalCount,
-                count: Int64(totalCount)
-            )
-        }
-        var metadata: [String: FieldValue] = [
-            FullTextReadParameter.totalCount: .uint64(totalCount)
-        ]
-        for (field, buckets) in facets {
-            metadata[FullTextReadParameter.facetMetadataPrefix + field] = .array(
-                try buckets.map { bucket in
-                    guard let count = UInt64(exactly: bucket.count) else {
-                        throw FullTextReadError.invalidResultCount(
-                            field: field,
-                            count: bucket.count
-                        )
-                    }
-                    return .array([.string(bucket.value), .uint64(count)])
-                }
-            )
-        }
-        return metadata
     }
 
     private func executePlainSearch(

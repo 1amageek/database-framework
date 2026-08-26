@@ -213,6 +213,102 @@ package final class DatabaseDataStore: DataStore, Sendable {
         let needsPostFiltering: Bool
     }
 
+    /// Produces canonical physical candidates without decoding the application
+    /// model type. Logical filtering, ordering, and pagination remain owned by
+    /// canonical relational execution.
+    package func fetchCanonicalPersistedModels<T: Persistable>(
+        _ query: Query<T>,
+        transaction: any TransactionAccess,
+        authorization: DatabaseReadAuthorization,
+        listRequirement: DatabaseListReadAuthorizationRequirement,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> DatabaseRetainedPersistedModels {
+        // Admission is deliberately the first operation. In particular, do
+        // not inspect index lifecycle state or open a physical cursor until
+        // the evidence is proven to belong to this store's policy generation.
+        try readPolicy.validate(authorization)
+        guard listRequirement.entityName == T.persistableType,
+              authorization.covers(listRequirement: listRequirement),
+              let authorizedFields = authorization.fields.fieldsByEntity[
+                T.persistableType
+              ] else {
+            throw DatabaseReadSessionError.authorizationMismatch
+        }
+
+        if query.executionWindowIsPushed, query.fetchLimit == 0 {
+            let empty = try DatabaseRetainedArrayBuilder<
+                DatabaseRetainedPersistedModels.Entry?
+            >(
+                workMeter: workMeter,
+                stage: .storageRow,
+                layout: try DatabaseRetainedArrayLayout.forElement(
+                    DatabaseRetainedPersistedModels.Entry?.self
+                )
+            )
+            return try DatabaseRetainedPersistedModels(buffer: empty.finish())
+        }
+
+        let predicate: Predicate<T>?
+        switch query.predicates.count {
+        case 0:
+            predicate = nil
+        case 1:
+            predicate = query.predicates[0]
+        default:
+            predicate = .and(query.predicates)
+        }
+
+        if let predicate,
+           let selection = try ScalarIndexAccessPlanner.select(
+                for: predicate,
+                descriptors: indexDescriptors,
+                forcedIndexName: query.forcedIndex?.indexName
+           ) {
+            let accessPath = try encodeScalarIndexAccess(selection)
+            let state = try await indexLifecycleStore.state(
+                of: accessPath.descriptor.name,
+                transaction: transaction
+            )
+            if state.isReadable {
+                let keys = try await retainedPrimaryKeys(
+                    for: accessPath,
+                    transaction: transaction,
+                    workMeter: workMeter
+                )
+                return try await fetchCanonicalPersistedModels(
+                    entity: T.persistableType,
+                    primaryKeys: keys,
+                    indexName: accessPath.descriptor.name,
+                    transaction: transaction,
+                    workMeter: workMeter,
+                    authorizedFields: authorizedFields
+                )
+            }
+            if query.forcedIndex != nil {
+                throw CanonicalReadError.indexHintNotReadable(
+                    indexName: accessPath.descriptor.name,
+                    state: state.description
+                )
+            }
+        } else if let forcedIndex = query.forcedIndex {
+            throw CanonicalReadError.indexHintNotApplicable(
+                "Forced index '\(forcedIndex.indexName)' cannot serve the given predicate on type '\(T.persistableType)'"
+            )
+        }
+
+        return try await fetchAllCanonicalPersistedModels(
+            entity: T.persistableType,
+            transaction: transaction,
+            workMeter: workMeter,
+            authorizedFields: authorizedFields,
+            limit: query.executionWindowIsPushed ? query.fetchLimit : nil,
+            offset: query.executionWindowIsPushed
+                ? query.executionStorageOffset
+                : 0,
+            startingAfterIdentifier: query.executionStartAfterIdentifier
+        )
+    }
+
     /// Resolve the physical access path using the same selection, encoding, and
     /// lifecycle checks as query execution.
     func executionPlan<T: Persistable>(
@@ -622,6 +718,412 @@ package final class DatabaseDataStore: DataStore, Sendable {
             )
         }
         return Tuple(idElements)
+    }
+
+    private func retainedPrimaryKeys(
+        for accessPath: ScalarIndexAccessPath,
+        transaction: any TransactionAccess,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> DatabaseRetainedPrimaryKeys {
+        let descriptor = accessPath.descriptor
+        let condition = accessPath.condition
+        let indexSubspace = try indexLifecycleStore.indexSubspace(
+            for: descriptor.name
+        )
+        let valueSubspace = Subspace(
+            prefix: indexSubspace.prefix.appending(
+                contentsOf: condition.valueTuple.pack()
+            )
+        )
+
+        let scanRange: IndexScanRange
+        switch condition.op {
+        case .equal:
+            let (begin, end) = valueSubspace.range()
+            scanRange = condition.matchedFieldCount == descriptor.fieldNames.count
+                ? .exactMatch(
+                    begin: begin,
+                    end: end,
+                    valueSubspace: valueSubspace
+                )
+                : .range(
+                    begin: begin,
+                    end: end,
+                    baseSubspace: indexSubspace,
+                    keyPathsCount: descriptor.fieldNames.count
+                )
+        case .greaterThan:
+            scanRange = .range(
+                begin: valueSubspace.range().end,
+                end: indexSubspace.range().end,
+                baseSubspace: indexSubspace,
+                keyPathsCount: descriptor.fieldNames.count
+            )
+        case .greaterThanOrEqual:
+            scanRange = .range(
+                begin: indexSubspace.pack(condition.valueTuple),
+                end: indexSubspace.range().end,
+                baseSubspace: indexSubspace,
+                keyPathsCount: descriptor.fieldNames.count
+            )
+        case .lessThan:
+            scanRange = .range(
+                begin: indexSubspace.range().begin,
+                end: indexSubspace.pack(condition.valueTuple),
+                baseSubspace: indexSubspace,
+                keyPathsCount: descriptor.fieldNames.count
+            )
+        case .lessThanOrEqual:
+            scanRange = .range(
+                begin: indexSubspace.range().begin,
+                end: valueSubspace.range().end,
+                baseSubspace: indexSubspace,
+                keyPathsCount: descriptor.fieldNames.count
+            )
+        default:
+            throw CanonicalReadError.unsupportedAccessPath(
+                "Scalar index '\(descriptor.name)' cannot execute comparison operator '\(condition.op)'"
+            )
+        }
+
+        let storageLimit = try boundedStorageLimit(
+            requested: nil,
+            workMeter: workMeter
+        ) ?? 0
+        var retained = try DatabaseRetainedArrayBuilder<
+            DatabaseRetainedPrimaryKey
+        >(
+            workMeter: workMeter,
+            stage: .indexScan,
+            layout: try DatabaseRetainedArrayLayout.forElement(
+                DatabaseRetainedPrimaryKey.self
+            )
+        )
+        try workMeter.consume(at: .indexScan)
+
+        let begin: ByteString
+        let end: ByteString
+        let decode: (ByteString) throws -> DatabaseRetainedPrimaryKey
+        switch scanRange {
+        case .exactMatch(let lower, let upper, let subspace):
+            begin = lower
+            end = upper
+            decode = { key in
+                try self.retainedPrimaryKey(
+                    from: key,
+                    subspace: subspace,
+                    skipping: 0,
+                    indexName: descriptor.name,
+                    workMeter: workMeter
+                )
+            }
+        case .range(
+            let lower,
+            let upper,
+            let subspace,
+            let keyPathsCount
+        ):
+            begin = lower
+            end = upper
+            decode = { key in
+                try self.retainedPrimaryKey(
+                    from: key,
+                    subspace: subspace,
+                    skipping: keyPathsCount,
+                    indexName: descriptor.name,
+                    workMeter: workMeter
+                )
+            }
+        }
+
+        var cursor = transaction.rangeCursor(
+            from: .firstGreaterOrEqual(begin),
+            to: .firstGreaterOrEqual(end),
+            limit: storageLimit,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .forQuery(limit: storageLimit)
+        )
+        try await cursor.consume { key, _ in
+            try workMeter.consume(at: .storageRow)
+            let primaryKey = try decode(key)
+            try retained.append(
+                footprint: DatabaseIntermediateFootprint(rows: 1),
+                at: .indexScan,
+                make: { primaryKey }
+            )
+        }
+        return try DatabaseRetainedPrimaryKeys(buffer: retained.finish())
+    }
+
+    private func retainedPrimaryKey(
+        from key: ByteString,
+        subspace: Subspace,
+        skipping leadingElementCount: Int,
+        indexName: String,
+        workMeter: DatabaseWorkMeter
+    ) throws -> DatabaseRetainedPrimaryKey {
+        var cursor: TupleCursor
+        do {
+            cursor = try subspace.tupleCursor(for: key)
+        } catch let error as TupleError {
+            throw CanonicalReadError.corruptedIndexEntry(
+                indexName: indexName,
+                reason: Self.tupleDecodeFailureDescription(error)
+            )
+        }
+
+        for _ in 0..<leadingElementCount {
+            let scratch = try workMeter.reserveIntermediate(
+                at: .indexScan
+            )
+            defer { scratch.release() }
+            let element: (any TupleElement)?
+            do {
+                element = try cursor.next { byteCount in
+                    try scratch.reserveAdditional(
+                        bytes: UInt64(byteCount),
+                        at: .indexScan
+                    )
+                }
+            } catch let error as TupleError {
+                throw CanonicalReadError.corruptedIndexEntry(
+                    indexName: indexName,
+                    reason: Self.tupleDecodeFailureDescription(error)
+                )
+            }
+            guard element != nil else {
+                throw CanonicalReadError.corruptedIndexEntry(
+                    indexName: indexName,
+                    reason: "index key ended before its indexed fields"
+                )
+            }
+        }
+
+        let reservation = try workMeter.reserveIntermediate(
+            bytes: UInt64(key.count),
+            at: .indexScan
+        )
+        do {
+            let value: Tuple
+            do {
+                value = try cursor.remainingTuple { byteCount in
+                    try reservation.reserveAdditional(
+                        bytes: UInt64(byteCount),
+                        at: .indexScan
+                    )
+                }
+            } catch let error as TupleError {
+                throw CanonicalReadError.corruptedIndexEntry(
+                    indexName: indexName,
+                    reason: Self.tupleDecodeFailureDescription(error)
+                )
+            }
+            guard !value.isEmpty else {
+                throw CanonicalReadError.corruptedIndexEntry(
+                    indexName: indexName,
+                    reason: "index key holds no primary key"
+                )
+            }
+            return DatabaseRetainedPrimaryKey(
+                value: value,
+                reservation: reservation
+            )
+        } catch {
+            reservation.release()
+            throw error
+        }
+    }
+
+    private static func tupleDecodeFailureDescription(
+        _ error: TupleError
+    ) -> String {
+        switch error {
+        case .unexpectedEndOfData:
+            return "index key ended during tuple decoding"
+        case .invalidElementRange:
+            return "index tuple contained an invalid element range"
+        case .invalidTypeCode:
+            return "index tuple contained an invalid type code"
+        case .integerOverflow:
+            return "index tuple contained an overflowing integer"
+        case .invalidUTF8:
+            return "index tuple contained invalid UTF-8"
+        case .invalidNullEscape:
+            return "index tuple contained an invalid null escape"
+        case .cannotIncrementKey:
+            return "index tuple contained an invalid key boundary"
+        case .prefixMismatch:
+            return "index key does not belong to its physical subspace"
+        case .elementHasNoCanonicalValue:
+            return "index tuple contained an element without a canonical value"
+        case .decodedStorageOverflow:
+            return "index tuple exceeded its decoded storage limit"
+        }
+    }
+
+    private func fetchCanonicalPersistedModels(
+        entity: String,
+        primaryKeys: DatabaseRetainedPrimaryKeys,
+        indexName: String,
+        transaction: any TransactionAccess,
+        workMeter: DatabaseWorkMeter,
+        authorizedFields: Set<String>?
+    ) async throws -> DatabaseRetainedPersistedModels {
+        guard primaryKeys.workMeter === workMeter else {
+            throw DatabaseIntermediateReservationError.workMeterMismatch
+        }
+        let runtime = try runtime(for: entity)
+        let typeSubspace = itemSubspace.subspace(entity)
+        let storage = container.itemStorageFactory.make(
+            transaction: transaction,
+            blobsSubspace: blobsSubspace
+        )
+        var models = try DatabaseRetainedArrayBuilder<
+            DatabaseRetainedPersistedModels.Entry?
+        >(
+            workMeter: workMeter,
+            stage: .storageRow,
+            layout: try DatabaseRetainedArrayLayout.forElement(
+                DatabaseRetainedPersistedModels.Entry?.self
+            ),
+            expectedCount: primaryKeys.count
+        )
+
+        for position in 0..<primaryKeys.count {
+            try workMeter.consume(at: .storageRow)
+            var keyReservation: DatabaseIntermediateReservation?
+            var key: ByteString?
+            try primaryKeys.withRetainedPrimaryKey(
+                at: position
+            ) { primaryKey in
+                let byteCount = typeSubspace.prefix.count
+                    + primaryKey.packedByteCount
+                keyReservation = try workMeter.reserveIntermediate(
+                    bytes: UInt64(byteCount),
+                    at: .storageRow
+                )
+                key = typeSubspace.pack(primaryKey)
+            }
+            guard let keyReservation else {
+                preconditionFailure(
+                    "Primary-key packing did not retain its admission"
+                )
+            }
+            defer { keyReservation.release() }
+            guard let key else {
+                preconditionFailure("Primary-key packing did not produce a key")
+            }
+            guard let data = try await storage.readRetained(
+                for: key,
+                snapshot: true,
+                workMeter: workMeter,
+                stage: .storageRow
+            ) else {
+                let primaryKeyBytes = key[
+                    (key.startIndex + typeSubspace.prefix.count)..<key.endIndex
+                ]
+                throw CanonicalReadError.danglingIndexEntry(
+                    indexName: indexName,
+                    primaryKey: Self.hexadecimalString(primaryKeyBytes)
+                )
+            }
+            let retained = try DatabaseRetainedStoredModel.decode(
+                data,
+                entity: entity,
+                runtime: runtime,
+                workMeter: workMeter,
+                stage: .storageRow
+            )
+            try retained.withModel { model in
+                try readPolicy.authorizeGet(model, fields: authorizedFields)
+            }
+            let admission = try models.prepareAppend(
+                footprint: DatabaseIntermediateFootprint(rows: 1),
+                at: .storageRow
+            )
+            models.append(retained.makeEntry(), using: admission)
+        }
+        return try DatabaseRetainedPersistedModels(buffer: models.finish())
+    }
+
+    private func fetchAllCanonicalPersistedModels(
+        entity: String,
+        transaction: any TransactionAccess,
+        workMeter: DatabaseWorkMeter,
+        authorizedFields: Set<String>?,
+        limit: Int?,
+        offset: Int,
+        startingAfterIdentifier: ByteString?
+    ) async throws -> DatabaseRetainedPersistedModels {
+        let runtime = try runtime(for: entity)
+        let typeSubspace = itemSubspace.subspace(entity)
+        let (begin, end) = typeSubspace.range()
+        let startingAfter = try startingAfterIdentifier.map {
+            typeSubspace.pack(try Tuple(packed: $0))
+        }
+        let requestedScanLimit: Int?
+        if let limit {
+            let (value, overflow) = limit.addingReportingOverflow(offset)
+            requestedScanLimit = overflow ? Int.max : value
+        } else {
+            requestedScanLimit = nil
+        }
+        let scanLimit = try boundedStorageLimit(
+            requested: requestedScanLimit,
+            workMeter: workMeter,
+            at: .storageRow
+        ) ?? 0
+        let reachableAfterOffset = max(0, scanLimit - min(offset, scanLimit))
+        let expectedCount = limit.map {
+            min($0, reachableAfterOffset)
+        } ?? reachableAfterOffset
+        let storage = container.itemStorageFactory.make(
+            transaction: transaction,
+            blobsSubspace: blobsSubspace
+        )
+        var models = try DatabaseRetainedArrayBuilder<
+            DatabaseRetainedPersistedModels.Entry?
+        >(
+            workMeter: workMeter,
+            stage: .storageRow,
+            layout: try DatabaseRetainedArrayLayout.forElement(
+                DatabaseRetainedPersistedModels.Entry?.self
+            ),
+            expectedCount: expectedCount
+        )
+        var skipped = 0
+        try await storage.consumeRetainedScan(
+            begin: begin,
+            end: end,
+            startingAfter: startingAfter,
+            snapshot: true,
+            limit: scanLimit,
+            workMeter: workMeter,
+            stage: .storageRow
+        ) { _, data in
+            try workMeter.consume(at: .storageRow)
+            if skipped < offset {
+                skipped += 1
+                return
+            }
+            let retained = try DatabaseRetainedStoredModel.decode(
+                data,
+                entity: entity,
+                runtime: runtime,
+                workMeter: workMeter,
+                stage: .storageRow
+            )
+            try retained.withModel { model in
+                try readPolicy.authorizeGet(model, fields: authorizedFields)
+            }
+            let admission = try models.prepareAppend(
+                footprint: DatabaseIntermediateFootprint(rows: 1),
+                at: .storageRow
+            )
+            models.append(retained.makeEntry(), using: admission)
+        }
+        return try DatabaseRetainedPersistedModels(buffer: models.finish())
     }
 
     /// Fetch models by IDs (parallel reads for 10-30× speedup)
@@ -1333,10 +1835,11 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
     private func boundedStorageLimit(
         requested: Int?,
-        workMeter: DatabaseWorkMeter?
+        workMeter: DatabaseWorkMeter?,
+        at stage: DatabaseWorkStage = .indexScan
     ) throws -> Int? {
         guard let workMeter else { return requested }
-        let budgetLimit = try workMeter.storageReadLimitWithSentinel()
+        let budgetLimit = try workMeter.storageReadLimitWithSentinel(at: stage)
         guard let requested else { return budgetLimit }
         return max(1, min(requested, budgetLimit))
     }

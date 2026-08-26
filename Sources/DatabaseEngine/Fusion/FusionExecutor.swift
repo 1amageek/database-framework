@@ -142,17 +142,20 @@ enum FusionExecutor {
                 workMeter: execution.options.workMeter
             )
             do {
-                for row in response.visibleRows {
-                    guard let identity = row.fields["id"] else {
-                        throw FusionExecutionContractError.missingIdentity(field: "id")
+                let visibleRows = response.visibleRows
+                for position in 0..<visibleRows.count {
+                    try visibleRows.withElement(at: position) { row in
+                        guard let identity = row.fields["id"] else {
+                            throw FusionExecutionContractError
+                                .missingIdentity(field: "id")
+                        }
+                        let primaryKey = try PersistableIdentifierKeyCodec
+                            .tuple(forPersistedIdentifier: identity)
+                        try sink.submit(
+                            primaryKeyTuple: primaryKey,
+                            numericSignal: nil
+                        )
                     }
-                    let primaryKey = try PersistableIdentifierKeyCodec.tuple(
-                        forPersistedIdentifier: identity
-                    ).pack()
-                    try sink.submit(
-                        primaryKey: primaryKey,
-                        numericSignal: nil
-                    )
                 }
                 let result = try sink.freeze(coverage: .exhausted)
                 return InputExecutionResult(

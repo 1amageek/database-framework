@@ -42,18 +42,21 @@ extension DatabaseContext {
         // canonical row owners stay alive until every model is decoded.
         var results: [ScoredResult<Item>] = []
         results.reserveCapacity(response.visibleRange.count)
-        for row in response.visibleRows {
-            guard let score = row.annotations[
-                FusionExecutor.scoreAnnotation
-            ]?.float64Value, score.isFinite else {
-                throw FusionExecutionContractError.invalidScoreSignal
-            }
-            results.append(
-                ScoredResult(
-                    item: try QueryRowCodec.decode(row, as: Item.self),
-                    score: score
+        let visibleRows = response.visibleRows
+        for position in 0..<visibleRows.count {
+            try visibleRows.withElement(at: position) { row in
+                guard let score = row.annotations[
+                    FusionExecutor.scoreAnnotation
+                ]?.float64Value, score.isFinite else {
+                    throw FusionExecutionContractError.invalidScoreSignal
+                }
+                results.append(
+                    ScoredResult(
+                        item: try QueryRowCodec.decode(row, as: Item.self),
+                        score: score
+                    )
                 )
-            )
+            }
         }
         return FusionResponse(
             results: results,

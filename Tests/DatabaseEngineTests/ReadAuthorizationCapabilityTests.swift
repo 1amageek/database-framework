@@ -1749,12 +1749,13 @@ struct ReadAuthorizationCapabilityTests {
                     descriptor: index
                 )
             )
+            let workMeter = DatabaseWorkMeter(
+                budget: ExecutionBudget(),
+                monotonicClock: container.monotonicClock
+            )
             try await DatabaseReadSession.withSession(
                 context: context,
-                workMeter: DatabaseWorkMeter(
-                    budget: ExecutionBudget(),
-                    monotonicClock: container.monotonicClock
-                )
+                workMeter: workMeter
             ) { session in
                 #expect(throws: DatabaseReadSessionError.authorizationMismatch) {
                     try session.requireCanonicalIndexReadAuthorization(
@@ -1797,6 +1798,7 @@ struct ReadAuthorizationCapabilityTests {
                         entity: entity,
                         partitions: FieldObject(),
                         limit: 10,
+                        workMeter: workMeter,
                         transaction: authorizedSession.transaction,
                         authorizationRequirement: try DatabaseReadPolicy
                             .listRequirement(

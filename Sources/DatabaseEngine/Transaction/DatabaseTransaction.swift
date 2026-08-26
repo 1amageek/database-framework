@@ -406,9 +406,9 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         limit: Int,
         offset: Int = 0,
         startingAfterIdentifier: ByteString? = nil,
-        workMeter: DatabaseWorkMeter? = nil,
+        workMeter: DatabaseWorkMeter,
         authorizationRequirement: DatabaseListReadAuthorizationRequirement? = nil
-    ) async throws -> [PersistedModel] {
+    ) async throws -> DatabaseRetainedPersistedModels {
         try await performOperation { _ in
             try await scanPersistedModelsUnchecked(
                 entity: entity,
@@ -1020,9 +1020,9 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         limit: Int,
         offset: Int,
         startingAfterIdentifier: ByteString?,
-        workMeter: DatabaseWorkMeter?,
+        workMeter: DatabaseWorkMeter,
         authorizationRequirement: DatabaseListReadAuthorizationRequirement?
-    ) async throws -> [PersistedModel] {
+    ) async throws -> DatabaseRetainedPersistedModels {
         guard limit > 0 else {
             throw DatabaseTransactionError.invalidLimit(limit)
         }
@@ -1063,7 +1063,16 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             for: runtime.entity,
             partition: partition
         ) else {
-            return []
+            let empty = try DatabaseRetainedArrayBuilder<
+                DatabaseRetainedPersistedModels.Entry?
+            >(
+                workMeter: workMeter,
+                stage: .storageRow,
+                layout: try DatabaseRetainedArrayLayout.forElement(
+                    DatabaseRetainedPersistedModels.Entry?.self
+                )
+            )
+            return try DatabaseRetainedPersistedModels(buffer: empty.finish())
         }
         let (begin, end) = subspaces.items.subspace(entity).range()
         let entitySubspace = subspaces.items.subspace(entity)
@@ -1074,44 +1083,86 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             transaction: storageAccess,
             blobsSubspace: subspaces.blobs
         )
-        var models: [PersistedModel] = []
-        models.reserveCapacity(limit)
         let (requestedScanLimit, scanLimitOverflow) = limit
             .addingReportingOverflow(offset)
-        var iterator = storage.scan(
+        let scanLimit = scanLimitOverflow ? Int.max : requestedScanLimit
+        return try await Self.consumePersistedModels(
+            storage: storage,
+            begin: begin,
+            end: end,
+            startingAfter: startingAfter,
+            scanLimit: scanLimit,
+            expectedCount: limit,
+            offset: offset,
+            entity: entity,
+            runtime: runtime,
+            readPolicy: readPolicy,
+            authorizedFields: authorizedFields,
+            workMeter: workMeter
+        )
+    }
+
+    /// The actor has already resolved and sealed every transaction-bound
+    /// dependency before this helper runs. Keeping cursor consumption in a
+    /// nonisolated operation scope prevents the callback from carrying actor
+    /// isolation across the backend cursor's asynchronous cleanup boundary.
+    private nonisolated static func consumePersistedModels(
+        storage: ItemStorage,
+        begin: ByteString,
+        end: ByteString,
+        startingAfter: ByteString?,
+        scanLimit: Int,
+        expectedCount: Int,
+        offset: Int,
+        entity: String,
+        runtime: EntityRuntimeRegistration,
+        readPolicy: DatabaseReadPolicy,
+        authorizedFields: Set<String>?,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> DatabaseRetainedPersistedModels {
+        var models = try DatabaseRetainedArrayBuilder<
+            DatabaseRetainedPersistedModels.Entry?
+        >(
+            workMeter: workMeter,
+            stage: .storageRow,
+            layout: try DatabaseRetainedArrayLayout.forElement(
+                DatabaseRetainedPersistedModels.Entry?.self
+            ),
+            expectedCount: expectedCount
+        )
+        var skipped = 0
+        try await storage.consumeRetainedScan(
             begin: begin,
             end: end,
             startingAfter: startingAfter,
             snapshot: false,
-            limit: scanLimitOverflow ? Int.max : requestedScanLimit,
+            limit: scanLimit,
             workMeter: workMeter,
             stage: .storageRow
-        ).makeAsyncIterator()
-        var skipped = 0
-        while let (_, data) = try await iterator.next() {
-            try workMeter?.consume(at: .storageRow)
+        ) { _, data in
+            try workMeter.consume(at: .storageRow)
             if skipped < offset {
                 skipped += 1
-                continue
+                return
             }
-            if let workMeter {
-                try DatabaseByteProcessingMeter.consume(
-                    byteCount: data.count,
-                    passes: 2,
-                    workMeter: workMeter,
-                    stage: .storageRow
-                )
-            }
-            let persistedModel = try DataAccess.deserializePersistedModel(
+            let retained = try DatabaseRetainedStoredModel.decode(
                 data,
-                expectedEntity: entity
+                entity: entity,
+                runtime: runtime,
+                workMeter: workMeter,
+                stage: .storageRow
             )
-            let model = try runtime.canonicalized(persistedModel)
-            try workMeter?.checkpoint(at: .storageRow)
-            try readPolicy.authorizeGet(model, fields: authorizedFields)
-            models.append(model)
+            try retained.withModel { model in
+                try readPolicy.authorizeGet(model, fields: authorizedFields)
+            }
+            try workMeter.checkpoint(at: .storageRow)
+            let admission = try models.prepareAppend(
+                footprint: DatabaseIntermediateFootprint(rows: 1),
+                at: .storageRow
+            )
+            models.append(retained.makeEntry(), using: admission)
         }
-        return models
+        return try DatabaseRetainedPersistedModels(buffer: models.finish())
     }
 
     private func scanPersistedModelChangesForMutationUnchecked(

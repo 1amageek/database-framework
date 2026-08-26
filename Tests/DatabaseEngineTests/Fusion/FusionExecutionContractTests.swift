@@ -201,6 +201,175 @@ struct FusionExecutionContractTests {
         #expect(meter.retainedIntermediateBytes == baselineBytes)
     }
 
+    @Test("Raw and scoped Fusion candidates share validation failures and order")
+    func rawFixtureAndScopedPageShareCandidateValidation() throws {
+        let entity = try FusionExecutionContractItem.schemaEntity
+        let orderedRows = [
+            QueryRow(fields: ["id": .string("b"), "value": .int64(2)]),
+            QueryRow(fields: ["id": .string("a"), "value": .int64(1)]),
+        ]
+        let keyA = try primaryKey("a")
+        let keyB = try primaryKey("b")
+
+        do {
+            let meter = makeMeter()
+            let domain = try FusionCandidateDomain.make(
+                rows: orderedRows,
+                entity: entity,
+                workMeter: meter
+            )
+            #expect(domain.primaryKey(at: 0) == keyA)
+            #expect(domain.primaryKey(at: 1) == keyB)
+        }
+
+        do {
+            let meter = makeMeter()
+            let page = try makeScopedRowPage(
+                rows: orderedRows,
+                workMeter: meter
+            )
+            let domain = try FusionCandidateDomain.make(
+                rows: page,
+                entity: entity,
+                workMeter: meter
+            )
+            #expect(domain.primaryKey(at: 0) == keyA)
+            #expect(domain.primaryKey(at: 1) == keyB)
+        }
+
+        let missingIdentityRows = [
+            QueryRow(fields: ["value": .int64(1)]),
+        ]
+        do {
+            let meter = makeMeter()
+            #expect {
+                try FusionCandidateDomain.make(
+                    rows: missingIdentityRows,
+                    entity: entity,
+                    workMeter: meter
+                )
+            } throws: { error in
+                error as? FusionExecutionContractError
+                    == .missingIdentity(field: "id")
+            }
+        }
+
+        do {
+            let meter = makeMeter()
+            let page = try makeScopedRowPage(
+                rows: missingIdentityRows,
+                workMeter: meter
+            )
+            #expect {
+                try FusionCandidateDomain.make(
+                    rows: page,
+                    entity: entity,
+                    workMeter: meter
+                )
+            } throws: { error in
+                error as? FusionExecutionContractError
+                    == .missingIdentity(field: "id")
+            }
+        }
+
+        let duplicateIdentityRows = [
+            QueryRow(fields: ["id": .string("a"), "value": .int64(1)]),
+            QueryRow(fields: ["id": .string("a"), "value": .int64(2)]),
+        ]
+        do {
+            let meter = makeMeter()
+            #expect {
+                try FusionCandidateDomain.make(
+                    rows: duplicateIdentityRows,
+                    entity: entity,
+                    workMeter: meter
+                )
+            } throws: { error in
+                error as? FusionExecutionContractError
+                    == .duplicateIdentity(.string("a"))
+            }
+        }
+
+        do {
+            let meter = makeMeter()
+            let page = try makeScopedRowPage(
+                rows: duplicateIdentityRows,
+                workMeter: meter
+            )
+            #expect {
+                try FusionCandidateDomain.make(
+                    rows: page,
+                    entity: entity,
+                    workMeter: meter
+                )
+            } throws: { error in
+                error as? FusionExecutionContractError
+                    == .duplicateIdentity(.string("a"))
+            }
+        }
+    }
+
+    @Test("Scoped Fusion candidates admit destination ownership before construction")
+    func scopedCandidatesAdmitDestinationBeforeConstruction() throws {
+        let entity = try FusionExecutionContractItem.schemaEntity
+        let rows = [
+            QueryRow(
+                fields: ["id": .string("candidate"), "value": .int64(1)]
+            )
+        ]
+
+        let measurementMeter = makeMeter()
+        do {
+            let page = try makeScopedRowPage(
+                rows: rows,
+                workMeter: measurementMeter
+            )
+            _ = try FusionCandidateDomain.make(
+                rows: page,
+                entity: entity,
+                workMeter: measurementMeter
+            )
+        }
+        let oneByteShort = measurementMeter.peakIntermediateBytes - 1
+        #expect(measurementMeter.retainedIntermediateBytes == 0)
+
+        let meter = makeMeter(maximumIntermediateBytes: oneByteShort)
+        var failure: (any Error)?
+        do {
+            let page = try makeScopedRowPage(rows: rows, workMeter: meter)
+            let sourceBytes = meter.retainedIntermediateBytes
+            do {
+                _ = try FusionCandidateDomain.make(
+                    rows: page,
+                    entity: entity,
+                    workMeter: meter
+                )
+                Issue.record("Expected destination admission to fail")
+            } catch {
+                failure = error
+            }
+            #expect(meter.retainedIntermediateBytes == sourceBytes)
+        }
+
+        guard let workLimit = failure as? DatabaseWorkLimitError,
+              case .maximumIntermediateBytes(
+            let stage,
+            _,
+            let requested,
+            let maximum
+        ) = workLimit else {
+            Issue.record(
+                "Expected a destination byte-limit failure, got \(String(describing: failure))"
+            )
+            return
+        }
+        #expect(stage == .bindingCandidate)
+        #expect(requested > 0)
+        #expect(maximum == oneByteShort)
+        #expect(meter.retainedIntermediateRows == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
     @Test("Match sink grows from retained matches rather than declared limit")
     func matchSinkGrowsFromRetainedMatches() throws {
         let meter = DatabaseWorkMeter(
@@ -278,6 +447,122 @@ struct FusionExecutionContractTests {
             )
         }
         result = nil
+        #expect(meter.retainedIntermediateRows == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("Tuple match key is not packed before byte admission")
+    func tupleMatchKeyRequiresAdmissionBeforePacking() throws {
+        let tuple = try PersistableIdentifierKeyCodec.tuple(
+            forPersistedIdentifier: .string("generated")
+        )
+        let keyByteCount = tuple.packedByteCount
+        let measurementMeter = makeMeter()
+        let measurementSink = try FusionMatchSink(
+            candidates: nil,
+            scoring: .position,
+            limit: 1,
+            workMeter: measurementMeter
+        )
+        let sinkBytes = measurementMeter.retainedIntermediateBytes
+        measurementSink.invalidate()
+        #expect(measurementMeter.retainedIntermediateBytes == 0)
+
+        let oneByteShort = try #require(
+            sinkBytes.addingReportingOverflow(UInt64(keyByteCount)).overflow
+                ? nil
+                : sinkBytes + UInt64(keyByteCount) - 1
+        )
+        let meter = makeMeter(maximumIntermediateBytes: oneByteShort)
+        let sink = try FusionMatchSink(
+            candidates: nil,
+            scoring: .position,
+            limit: 1,
+            workMeter: meter
+        )
+        do {
+            try sink.submit(
+                primaryKeyTuple: tuple,
+                numericSignal: nil
+            )
+            Issue.record("Expected key admission to fail")
+        } catch let error as DatabaseWorkLimitError {
+            guard case .maximumIntermediateBytes(
+                let stage,
+                let consumed,
+                let requested,
+                let maximum
+            ) = error else {
+                Issue.record("Unexpected key admission failure: \(error)")
+                return
+            }
+            #expect(stage == .indexScan)
+            #expect(consumed == sinkBytes)
+            #expect(requested == UInt64(keyByteCount))
+            #expect(maximum == oneByteShort)
+        }
+
+        sink.invalidate()
+        #expect(meter.retainedIntermediateRows == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("Tuple match key transfers one exact self-contained owner")
+    func tupleMatchKeyTransfersExactOwner() throws {
+        let tuple = try PersistableIdentifierKeyCodec.tuple(
+            forPersistedIdentifier: .string("generated-owner")
+        )
+        let expectedKey = tuple.pack()
+        let meter = makeMeter()
+        var result: FusionIndexReadResult?
+
+        do {
+            let sink = try FusionMatchSink(
+                candidates: nil,
+                scoring: .position,
+                limit: 1,
+                workMeter: meter
+            )
+            try sink.submit(
+                primaryKeyTuple: tuple,
+                numericSignal: nil
+            )
+            result = try sink.freeze(coverage: .exhausted)
+            #expect(result?.matches.first?.primaryKey == expectedKey)
+            #expect(
+                result?.matches.first?.primaryKey.retainedByteCount
+                    == expectedKey.count
+            )
+        }
+
+        result = nil
+        #expect(meter.retainedIntermediateRows == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("External key owner borrow cannot reenter a lifecycle lock")
+    func externalKeyOwnerBorrowReentersWithoutDeadlock() throws {
+        let canonicalBytes = Array(try primaryKey("reentrant-invalidation"))
+        let meter = makeMeter()
+        let sink = try FusionMatchSink(
+            candidates: nil,
+            scoring: .position,
+            limit: 1,
+            workMeter: meter
+        )
+        let owner = FusionTestByteOwner(
+            bytes: canonicalBytes,
+            retainedByteCount: canonicalBytes.count,
+            onBorrow: { [weak sink] in sink?.invalidate() }
+        )
+        let key = ByteString(retaining: owner)
+
+        #expect {
+            try sink.submit(primaryKey: key, numericSignal: nil)
+        } throws: { error in
+            error as? FusionExecutionContractError == .matchSinkInvalidated
+        }
+
         #expect(meter.retainedIntermediateRows == 0)
         #expect(meter.retainedIntermediateBytes == 0)
     }
@@ -408,7 +693,7 @@ struct FusionExecutionContractTests {
                 error as? DatabaseWorkLimitError == .maximumWorkUnits(
                     stage: .indexScan,
                     consumed: 1,
-                    requested: 6,
+                    requested: 3,
                     maximum: 3
                 )
             }
@@ -1617,13 +1902,15 @@ struct FusionExecutionContractTests {
         )
     }
 
-    private func makeMeter() -> DatabaseWorkMeter {
+    private func makeMeter(
+        maximumIntermediateBytes: UInt64 = 1_000_000
+    ) -> DatabaseWorkMeter {
         DatabaseWorkMeter(
             budget: ExecutionBudget(
                 maximumRows: 1_000,
                 maximumWorkUnits: 100_000,
                 maximumIntermediateRows: 1_000,
-                maximumIntermediateBytes: 1_000_000,
+                maximumIntermediateBytes: maximumIntermediateBytes,
                 timeoutMilliseconds: 30_000
             ),
             monotonicClock: TestProcessMonotonicClock()
@@ -1634,6 +1921,40 @@ struct FusionExecutionContractTests {
         try PersistableIdentifierKeyCodec.tuple(
             forPersistedIdentifier: .string(identity)
         ).pack()
+    }
+
+    private func makeScopedRowPage(
+        rows: [QueryRow],
+        workMeter: DatabaseWorkMeter
+    ) throws -> CanonicalRetainedQueryRowView {
+        let ownerRows = [
+            QueryRow(fields: ["id": .string("page-prefix")]),
+        ] + rows + [
+            QueryRow(fields: ["id": .string("page-suffix")]),
+        ]
+        var builder = try DatabaseRetainedArrayBuilder<QueryRow>(
+            workMeter: workMeter,
+            stage: .bindingCandidate,
+            layout: try DatabaseRetainedArrayLayout.forElement(QueryRow.self),
+            expectedCount: ownerRows.count
+        )
+        for row in ownerRows {
+            try builder.append(
+                footprint: try CanonicalRelationalFootprintMeter.footprint(
+                    of: row,
+                    workMeter: workMeter
+                ),
+                at: .bindingCandidate,
+                make: { row }
+            )
+        }
+        let owner = try builder.finish().moveToSharedOwnership(
+            at: .bindingCandidate
+        )
+        return CanonicalRetainedQueryRowView(
+            owner: owner,
+            range: 1..<(owner.count - 1)
+        )
     }
 
     private func paddedIdentity(_ index: Int) -> String {
@@ -1697,15 +2018,20 @@ struct FusionExecutionContractTests {
             maximumResultCount: maximumResultCount,
             workMeter: meter
         )
-        return try result.rows.map { row in
-            guard case .string(let identity) = row.fields["id"],
-                  let score = row.annotations[
-                    FusionExecutor.scoreAnnotation
-                  ]?.float64Value else {
-                throw FusionExecutionContractError.invalidScoreSignal
+        var composed: [(identity: String, score: Double)] = []
+        composed.reserveCapacity(result.count)
+        for index in 0..<result.count {
+            try result.withRow(at: index) { row in
+                guard case .string(let identity) = row.fields["id"],
+                      let score = row.annotations[
+                        FusionExecutor.scoreAnnotation
+                      ]?.float64Value else {
+                    throw FusionExecutionContractError.invalidScoreSignal
+                }
+                composed.append((identity, score))
             }
-            return (identity, score)
         }
+        return composed
     }
 }
 

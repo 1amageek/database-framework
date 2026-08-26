@@ -70,13 +70,66 @@ package final class FusionMatchSink: Sendable {
         )
     }
 
-    /// Submits one index-native match. The key is detached only after all
-    /// validation and request-memory admission succeed.
+    /// Submits one index-native match. Its exact destination claim precedes
+    /// detachment into a framework-owned key; lifecycle and semantic
+    /// validation are repeated before that key is committed.
     package func submit(
         primaryKey: ByteString,
         numericSignal: Double?
     ) throws {
-        try state.withLock { state in
+        try submit(
+            primaryKeyByteCount: primaryKey.count,
+            numericSignal: numericSignal
+        ) { reservation in
+            try DatabaseRetainedByteString.copying(
+                primaryKey,
+                reservation: reservation,
+                at: .indexScan
+            )
+        }
+    }
+
+    /// Submits one framework-sealed tuple key. Its exact byte claim is
+    /// established before packing, and the tuple's self-contained owner moves
+    /// into the sink without another payload copy.
+    package func submit(
+        primaryKeyTuple: Tuple,
+        numericSignal: Double?
+    ) throws {
+        let primaryKeyByteCount = primaryKeyTuple.packedByteCount
+        try submit(
+            primaryKeyByteCount: primaryKeyByteCount,
+            numericSignal: numericSignal
+        ) { reservation in
+            let primaryKey = primaryKeyTuple.pack()
+            guard primaryKey.count == primaryKeyByteCount else {
+                throw FusionExecutionContractError.inconsistentPayload(
+                    primaryKey
+                )
+            }
+            return try DatabaseRetainedByteString.make(
+                primaryKey,
+                reservation: reservation,
+                at: .indexScan
+            )
+        }
+    }
+
+    private func submit(
+        primaryKeyByteCount: Int,
+        numericSignal: Double?,
+        retainPrimaryKey: (
+            DatabaseIntermediateReservation
+        ) throws -> ByteString
+    ) throws {
+        guard let keyBytes = UInt64(exactly: primaryKeyByteCount) else {
+            throw FusionExecutionContractError.executionContractViolation
+        }
+        let preparation = try state.withLock {
+            state -> (
+                destination: DatabaseIntermediateReservation,
+                key: DatabaseIntermediateReservation
+            ) in
             guard state.isActive else {
                 throw FusionExecutionContractError.matchSinkInvalidated
             }
@@ -87,17 +140,6 @@ package final class FusionMatchSink: Sendable {
                 throw FusionExecutionContractError.matchLimitExceeded(maximum: limit)
             }
             try workMeter.consume(at: .indexScan)
-            try validateCanonicalPrimaryKey(primaryKey)
-            if let candidates = state.candidates,
-               try !candidates.contains(
-                   primaryKey: primaryKey,
-                   workMeter: workMeter
-               ) {
-                throw FusionExecutionContractError.candidateDomainViolation(primaryKey)
-            }
-            guard !state.primaryKeys.contains(primaryKey) else {
-                throw FusionExecutionContractError.duplicateMatch(primaryKey)
-            }
             switch scoring {
             case nil, .position:
                 guard numericSignal == nil else {
@@ -108,67 +150,114 @@ package final class FusionMatchSink: Sendable {
                     throw FusionExecutionContractError.invalidScoreSignal
                 }
             }
+            return (
+                reservation,
+                try reservation.reserveChild(
+                    bytes: keyBytes,
+                    at: .indexScan
+                )
+            )
+        }
 
-            let (requiredCount, countOverflow) = state.matches.count
-                .addingReportingOverflow(1)
-            guard !countOverflow else {
-                throw DatabaseRetainedArrayLayoutError.capacityOverflow(
-                    currentCapacity: state.accountedMatchCapacity
+        // Caller code and allocation must remain outside the lifecycle lock.
+        // The independent child claim survives a concurrent invalidation, and
+        // is released if the producer or the second lifecycle check fails.
+        let retainedPrimaryKey: ByteString
+        do {
+            retainedPrimaryKey = try retainPrimaryKey(preparation.key)
+            guard retainedPrimaryKey.count == primaryKeyByteCount else {
+                throw FusionExecutionContractError.inconsistentPayload(
+                    retainedPrimaryKey
                 )
             }
-            let growth = try layout.growth(
-                from: state.accountedMatchCapacity,
-                toFit: requiredCount
-            )
-            let hashGrowth = try hashLayout.growth(
-                from: state.accountedHashCapacity,
-                toFit: requiredCount
-            )
-            let keyBytes = UInt64(primaryKey.count)
-            let keyReservation = try reservation.reserveChild(
-                bytes: keyBytes,
-                at: .indexScan
-            )
-            // Work and memory admission both precede the exact-size copy. If
-            // later container growth fails, this local owner releases the
-            // independent key claim without changing sink state.
-            let retainedPrimaryKey = try DatabaseRetainedByteString.copying(
-                primaryKey,
-                reservation: keyReservation,
-                at: .indexScan
-            )
-            try reservation.reserveAdditional(
-                rows: 1,
-                bytes: try DatabaseIntermediateFootprint(bytes: 64).adding(
-                    DatabaseIntermediateFootprint(
-                        bytes: growth.additionalByteCount
-                    )
-                ).adding(
-                    DatabaseIntermediateFootprint(
-                        bytes: hashGrowth.additionalByteCount
-                    )
-                ).bytes,
-                at: .indexScan
-            )
-            if growth.capacity != state.accountedMatchCapacity {
-                state.matches.reserveCapacity(growth.capacity)
-                state.accountedMatchCapacity = growth.capacity
-            }
-            if hashGrowth.capacity != state.accountedHashCapacity {
-                state.primaryKeys.reserveCapacity(hashGrowth.capacity)
-                state.accountedHashCapacity = hashGrowth.capacity
-            }
-            reservation.absorbGuaranteedPartial(
-                from: keyReservation,
-                bytes: keyBytes
-            )
-            state.primaryKeys.insert(retainedPrimaryKey)
-            state.matches.append(
-                FusionIndexMatch(
+        } catch {
+            preparation.key.release()
+            throw error
+        }
+
+        do {
+            try state.withLock { state in
+                guard state.isActive,
+                      let reservation = state.reservation,
+                      reservation === preparation.destination else {
+                    throw FusionExecutionContractError.matchSinkInvalidated
+                }
+                guard state.matches.count < limit else {
+                    throw FusionExecutionContractError
+                        .matchLimitExceeded(maximum: limit)
+                }
+                try validate(
                     primaryKey: retainedPrimaryKey,
-                    numericSignal: numericSignal
+                    state: state
                 )
-            )
+                let (requiredCount, countOverflow) = state.matches.count
+                    .addingReportingOverflow(1)
+                guard !countOverflow else {
+                    throw DatabaseRetainedArrayLayoutError.capacityOverflow(
+                        currentCapacity: state.accountedMatchCapacity
+                    )
+                }
+                let growth = try layout.growth(
+                    from: state.accountedMatchCapacity,
+                    toFit: requiredCount
+                )
+                let hashGrowth = try hashLayout.growth(
+                    from: state.accountedHashCapacity,
+                    toFit: requiredCount
+                )
+                try reservation.reserveAdditional(
+                    rows: 1,
+                    bytes: try DatabaseIntermediateFootprint(bytes: 64).adding(
+                        DatabaseIntermediateFootprint(
+                            bytes: growth.additionalByteCount
+                        )
+                    ).adding(
+                        DatabaseIntermediateFootprint(
+                            bytes: hashGrowth.additionalByteCount
+                        )
+                    ).bytes,
+                    at: .indexScan
+                )
+                if growth.capacity != state.accountedMatchCapacity {
+                    state.matches.reserveCapacity(growth.capacity)
+                    state.accountedMatchCapacity = growth.capacity
+                }
+                if hashGrowth.capacity != state.accountedHashCapacity {
+                    state.primaryKeys.reserveCapacity(hashGrowth.capacity)
+                    state.accountedHashCapacity = hashGrowth.capacity
+                }
+                reservation.absorbGuaranteedPartial(
+                    from: preparation.key,
+                    bytes: keyBytes
+                )
+                state.primaryKeys.insert(retainedPrimaryKey)
+                state.matches.append(
+                    FusionIndexMatch(
+                        primaryKey: retainedPrimaryKey,
+                        numericSignal: numericSignal
+                    )
+                )
+            }
+        } catch {
+            preparation.key.release()
+            throw error
+        }
+    }
+
+    private func validate(
+        primaryKey: ByteString,
+        state: borrowing State
+    ) throws {
+        try validateCanonicalPrimaryKey(primaryKey)
+        if let candidates = state.candidates,
+           try !candidates.contains(
+               primaryKey: primaryKey,
+               workMeter: workMeter
+           ) {
+            throw FusionExecutionContractError.candidateDomainViolation(primaryKey)
+        }
+        guard !state.primaryKeys.contains(primaryKey) else {
+            throw FusionExecutionContractError.duplicateMatch(primaryKey)
         }
     }
 
