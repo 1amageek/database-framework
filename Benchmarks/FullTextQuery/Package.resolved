@@ -6,8 +6,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/database-kit.git",
       "state" : {
-        "revision" : "775facbae56d8ccbbf7024d40a8fb36da64093c2",
-        "version" : "26.819.0"
+        "revision" : "cca9c9da970c7cbf2d41e8f7471632df0aa92ff2"
       }
     },
     {
@@ -15,8 +14,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/database-types.git",
       "state" : {
-        "revision" : "4b0c81a9c322cbfa5628e411ee1fa931c2890e5d",
-        "version" : "26.730.0"
+        "revision" : "d075edcb37f8a7be845c5be4d6a7a226d899505b"
       }
     },
     {
@@ -41,7 +39,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/storage-kit.git",
       "state" : {
-        "revision" : "00d4c48e824f1055e02f51ebdffe5b8dc42645d3"
+        "revision" : "b1513da941b8644a4e19350cfa104ce8f92f63e8"
       }
     },
     {
@@ -94,8 +92,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/swift-hnsw.git",
       "state" : {
-        "revision" : "e427a41eeb6a8190b188ebb695694ba719f3e0e8",
-        "version" : "1.1.4"
+        "revision" : "499948ca5037ccac8e7126525f4be359c4d42697"
       }
     },
     {
