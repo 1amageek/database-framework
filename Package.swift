@@ -140,6 +140,7 @@ let package = Package(
                 "QueryExecution/DESIGN.md",
                 "Read/DESIGN.md",
                 "Serialization/DESIGN.md",
+                "Serialization/RDF/DESIGN.md",
             ],
             swiftSettings: [
                 .define(
@@ -343,7 +344,7 @@ let package = Package(
                 "OntologyIndex",
                 .product(name: "StorageKit", package: "storage-kit"),
             ],
-            exclude: ["README.md"],
+            exclude: ["README.md", "DESIGN.md"],
             swiftSettings: [
                 .define(
                     "DATABASE_MULTI_BASE",
@@ -487,7 +488,7 @@ let package = Package(
                     name: "PostgreSQLStorage", package: "storage-kit",
                     condition: .when(platforms: nativeRuntimePlatforms, traits: ["PostgreSQL"])),
             ],
-            exclude: ["README.md"],
+            exclude: ["README.md", "DESIGN.md"],
             swiftSettings: [
                 .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
                 .define("SQLITE", .when(platforms: nativeRuntimePlatforms, traits: ["SQLite"])),

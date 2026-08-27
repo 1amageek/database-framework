@@ -370,6 +370,142 @@ struct FusionExecutionContractTests {
         #expect(meter.retainedIntermediateBytes == 0)
     }
 
+    @Test("Composite Fusion candidate keys admit every decode allocation")
+    func compositeCandidateKeysAdmitEveryDecodeAllocation() throws {
+        let components: [any TupleElement] = (0..<8).map { index in
+            "component-\(index)" as any TupleElement
+        }
+        let composite = Tuple(
+            ByteString([0x41, 0x42, 0x43]),
+            Tuple(components)
+        )
+        let packed = composite.pack()
+
+        // This is the superseded count + 64 admission. It supplies the
+        // deliberately insufficient budget used to reproduce the defect.
+        let legacyMeter = makeMeter()
+        let legacyBudget: UInt64
+        do {
+            var builder = try DatabaseRetainedArrayBuilder<
+                DatabaseRetainedPrimaryKey
+            >(
+                workMeter: legacyMeter,
+                stage: .storageRow,
+                layout: try DatabaseRetainedArrayLayout.forElement(
+                    DatabaseRetainedPrimaryKey.self
+                ),
+                expectedCount: 1
+            )
+            try builder.append(
+                footprint: DatabaseIntermediateFootprint(
+                    rows: 1,
+                    bytes: UInt64(packed.count) + 64
+                ),
+                at: .storageRow
+            ) {
+                let reservation = try legacyMeter.reserveIntermediate(
+                    at: .storageRow
+                )
+                return DatabaseRetainedPrimaryKey(
+                    value: try Tuple(packed: packed),
+                    reservation: reservation
+                )
+            }
+            let retained = try DatabaseRetainedPrimaryKeys(
+                buffer: builder.finish()
+            )
+            legacyBudget = legacyMeter.peakIntermediateBytes
+            _ = retained
+        }
+        #expect(legacyMeter.retainedIntermediateBytes == 0)
+
+        func makeResult(
+            key: ByteString,
+            sourceMeter: DatabaseWorkMeter
+        ) throws -> FusionIndexReadResult {
+            FusionIndexReadResult(
+                matches: [
+                    FusionIndexMatch(
+                        primaryKey: key,
+                        numericSignal: nil
+                    )
+                ],
+                coverage: .exhausted,
+                reservation: try sourceMeter.reserveIntermediate(
+                    at: .indexScan
+                )
+            )
+        }
+
+        let constrainedMeter = makeMeter(
+            maximumIntermediateBytes: legacyBudget
+        )
+        let constrainedSourceMeter = makeMeter()
+        let constrainedResult = try makeResult(
+            key: packed,
+            sourceMeter: constrainedSourceMeter
+        )
+        var failure: (any Error)?
+        do {
+            _ = try FusionExecution.makeRetainedPrimaryKeys(
+                from: constrainedResult,
+                workMeter: constrainedMeter
+            )
+            Issue.record(
+                "Expected composite tuple allocation admission to fail"
+            )
+        } catch {
+            failure = error
+        }
+
+        guard let workLimit = failure as? DatabaseWorkLimitError,
+              case .maximumIntermediateBytes(
+            let stage,
+            _,
+            let requested,
+            let maximum
+        ) = workLimit else {
+            Issue.record(
+                "Expected typed composite admission failure, got \(String(describing: failure))"
+            )
+            return
+        }
+        #expect(stage == .storageRow)
+        #expect(requested > 0)
+        #expect(maximum == legacyBudget)
+        #expect(constrainedMeter.retainedIntermediateBytes == 0)
+
+        let exactMeter = makeMeter()
+        let exactSourceMeter = makeMeter()
+        weak var sourceOwner: FusionTestByteOwner?
+        var exactResult: FusionIndexReadResult?
+        do {
+            let owner = FusionTestByteOwner(
+                bytes: Array(packed),
+                retainedByteCount: packed.count
+            )
+            sourceOwner = owner
+            exactResult = try makeResult(
+                key: ByteString(retaining: owner),
+                sourceMeter: exactSourceMeter
+            )
+        }
+        var retained: DatabaseRetainedPrimaryKeys? = try
+            FusionExecution.makeRetainedPrimaryKeys(
+                from: try #require(exactResult),
+                workMeter: exactMeter
+            )
+        exactResult = nil
+        #expect(sourceOwner != nil)
+        retained?.withRetainedPrimaryKey(at: 0) { key in
+            #expect(key == composite)
+        }
+        #expect(retained?.count == 1)
+        retained = nil
+        #expect(sourceOwner == nil)
+        #expect(exactMeter.retainedIntermediateBytes == 0)
+    }
+
     @Test("Match sink grows from retained matches rather than declared limit")
     func matchSinkGrowsFromRetainedMatches() throws {
         let meter = DatabaseWorkMeter(

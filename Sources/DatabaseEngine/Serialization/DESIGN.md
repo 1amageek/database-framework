@@ -7,8 +7,8 @@ bounded retained read that returns one canonical payload with its request
 reservation attached.
 
 - Parent: [DatabaseEngine](../DESIGN.md).
-- Child [RDF](RDF/DESIGN.md) is outside DF-06F0 and has no design authority in
-  this change.
+- Child: [RDF](RDF/DESIGN.md), which is the authority for canonical RDF term
+  bytes used by this component and GraphIndex physical codecs.
 
 ## Responsibilities and Boundaries
 
@@ -27,6 +27,7 @@ contract and is not evidence for the retained path.
 |---|---|---|---|---|
 | [DatabaseEngine](../DESIGN.md) | parent | Retained storage guarantee | Places bounded bytes below Core decoding. | Compile-only evidence does not prove backend enforcement. |
 | [Core](../Core/DESIGN.md) | used by | `ItemStorage.readRetained` | Core consumes the canonical payload. | The returned owner must remain alive through decode. |
+| [RDF](RDF/DESIGN.md) | child | Canonical RDF term encoding, validation, limits, and scoped byte views | Supplies term bytes to frame/tuple consumers and GraphIndex codecs. | Serialization owns envelopes; RDF owns term-format rules. |
 
 ## Architecture
 
@@ -39,6 +40,9 @@ bounded envelope point read
               -> validate exact chunk sizes and assemble once
     -> checksum and work checkpoint
     -> retained canonical payload
+
+RDF child canonical term bytes
+    -> frame/tuple consumers and GraphIndex physical codecs
 ```
 
 ## Contracts and Invariants

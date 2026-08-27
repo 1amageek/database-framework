@@ -27,11 +27,10 @@ does not authorize independently or open another transaction.
 
 | Design | Relationship | Contract Used | Summary | Cautions |
 |---|---|---|---|---|
-| [Workspace](../../DESIGN.md) | parent | Package ownership and dependency direction | BitmapIndex is an execution feature above DatabaseEngine and StorageKit. | Do not move storage or query semantics into this module. |
+| [database-framework](../../DESIGN.md) | parent | Package ownership and dependency direction | BitmapIndex is an execution feature above DatabaseEngine and StorageKit. | Do not move storage or query semantics into this module. |
 | [DatabaseEngine](../DatabaseEngine/DESIGN.md) | depends on | Session-bound read transaction and result admission | Supplies authorization, transaction, meter, and retained output contracts. | The session-owned transaction is the only read authority. |
 | [Read](../DatabaseEngine/Read/DESIGN.md) | coordinates with | Sealed authorization and meter identity | Admission precedes index reads and all retained values use the session meter. | A tokenless/direct bridge cannot replace session authorization. |
 | [QueryExecution](../DatabaseEngine/QueryExecution/DESIGN.md) | used by | Retained polymorphic aggregate and `appendIndexRow` | Converts retained index entries into canonical index rows. | Never return a raw polymorphic entity array from an intermediate path. |
-| [Workspace StorageKit ownership](../../DESIGN.md#storage-kit) | depends on | Bounded point read | The StorageKit package owns the backend point-read contract consumed here. | Bitmap decoding cannot use an unbounded `getValue` path. |
 
 ## Architecture
 

@@ -30,7 +30,7 @@ result as an intermediate.
 
 | Design | Relationship | Contract Used | Cautions |
 |---|---|---|---|
-| [Package](../../DESIGN.md) | parent | Package dependency direction | VersionIndex depends on DatabaseEngine, never the reverse. |
+| [database-framework](../../DESIGN.md) | parent | Package dependency direction | VersionIndex depends on DatabaseEngine, never the reverse. |
 | [DatabaseEngine](../DatabaseEngine/DESIGN.md) | depends on | Sealed read session, retained owners, destination admission | Authorization precedes runtime/index/storage access. |
 
 ## Architecture

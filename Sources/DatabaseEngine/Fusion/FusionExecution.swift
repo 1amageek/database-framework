@@ -131,25 +131,9 @@ struct FusionExecution: Sendable {
     func materializeCandidates(
         _ result: FusionIndexReadResult
     ) async throws -> FusionCandidateDomain {
-        var builder = try DatabaseRetainedArrayBuilder<Tuple>(
-            workMeter: options.workMeter,
-            stage: .storageRow,
-            layout: try DatabaseRetainedArrayLayout.forElement(Tuple.self),
-            expectedCount: result.matches.count
-        )
-        for match in result.matches {
-            try builder.append(
-                footprint: DatabaseIntermediateFootprint(
-                    rows: 1,
-                    bytes: UInt64(match.primaryKey.count) + 64
-                ),
-                at: .storageRow
-            ) {
-                try Tuple(packed: match.primaryKey)
-            }
-        }
-        let primaryKeys = try builder.finish().moveToSharedOwnership(
-            at: .storageRow
+        let primaryKeys = try Self.makeRetainedPrimaryKeys(
+            from: result,
+            workMeter: options.workMeter
         )
         let snapshot = CanonicalReadExecution.resolve(
             requested: options.consistency,
@@ -169,6 +153,65 @@ struct FusionExecution: Sendable {
             entity: plan.entity,
             workMeter: options.workMeter
         )
+    }
+
+    static func makeRetainedPrimaryKeys(
+        from result: borrowing FusionIndexReadResult,
+        workMeter: DatabaseWorkMeter
+    ) throws -> DatabaseRetainedPrimaryKeys {
+        var builder = try DatabaseRetainedArrayBuilder<
+            DatabaseRetainedPrimaryKey
+        >(
+            workMeter: workMeter,
+            stage: .storageRow,
+            layout: try DatabaseRetainedArrayLayout.forElement(
+                DatabaseRetainedPrimaryKey.self
+            ),
+            expectedCount: result.matches.count
+        )
+        for match in result.matches {
+            let admission = try builder.prepareAppend(
+                footprint: DatabaseIntermediateFootprint(rows: 1),
+                at: .storageRow
+            )
+            let primaryKey = try makeRetainedPrimaryKey(
+                match.primaryKey,
+                workMeter: workMeter
+            )
+            builder.append(primaryKey, using: admission)
+        }
+        return try DatabaseRetainedPrimaryKeys(buffer: builder.finish())
+    }
+
+    private static func makeRetainedPrimaryKey(
+        _ packedKey: ByteString,
+        workMeter: DatabaseWorkMeter
+    ) throws -> DatabaseRetainedPrimaryKey {
+        let reservation = try workMeter.reserveIntermediate(
+            bytes: UInt64(packedKey.count),
+            at: .storageRow
+        )
+        do {
+            let retainedKey = try DatabaseRetainedByteString.make(
+                packedKey,
+                reservation: reservation,
+                at: .storageRow
+            )
+            let tuple = try Tuple(packed: retainedKey) {
+                additionalByteCount in
+                try reservation.reserveAdditional(
+                    bytes: UInt64(additionalByteCount),
+                    at: .storageRow
+                )
+            }
+            return DatabaseRetainedPrimaryKey(
+                value: tuple,
+                reservation: reservation
+            )
+        } catch {
+            reservation.release()
+            throw error
+        }
     }
 
     private static func scoringOutputPrefixLimit(
