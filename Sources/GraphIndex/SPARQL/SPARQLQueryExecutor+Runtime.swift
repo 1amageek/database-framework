@@ -55,10 +55,10 @@ extension SPARQLQueryExecutor {
 
     package func scanDatasetInTransaction(
         graphTarget: RDFGraphScanTarget,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> RDFDatasetScanResult {
-        try await datasetScanner.scan(
+        try await datasetScanner.scanRetained(
             subject: nil,
             predicate: nil,
             object: nil,

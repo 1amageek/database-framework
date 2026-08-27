@@ -15,6 +15,7 @@
 //   - Check functional property hints for cardinality estimation (F-4)
 
 import DatabaseKit
+import DatabaseEngine
 
 import OntologyIndex
 /// Ontology context for SPARQL property path evaluation
@@ -28,7 +29,12 @@ import OntologyIndex
 public struct OntologyContext: Sendable {
 
     /// Pre-computed role hierarchy for property expansion
-    private let roleHierarchy: RoleHierarchy
+    private let roleHierarchy: RoleHierarchy?
+
+    /// RDFS validation already owns this closure in its request-scoped
+    /// entailment storage. Keeping the shared backing avoids rebuilding an
+    /// equivalent RoleHierarchy and preserves the originating work claim.
+    private let rdfsPropertySubClosure: [String: Set<String>]?
 
     /// Immutable direction-aware physical scan closure for every known role.
     /// It is built at runtime bootstrap so request execution performs no
@@ -37,6 +43,11 @@ public struct OntologyContext: Sendable {
         String: [OntologyEntailedPropertyScan]
     ]
 
+    private let rdfsPropertySubClosureReservation:
+        DatabaseIntermediateReservation?
+    private let entailedPropertyScansReservation:
+        DatabaseIntermediateReservation?
+
     /// Initialize from an OWL ontology
     ///
     /// Eagerly computes transitive closures for all role hierarchies.
@@ -44,9 +55,12 @@ public struct OntologyContext: Sendable {
         var rh = RoleHierarchy(ontology: ontology)
         rh.ensureClosuresComputed()
         self.roleHierarchy = rh
+        self.rdfsPropertySubClosure = nil
         self.entailedPropertyScans = Self.makeEntailedPropertyScans(
             roleHierarchy: rh
         )
+        self.rdfsPropertySubClosureReservation = nil
+        self.entailedPropertyScansReservation = nil
     }
 
     /// Initialize from a pre-built role hierarchy
@@ -56,9 +70,32 @@ public struct OntologyContext: Sendable {
         var rh = roleHierarchy
         rh.ensureClosuresComputed()
         self.roleHierarchy = rh
+        self.rdfsPropertySubClosure = nil
         self.entailedPropertyScans = Self.makeEntailedPropertyScans(
             roleHierarchy: rh
         )
+        self.rdfsPropertySubClosureReservation = nil
+        self.entailedPropertyScansReservation = nil
+    }
+
+    init(
+        rdfsPropertySubClosure: [String: Set<String>],
+        entailedPropertyScans: [String: [OntologyEntailedPropertyScan]],
+        propertySubClosureReservation: DatabaseIntermediateReservation,
+        entailedPropertyScansReservation: DatabaseIntermediateReservation
+    ) {
+        precondition(
+            propertySubClosureReservation.workMeter
+                === entailedPropertyScansReservation.workMeter,
+            "RDFS ontology storage must use one request work meter"
+        )
+        self.roleHierarchy = nil
+        self.rdfsPropertySubClosure = rdfsPropertySubClosure
+        self.entailedPropertyScans = entailedPropertyScans
+        self.rdfsPropertySubClosureReservation =
+            propertySubClosureReservation
+        self.entailedPropertyScansReservation =
+            entailedPropertyScansReservation
     }
 
     /// Get all sub-properties of a property (transitive closure)
@@ -66,7 +103,10 @@ public struct OntologyContext: Sendable {
     /// For `ex:hasFather ⊑ ex:hasParent`, querying `ex:hasParent`
     /// should also match `ex:hasFather` edges.
     public func subProperties(of propertyIRI: String) -> Set<String> {
-        roleHierarchy.subRolesPrecomputed(of: propertyIRI)
+        if let rdfsPropertySubClosure {
+            return rdfsPropertySubClosure[propertyIRI] ?? []
+        }
+        return roleHierarchy?.subRolesPrecomputed(of: propertyIRI) ?? []
     }
 
     /// Get the inverse property (owl:inverseOf or symmetric self-inverse)
@@ -77,6 +117,7 @@ public struct OntologyContext: Sendable {
     ///
     /// Reference: OWL 2 Structural Specification, Section 9.2.1
     public func inverseProperty(of propertyIRI: String) -> String? {
+        guard let roleHierarchy else { return nil }
         if let declared = roleHierarchy.inverse(of: propertyIRI) {
             return declared
         }
@@ -92,12 +133,12 @@ public struct OntologyContext: Sendable {
     /// Transitive properties enable BFS expansion optimization
     /// in property path evaluation.
     public func isTransitive(_ propertyIRI: String) -> Bool {
-        roleHierarchy.isTransitive(propertyIRI)
+        roleHierarchy?.isTransitive(propertyIRI) ?? false
     }
 
     /// Check if a property is symmetric
     public func isSymmetric(_ propertyIRI: String) -> Bool {
-        roleHierarchy.isSymmetric(propertyIRI)
+        roleHierarchy?.isSymmetric(propertyIRI) ?? false
     }
 
     /// Check if a property is functional
@@ -105,7 +146,7 @@ public struct OntologyContext: Sendable {
     /// Functional properties have at most one value per subject.
     /// Used for cardinality estimation hints.
     public func isFunctional(_ propertyIRI: String) -> Bool {
-        roleHierarchy.isFunctional(propertyIRI)
+        roleHierarchy?.isFunctional(propertyIRI) ?? false
     }
 
     /// Get all property IRIs expanded with their sub-properties

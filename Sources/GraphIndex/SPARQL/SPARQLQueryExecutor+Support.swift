@@ -9,12 +9,12 @@ extension SPARQLQueryExecutor {
     /// Execute one triple atom against the active RDF graph.
     func executePattern(
         _ pattern: ExecutionTriple,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         activeGraph: ActiveGraph,
         filter: FilterExpression? = nil,
         resultLimit: Int? = nil
     ) async throws -> EvaluationResult {
-        let scanResult = try await datasetScanner.scan(
+        let scanResult = try await datasetScanner.scanRetained(
             subject: try boundRDFTerm(pattern.subject),
             predicate: try boundRDFTerm(pattern.predicate),
             object: try boundRDFTerm(pattern.object),
@@ -25,48 +25,79 @@ extension SPARQLQueryExecutor {
             workMeter: try requiredWorkMeter()
         )
 
+        let workMeter = try requiredWorkMeter()
+        let footprintMeter = try SPARQLBindingFootprintMeter.make(
+            workMeter: workMeter,
+            stage: .bindingCandidate
+        )
+        defer { footprintMeter.shutdown() }
         var bindings = try SPARQLRetainedBindingBuilder.make(
-            workMeter: try requiredWorkMeter(),
+            workMeter: workMeter,
             stage: .bindingCandidate,
             expectedCount: 0
         )
-        rowLoop: for row in scanResult {
-            try requiredWorkMeter().consume(at: .bindingCandidate)
-            var binding = VariableBinding()
-            guard matchTerm(
-                pattern.subject,
-                against: .rdfTerm(row.subject),
-                binding: &binding
-            ), matchTerm(
-                pattern.predicate,
-                against: .rdfTerm(row.predicate),
-                binding: &binding
-            ), matchTerm(
-                pattern.object,
-                against: .rdfTerm(row.object),
-                binding: &binding
-            ) else {
-                continue
-            }
-            let properties = try row.decodeProperties()
-            for (fieldName, value) in properties {
-                guard binding.merge(
-                    variable: "?\(fieldName)",
-                    value: value
-                ) else {
-                    continue rowLoop
+        for index in 0..<scanResult.count {
+            try await scanResult.withRow(at: index) { row in
+                try workMeter.consume(at: .bindingCandidate)
+                try await row.withDecodedProperties(
+                    workMeter: workMeter,
+                    stage: .bindingCandidate
+                ) { properties in
+                    let footprint: DatabaseIntermediateFootprint
+                    switch try footprintMeter.footprint(
+                        pattern: pattern,
+                        row: row,
+                        properties: properties
+                    ) {
+                    case .incompatible:
+                        return
+                    case .compatible(let compatibleFootprint):
+                        footprint = compatibleFootprint
+                    }
+                    let admission = try bindings.prepareAppend(
+                        footprint: footprint,
+                        at: .bindingCandidate
+                    )
+                    var binding = VariableBinding()
+                    guard matchTerm(
+                        pattern.subject,
+                        against: .rdfTerm(row.quad.subject.term),
+                        binding: &binding
+                    ), matchTerm(
+                        pattern.predicate,
+                        against: .rdfTerm(row.quad.predicate.term),
+                        binding: &binding
+                    ), matchTerm(
+                        pattern.object,
+                        against: .rdfTerm(row.quad.object),
+                        binding: &binding
+                    ) else {
+                        throw SPARQLQueryError.executionFailed(
+                            "scan preflight disagrees with triple construction"
+                        )
+                    }
+                    for (fieldName, value) in properties {
+                        guard binding.merge(
+                            variable: "?\(fieldName)",
+                            value: value
+                        ) else {
+                            throw SPARQLQueryError.executionFailed(
+                                "scan preflight disagrees with property construction"
+                            )
+                        }
+                    }
+                    if let filter {
+                        try workMeter.consume(at: .filterEvaluation)
+                        if try await !evaluateFilterExpression(
+                            filter,
+                            binding: binding,
+                            transaction: transaction,
+                            activeGraph: activeGraph
+                        ) { return }
+                    }
+                    bindings.append(binding, using: admission)
                 }
             }
-            if let filter {
-                try requiredWorkMeter().consume(at: .filterEvaluation)
-                if try await !evaluateFilterExpression(
-                    filter,
-                    binding: binding,
-                    transaction: transaction,
-                    activeGraph: activeGraph
-                ) { continue }
-            }
-            try bindings.append(binding, at: .bindingCandidate)
             if let resultLimit, bindings.count >= resultLimit { break }
         }
 
@@ -266,7 +297,7 @@ extension SPARQLQueryExecutor {
         object: ExecutionTerm,
         seed: consuming VariableBinding,
         resultLimit: Int?,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         activeGraph: ActiveGraph,
         config: ExecutionPropertyPathConfiguration = .default
     ) async throws -> EvaluationResult {

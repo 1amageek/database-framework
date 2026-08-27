@@ -32,6 +32,26 @@ package enum StorageValueDecoder {
     package static func retainedFootprint(
         of value: FieldValue
     ) throws -> UInt64 {
+        try retainedFootprint(
+            of: value,
+            prefixingRDFBlankNodeIdentifiersWith: nil
+        )
+    }
+
+    package static func retainedFootprint(
+        of value: FieldValue,
+        prefixingRDFBlankNodeIdentifiersWith prefix: String
+    ) throws -> UInt64 {
+        try retainedFootprint(
+            of: value,
+            prefixingRDFBlankNodeIdentifiersWith: Optional(prefix)
+        )
+    }
+
+    private static func retainedFootprint(
+        of value: FieldValue,
+        prefixingRDFBlankNodeIdentifiersWith prefix: String?
+    ) throws -> UInt64 {
         let base = UInt64(MemoryLayout<FieldValue>.stride + 32)
         switch value {
         case .null, .bool, .int8, .int16, .int32, .int64,
@@ -63,7 +83,10 @@ package enum StorageValueDecoder {
             for child in values {
                 total = try total.adding(
                     DatabaseIntermediateFootprint(
-                        bytes: try retainedFootprint(of: child)
+                        bytes: try retainedFootprint(
+                            of: child,
+                            prefixingRDFBlankNodeIdentifiersWith: prefix
+                        )
                     )
                 )
             }
@@ -71,7 +94,10 @@ package enum StorageValueDecoder {
         case .object(let object):
             return try addingFootprints(
                 base,
-                retainedFootprint(of: object)
+                retainedFootprint(
+                    of: object,
+                    prefixingRDFBlankNodeIdentifiersWith: prefix
+                )
             )
         case .reference(let reference):
             var total = try DatabaseIntermediateFootprint(
@@ -88,9 +114,19 @@ package enum StorageValueDecoder {
             )
             return total.bytes
         case .rdfTerm(let term):
-            let encodedBytes = UInt64(
-                try RDFTermStorageFormat.encodedByteCount(term)
-            )
+            let encodedBytes: UInt64
+            if let prefix {
+                encodedBytes = UInt64(
+                    try RDFTermStorageFormat.encodedByteCount(
+                        term,
+                        prefixingBlankNodeIdentifiersWith: prefix
+                    )
+                )
+            } else {
+                encodedBytes = UInt64(
+                    try RDFTermStorageFormat.encodedByteCount(term)
+                )
+            }
             return try DatabaseIntermediateFootprint(bytes: encodedBytes)
                 .multiplied(by: 4)
                 .adding(DatabaseIntermediateFootprint(bytes: base + 128))
@@ -102,6 +138,36 @@ package enum StorageValueDecoder {
     /// admitting the explicit traversal stack before it grows.
     package static func retainedFootprint(
         of value: FieldValue,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> UInt64 {
+        try retainedFootprint(
+            of: value,
+            prefixingRDFBlankNodeIdentifiersWith: nil,
+            workMeter: workMeter,
+            stage: stage
+        )
+    }
+
+    /// Measures the exact retained FieldValue after RDF blank-node
+    /// qualification without constructing the qualified value.
+    package static func retainedFootprint(
+        of value: FieldValue,
+        prefixingRDFBlankNodeIdentifiersWith prefix: String,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> UInt64 {
+        try retainedFootprint(
+            of: value,
+            prefixingRDFBlankNodeIdentifiersWith: Optional(prefix),
+            workMeter: workMeter,
+            stage: stage
+        )
+    }
+
+    private static func retainedFootprint(
+        of value: FieldValue,
+        prefixingRDFBlankNodeIdentifiersWith prefix: String?,
         workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage
     ) throws -> UInt64 {
@@ -205,9 +271,19 @@ package enum StorageValueDecoder {
                     try append(.object(reference.partitions))
                     try append(.identifier(reference.id))
                 case .rdfTerm(let term):
-                    let encodedBytes = UInt64(
-                        try RDFTermStorageFormat.encodedByteCount(term)
-                    )
+                    let encodedBytes: UInt64
+                    if let prefix {
+                        encodedBytes = UInt64(
+                            try RDFTermStorageFormat.encodedByteCount(
+                                term,
+                                prefixingBlankNodeIdentifiersWith: prefix
+                            )
+                        )
+                    } else {
+                        encodedBytes = UInt64(
+                            try RDFTermStorageFormat.encodedByteCount(term)
+                        )
+                    }
                     try DatabaseByteProcessingMeter.consume(
                         byteCount: encodedBytes,
                         passes: 4,
@@ -643,6 +719,16 @@ package enum StorageValueDecoder {
     private static func retainedFootprint(
         of object: FieldObject
     ) throws -> UInt64 {
+        try retainedFootprint(
+            of: object,
+            prefixingRDFBlankNodeIdentifiersWith: nil
+        )
+    }
+
+    private static func retainedFootprint(
+        of object: FieldObject,
+        prefixingRDFBlankNodeIdentifiersWith prefix: String?
+    ) throws -> UInt64 {
         var total = try DatabaseIntermediateFootprint(
             bytes: UInt64(MemoryLayout<FieldObject>.stride + 64)
         ).adding(
@@ -657,7 +743,10 @@ package enum StorageValueDecoder {
                 )
             ).adding(
                 DatabaseIntermediateFootprint(
-                    bytes: try retainedFootprint(of: field.value)
+                    bytes: try retainedFootprint(
+                        of: field.value,
+                        prefixingRDFBlankNodeIdentifiersWith: prefix
+                    )
                 )
             )
         }

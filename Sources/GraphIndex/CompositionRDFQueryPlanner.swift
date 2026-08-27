@@ -89,8 +89,8 @@ public struct CompositionRDFQueryPlanner: Sendable {
         ) async throws -> Bool
     ) async throws {
         try CompositionSPARQLPlanValidator.validate(statement)
-        guard let executor = source.container.runtimeConfiguration
-            .logicalSourceExecutors.sparqlExecutor else {
+        guard source.container.runtimeConfiguration
+            .logicalSourceExecutors.sparqlExecutor != nil else {
             throw CanonicalReadError.unsupportedSource(
                 "SPARQL source executor is not registered"
             )
@@ -127,22 +127,22 @@ public struct CompositionRDFQueryPlanner: Sendable {
                                         "CONSTRUCT requires a deterministic graph-result node namespace"
                                     )
                             }
-                            graph = try await executor
-                                .executeConstructInTransaction(
-                                    session: session,
-                                    constructQuery: query,
-                                    nodeNamespace: nodeNamespace,
-                                    options: readContext,
-                                    partitions: graphPartitions
-                                )
+                            graph = try await session.executeSPARQLConstruct(
+                                query,
+                                nodeNamespace: nodeNamespace,
+                                options: readContext,
+                                partitions: graphPartitions
+                            )
                         case .describe(let query):
-                            graph = try await executor
-                                .executeDescribeInTransaction(
-                                    session: session,
-                                    describeQuery: query,
-                                    options: readContext,
-                                    partitions: graphPartitions
-                                )
+                            graph = try await session.executeSPARQLDescribe(
+                                query,
+                                options: readContext,
+                                partitions: graphPartitions
+                            )
+                        }
+                        guard graph.workMeter === readContext.workMeter else {
+                            throw DatabaseIntermediateReservationError
+                                .workMeterMismatch
                         }
                         var memberSequence = memberSequenceStart
                         for index in 0..<graph.count {
@@ -153,13 +153,29 @@ public struct CompositionRDFQueryPlanner: Sendable {
                             }
                             memberSequence = next.partialValue
                             try await graph.withElement(at: index) { value in
-                                let qualifiedQuad = try CompositionRDFIdentity
-                                    .qualifyBlankNodes(
-                                        in: copy value,
-                                        baseID: member.baseID
-                                    )
+                                let footprint = try Self.qualifiedRowFootprint(
+                                    from: value,
+                                    baseID: member.baseID,
+                                    workMeter: readContext.workMeter
+                                )
+                                let ownedRow = try DatabaseQueryScopedQueryRow
+                                    .producing(
+                                        exactFootprint: footprint,
+                                        workMeter: readContext.workMeter,
+                                        stage: .resultMaterialization
+                                    ) {
+                                        let qualifiedQuad = try
+                                            CompositionRDFIdentity
+                                                .qualifyBlankNodes(
+                                                    in: copy value,
+                                                    baseID: member.baseID
+                                                )
+                                        return try Self.row(
+                                            from: qualifiedQuad
+                                        )
+                                    }
                                 try await workspace.insert(
-                                    try Self.row(from: qualifiedQuad),
+                                    consume ownedRow,
                                     origin: .source(member.baseID),
                                     sequence: currentSequence
                                 )
@@ -194,8 +210,8 @@ public struct CompositionRDFQueryPlanner: Sendable {
         readContext: ReadExecutionContext
     ) async throws -> CompositionAskResult {
         try CompositionSPARQLPlanValidator.validate(query)
-        guard let executor = source.container.runtimeConfiguration
-            .logicalSourceExecutors.sparqlExecutor else {
+        guard source.container.runtimeConfiguration
+            .logicalSourceExecutors.sparqlExecutor != nil else {
             throw CanonicalReadError.unsupportedSource(
                 "SPARQL source executor is not registered"
             )
@@ -209,9 +225,8 @@ public struct CompositionRDFQueryPlanner: Sendable {
                     in: snapshot,
                     workMeter: readContext.workMeter
                 ) { session in
-                    try await executor.executeAskInTransaction(
-                        session: session,
-                        askQuery: query,
+                    try await session.executeSPARQLAsk(
+                        query,
                         options: readContext,
                         partitions: graphPartitions
                     )
@@ -246,6 +261,35 @@ public struct CompositionRDFQueryPlanner: Sendable {
                 Field.graph: quad.graph.map { .rdfTerm($0.term) } ?? .null,
             ]
         )
+    }
+
+    private static func qualifiedRowFootprint(
+        from quad: borrowing RDFQuad,
+        baseID: Base.ID,
+        workMeter: DatabaseWorkMeter
+    ) throws -> DatabaseIntermediateFootprint {
+        let prefix = CompositionRDFIdentity.qualificationPrefix(
+            baseID: baseID
+        )
+        var footprint = CanonicalRelationalFootprintMeter
+            .queryRowBaseFootprint()
+        func add(_ name: String, _ value: FieldValue) throws {
+            footprint = try footprint.adding(
+                CanonicalRelationalFootprintMeter.fieldEntryFootprint(
+                    nameUTF8Count: name.utf8.count,
+                    value: value,
+                    prefixingRDFBlankNodeIdentifiersWith: prefix,
+                    workMeter: workMeter,
+                    stage: .resultMaterialization
+                )
+            )
+        }
+        try add(Field.subject, .rdfTerm(quad.subject.term))
+        try add(Field.predicate, .rdfTerm(quad.predicate.term))
+        let object = quad.object
+        try add(Field.object, .rdfTerm(object))
+        try add(Field.graph, quad.graph.map { .rdfTerm($0.term) } ?? .null)
+        return footprint
     }
 
     private static func quad(from row: QueryRow) throws -> RDFQuad {

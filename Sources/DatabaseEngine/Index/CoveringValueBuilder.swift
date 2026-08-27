@@ -101,6 +101,50 @@ public enum CoveringValueBuilder {
         return properties
     }
 
+    /// Returns a deterministic upper bound for the complete selected-field
+    /// decode workspace before any String, FieldValue, Set, or Dictionary is
+    /// materialized. The bound covers both the frame's root-field validation
+    /// storage and the path-projected property dictionary while they overlap.
+    package static func decodedPropertiesWorkspaceFootprint(
+        _ bytes: ByteString,
+        includedFieldNames: [String]
+    ) throws -> DatabaseIntermediateFootprint {
+        guard !includedFieldNames.isEmpty else {
+            return DatabaseIntermediateFootprint()
+        }
+        let decoded = try PersistableFieldFrameCodec.decodedFootprint(
+            bytes,
+            magic: magic,
+            version: formatVersion,
+            limits: try storageLimits()
+        )
+        var propertyBytes = UInt64(
+            MemoryLayout<[String: FieldValue]>.stride
+        )
+        for name in includedFieldNames {
+            propertyBytes = try DatabaseIntermediateFootprint(
+                bytes: propertyBytes
+            ).adding(
+                DatabaseIntermediateFootprint(
+                    bytes: 64 + UInt64(name.utf8.count)
+                )
+            ).bytes
+        }
+        return try DatabaseIntermediateFootprint(
+            bytes: decoded.transientByteCount
+        ).adding(
+            DatabaseIntermediateFootprint(
+                bytes: decoded.retainedByteCount
+            )
+        ).adding(
+            DatabaseIntermediateFootprint(
+                bytes: decoded.retainedByteCount
+            )
+        ).adding(
+            DatabaseIntermediateFootprint(bytes: propertyBytes)
+        )
+    }
+
     package static func decodeFields(
         _ bytes: ByteString,
         expectedEntity: String

@@ -88,7 +88,7 @@ package struct GraphTableExecutor: Sendable {
     /// Executes one GRAPH_TABLE source while retaining every intermediate row
     /// under the caller's request meter and transaction.
     package func execute(
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> DatabaseRetainedQueryRows {
         let steps = try Self.steps(from: graphTableSource.matchPattern)
@@ -277,7 +277,7 @@ package struct GraphTableExecutor: Sendable {
         with step: Step,
         scanner: GraphPropertyScanner,
         strategy: GraphIndexStrategy,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> DatabaseRetainedBuffer<QueryRow> {
         var nextStates = try makeStateBuilder(workMeter: workMeter)
@@ -302,7 +302,7 @@ package struct GraphTableExecutor: Sendable {
         step: Step,
         scanner: GraphPropertyScanner,
         strategy: GraphIndexStrategy,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> DatabaseRetainedBuffer<QueryRow> {
         var matches = try makeStateBuilder(workMeter: workMeter)
@@ -326,7 +326,7 @@ package struct GraphTableExecutor: Sendable {
         isInitial: Bool,
         scanner: GraphPropertyScanner,
         strategy: GraphIndexStrategy,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter,
         into matches: inout DatabaseRetainedArrayBuilder<QueryRow>
     ) async throws {

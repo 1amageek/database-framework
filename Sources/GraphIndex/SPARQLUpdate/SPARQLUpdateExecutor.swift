@@ -613,23 +613,25 @@ public struct SPARQLUpdateExecutor: Sendable {
             createdGraphs = 1
         }
 
-        for sourceQuad in sourceQuads {
-            try mutationMeter.consume()
-            let destinationQuad = try retarget(
-                sourceQuad.ownedQuad(),
-                to: query.destination
-            )
-            let insertResult = try await graphStore.insert(
-                destinationQuad,
-                transaction: transaction,
-                workMeter: workMeter
-            )
-            try accumulate(
-                insertResult,
-                mutationMeter: mutationMeter,
-                insertedQuads: &inserted,
-                createdGraphs: &createdGraphs
-            )
+        for sourceIndex in 0..<sourceQuads.count {
+            try await sourceQuads.withQuad(at: sourceIndex) { sourceQuad in
+                try mutationMeter.consume()
+                let destinationQuad = try retarget(
+                    sourceQuad,
+                    to: query.destination
+                )
+                let insertResult = try await graphStore.insert(
+                    destinationQuad,
+                    transaction: transaction,
+                    workMeter: workMeter
+                )
+                try accumulate(
+                    insertResult,
+                    mutationMeter: mutationMeter,
+                    insertedQuads: &inserted,
+                    createdGraphs: &createdGraphs
+                )
+            }
         }
 
         if query.operation == .move {

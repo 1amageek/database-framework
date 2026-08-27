@@ -7,7 +7,7 @@ extension SPARQLQueryExecutor {
     func evaluateOptional(
         leftBindings: borrowing SPARQLRetainedBindings,
         rightPattern: ExecutionPattern,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         activeGraph: ActiveGraph,
         resultLimit: Int?
     ) async throws -> EvaluationResult {

@@ -731,7 +731,7 @@ struct CanonicalSQLRetainedOwnershipTests {
         var producerWasInvoked = false
 
         do {
-            _ = try CanonicalQueryScopedFieldValue.producing(
+            _ = try DatabaseQueryScopedFieldValue.producing(
                 maximumFootprint: DatabaseIntermediateFootprint(
                     bytes: expectedBytes
                 ),
@@ -783,7 +783,7 @@ struct CanonicalSQLRetainedOwnershipTests {
             maximumIntermediateRows: 64,
             maximumIntermediateBytes: maximumFootprint.bytes + 1_024
         )
-        var value: CanonicalQueryScopedFieldValue? = try .producing(
+        var value: DatabaseQueryScopedFieldValue? = try .producing(
             maximumFootprint: maximumFootprint,
             workMeter: meter,
             stage: .expressionEvaluation
@@ -831,7 +831,7 @@ struct CanonicalSQLRetainedOwnershipTests {
         var producerWasInvoked = false
 
         #expect {
-            try CanonicalQueryScopedFieldValue.producing(
+            try DatabaseQueryScopedFieldValue.producing(
                 maximumFootprint: maximumFootprint,
                 workMeter: meter,
                 stage: .expressionEvaluation
@@ -840,7 +840,7 @@ struct CanonicalSQLRetainedOwnershipTests {
                 return producedValue
             }
         } throws: { error in
-            error as? CanonicalQueryScopedFieldValueError
+            error as? DatabaseQueryScopedFieldValueError
                 == .payloadFootprintExceeded(
                     maximumRows: maximumFootprint.rows,
                     maximumBytes: maximumFootprint.bytes,
@@ -863,7 +863,7 @@ struct CanonicalSQLRetainedOwnershipTests {
         )
 
         #expect {
-            try CanonicalQueryScopedFieldValue.producing(
+            try DatabaseQueryScopedFieldValue.producing(
                 maximumFootprint: maximumFootprint,
                 workMeter: meter,
                 stage: .expressionEvaluation

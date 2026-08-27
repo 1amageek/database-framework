@@ -8,14 +8,14 @@ import DatabaseEngine
 /// versions while traversing a graph.
 @_spi(DatabaseExecution)
 public final class GraphReadSnapshot: Sendable {
-    public let transaction: any TransactionAccess
+    public let transaction: any TransactionReadAccess
     public let monotonicClock: any StorageMonotonicClock
     public let workBudget: GraphAlgorithmWorkBudget?
     package let identityPool: GraphIdentityPool
     let clock: MonotonicClock
 
     public init(
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         monotonicClock: any StorageMonotonicClock,
         workBudget: GraphAlgorithmWorkBudget? = nil
     ) {

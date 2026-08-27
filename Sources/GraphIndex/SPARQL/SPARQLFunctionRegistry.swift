@@ -25,6 +25,21 @@ public struct SPARQLFunctionRegistry: Sendable {
         self.functions = functions
     }
 
+    func maximumResultByteCount(
+        identifier: String
+    ) throws(SPARQLFunctionRegistryError) -> UInt64 {
+        let iri: RDFIRI
+        do {
+            iri = try RDFIRI(identifier)
+        } catch {
+            throw SPARQLFunctionRegistryError.unknownFunction(identifier)
+        }
+        guard let function = functions[iri] else {
+            throw SPARQLFunctionRegistryError.unknownFunction(identifier)
+        }
+        return function.maximumResultByteCount
+    }
+
     func evaluate(
         identifier: String,
         arguments: [FieldValue]

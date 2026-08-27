@@ -7,7 +7,7 @@ extension SPARQLQueryExecutor {
     func evaluateBatchedNestedLoopJoinStep(
         pattern: ExecutionTriple,
         leftBindings: borrowing SPARQLRetainedBindings,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         activeGraph: ActiveGraph,
         filter: FilterExpression?,
         resultLimit: Int?
@@ -20,9 +20,10 @@ extension SPARQLQueryExecutor {
         var stats = ExecutionStatistics()
         stats.joinStrategies.append(.batchedNestedLoop)
 
-        var scanCache: [
-            ScanSignature: SPARQLSharedBindingSnapshot
-        ] = [:]
+        let workMeter = try requiredWorkMeter()
+        var scanCache = try SPARQLScanResultCache.make(
+            workMeter: workMeter
+        )
 
         for leftIndex in 0..<leftBindings.count {
             try requiredWorkMeter().consume(at: .bindingCandidate)
@@ -34,8 +35,8 @@ extension SPARQLQueryExecutor {
                 )
 
                 let matches: SPARQLRetainedBindings
-                if let cachedMatches = scanCache[signature] {
-                    matches = cachedMatches.retainedBindings()
+                if let cachedMatches = scanCache.value(for: signature) {
+                    matches = cachedMatches
                 } else {
                     let scannedMatches = try await executePattern(
                         substituted,
@@ -50,7 +51,11 @@ extension SPARQLQueryExecutor {
                     ).sharingForFanOut(
                         at: .joinCandidate
                     )
-                    scanCache[signature] = sharedOwnership.snapshot
+                    try scanCache.insert(
+                        sharedOwnership.snapshot,
+                        for: signature,
+                        sourceWorkMeter: workMeter
+                    )
                     matches = consume sharedOwnership.retained
                 }
 

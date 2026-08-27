@@ -66,7 +66,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
         graphTarget: RDFGraphScanTarget,
         limit: Int?,
         readMode: RDFDatasetReadMode,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> RDFDatasetScanResult {
         try await scanner.scan(
@@ -84,12 +84,14 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
     public func namedGraphs(
         limit: Int?,
         readMode: RDFDatasetReadMode,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
-    ) async throws -> [RDFGraphName] {
-        if let limit, limit <= 0 { return [] }
+    ) async throws -> RDFDatasetNamedGraphs {
+        if let limit, limit <= 0 {
+            return .empty(workMeter: workMeter)
+        }
 
-        var graphs: [RDFGraphName] = []
+        var graphs = RDFDatasetNamedGraphBuilder(workMeter: workMeter)
         let range = catalogCodec.range
         let storageLimit = try workMeter.storageReadLimitWithSentinel()
         var cursor = transaction.rangeCursor(
@@ -104,7 +106,16 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
             while let (key, value) = try await cursor.next() {
                 try workMeter.consume(at: .storageRow)
                 try catalogCodec.validateMarker(value)
-                graphs.append(try catalogCodec.decodeGraph(from: key))
+                let preflight = try catalogCodec.preflightGraph(from: key)
+                let admission = try graphs.prepareAppend(
+                    RDFDatasetNamedGraphRetainedMetrics.preflight(
+                        preflight.validation
+                    )
+                )
+                try graphs.append(
+                    try catalogCodec.decodeGraph(preflight),
+                    using: admission
+                )
                 if let limit, graphs.count >= limit {
                     break
                 }
@@ -122,14 +133,13 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
             throw iterationError
         }
         try await cursor.finish()
-        graphs.sort()
-        return graphs
+        return try graphs.finish(limit: limit)
     }
 
     public func containsGraph(
         _ graph: RDFGraphName,
         readMode: RDFDatasetReadMode,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> Bool {
         let key = try catalogCodec.key(for: graph)
@@ -327,7 +337,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
 
     private func missingCatalogKeyAfterIntegrityCheck(
         for graph: RDFGraphName,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> ByteString? {
         let key = try catalogCodec.key(for: graph)
@@ -354,7 +364,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
     /// graph when this exact protected range is empty.
     private func containsPhysicalQuad(
         in graph: RDFGraphName,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> Bool {
         try workMeter.consume(at: .indexScan)
@@ -391,7 +401,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
 
     private func validateNamedGraphExists(
         for graphTarget: RDFGraphMutationTarget,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws {
         guard case .named(let graph) = graphTarget else { return }
@@ -406,7 +416,7 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
 
     private func catalogRemoval(
         for graphTarget: RDFGraphMutationTarget,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> CatalogRemoval {
         switch graphTarget {

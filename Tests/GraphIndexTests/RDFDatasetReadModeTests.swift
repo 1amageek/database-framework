@@ -337,27 +337,33 @@ struct RDFDatasetReadModeTests {
             graphTarget: RDFGraphScanTarget,
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> RDFDatasetScanResult {
             observations.record(.scan(readMode))
-            return RDFDatasetScanResult(quads: [], physicalScanCount: 1)
+            return .empty(
+                physicalScanCount: 1,
+                workMeter: workMeter
+            )
         }
 
         func namedGraphs(
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
-        ) async throws -> [RDFGraphName] {
+        ) async throws -> RDFDatasetNamedGraphs {
             observations.record(.namedGraphs(readMode))
-            return [graph]
+            return try RDFDatasetNamedGraphs(
+                graphs: [graph],
+                workMeter: workMeter
+            )
         }
 
         func containsNamedGraph(
             _ graph: RDFGraphName,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> Bool {
             observations.record(.containsNamedGraph(readMode))

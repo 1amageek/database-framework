@@ -7,7 +7,6 @@ import StorageKit
 private struct CompositionSPARQLMemberQueryExecutor:
     CompositionMemberQueryExecutor
 {
-    let sourceExecutor: any SPARQLSourceExecutor
     let graphPartitions: FieldObject
 
     func validate(_ query: SelectQuery) throws {
@@ -18,15 +17,30 @@ private struct CompositionSPARQLMemberQueryExecutor:
         session: DatabaseReadSession,
         query: SelectQuery,
         execution: ReadExecutionContext
-    ) async throws -> QueryResponse {
+    ) async throws -> DatabaseRetainedQueryPage {
         let authorizedSession = try session.admittingRDFDatasetRead()
-        let rows = try await sourceExecutor.executeInTransaction(
-            session: authorizedSession,
-            selectQuery: query,
-            options: execution,
-            partitions: graphPartitions
+        return try await authorizedSession.retainedCanonicalPage(
+            query,
+            execution: execution,
+            graphPartitions: graphPartitions
         )
-        return QueryResponse(rows: rows.promoteToOutput())
+    }
+
+    func preparedFootprint(
+        of row: borrowing DatabaseEngine.QueryRow,
+        sourceBaseID: Base.ID,
+        workMeter: DatabaseWorkMeter
+    ) throws -> (rows: UInt64, bytes: UInt64) {
+        let footprint = try CanonicalRelationalFootprintMeter.footprint(
+            of: row,
+            prefixingRDFBlankNodeIdentifiersWith:
+                CompositionRDFIdentity.qualificationPrefix(
+                    baseID: sourceBaseID
+                ),
+            workMeter: workMeter,
+            stage: .resultMaterialization
+        )
+        return (footprint.rows, footprint.bytes)
     }
 
     func prepare(
@@ -63,8 +77,8 @@ public struct CompositionSPARQLQueryPlanner: Sendable {
         // Reject unsupported SPARQL semantics before runtime capability
         // lookup so plan errors do not depend on adapter registration.
         try CompositionSPARQLPlanValidator.validate(query)
-        guard let sourceExecutor = source.container.runtimeConfiguration
-            .logicalSourceExecutors.sparqlExecutor else {
+        guard source.container.runtimeConfiguration.logicalSourceExecutors
+            .sparqlExecutor != nil else {
             throw CanonicalReadError.unsupportedSource(
                 "SPARQL source executor is not registered"
             )
@@ -79,7 +93,6 @@ public struct CompositionSPARQLQueryPlanner: Sendable {
                 readContext: readContext
             ),
             memberExecutor: CompositionSPARQLMemberQueryExecutor(
-                sourceExecutor: sourceExecutor,
                 graphPartitions: graphPartitions
             ),
             emit: emit

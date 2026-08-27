@@ -72,7 +72,12 @@ public struct SPARQLQueryExecutor: Sendable {
             binding: borrowing VariableBinding,
             variables: [String]
         ) {
-            self.values = variables.map { binding[$0] ?? .null }
+            var values: [FieldValue] = []
+            values.reserveCapacity(variables.count)
+            for variable in variables {
+                values.append(binding[variable] ?? .null)
+            }
+            self.values = values
         }
     }
 

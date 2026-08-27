@@ -24,35 +24,51 @@ struct SPARQLConstructTemplateInstantiator {
         blankNodeResolver: inout SPARQLConstructBlankNodeResolver,
         to output: inout DatabaseRetainedRDFGraphBuilder
     ) throws {
-        let subject = try resolve(
-            pattern.subject,
-            binding: binding,
-            role: .subject,
-            blankNodeResolver: &blankNodeResolver,
-            output: &output
-        )
-        let predicate = try resolve(
-            pattern.predicate,
-            binding: binding,
-            role: .predicate,
-            blankNodeResolver: &blankNodeResolver,
-            output: &output
-        )
-        let object = try resolve(
-            pattern.object,
-            binding: binding,
-            role: .object,
-            blankNodeResolver: &blankNodeResolver,
-            output: &output
-        )
-        guard let subject, let predicate, let object else { return }
-        try output.append(
-            RDFQuad(
+        guard let maximumFootprint = try SPARQLConstructFootprintPlanner
+            .maximumQuadFootprint(
+                pattern,
+                binding: binding
+            ) else {
+            return
+        }
+        let footprintMeter = output.producerFootprintMeter
+        let workMeter = output.workMeter
+        let produced = try DatabaseQueryScopedRDFQuad.producingOptional(
+            maximumFootprint: maximumFootprint,
+            footprintMeter: footprintMeter,
+            workMeter: workMeter,
+            stage: .resultMaterialization
+        ) {
+            let subject = try resolve(
+                pattern.subject,
+                binding: binding,
+                role: .subject,
+                blankNodeResolver: &blankNodeResolver,
+                output: &output
+            )
+            let predicate = try resolve(
+                pattern.predicate,
+                binding: binding,
+                role: .predicate,
+                blankNodeResolver: &blankNodeResolver,
+                output: &output
+            )
+            let object = try resolve(
+                pattern.object,
+                binding: binding,
+                role: .object,
+                blankNodeResolver: &blankNodeResolver,
+                output: &output
+            )
+            guard let subject, let predicate, let object else { return nil }
+            return RDFQuad(
                 subject: try rdfSubject(from: subject),
                 predicate: try rdfPredicate(from: predicate),
                 object: object
             )
-        )
+        }
+        guard let produced else { return }
+        try output.appendProduced(produced)
     }
 
     private static func resolve(
@@ -135,42 +151,61 @@ struct SPARQLConstructTemplateInstantiator {
             let reifier
         ):
             isVariableSubstitution = false
-            let resolvedSubject = try resolve(
-                subject,
-                binding: binding,
-                role: .subject,
-                blankNodeResolver: &blankNodeResolver,
-                output: &output
-            )
-            let resolvedPredicate = try resolve(
-                predicate,
-                binding: binding,
-                role: .predicate,
-                blankNodeResolver: &blankNodeResolver,
-                output: &output
-            )
-            let resolvedObject = try resolve(
-                object,
-                binding: binding,
-                role: .object,
-                blankNodeResolver: &blankNodeResolver,
-                output: &output
-            )
-            let resolvedReifier = try resolve(
-                reifier,
-                binding: binding,
-                role: .subject,
-                blankNodeResolver: &blankNodeResolver,
-                output: &output
-            )
-            guard let resolvedSubject,
-                  let resolvedPredicate,
-                  let resolvedObject,
-                  let resolvedReifier else {
+            guard let maximumFootprint = try SPARQLConstructFootprintPlanner
+                .maximumReificationQuadFootprint(
+                    subject: subject,
+                    predicate: predicate,
+                    object: object,
+                    reifier: reifier,
+                    binding: binding
+                ) else {
                 return nil
             }
-            try output.append(
-                RDFQuad(
+            let footprintMeter = output.producerFootprintMeter
+            let workMeter = output.workMeter
+            var retainedReifier: RDFTerm?
+            let produced = try DatabaseQueryScopedRDFQuad.producingOptional(
+                maximumFootprint: maximumFootprint,
+                footprintMeter: footprintMeter,
+                workMeter: workMeter,
+                stage: .resultMaterialization
+            ) {
+                let resolvedSubject = try resolve(
+                    subject,
+                    binding: binding,
+                    role: .subject,
+                    blankNodeResolver: &blankNodeResolver,
+                    output: &output
+                )
+                let resolvedPredicate = try resolve(
+                    predicate,
+                    binding: binding,
+                    role: .predicate,
+                    blankNodeResolver: &blankNodeResolver,
+                    output: &output
+                )
+                let resolvedObject = try resolve(
+                    object,
+                    binding: binding,
+                    role: .object,
+                    blankNodeResolver: &blankNodeResolver,
+                    output: &output
+                )
+                let resolvedReifier = try resolve(
+                    reifier,
+                    binding: binding,
+                    role: .subject,
+                    blankNodeResolver: &blankNodeResolver,
+                    output: &output
+                )
+                guard let resolvedSubject,
+                      let resolvedPredicate,
+                      let resolvedObject,
+                      let resolvedReifier else {
+                    return nil
+                }
+                retainedReifier = resolvedReifier
+                return RDFQuad(
                     subject: try rdfSubject(from: resolvedReifier),
                     predicate: RDFPredicateIRI(
                         try RDFIRI(
@@ -183,8 +218,10 @@ struct SPARQLConstructTemplateInstantiator {
                         object: resolvedObject
                     )
                 )
-            )
-            resolved = resolvedReifier
+            }
+            guard let produced, let retainedReifier else { return nil }
+            try output.appendProduced(produced)
+            resolved = retainedReifier
         }
 
         do {

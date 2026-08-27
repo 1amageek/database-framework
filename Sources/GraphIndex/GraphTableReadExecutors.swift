@@ -44,7 +44,7 @@ private struct RuntimeGraphTableSourceExecutor: GraphTableSourceExecutor {
             indexSubspace: index.subspace,
             graphTableSource: graphTableSource
         ).execute(
-            transaction: session.transaction.storageTransaction,
+            transaction: session.transaction,
             workMeter: options.workMeter
         )
     }

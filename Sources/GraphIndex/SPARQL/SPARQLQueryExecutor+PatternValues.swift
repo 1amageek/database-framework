@@ -6,7 +6,7 @@ import StorageKit
 extension SPARQLQueryExecutor {
     func evaluateValuesPattern(
         _ table: SPARQLValuesTable,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         activeGraph: ActiveGraph,
         filter: FilterExpression?,
         seed: VariableBinding,
@@ -37,22 +37,6 @@ extension SPARQLQueryExecutor {
             }
 
             if let filter {
-                guard let binding = valuesBinding(
-                    extending: seed,
-                    with: table,
-                    row: row
-                ) else {
-                    continue
-                }
-                try meter.consume(at: .filterEvaluation)
-                guard try await evaluateFilterExpression(
-                    filter,
-                    binding: binding,
-                    transaction: transaction,
-                    activeGraph: activeGraph
-                ) else {
-                    continue
-                }
                 switch try bindings.prepareAppend(
                     extending: seed,
                     with: table,
@@ -60,10 +44,26 @@ extension SPARQLQueryExecutor {
                     at: .bindingCandidate
                 ) {
                 case .incompatible:
-                    throw SPARQLQueryError.executionFailed(
-                        "VALUES filter candidate disagrees with retained footprint preflight"
-                    )
+                    continue
                 case .admitted(let admission):
+                    guard let binding = valuesBinding(
+                        extending: seed,
+                        with: table,
+                        row: row
+                    ) else {
+                        throw SPARQLQueryError.executionFailed(
+                            "VALUES preflight disagrees with row construction"
+                        )
+                    }
+                    try meter.consume(at: .filterEvaluation)
+                    guard try await evaluateFilterExpression(
+                        filter,
+                        binding: binding,
+                        transaction: transaction,
+                        activeGraph: activeGraph
+                    ) else {
+                        continue
+                    }
                     bindings.append(binding, using: admission)
                 }
                 if let resultLimit, bindings.count >= resultLimit {

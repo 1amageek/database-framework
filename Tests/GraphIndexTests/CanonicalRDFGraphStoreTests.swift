@@ -34,7 +34,7 @@ struct CanonicalRDFGraphStoreTests {
                 transaction: transaction,
                 workMeter: meter
             )
-            #expect(graphsAfterCreate == [graph])
+            #expect(try graphNames(graphsAfterCreate) == [graph])
             let inserted = try await store.insert(
                 quad,
                 transaction: transaction,
@@ -65,7 +65,7 @@ struct CanonicalRDFGraphStoreTests {
                 transaction: transaction,
                 workMeter: meter
             )
-            #expect(graphsAfterClear == [graph])
+            #expect(try graphNames(graphsAfterClear) == [graph])
             let scan = try await store.scan(
                 subject: nil,
                 predicate: nil,
@@ -76,7 +76,8 @@ struct CanonicalRDFGraphStoreTests {
                 transaction: transaction,
                 workMeter: meter
             )
-            #expect(scan.isEmpty)
+            let scanIsEmpty = scan.isEmpty
+            #expect(scanIsEmpty)
         }
     }
 
@@ -182,7 +183,7 @@ struct CanonicalRDFGraphStoreTests {
                 transaction: transaction,
                 workMeter: makeMeter()
             )
-            #expect(graphs == [graph])
+            #expect(try graphNames(graphs) == [graph])
         }
     }
 
@@ -267,9 +268,10 @@ struct CanonicalRDFGraphStoreTests {
                 transaction: transaction,
                 workMeter: meter
             )
-            #expect(graphs == [first])
-            #expect(defaultScan.map(\.quad) == [defaultQuad])
-            #expect(namedScan.isEmpty)
+            #expect(try graphNames(graphs) == [first])
+            #expect(try quads(defaultScan) == [defaultQuad])
+            let namedScanIsEmpty = namedScan.isEmpty
+            #expect(namedScanIsEmpty)
         }
     }
 
@@ -332,9 +334,12 @@ struct CanonicalRDFGraphStoreTests {
                 workMeter: meter
             )
             #expect(cleared == 3)
-            #expect(graphsAfterClear == [first, second])
+            #expect(
+                try graphNames(graphsAfterClear) == [first, second]
+            )
             #expect(dropped == 0)
-            #expect(graphsAfterDrop.isEmpty)
+            let graphsAfterDropIsEmpty = graphsAfterDrop.isEmpty
+            #expect(graphsAfterDropIsEmpty)
         }
     }
 
@@ -423,9 +428,12 @@ struct CanonicalRDFGraphStoreTests {
                 workMeter: meter
             )
             #expect(defaultResult.count == 1)
-            #expect(defaultResult.first?.quad == defaultQuad)
-            #expect(namedResult.isEmpty)
-            #expect(Set(catalogs) == Set([iriGraph, blankGraph]))
+            #expect(try quads(defaultResult).first == defaultQuad)
+            let namedResultIsEmpty = namedResult.isEmpty
+            #expect(namedResultIsEmpty)
+            #expect(
+                Set(try graphNames(catalogs)) == Set([iriGraph, blankGraph])
+            )
         }
     }
 
@@ -484,7 +492,8 @@ struct CanonicalRDFGraphStoreTests {
                 transaction: transaction,
                 workMeter: makeMeter()
             )
-            #expect(catalogs.isEmpty)
+            let catalogsAreEmpty = catalogs.isEmpty
+            #expect(catalogsAreEmpty)
         }
     }
 
@@ -533,7 +542,8 @@ struct CanonicalRDFGraphStoreTests {
                 transaction: transaction,
                 workMeter: makeMeter()
             )
-            #expect(catalogs.isEmpty)
+            let catalogsAreEmpty = catalogs.isEmpty
+            #expect(catalogsAreEmpty)
         }
     }
 
@@ -601,7 +611,7 @@ struct CanonicalRDFGraphStoreTests {
                 workMeter: makeMeter()
             )
             #expect(result.count == 1)
-            #expect(result.first?.quad == quad)
+            #expect(try quads(result).first == quad)
         }
     }
 
@@ -648,7 +658,8 @@ struct CanonicalRDFGraphStoreTests {
                 transaction: transaction,
                 workMeter: makeMeter()
             )
-            #expect(catalogs.isEmpty)
+            let catalogsAreEmpty = catalogs.isEmpty
+            #expect(catalogsAreEmpty)
         }
     }
 
@@ -753,7 +764,8 @@ struct CanonicalRDFGraphStoreTests {
                 transaction: transaction,
                 workMeter: makeMeter()
             )
-            #expect(graphs.isEmpty)
+            let graphsAreEmpty = graphs.isEmpty
+            #expect(graphsAreEmpty)
         }
     }
 
@@ -791,8 +803,10 @@ struct CanonicalRDFGraphStoreTests {
                 transaction: transaction,
                 workMeter: makeMeter()
             )
-            #expect(graphs.isEmpty)
-            #expect(scan.isEmpty)
+            let graphsAreEmpty = graphs.isEmpty
+            let scanIsEmpty = scan.isEmpty
+            #expect(graphsAreEmpty)
+            #expect(scanIsEmpty)
         }
     }
 
@@ -825,6 +839,32 @@ struct CanonicalRDFGraphStoreTests {
 
     private func makeStore() -> CanonicalRDFGraphStore {
         CanonicalRDFGraphStore(rootSubspace: makeRoot())
+    }
+
+    private func graphNames(
+        _ result: borrowing RDFDatasetNamedGraphs
+    ) throws -> [RDFGraphName] {
+        var graphs: [RDFGraphName] = []
+        graphs.reserveCapacity(result.count)
+        for index in 0..<result.count {
+            result.withGraph(at: index) { graph in
+                graphs.append(graph)
+            }
+        }
+        return graphs
+    }
+
+    private func quads(
+        _ result: borrowing RDFDatasetScanResult
+    ) throws -> [RDFQuad] {
+        var quads: [RDFQuad] = []
+        quads.reserveCapacity(result.count)
+        for index in 0..<result.count {
+            result.withQuad(at: index) { quad in
+                quads.append(quad)
+            }
+        }
+        return quads
     }
 
     private func makeRoot() -> Subspace {

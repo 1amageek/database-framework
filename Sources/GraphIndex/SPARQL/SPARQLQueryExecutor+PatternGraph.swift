@@ -7,7 +7,7 @@ extension SPARQLQueryExecutor {
     func evaluateGraphPattern(
         selector: ExecutionGraphSelector,
         innerPattern: ExecutionPattern,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         filter: FilterExpression?,
         seed: VariableBinding,
         resultLimit: Int?,
@@ -56,7 +56,7 @@ extension SPARQLQueryExecutor {
                     statistics: stats
                 )
             }
-            let discoveredGraphs = try await datasetScanner.namedGraphs(
+            let discoveredGraphs = try await datasetScanner.namedGraphsRetained(
                 limit: nil,
                 readMode: readMode,
                 transaction: transaction,
@@ -79,7 +79,7 @@ extension SPARQLQueryExecutor {
         graphNames: GraphNames,
         variable: String,
         innerPattern: ExecutionPattern,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         filter: FilterExpression?,
         seed: VariableBinding,
         resultLimit: Int?,
@@ -130,6 +130,63 @@ extension SPARQLQueryExecutor {
             }
             if let resultLimit, bindings.count >= resultLimit {
                 break
+            }
+        }
+        return EvaluationResult(
+            bindings: bindings.finish(),
+            stats: mergedStats
+        )
+    }
+
+    private func evaluateVariableGraphPattern(
+        graphNames: borrowing RDFDatasetNamedGraphs,
+        variable: String,
+        innerPattern: ExecutionPattern,
+        transaction: any TransactionReadAccess,
+        filter: FilterExpression?,
+        seed: VariableBinding,
+        resultLimit: Int?,
+        statistics: ExecutionStatistics
+    ) async throws -> EvaluationResult {
+        var bindings = try SPARQLRetainedBindingBuilder.make(
+            workMeter: try requiredWorkMeter(),
+            stage: .joinCandidate,
+            expectedCount: 0
+        )
+        var mergedStats = statistics
+        for graphIndex in 0..<graphNames.count {
+            try await graphNames.withGraph(at: graphIndex) { graph in
+                if let resultLimit, bindings.count >= resultLimit { return }
+                let remainingLimit = resultLimit.map {
+                    max(0, $0 - bindings.count)
+                }
+                let graphBinding = VariableBinding().binding(
+                    variable,
+                    to: .rdfTerm(graph.term)
+                )
+                guard let graphSeed = seed.merged(with: graphBinding) else {
+                    return
+                }
+                let result = try await evaluate(
+                    pattern: innerPattern,
+                    transaction: transaction,
+                    activeGraph: .named(graph),
+                    filter: filter,
+                    seed: graphSeed,
+                    resultLimit: remainingLimit
+                )
+                mergedStats = mergedStats.merged(with: result.stats)
+                for resultIndex in 0..<result.bindings.count {
+                    if let resultLimit, bindings.count >= resultLimit { break }
+                    try requiredWorkMeter().consume(at: .joinCandidate)
+                    try result.bindings.withElement(at: resultIndex) { binding in
+                        _ = try bindings.appendMerged(
+                            graphSeed,
+                            with: binding,
+                            at: .joinCandidate
+                        )
+                    }
+                }
             }
         }
         return EvaluationResult(

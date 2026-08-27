@@ -70,6 +70,93 @@ struct NamedGraphStoreSQLiteTests {
             "https://example.com/settles",
         ]))
         #expect(!predicates.contains("https://example.com/issued-to"))
+
+        let federated = try await context
+            .sparql(namedGraph: try RDFGraphName(iri: receiptGraphIRI))
+            .where("?subject", "?predicate", "?object")
+            .select("?predicate")
+            .distinct()
+            .orderBy("?predicate")
+            .offset(1)
+            .limit(1)
+            .execute()
+        #expect(federated.count == 1)
+        #expect(federated.bindings.first?.count == 1)
+        #expect(
+            federated.bindings.first?["?predicate"]
+                == .rdfTerm(
+                    try .iri(validating: "https://example.com/settles")
+                )
+        )
+
+        let wrapperPredicate = try RDFTerm.iri(
+            validating: "https://example.com/wrapper-rank"
+        )
+        for (index, rank) in ["3", "1", "2", "2"].enumerated() {
+            try context.insert(
+                statement(
+                    id: "wrapper-\(index)",
+                    graph: nil,
+                    subject: try .iri(
+                        validating: "https://example.com/wrapper/\(index)"
+                    ),
+                    predicate: wrapperPredicate,
+                    object: integerLiteral(rank)
+                )
+            )
+        }
+        try await context.save()
+
+        let typed = try await context
+            .sparql(SQLiteNamedGraphStatement.self)
+            .defaultIndex()
+            .where(
+                .variable("?subject"),
+                .value(.rdfTerm(wrapperPredicate)),
+                .variable("?rank")
+            )
+            .orderBy("?rank")
+            .select("?rank")
+            .distinct()
+            .offset(1)
+            .limit(1)
+            .execute()
+        #expect(typed.count == 1)
+        #expect(typed.bindings.first?.count == 1)
+        #expect(typed.bindings.first?["?rank"] == .rdfTerm(integerLiteral("2")))
+
+        let grouped = try await context
+            .sparql(SQLiteNamedGraphStatement.self)
+            .defaultIndex()
+            .where(
+                .variable("?subject"),
+                .value(.rdfTerm(wrapperPredicate)),
+                .variable("?rank")
+            )
+            .groupBy("?rank")
+            .count("?subject", as: "count")
+            .orderBy("?rank")
+            .distinct()
+            .offset(1)
+            .limit(1)
+            .execute()
+        #expect(grouped.count == 1)
+        #expect(grouped.bindings.first?["?rank"] == .rdfTerm(integerLiteral("2")))
+        #expect(grouped.bindings.first?.int("count") == 2)
+
+        let string = try await context.executeSPARQL(
+            """
+            SELECT DISTINCT ?rank
+            WHERE { ?subject <https://example.com/wrapper-rank> ?rank }
+            ORDER BY ?rank
+            LIMIT 1
+            OFFSET 1
+            """,
+            on: SQLiteNamedGraphStatement.self
+        )
+        #expect(string.count == 1)
+        #expect(string.bindings.first?.count == 1)
+        #expect(string.bindings.first?["?rank"] == .rdfTerm(integerLiteral("2")))
     }
 
     @Test("SPARQL GRAPH variable binds graph names from graph-first keys")
@@ -127,9 +214,26 @@ struct NamedGraphStoreSQLiteTests {
 
             #expect(result.physicalScanCount == 1)
             #expect(result.count == 1)
-            #expect(result[0].subject == (try .iri(validating: "https://example.com/invoice")))
-            #expect(result[0].predicate == (try .iri(validating: amountPredicate)))
-            #expect(result[0].graph == (try .iri(validating: receiptGraphIRI)))
+            let expectedSubject = try RDFTerm.iri(
+                validating: "https://example.com/invoice"
+            )
+            let expectedPredicate = try RDFTerm.iri(
+                validating: amountPredicate
+            )
+            let expectedGraph = try RDFTerm.iri(
+                validating: receiptGraphIRI
+            )
+            result.withQuad(at: 0) { quad in
+                #expect(
+                    quad.subject.term == expectedSubject
+                )
+                #expect(
+                    quad.predicate.term == expectedPredicate
+                )
+                #expect(
+                    quad.graph?.term == expectedGraph
+                )
+            }
         }
     }
 
@@ -178,7 +282,13 @@ struct NamedGraphStoreSQLiteTests {
                 workMeter: meter
             )
 
-            #expect(Set(graphs) == Set([
+            var retainedGraphs = Set<RDFGraphName>()
+            for index in 0..<graphs.count {
+                graphs.withGraph(at: index) { graph in
+                    retainedGraphs.insert(copy graph)
+                }
+            }
+            #expect(retainedGraphs == Set([
                 try RDFGraphName(iri: invoiceGraphIRI),
                 try RDFGraphName(iri: receiptGraphIRI),
                 try RDFGraphName(iri: mailGraphIRI),

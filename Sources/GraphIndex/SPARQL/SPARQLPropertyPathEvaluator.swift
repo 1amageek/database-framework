@@ -38,7 +38,7 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         seed: consuming VariableBinding,
         resultLimit: Int?,
         graphTarget: RDFGraphScanTarget,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> SPARQLPropertyPathExecutionResult {
         try validateConfiguration()
         guard resultLimit.map({ $0 >= 0 }) ?? true else {
@@ -150,7 +150,7 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         startConstraint: RDFTerm?,
         endConstraint: RDFTerm?,
         graphTarget: RDFGraphScanTarget,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> MatchResult {
         try workMeter.consume(at: .pathExpansion)
         switch path {
@@ -269,7 +269,7 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         startConstraint: RDFTerm?,
         endConstraint: RDFTerm?,
         graphTarget: RDFGraphScanTarget,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> MatchResult {
         guard repetitions <= configuration.maximumTraversalDepth else {
             throw SPARQLQueryError.propertyPathTraversalDepthLimitExceeded(
@@ -323,7 +323,7 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         startConstraint: RDFTerm?,
         endConstraint: RDFTerm?,
         graphTarget: RDFGraphScanTarget,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> MatchResult {
         var builder = try makeMatchBuilder()
         var seen = try SPARQLPropertyPathMatchSet.make(
@@ -381,12 +381,12 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         startConstraint: RDFTerm?,
         endConstraint: RDFTerm?,
         graphTarget: RDFGraphScanTarget,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         builder: inout SPARQLPropertyPathMatchBuilder,
         seen: inout SPARQLPropertyPathMatchSet,
         statistics: inout ExecutionStatistics
     ) async throws {
-        let scan = try await datasetScanner.scan(
+        let scan = try await datasetScanner.scanRetained(
             subject: inverse ? endConstraint : startConstraint,
             predicate: predicate.term,
             object: inverse ? startConstraint : endConstraint,
@@ -397,18 +397,20 @@ struct SPARQLPropertyPathEvaluator: Sendable {
             workMeter: workMeter
         )
         try addIndexScans(scan.physicalScanCount, to: &statistics)
-        for quad in scan {
-            try workMeter.consume(at: .pathExpansion)
-            let match = inverse
-                ? SPARQLPropertyPathMatch(
-                    start: quad.object,
-                    end: quad.subject
-                )
-                : SPARQLPropertyPathMatch(
-                    start: quad.subject,
-                    end: quad.object
-                )
-            try appendDistinct(match, builder: &builder, seen: &seen)
+        for index in 0..<scan.count {
+            try scan.withQuad(at: index) { quad in
+                try workMeter.consume(at: .pathExpansion)
+                let match = inverse
+                    ? SPARQLPropertyPathMatch(
+                        start: quad.object,
+                        end: quad.subject.term
+                    )
+                    : SPARQLPropertyPathMatch(
+                        start: quad.subject.term,
+                        end: quad.object
+                    )
+                try appendDistinct(match, builder: &builder, seen: &seen)
+            }
         }
     }
 
@@ -417,7 +419,7 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         startConstraint: RDFTerm?,
         endConstraint: RDFTerm?,
         graphTarget: RDFGraphScanTarget,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> MatchResult {
         var builder = try makeMatchBuilder()
         var statistics = ExecutionStatistics(patternsEvaluated: 1)
@@ -465,12 +467,12 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         startConstraint: RDFTerm?,
         endConstraint: RDFTerm?,
         graphTarget: RDFGraphScanTarget,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         builder: inout SPARQLPropertyPathMatchBuilder,
         seen: inout SPARQLPropertyPathMatchSet,
         statistics: inout ExecutionStatistics
     ) async throws {
-        let scan = try await datasetScanner.scan(
+        let scan = try await datasetScanner.scanRetained(
             subject: inverse ? endConstraint : startConstraint,
             predicate: nil,
             object: inverse ? startConstraint : endConstraint,
@@ -481,23 +483,22 @@ struct SPARQLPropertyPathEvaluator: Sendable {
             workMeter: workMeter
         )
         try addIndexScans(scan.physicalScanCount, to: &statistics)
-        for quad in scan {
-            try workMeter.consume(at: .pathExpansion)
-            guard case .iri(let predicateIRI) = quad.predicate else {
-                continue
+        for index in 0..<scan.count {
+            try scan.withQuad(at: index) { quad in
+                try workMeter.consume(at: .pathExpansion)
+                let predicate = quad.predicate
+                guard !excludedPredicates.contains(predicate) else { return }
+                let match = inverse
+                    ? SPARQLPropertyPathMatch(
+                        start: quad.object,
+                        end: quad.subject.term
+                    )
+                    : SPARQLPropertyPathMatch(
+                        start: quad.subject.term,
+                        end: quad.object
+                    )
+                try appendDistinct(match, builder: &builder, seen: &seen)
             }
-            let predicate = RDFPredicateIRI(predicateIRI)
-            guard !excludedPredicates.contains(predicate) else { continue }
-            let match = inverse
-                ? SPARQLPropertyPathMatch(
-                    start: quad.object,
-                    end: quad.subject
-                )
-                : SPARQLPropertyPathMatch(
-                    start: quad.subject,
-                    end: quad.object
-                )
-            try appendDistinct(match, builder: &builder, seen: &seen)
         }
     }
 
@@ -507,7 +508,7 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         startConstraint: RDFTerm?,
         endConstraint: RDFTerm?,
         graphTarget: RDFGraphScanTarget,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> MatchResult {
         let leftResult = try await evaluate(
             left,
@@ -555,7 +556,7 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         startConstraint: RDFTerm?,
         endConstraint: RDFTerm?,
         graphTarget: RDFGraphScanTarget,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> MatchResult {
         let leftResult = try await evaluate(
             left,
@@ -591,7 +592,7 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         startConstraint: RDFTerm?,
         endConstraint: RDFTerm?,
         graphTarget: RDFGraphScanTarget,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> MatchResult {
         var statistics = ExecutionStatistics(patternsEvaluated: 1)
         if let startConstraint, let endConstraint,
@@ -607,7 +608,7 @@ struct SPARQLPropertyPathEvaluator: Sendable {
             )
         }
 
-        let scan = try await datasetScanner.scan(
+        let scan = try await datasetScanner.scanRetained(
             subject: nil,
             predicate: nil,
             object: nil,
@@ -622,23 +623,25 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         var seen = try SPARQLPropertyPathMatchSet.make(
             workMeter: workMeter
         )
-        for quad in scan {
-            try appendDistinct(
-                SPARQLPropertyPathMatch(
-                    start: quad.subject,
-                    end: quad.subject
-                ),
-                builder: &builder,
-                seen: &seen
-            )
-            try appendDistinct(
-                SPARQLPropertyPathMatch(
-                    start: quad.object,
-                    end: quad.object
-                ),
-                builder: &builder,
-                seen: &seen
-            )
+        for index in 0..<scan.count {
+            try scan.withQuad(at: index) { quad in
+                try appendDistinct(
+                    SPARQLPropertyPathMatch(
+                        start: quad.subject.term,
+                        end: quad.subject.term
+                    ),
+                    builder: &builder,
+                    seen: &seen
+                )
+                try appendDistinct(
+                    SPARQLPropertyPathMatch(
+                        start: quad.object,
+                        end: quad.object
+                    ),
+                    builder: &builder,
+                    seen: &seen
+                )
+            }
         }
         return MatchResult(
             matches: builder.finish(),
@@ -653,7 +656,7 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         startConstraint: RDFTerm?,
         endConstraint: RDFTerm?,
         graphTarget: RDFGraphScanTarget,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> MatchResult {
         guard minimum <= configuration.maximumTraversalDepth,
               (maximum ?? minimum) <= configuration.maximumTraversalDepth else {
@@ -827,7 +830,7 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         _ frontier: borrowing SPARQLPropertyPathMatches,
         through path: ExecutionPropertyPath,
         graphTarget: RDFGraphScanTarget,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> MatchResult {
         var builder = try makeMatchBuilder()
         var seen = try SPARQLPropertyPathMatchSet.make(
@@ -874,7 +877,7 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         through path: ExecutionPropertyPath,
         endConstraint: RDFTerm?,
         graphTarget: RDFGraphScanTarget,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> MatchResult {
         var builder = try makeMatchBuilder()
         var statistics = ExecutionStatistics()

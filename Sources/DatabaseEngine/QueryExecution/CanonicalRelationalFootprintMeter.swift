@@ -109,6 +109,53 @@ package enum CanonicalRelationalFootprintMeter {
         )
     }
 
+    /// Measures the exact destination row after RDF blank-node identifiers
+    /// receive a shared prefix, without constructing the qualified row.
+    package static func footprint(
+        of row: borrowing QueryRow,
+        prefixingRDFBlankNodeIdentifiersWith prefix: String,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> DatabaseIntermediateFootprint {
+        var retainedBytes = try retainedByteCount(
+            fields: row.fields,
+            prefixingRDFBlankNodeIdentifiersWith: prefix,
+            workMeter: workMeter,
+            stage: stage
+        )
+        retainedBytes = try adding(
+            retainedBytes,
+            retainedByteCount(
+                fields: row.annotations,
+                prefixingRDFBlankNodeIdentifiersWith: prefix,
+                workMeter: workMeter,
+                stage: stage
+            )
+        )
+        if let version = row.version {
+            retainedBytes = try adding(
+                retainedBytes,
+                UInt64(version.value.utf8.count)
+            )
+        }
+        return DatabaseIntermediateFootprint(
+            rows: 1,
+            bytes: try adding(rowHeaderByteCount, retainedBytes)
+        )
+    }
+
+    /// Returns the fixed retained shape of a QueryRow before its field and
+    /// annotation dictionaries are populated.
+    package static func queryRowBaseFootprint()
+        -> DatabaseIntermediateFootprint
+    {
+        DatabaseIntermediateFootprint(
+            rows: 1,
+            bytes: rowHeaderByteCount
+                + UInt64(MemoryLayout<[String: FieldValue]>.stride) * 2
+        )
+    }
+
     /// Measures the exact retained shape created by
     /// `CanonicalSourceRow.fromBaseFields` before that shape allocates its
     /// flattened and scoped dictionaries.
@@ -346,6 +393,29 @@ package enum CanonicalRelationalFootprintMeter {
         )
     }
 
+    package static func fieldEntryFootprint(
+        nameUTF8Count: Int,
+        value: borrowing FieldValue,
+        prefixingRDFBlankNodeIdentifiersWith prefix: String,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> DatabaseIntermediateFootprint {
+        let valueBytes = try StorageValueDecoder.retainedFootprint(
+            of: copy value,
+            prefixingRDFBlankNodeIdentifiersWith: prefix
+        )
+        let retainedBytes = try adding(
+            collectionEntryByteCount,
+            try adding(UInt64(nameUTF8Count), valueBytes)
+        )
+        try DatabaseByteProcessingMeter.consume(
+            byteCount: retainedBytes,
+            workMeter: workMeter,
+            stage: stage
+        )
+        return DatabaseIntermediateFootprint(bytes: retainedBytes)
+    }
+
     /// Measures one retained field-value payload without creating a temporary
     /// row. Destination container storage remains the destination owner's
     /// responsibility.
@@ -359,6 +429,29 @@ package enum CanonicalRelationalFootprintMeter {
                 of: copy value,
                 workMeter: workMeter,
                 stage: stage
+            )
+        )
+    }
+
+    /// Conservatively bounds the retained canonical FieldValue footprint of
+    /// one RDF term before the term is produced. The UTF-8 and term-count
+    /// limits are semantic producer contracts; the structural allowance
+    /// covers canonical tags, lengths, and triple-term framing.
+    package static func maximumRDFTermValueFootprint(
+        maximumUTF8ByteCount: UInt64,
+        maximumTermCount: UInt64 = 1
+    ) throws -> DatabaseIntermediateFootprint {
+        let structuralBytes = try DatabaseIntermediateFootprint(bytes: 64)
+            .multiplied(by: maximumTermCount)
+        let encodedBytes = try DatabaseIntermediateFootprint(
+            bytes: maximumUTF8ByteCount
+        )
+            .adding(structuralBytes)
+            .adding(DatabaseIntermediateFootprint(bytes: 64))
+        let retainedPayload = try encodedBytes.multiplied(by: 4)
+        return try retainedPayload.adding(
+            DatabaseIntermediateFootprint(
+                bytes: UInt64(MemoryLayout<FieldValue>.stride) + 160
             )
         )
     }
@@ -500,6 +593,33 @@ package enum CanonicalRelationalFootprintMeter {
                     stage: stage
                 )
             )
+        }
+        try workMeter.checkpoint(at: stage)
+        return total
+    }
+
+    private static func retainedByteCount(
+        fields: [String: FieldValue],
+        prefixingRDFBlankNodeIdentifiersWith prefix: String,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> UInt64 {
+        var total = UInt64(MemoryLayout<[String: FieldValue]>.stride)
+        for (name, value) in fields {
+            let valueBytes = try StorageValueDecoder.retainedFootprint(
+                of: value,
+                prefixingRDFBlankNodeIdentifiersWith: prefix
+            )
+            let retainedBytes = try adding(
+                collectionEntryByteCount,
+                try adding(UInt64(name.utf8.count), valueBytes)
+            )
+            try DatabaseByteProcessingMeter.consume(
+                byteCount: retainedBytes,
+                workMeter: workMeter,
+                stage: stage
+            )
+            total = try adding(total, retainedBytes)
         }
         try workMeter.checkpoint(at: stage)
         return total

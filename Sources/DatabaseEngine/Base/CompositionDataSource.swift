@@ -331,7 +331,7 @@ public struct CompositionDataSource: Sendable {
     /// Executes one member-local read against the transaction captured by the
     /// federated snapshot. The caller receives neither a container nor a
     /// transaction capable of resolving a different Base.
-    package func withMemberReadSession<Result: Sendable>(
+    package func withMemberReadSession<Result: ~Copyable & Sendable>(
         _ member: DatabaseCompositionMember,
         in snapshot: DatabaseCompositionReadSnapshot,
         workMeter: DatabaseWorkMeter,
@@ -344,7 +344,7 @@ public struct CompositionDataSource: Sendable {
         }
         let access = try snapshot.vault.memberAccess(for: member)
         defer { access.operationLease.end() }
-        return try await container.withBaseLease(access.lease) {
+        let output = try await container.withBaseLease(access.lease) {
             let context = container.session(
                 authorization: snapshot.authorization
             ).base(member.baseID).newContext()
@@ -360,14 +360,16 @@ public struct CompositionDataSource: Sendable {
                 try await ActiveDatabaseTransactionContext.$binding.withValue(
                     executionBinding
                 ) {
-                    try await DatabaseReadSession.withSession(
+                    let result = try await DatabaseReadSession.withSession(
                         context: context,
                         workMeter: workMeter,
                         operation
                     )
+                    return DatabaseReadResultBox(consume result)
                 }
             }
         }
+        return output.take()
     }
 
     private static func makeOpaqueReadPoint() -> ByteString {

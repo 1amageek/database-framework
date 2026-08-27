@@ -1,4 +1,11 @@
 import DatabaseKit
+import DatabaseEngine
+import DatabaseTypes
+
+enum SPARQLExpressionResultOwnership {
+    case borrowed
+    case produced(maximumFootprint: DatabaseIntermediateFootprint)
+}
 
 public struct SPARQLExpressionPlan: Sendable {
     public enum Volatility: Sendable, Hashable {
@@ -12,6 +19,7 @@ public struct SPARQLExpressionPlan: Sendable {
     public let usesExtensionFunction: Bool
     public let volatility: Volatility
     let program: SPARQLExpressionProgram
+    private let maximumStringUTF8Count: UInt64
 
     public init(
         _ expression: consuming Expression,
@@ -29,6 +37,7 @@ public struct SPARQLExpressionPlan: Sendable {
         self.usesExtensionFunction = analysis.usesExtensionFunction
         self.volatility = analysis.volatility
         self.program = program
+        self.maximumStringUTF8Count = limits.maximumStringUTF8Count
     }
 
     public var isFilterPushdownSafe: Bool {
@@ -47,6 +56,111 @@ public struct SPARQLExpressionPlan: Sendable {
 
     func compiledExistsPattern(at handle: Int) -> ExecutionPattern? {
         program.compiledExistsPattern(at: handle)
+    }
+
+    /// Computes a conservative retained-result bound without producing the
+    /// result. Direct variables and root literals stay borrowed from their
+    /// existing owner; every derived result receives a query-scoped owner.
+    func resultOwnership(
+        binding: borrowing VariableBinding,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage,
+        maximumExtensionResultByteCount: (String) throws -> UInt64
+    ) throws -> SPARQLExpressionResultOwnership {
+        guard let root = program.nodes.first else {
+            return .borrowed
+        }
+        switch root.opcode {
+        case .variable, .column, .literal:
+            return .borrowed
+        default:
+            break
+        }
+
+        let maximumSingleTerm = try CanonicalRelationalFootprintMeter
+            .maximumRDFTermValueFootprint(
+                maximumUTF8ByteCount: maximumStringUTF8Count
+            )
+        let boundsFootprint = try DatabaseIntermediateCollectionMeter
+            .arrayFootprint(
+                count: program.nodes.count,
+                element: DatabaseIntermediateFootprint.self
+            )
+        let boundsReservation = try workMeter.reserveIntermediate(
+            bytes: boundsFootprint.bytes,
+            at: stage
+        )
+        defer { boundsReservation.release() }
+        var bounds = Array(
+            repeating: DatabaseIntermediateFootprint(),
+            count: program.nodes.count
+        )
+        for nodeIndex in program.nodes.indices.reversed() {
+            let node = program.nodes[nodeIndex]
+            let bound: DatabaseIntermediateFootprint
+            switch node.opcode {
+            case .variable(let variable), .column(let variable):
+                if let value = binding["?\(variable)"] {
+                    bound = try CanonicalRelationalFootprintMeter
+                        .valueFootprint(
+                            of: value,
+                            workMeter: workMeter,
+                            stage: stage
+                        )
+                } else {
+                    bound = DatabaseIntermediateFootprint(
+                        bytes: UInt64(MemoryLayout<FieldValue>.stride) + 32
+                    )
+                }
+
+            case .literal:
+                bound = maximumSingleTerm
+
+            case .function(
+                let name,
+                .extensionFunction,
+                _
+            ):
+                bound = DatabaseIntermediateFootprint(
+                    bytes: try maximumExtensionResultByteCount(name)
+                )
+
+            case .triple:
+                var total = try CanonicalRelationalFootprintMeter
+                    .maximumRDFTermValueFootprint(
+                        maximumUTF8ByteCount: 0
+                    )
+                for childSlot in node.children {
+                    total = try total.adding(
+                        bounds[program.childIndices[childSlot]]
+                    )
+                }
+                bound = total
+
+            case .subject, .predicate, .object:
+                if let childSlot = node.children.first {
+                    bound = bounds[program.childIndices[childSlot]]
+                } else {
+                    bound = maximumSingleTerm
+                }
+
+            case .conditional, .coalesce, .caseSelection, .nullIf:
+                var maximumChild: DatabaseIntermediateFootprint?
+                for childSlot in node.children {
+                    let candidate = bounds[program.childIndices[childSlot]]
+                    if maximumChild.map({ $0.bytes < candidate.bytes })
+                        ?? true {
+                        maximumChild = candidate
+                    }
+                }
+                bound = maximumChild ?? maximumSingleTerm
+
+            default:
+                bound = maximumSingleTerm
+            }
+            bounds[nodeIndex] = bound
+        }
+        return .produced(maximumFootprint: bounds[0])
     }
 
     private struct Analysis {

@@ -130,7 +130,7 @@ struct BindingSorterDecorationTests {
             VariableBinding(["?value": .int64(1)]),
             VariableBinding(["?value": .int64(2)])
         ]
-        let key = BindingSortKey { binding in
+        let key = BindingSortKey(maximumRetainedByteCount: 4_096) { binding in
             evaluationCount.withLock { $0 += 1 }
             return binding["?value"]
         }
@@ -152,25 +152,59 @@ struct BindingSorterDecorationTests {
             VariableBinding(["?value": .int64(1)]),
             VariableBinding(["?value": .int64(2)])
         ]
-        let workMeter = DatabaseWorkMeter(
+        let borrowedMeter = DatabaseWorkMeter(
             budget: ExecutionBudget(
                 maximumIntermediateRows: 3,
-                maximumIntermediateBytes: 4_096
+                maximumIntermediateBytes: 64_000
             ),
             monotonicClock: TestProcessMonotonicClock()
         )
 
-        let sorted = try BindingSorter.sort(
+        let borrowedSorted = try BindingSorter.sort(
             bindings,
             by: [.variable("?value")],
-            workMeter: workMeter
+            workMeter: borrowedMeter
+        )
+        let producedMeter = DatabaseWorkMeter(
+            budget: ExecutionBudget(
+                maximumIntermediateRows: 3,
+                maximumIntermediateBytes: 64_000
+            ),
+            monotonicClock: TestProcessMonotonicClock()
+        )
+        let producedKey = BindingSortKey(
+            maximumRetainedByteCount: 4_096
+        ) { binding in
+            guard let value = binding["?value"]?.int64Value else {
+                return nil
+            }
+            return .string(
+                String(repeating: "x", count: 256) + String(value)
+            )
+        }
+        let producedSorted = try BindingSorter.sort(
+            bindings,
+            by: [producedKey],
+            workMeter: producedMeter
         )
 
-        #expect(sorted.compactMap { $0["?value"]?.int64Value } == [1, 2, 3])
-        #expect(workMeter.peakIntermediateRows == 3)
-        #expect(workMeter.peakIntermediateBytes > 0)
-        #expect(workMeter.retainedIntermediateRows == 0)
-        #expect(workMeter.retainedIntermediateBytes == 0)
+        #expect(
+            borrowedSorted.compactMap { $0["?value"]?.int64Value }
+                == [1, 2, 3]
+        )
+        #expect(
+            producedSorted.compactMap { $0["?value"]?.int64Value }
+                == [1, 2, 3]
+        )
+        #expect(borrowedMeter.peakIntermediateRows == 3)
+        #expect(
+            producedMeter.peakIntermediateBytes
+                > borrowedMeter.peakIntermediateBytes
+        )
+        #expect(borrowedMeter.retainedIntermediateRows == 0)
+        #expect(borrowedMeter.retainedIntermediateBytes == 0)
+        #expect(producedMeter.retainedIntermediateRows == 0)
+        #expect(producedMeter.retainedIntermediateBytes == 0)
     }
 
     @Test("Scratch rejection occurs before key evaluation")
@@ -181,7 +215,7 @@ struct BindingSorterDecorationTests {
             VariableBinding(["?value": .int64(1)])
         ]
         let original = bindings
-        let key = BindingSortKey { binding in
+        let key = BindingSortKey(maximumRetainedByteCount: 4_096) { binding in
             evaluationCount.withLock { $0 += 1 }
             return binding["?value"]
         }
@@ -218,11 +252,30 @@ struct BindingSorterDecorationTests {
 
     @Test("Async ORDER BY uses and releases the same scratch ledger")
     func asyncSortReleasesScratchReservation() async throws {
-        let expression = try SPARQLExpressionPlan(
+        let borrowedExpression = try SPARQLExpressionPlan(
             .variable(Variable("value"))
         )
-        let key = SPARQLOrderKeyPlan(
-            expression: expression,
+        let borrowedKey = SPARQLOrderKeyPlan(
+            expression: borrowedExpression,
+            ascending: true,
+            nullsLast: false
+        )
+        let producedExpression = try SPARQLExpressionPlan(
+            .function(
+                FunctionCall(
+                    name: "CONCAT",
+                    arguments: [
+                        .variable(Variable("value")),
+                        .literal(.string(String(repeating: "x", count: 128)))
+                    ]
+                )
+            ),
+            limits: SPARQLExpressionCompilationLimits(
+                maximumStringUTF8Count: 256
+            )
+        )
+        let producedKey = SPARQLOrderKeyPlan(
+            expression: producedExpression,
             ascending: true,
             nullsLast: false
         )
@@ -231,30 +284,66 @@ struct BindingSorterDecorationTests {
             VariableBinding(["?value": .int64(1)]),
             VariableBinding(["?value": .int64(2)])
         ]
-        let evaluationCount = Mutex(0)
-        let workMeter = DatabaseWorkMeter(
+        let borrowedEvaluationCount = Mutex(0)
+        let borrowedMeter = DatabaseWorkMeter(
             budget: ExecutionBudget(
                 maximumIntermediateRows: 3,
-                maximumIntermediateBytes: 4_096
+                maximumIntermediateBytes: 64_000
             ),
             monotonicClock: TestProcessMonotonicClock()
         )
 
-        let sorted = try await BindingSorter.sort(
+        let borrowedSorted = try await BindingSorter.sort(
             bindings,
-            by: [key],
-            workMeter: workMeter
+            by: [borrowedKey],
+            workMeter: borrowedMeter,
+            maximumExtensionResultByteCount: { _ in 0 }
         ) { _, binding in
-            evaluationCount.withLock { $0 += 1 }
+            borrowedEvaluationCount.withLock { $0 += 1 }
             return binding["?value"]
         }
+        let producedEvaluationCount = Mutex(0)
+        let producedMeter = DatabaseWorkMeter(
+            budget: ExecutionBudget(
+                maximumIntermediateRows: 3,
+                maximumIntermediateBytes: 64_000
+            ),
+            monotonicClock: TestProcessMonotonicClock()
+        )
+        let producedSorted = try await BindingSorter.sort(
+            bindings,
+            by: [producedKey],
+            workMeter: producedMeter,
+            maximumExtensionResultByteCount: { _ in 0 }
+        ) { _, binding in
+            producedEvaluationCount.withLock { $0 += 1 }
+            guard let value = binding["?value"]?.int64Value else {
+                return nil
+            }
+            return .string(
+                String(value) + String(repeating: "x", count: 128)
+            )
+        }
 
-        #expect(evaluationCount.withLock { $0 } == bindings.count)
-        #expect(sorted.compactMap { $0["?value"]?.int64Value } == [1, 2, 3])
-        #expect(workMeter.peakIntermediateRows == 3)
-        #expect(workMeter.peakIntermediateBytes > 0)
-        #expect(workMeter.retainedIntermediateRows == 0)
-        #expect(workMeter.retainedIntermediateBytes == 0)
+        #expect(borrowedEvaluationCount.withLock { $0 } == bindings.count)
+        #expect(producedEvaluationCount.withLock { $0 } == bindings.count)
+        #expect(
+            borrowedSorted.compactMap { $0["?value"]?.int64Value }
+                == [1, 2, 3]
+        )
+        #expect(
+            producedSorted.compactMap { $0["?value"]?.int64Value }
+                == [1, 2, 3]
+        )
+        #expect(borrowedMeter.peakIntermediateRows == 3)
+        #expect(
+            producedMeter.peakIntermediateBytes
+                > borrowedMeter.peakIntermediateBytes
+        )
+        #expect(borrowedMeter.retainedIntermediateRows == 0)
+        #expect(borrowedMeter.retainedIntermediateBytes == 0)
+        #expect(producedMeter.retainedIntermediateRows == 0)
+        #expect(producedMeter.retainedIntermediateBytes == 0)
     }
 
     @Test("Async scratch rejection occurs before expression evaluation")
@@ -285,7 +374,8 @@ struct BindingSorterDecorationTests {
             _ = try await BindingSorter.sort(
                 bindings,
                 by: [key],
-                workMeter: workMeter
+                workMeter: workMeter,
+                maximumExtensionResultByteCount: { _ in 0 }
             ) { _, binding in
                 evaluationCount.withLock { $0 += 1 }
                 return binding["?value"]
@@ -310,7 +400,7 @@ struct BindingSorterDecorationTests {
     @Test("Semantic expression errors become unbound ordering keys")
     func expressionErrorBecomesUnboundKey() throws {
         let expression = Expression.variable(Variable("missing"))
-        let key = BindingSortKey { binding in
+        let key = BindingSortKey(maximumRetainedByteCount: 4_096) { binding in
             try ExpressionEvaluator.evaluateForOrdering(
                 expression,
                 binding: binding
@@ -328,7 +418,7 @@ struct BindingSorterDecorationTests {
 
     @Test("Runtime failures abort ORDER BY")
     func runtimeFailurePropagates() {
-        let key = BindingSortKey { _ in
+        let key = BindingSortKey(maximumRetainedByteCount: 4_096) { _ in
             throw SPARQLExpressionEvaluationError.resourceLimitExceeded(
                 stage: "test",
                 required: 2,

@@ -36,6 +36,19 @@ public struct DatabaseRetainedQueryRowsBuilder: ~Copyable {
         storage.append(consume row, using: consume admission)
     }
 
+    /// Admits a prospectively measured row before allocating its fields.
+    package mutating func append<Failure: Error>(
+        footprint: DatabaseIntermediateFootprint,
+        make: () throws(Failure) -> QueryRow
+    ) throws {
+        try workMeter.consume(at: stage)
+        try storage.append(
+            footprint: footprint,
+            at: stage,
+            make: make
+        )
+    }
+
     public consuming func finish() -> DatabaseRetainedQueryRows {
         DatabaseRetainedQueryRows(storage: storage.finish())
     }

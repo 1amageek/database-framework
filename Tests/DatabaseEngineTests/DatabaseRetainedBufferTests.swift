@@ -571,10 +571,69 @@ struct DatabaseRetainedBufferTests {
             rows.withElement(at: 0) { row in
                 #expect(row.fields["value"] == .string("retained-row"))
             }
+            let uniqueAddress = rows.withSpan { span in
+                span.withUnsafeBufferPointer { buffer in
+                    buffer.baseAddress.map(UInt.init(bitPattern:))
+                }
+            }
             #expect(meter.retainedIntermediateRows == 1)
-            let shared = try rows.moveToSharedOwnership(at: .joinCandidate)
+            let retainedBytes = meter.retainedIntermediateBytes
+            let consumedWorkUnits = meter.consumedWorkUnits
+            let layout = try DatabaseRetainedArrayLayout.forElement(
+                DatabaseEngine.QueryRow.self
+            )
+            let shared = try rows.moveToSharedOwnership(
+                at: .resultMaterialization
+            )
             #expect(shared.workMeter === meter)
             #expect(shared.count == 1)
+            let sharedAddress = shared.withSpan { span in
+                span.withUnsafeBufferPointer { buffer in
+                    buffer.baseAddress.map(UInt.init(bitPattern:))
+                }
+            }
+            #expect(sharedAddress == uniqueAddress)
+            #expect(
+                meter.retainedIntermediateBytes
+                    == retainedBytes + layout.sharedOwnerByteCount
+            )
+            #expect(meter.consumedWorkUnits == consumedWorkUnits)
+        }
+
+        #expect(meter.retainedIntermediateRows == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+
+        do {
+            var builder = try DatabaseRetainedQueryRowsBuilder(
+                workMeter: meter,
+                stage: .projection
+            )
+            try builder.append(QueryRow(fields: ["value": .string("hidden")]))
+            try builder.append(QueryRow(fields: ["value": .string("visible")]))
+            let rows = builder.finish()
+            let shared = try rows.moveToSharedOwnership(at: .joinCandidate)
+            let sourceAddress = shared.withSpan { span in
+                span.withUnsafeBufferPointer { buffer in
+                    buffer.baseAddress.map(UInt.init(bitPattern:))
+                }
+            }
+            let visibleRows = DatabaseRetainedQueryRows(
+                sharedStorage: shared.boundedView(1..<2)
+            )
+            let rebuilt = try visibleRows.moveToSharedOwnership(
+                at: .resultMaterialization
+            )
+            let rebuiltAddress = rebuilt.withSpan { span in
+                span.withUnsafeBufferPointer { buffer in
+                    buffer.baseAddress.map(UInt.init(bitPattern:))
+                }
+            }
+            #expect(rebuilt.workMeter === meter)
+            #expect(rebuilt.count == 1)
+            #expect(rebuiltAddress != sourceAddress)
+            rebuilt.withElement(at: 0) { row in
+                #expect(row.fields["value"] == .string("visible"))
+            }
         }
 
         #expect(meter.retainedIntermediateRows == 0)

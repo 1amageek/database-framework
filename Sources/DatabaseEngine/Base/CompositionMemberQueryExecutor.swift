@@ -16,7 +16,14 @@ public protocol CompositionMemberQueryExecutor: Sendable {
         session: DatabaseReadSession,
         query: SelectQuery,
         execution: ReadExecutionContext
-    ) async throws -> QueryResponse
+    ) async throws -> DatabaseRetainedQueryPage
+
+    /// Measures the exact destination row before `prepare` allocates it.
+    func preparedFootprint(
+        of row: borrowing QueryRow,
+        sourceBaseID: Base.ID,
+        workMeter: DatabaseWorkMeter
+    ) throws -> (rows: UInt64, bytes: UInt64)
 
     func prepare(
         _ row: QueryRow,

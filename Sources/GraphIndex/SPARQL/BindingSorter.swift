@@ -24,9 +24,17 @@ import DatabaseEngine
 /// let key = BindingSortKey.variable("?age", ascending: false, nullsLast: true)
 ///
 /// // Custom evaluation
-/// let key = BindingSortKey(ascending: true) { binding in binding["?score"] }
+/// let key = BindingSortKey(
+///     maximumRetainedByteCount: 1_024,
+///     ascending: true
+/// ) { binding in binding["?score"] }
 /// ```
 public struct BindingSortKey: Sendable {
+
+    private enum ResultOwnership: Sendable {
+        case borrowed
+        case produced(maximumFootprint: DatabaseIntermediateFootprint)
+    }
 
     /// Evaluates a binding to produce the sort value
     public let evaluate: @Sendable (VariableBinding) throws -> FieldValue?
@@ -40,15 +48,21 @@ public struct BindingSortKey: Sendable {
     /// This property overrides the default behavior.
     public let nullsLast: Bool
 
+    private let resultOwnership: ResultOwnership
+
     // MARK: - Initialization
 
     /// Create a sort key with a custom evaluation function
     ///
     /// - Parameters:
+    ///   - maximumRetainedByteCount: Safe upper bound for the retained value
+    ///     returned by `evaluate`. The sorter admits this bound before calling
+    ///     the closure and rejects a larger result.
     ///   - ascending: Sort direction (default: true = ASC)
     ///   - nullsLast: Whether nulls sort last (default: false = nulls sort first)
     ///   - evaluate: Function to extract the sort value from a binding
     public init(
+        maximumRetainedByteCount: UInt64,
         ascending: Bool = true,
         nullsLast: Bool = false,
         evaluate: @escaping @Sendable (VariableBinding) throws -> FieldValue?
@@ -56,6 +70,23 @@ public struct BindingSortKey: Sendable {
         self.ascending = ascending
         self.nullsLast = nullsLast
         self.evaluate = evaluate
+        self.resultOwnership = .produced(
+            maximumFootprint: DatabaseIntermediateFootprint(
+                bytes: maximumRetainedByteCount
+            )
+        )
+    }
+
+    private init(
+        ascending: Bool,
+        nullsLast: Bool,
+        resultOwnership: ResultOwnership,
+        evaluate: @escaping @Sendable (VariableBinding) throws -> FieldValue?
+    ) {
+        self.ascending = ascending
+        self.nullsLast = nullsLast
+        self.evaluate = evaluate
+        self.resultOwnership = resultOwnership
     }
 
     // MARK: - Convenience Constructors
@@ -75,8 +106,29 @@ public struct BindingSortKey: Sendable {
         BindingSortKey(
             ascending: ascending,
             nullsLast: nullsLast,
+            resultOwnership: .borrowed,
             evaluate: { binding in binding[name] }
         )
+    }
+
+    fileprivate func evaluateScoped(
+        _ binding: VariableBinding,
+        workMeter: DatabaseWorkMeter
+    ) throws -> DatabaseQueryScopedFieldValue? {
+        switch resultOwnership {
+        case .borrowed:
+            return try evaluate(binding).map(
+                DatabaseQueryScopedFieldValue.borrowing
+            )
+        case .produced(let maximumFootprint):
+            return try DatabaseQueryScopedFieldValue.producingOptional(
+                maximumFootprint: maximumFootprint,
+                workMeter: workMeter,
+                stage: .sortInput
+            ) {
+                try evaluate(binding)
+            }
+        }
     }
 }
 
@@ -153,14 +205,16 @@ public struct BindingSorter: Sendable {
         keyStorageCount: Int,
         workMeter: DatabaseWorkMeter
     ) throws {
-        var evaluatedKeys: [FieldValue?] = []
+        var evaluatedKeys: [DatabaseQueryScopedFieldValue?] = []
         evaluatedKeys.reserveCapacity(keyStorageCount)
         var decorated: [DecoratedBinding] = []
         decorated.reserveCapacity(ownedBindings.count)
         for (index, binding) in ownedBindings.enumerated() {
             let keyOffset = evaluatedKeys.count
             for key in keys {
-                evaluatedKeys.append(try key.evaluate(binding))
+                evaluatedKeys.append(
+                    try key.evaluateScoped(binding, workMeter: workMeter)
+                )
             }
             decorated.append(
                 DecoratedBinding(
@@ -180,7 +234,7 @@ public struct BindingSorter: Sendable {
                 let lVal = evaluatedKeys[lhsItem.keyOffset + keyIndex]
                 let rVal = evaluatedKeys[rhsItem.keyOffset + keyIndex]
 
-                let result = try compareValues(
+                let result = try compareScopedValues(
                     lVal,
                     rVal,
                     nullsLast: key.nullsLast
@@ -208,6 +262,9 @@ public struct BindingSorter: Sendable {
         _ bindings: consuming [VariableBinding],
         by keys: [SPARQLOrderKeyPlan],
         workMeter: DatabaseWorkMeter,
+        maximumExtensionResultByteCount: @escaping @Sendable (
+            String
+        ) throws -> UInt64,
         evaluate: @Sendable (
             SPARQLExpressionPlan,
             VariableBinding
@@ -236,9 +293,105 @@ public struct BindingSorter: Sendable {
             keys: keys,
             keyStorageCount: scratchPlan.keyStorageCount,
             workMeter: workMeter,
+            maximumExtensionResultByteCount: maximumExtensionResultByteCount,
             evaluate: evaluate
         )
         return ownedBindings
+    }
+
+    /// Sorts a retained relation with caller-provided synchronous keys while
+    /// preserving its request-scoped owner.
+    static func sort(
+        _ bindings: consuming SPARQLRetainedBindings,
+        by keys: [BindingSortKey],
+        workMeter: DatabaseWorkMeter
+    ) throws -> SPARQLRetainedBindings {
+        let bindingCount = bindings.count
+        try workMeter.consume(UInt64(bindingCount), at: .sortInput)
+        guard !keys.isEmpty, bindingCount > 1 else {
+            return consume bindings
+        }
+
+        let normalizedBuilder = try SPARQLRetainedBindingBuilder.resuming(
+            consume bindings,
+            workMeter: workMeter,
+            stage: .sortInput
+        )
+        let normalized = normalizedBuilder.finish()
+        let scratchPlan = try scratchPlan(
+            bindingCount: bindingCount,
+            keyCount: keys.count,
+            workMeter: workMeter
+        )
+        let scratchReservation = try workMeter.reserveIntermediate(
+            rows: UInt64(bindingCount),
+            bytes: scratchPlan.retainedByteCount,
+            at: .sortInput
+        )
+
+        var evaluatedKeys: [DatabaseQueryScopedFieldValue?] = []
+        evaluatedKeys.reserveCapacity(scratchPlan.keyStorageCount)
+        var decorated: [DecoratedBinding] = []
+        decorated.reserveCapacity(bindingCount)
+        defer {
+            evaluatedKeys.removeAll(keepingCapacity: false)
+            decorated.removeAll(keepingCapacity: false)
+            scratchReservation.release()
+        }
+        for index in 0..<bindingCount {
+            let keyOffset = evaluatedKeys.count
+            let fingerprint = try normalized.withElement(
+                at: index
+            ) { binding in
+                for key in keys {
+                    evaluatedKeys.append(
+                        try key.evaluateScoped(
+                            copy binding,
+                            workMeter: workMeter
+                        )
+                    )
+                }
+                return try binding.canonicalFingerprint(
+                    workMeter: workMeter
+                )
+            }
+            decorated.append(
+                DecoratedBinding(
+                    originalIndex: index,
+                    keyOffset: keyOffset,
+                    fingerprint: fingerprint
+                )
+            )
+        }
+
+        try decorated.sort { lhsItem, rhsItem in
+            for keyIndex in keys.indices {
+                let key = keys[keyIndex]
+                try workMeter.consume(2, at: .sortComparison)
+                let lhs = evaluatedKeys[lhsItem.keyOffset + keyIndex]
+                let rhs = evaluatedKeys[rhsItem.keyOffset + keyIndex]
+                switch try compareScopedValues(
+                    lhs,
+                    rhs,
+                    nullsLast: key.nullsLast
+                ) {
+                case .same:
+                    continue
+                case .ascending:
+                    return key.ascending
+                case .descending:
+                    return !key.ascending
+                }
+            }
+            try workMeter.consume(2, at: .sortComparison)
+            return lhsItem.fingerprint.lexicographicallyPrecedes(
+                rhsItem.fingerprint
+            )
+        }
+
+        return (consume normalized).reorderingUniqueElements { destination in
+            decorated[destination].originalIndex
+        }
     }
 
     /// Sorts a retained relation while preserving its request-scoped owner.
@@ -248,6 +401,9 @@ public struct BindingSorter: Sendable {
         _ bindings: consuming SPARQLRetainedBindings,
         by keys: [SPARQLOrderKeyPlan],
         workMeter: DatabaseWorkMeter,
+        maximumExtensionResultByteCount: @escaping @Sendable (
+            String
+        ) throws -> UInt64,
         evaluate: @Sendable (
             SPARQLExpressionPlan,
             VariableBinding
@@ -275,12 +431,16 @@ public struct BindingSorter: Sendable {
             bytes: scratchPlan.retainedByteCount,
             at: .sortInput
         )
-        defer { scratchReservation.release() }
 
-        var evaluatedKeys: [FieldValue?] = []
+        var evaluatedKeys: [DatabaseQueryScopedFieldValue?] = []
         evaluatedKeys.reserveCapacity(scratchPlan.keyStorageCount)
         var decorated: [DecoratedBinding] = []
         decorated.reserveCapacity(bindingCount)
+        defer {
+            evaluatedKeys.removeAll(keepingCapacity: false)
+            decorated.removeAll(keepingCapacity: false)
+            scratchReservation.release()
+        }
         for index in 0..<bindingCount {
             let keyOffset = evaluatedKeys.count
             let fingerprint = try await normalized.withElement(
@@ -288,9 +448,13 @@ public struct BindingSorter: Sendable {
             ) { binding in
                 for key in keys {
                     evaluatedKeys.append(
-                        try await evaluate(
-                            key.expression,
-                            copy binding
+                        try await evaluateScoped(
+                            key,
+                            binding: copy binding,
+                            workMeter: workMeter,
+                            maximumExtensionResultByteCount:
+                                maximumExtensionResultByteCount,
+                            evaluate: evaluate
                         )
                     )
                 }
@@ -313,7 +477,7 @@ public struct BindingSorter: Sendable {
                 try workMeter.consume(2, at: .sortComparison)
                 let lhs = evaluatedKeys[lhsItem.keyOffset + keyIndex]
                 let rhs = evaluatedKeys[rhsItem.keyOffset + keyIndex]
-                switch try compareValues(
+                switch try compareScopedValues(
                     lhs,
                     rhs,
                     nullsLast: key.nullsLast
@@ -342,12 +506,15 @@ public struct BindingSorter: Sendable {
         keys: [SPARQLOrderKeyPlan],
         keyStorageCount: Int,
         workMeter: DatabaseWorkMeter,
+        maximumExtensionResultByteCount: @escaping @Sendable (
+            String
+        ) throws -> UInt64,
         evaluate: @Sendable (
             SPARQLExpressionPlan,
             VariableBinding
         ) async throws -> FieldValue?
     ) async throws {
-        var evaluatedKeys: [FieldValue?] = []
+        var evaluatedKeys: [DatabaseQueryScopedFieldValue?] = []
         evaluatedKeys.reserveCapacity(keyStorageCount)
         var decorated: [DecoratedBinding] = []
         decorated.reserveCapacity(ownedBindings.count)
@@ -355,7 +522,14 @@ public struct BindingSorter: Sendable {
             let keyOffset = evaluatedKeys.count
             for key in keys {
                 evaluatedKeys.append(
-                    try await evaluate(key.expression, binding)
+                    try await evaluateScoped(
+                        key,
+                        binding: binding,
+                        workMeter: workMeter,
+                        maximumExtensionResultByteCount:
+                            maximumExtensionResultByteCount,
+                        evaluate: evaluate
+                    )
                 )
             }
             decorated.append(
@@ -375,7 +549,7 @@ public struct BindingSorter: Sendable {
                 try workMeter.consume(2, at: .sortComparison)
                 let lhs = evaluatedKeys[lhsItem.keyOffset + keyIndex]
                 let rhs = evaluatedKeys[rhsItem.keyOffset + keyIndex]
-                switch try compareValues(
+                switch try compareScopedValues(
                     lhs,
                     rhs,
                     nullsLast: key.nullsLast
@@ -397,18 +571,50 @@ public struct BindingSorter: Sendable {
         reorder(&ownedBindings, accordingTo: decorated)
     }
 
+    private static func evaluateScoped(
+        _ key: SPARQLOrderKeyPlan,
+        binding: VariableBinding,
+        workMeter: DatabaseWorkMeter,
+        maximumExtensionResultByteCount: @escaping @Sendable (
+            String
+        ) throws -> UInt64,
+        evaluate: @Sendable (
+            SPARQLExpressionPlan,
+            VariableBinding
+        ) async throws -> FieldValue?
+    ) async throws -> DatabaseQueryScopedFieldValue? {
+        let resultOwnership = try key.expression.resultOwnership(
+            binding: binding,
+            workMeter: workMeter,
+            stage: .sortInput,
+            maximumExtensionResultByteCount:
+                maximumExtensionResultByteCount
+        )
+        switch resultOwnership {
+        case .borrowed:
+            guard let value = try await evaluate(
+                key.expression,
+                binding
+            ) else {
+                return nil
+            }
+            return DatabaseQueryScopedFieldValue.borrowing(value)
+        case .produced(let maximumFootprint):
+            return try await DatabaseQueryScopedFieldValue.producingOptional(
+                maximumFootprint: maximumFootprint,
+                workMeter: workMeter,
+                stage: .sortInput
+            ) {
+                try await evaluate(key.expression, binding)
+            }
+        }
+    }
+
     // MARK: - Private
 
-    /// Compare two optional FieldValues with null handling
-    ///
-    /// - Parameters:
-    ///   - lhs: Left value (nil = unbound/null)
-    ///   - rhs: Right value (nil = unbound/null)
-    ///   - nullsLast: Whether nulls sort after all non-null values
-    /// - Returns: Comparison result
-    private static func compareValues(
-        _ lhs: FieldValue?,
-        _ rhs: FieldValue?,
+    private static func compareScopedValues(
+        _ lhs: DatabaseQueryScopedFieldValue?,
+        _ rhs: DatabaseQueryScopedFieldValue?,
         nullsLast: Bool
     ) throws -> SPARQLComparisonOrder {
         switch (lhs, rhs) {
@@ -418,15 +624,43 @@ public struct BindingSorter: Sendable {
             return nullsLast ? .descending : .ascending
         case (.some, .none):
             return nullsLast ? .ascending : .descending
-        case (.some(.null), .some(.null)):
-            return .same
-        case (.some(.null), .some):
-            return nullsLast ? .descending : .ascending
-        case (.some, .some(.null)):
-            return nullsLast ? .ascending : .descending
-        case (.some(let l), .some(let r)):
-            return try SPARQLTermOrdering.compare(l, r)
+        case (.some(let lhs), .some(let rhs)):
+            return try lhs.withValue { lhsValue in
+                try rhs.withValue { rhsValue in
+                    try compareValues(
+                        lhsValue,
+                        rhsValue,
+                        nullsLast: nullsLast
+                    )
+                }
+            }
         }
+    }
+
+    /// Compare two FieldValues with null handling
+    ///
+    /// - Parameters:
+    ///   - lhs: Left value
+    ///   - rhs: Right value
+    ///   - nullsLast: Whether nulls sort after all non-null values
+    /// - Returns: Comparison result
+    private static func compareValues(
+        _ lhs: borrowing FieldValue,
+        _ rhs: borrowing FieldValue,
+        nullsLast: Bool
+    ) throws -> SPARQLComparisonOrder {
+        let lhsIsNull = lhs == .null
+        let rhsIsNull = rhs == .null
+        if lhsIsNull && rhsIsNull {
+            return .same
+        }
+        if lhsIsNull {
+            return nullsLast ? .descending : .ascending
+        }
+        if rhsIsNull {
+            return nullsLast ? .ascending : .descending
+        }
+        return try SPARQLTermOrdering.compare(lhs, rhs)
     }
 
     private static func reorder(
@@ -466,7 +700,9 @@ public struct BindingSorter: Sendable {
             retainedByteCount,
             checkedMultiply(
                 keySlotCount,
-                UInt64(MemoryLayout<FieldValue?>.stride),
+                UInt64(
+                    MemoryLayout<DatabaseQueryScopedFieldValue?>.stride
+                ),
                 workMeter: workMeter
             ),
             workMeter: workMeter

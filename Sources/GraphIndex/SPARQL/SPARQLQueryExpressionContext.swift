@@ -211,6 +211,26 @@ final class SPARQLQueryExpressionContext: Sendable {
         }
     }
 
+    func maximumExtensionFunctionResultByteCount(
+        identifier: String
+    ) throws -> UInt64 {
+        do throws(SPARQLFunctionRegistryError) {
+            return try functionRegistry.maximumResultByteCount(
+                identifier: identifier
+            )
+        } catch let error {
+            switch error {
+            case .unknownFunction:
+                throw SPARQLExpressionEvaluationError
+                    .unsupportedExpression("function \(identifier)")
+            case .duplicateFunction, .evaluation, .nonCanonicalResult:
+                throw SPARQLExpressionEvaluationError.runtimeInvariant(
+                    "function registry failed while resolving a result bound"
+                )
+            }
+        }
+    }
+
     private static func evaluateImmediate(
         _ expression: Expression
     ) -> SPARQLExpressionEvaluationOutcome<FieldValue> {

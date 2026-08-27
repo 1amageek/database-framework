@@ -6,7 +6,7 @@ import StorageKit
 extension SPARQLQueryExecutor {
     func evaluateOrderedSolutionPlan(
         _ plan: SPARQLOrderedSolutionPlan,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         activeGraph: ActiveGraph,
         seed: VariableBinding
     ) async throws -> EvaluationResult {
@@ -20,10 +20,21 @@ extension SPARQLQueryExecutor {
         var bindings = consume evaluated.bindings
 
         if !plan.orderKeys.isEmpty {
+            guard let expressionContext else {
+                throw SPARQLExpressionEvaluationError.runtimeInvariant(
+                    "query-scoped expression context is unavailable"
+                )
+            }
             bindings = try await BindingSorter.sort(
                 consume bindings,
                 by: plan.orderKeys,
                 workMeter: try requiredWorkMeter(),
+                maximumExtensionResultByteCount: {
+                    try expressionContext
+                        .maximumExtensionFunctionResultByteCount(
+                            identifier: $0
+                        )
+                },
                 evaluate: { expression, binding in
                     switch try await evaluateCanonicalExpression(
                             expression,
@@ -51,7 +62,7 @@ extension SPARQLQueryExecutor {
 
     func evaluateSelectPlan(
         _ plan: SPARQLSelectExecutionPlan,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         activeGraph: ActiveGraph,
         seed: VariableBinding
     ) async throws -> EvaluationResult {
@@ -62,9 +73,30 @@ extension SPARQLQueryExecutor {
             seed: seed
         )
         let evaluationStats = evaluated.stats
-        var bindings = consume evaluated.bindings
+        let bindings = try applyProjectionDuplicateAndSlice(
+            consume evaluated.bindings,
+            projectionVariables: plan.projectionVariables,
+            projectionIsIdentity: plan.projectionIsIdentity,
+            duplicatePolicy: plan.duplicatePolicy,
+            slice: plan.slice
+        )
 
-        if !plan.projectionIsIdentity {
+        return EvaluationResult(
+            bindings: consume bindings,
+            stats: evaluationStats
+        )
+    }
+
+    func applyProjectionDuplicateAndSlice(
+        _ source: consuming SPARQLRetainedBindings,
+        projectionVariables: [String],
+        projectionIsIdentity: Bool,
+        duplicatePolicy: SPARQLDuplicatePolicy,
+        slice: SPARQLSlice
+    ) throws -> SPARQLRetainedBindings {
+        var bindings = consume source
+
+        if !projectionIsIdentity {
             var projectionBuilder = try SPARQLRetainedBindingBuilder.make(
                 workMeter: try requiredWorkMeter(),
                 stage: .projection,
@@ -75,17 +107,17 @@ extension SPARQLQueryExecutor {
                 try bindings.withElement(at: index) { binding in
                     let admission = try projectionBuilder.prepareAppend(
                         projecting: binding,
-                        variables: plan.projectionVariables,
+                        variables: projectionVariables,
                         at: .projection
                     )
-                    let projected = binding.project(plan.projectionVariables)
+                    let projected = binding.project(projectionVariables)
                     projectionBuilder.append(projected, using: admission)
                 }
             }
             bindings = projectionBuilder.finish()
         }
 
-        if plan.duplicatePolicy == .distinct {
+        if duplicatePolicy == .distinct {
             var seen = try SPARQLRetainedBindingSet.make(
                 workMeter: try requiredWorkMeter(),
                 stage: .deduplication,
@@ -131,13 +163,9 @@ extension SPARQLQueryExecutor {
             }
         }
 
-        bindings = try applyRetainedSlice(
+        return try applyRetainedSlice(
             consume bindings,
-            slice: plan.slice
-        )
-        return EvaluationResult(
-            bindings: consume bindings,
-            stats: evaluationStats
+            slice: slice
         )
     }
 

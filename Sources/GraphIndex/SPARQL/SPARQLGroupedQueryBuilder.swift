@@ -328,14 +328,19 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
 
         let startTime = queryContext.graphClock.now()
 
-        // Step 1: Pattern evaluation + GROUP BY + HAVING
-        var (bindings, stats) = try await queryContext.withReadableIndex(
+        let outputVariables = projectedVariables
+            ?? (groupVariables + aggregates.map { $0.alias })
+        let projectionIsIdentity = groupByPattern.outputVariables.isSubset(
+            of: Set(outputVariables)
+        )
+
+        let executionResult = try await queryContext.withReadableIndex(
             named: selection.indexName,
             indexType: selection.indexType,
             for: T.self
         ) {
             readableIndex,
-            transaction -> ([VariableBinding], ExecutionStatistics) in
+            transaction -> SPARQLResult in
             let sources: [RDFDatasetSource]
             if let readableIndex {
                 sources = [
@@ -349,59 +354,30 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
                 sources = []
             }
             let executor = SPARQLQueryExecutor(
-                database: queryContext.context.container.engine,
                 monotonicClock: queryContext.context.container.monotonicClock,
                 wallClock: queryContext.context.container.wallClock,
-                sources: sources
+                datasetScanner: IndexedRDFDatasetScanner(sources: sources)
             )
-            return try await executor.executeInTransaction(
+            let retained = try await executor
+                .executeRetainedProjectedInTransaction(
                 pattern: groupByPattern,
-                transaction: transaction.storageTransaction,
-                limit: nil,
-                offset: 0,
+                transaction: transaction,
+                orderBy: sortKeys,
+                projectionVariables: outputVariables,
+                projectionIsIdentity: projectionIsIdentity,
+                duplicatePolicy: isDistinct ? .distinct : .preserve,
+                offset: offsetCount,
+                limit: limitCount,
                 workMeter: workMeter
             )
+            return retained.promoteToResult()
         }
 
-        // Step 2: ORDER BY (before projection, per W3C Section 15)
-        if !sortKeys.isEmpty {
-            bindings = try BindingSorter.sort(
-                bindings,
-                by: sortKeys,
-                workMeter: workMeter
-            )
-        }
-
-        // Step 3: Projection (SELECT)
-        var outputVariables = groupVariables + aggregates.map { $0.alias }
-        if let projected = projectedVariables {
-            outputVariables = projected
-        }
-        let projectionSet = Set(outputVariables)
-        var projected = try bindings.map { binding in
-            try workMeter.consume(at: .projection)
-            return binding.project(projectionSet)
-        }
-
-        // Step 4: DISTINCT
-        if isDistinct {
-            var seen = Set<VariableBinding>()
-            projected = try projected.filter { binding in
-                try workMeter.consume(at: .deduplication)
-                return seen.insert(binding).inserted
-            }
-        }
-
-        // Step 5: OFFSET / LIMIT (Slice)
-        if offsetCount > 0 {
-            projected = Array(projected.dropFirst(offsetCount))
-        }
-        if let limit = limitCount {
-            projected = Array(projected.prefix(limit))
-        }
-
+        let executionStats = executionResult.statistics
+        let isComplete = executionResult.isComplete
+        let projected = executionResult.bindings
         let endTime = queryContext.graphClock.now()
-        var finalStats = stats
+        var finalStats = executionStats
         finalStats.durationNs = endTime.uptimeNanoseconds - startTime.uptimeNanoseconds
 
         guard let outputRows = UInt32(exactly: projected.count) else {
@@ -413,13 +389,12 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
             )
         }
         try workMeter.recordOutputRows(outputRows)
-        let reachedLimit = limitCount.map { projected.count >= $0 } ?? false
         return SPARQLGroupedResult(
             bindings: projected,
             groupVariables: groupVariables,
             aggregateAliases: aggregates.map { $0.alias },
             projectedVariables: outputVariables,
-            isComplete: !reachedLimit,
+            isComplete: isComplete,
             statistics: finalStats
         )
     }

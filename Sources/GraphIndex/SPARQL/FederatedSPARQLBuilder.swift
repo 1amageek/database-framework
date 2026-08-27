@@ -259,7 +259,7 @@ public struct FederatedSPARQLBuilder: Sendable {
         )
 
         let evaluation = try await queryContext.withTransaction {
-            transaction -> ([VariableBinding], ExecutionStatistics)? in
+            transaction -> SPARQLResult? in
             let sources = try await RDFDatasetSourcePlanner.plan(
                 namedGraph: namedGraph,
                 queryContext: queryContext,
@@ -268,13 +268,15 @@ public struct FederatedSPARQLBuilder: Sendable {
             guard !sources.isEmpty else {
                 return nil
             }
-            return try await evaluate(
+            let retained = try await evaluateRetained(
                 sources: sources,
-                transaction: transaction.storageTransaction,
+                transaction: transaction,
+                projectedVars: projectedVars,
                 workMeter: workMeter
             )
+            return retained.promoteToResult()
         }
-        guard let (bindings, stats) = evaluation else {
+        guard let executionResult = evaluation else {
             return SPARQLResult(
                 bindings: [],
                 projectedVariables: projectedVars,
@@ -284,12 +286,17 @@ public struct FederatedSPARQLBuilder: Sendable {
             )
         }
 
-        let result = try finalize(
-            bindings: bindings,
-            stats: stats,
+        let executionStats = executionResult.statistics
+        let isComplete = executionResult.isComplete
+        let limitReason = executionResult.limitReason
+        let projected = executionResult.bindings
+        let result = finalize(
+            bindings: projected,
+            stats: executionStats,
             projectedVars: projectedVars,
             startTime: startTime,
-            workMeter: workMeter
+            isComplete: isComplete,
+            limitReason: limitReason
         )
         guard let outputRows = UInt32(exactly: result.bindings.count) else {
             throw DatabaseWorkLimitError.maximumRows(
@@ -344,44 +351,38 @@ public struct FederatedSPARQLBuilder: Sendable {
     }
 
     /// Evaluate algebra once while atomic scans fan out across all sources.
-    private func evaluate(
+    private func evaluateRetained(
         sources: [RDFDatasetSource],
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
+        projectedVars: [String],
         workMeter: DatabaseWorkMeter
-    ) async throws -> ([VariableBinding], ExecutionStatistics) {
-        let engine = queryContext.context.container.engine
+    ) async throws -> SPARQLRetainedResult {
         let pattern = ExecutionPattern.graph(
             .named(namedGraph),
             graphPattern
         )
-        let hasOrderBy = !sortKeys.isEmpty
-        let needsAllResults = hasOrderBy || isDistinct
-        let pushdownLimit: Int?
-        if needsAllResults {
-            pushdownLimit = nil
-        } else if let limitCount {
-            let (combined, overflow) = limitCount.addingReportingOverflow(
-                offsetCount
-            )
-            guard !overflow else {
-                throw SPARQLQueryError.invalidPagination
-            }
-            pushdownLimit = combined
-        } else {
-            pushdownLimit = nil
-        }
 
         let executor = SPARQLQueryExecutor(
-            database: engine,
             monotonicClock: queryContext.context.container.monotonicClock,
             wallClock: queryContext.context.container.wallClock,
-            sources: sources
+            datasetScanner: IndexedRDFDatasetScanner(sources: sources)
         )
-        return try await executor.executeInTransaction(
+        let possibleBindingVariables = graphPattern.outputVariables.union(
+            sources.flatMap { source in
+                source.includedFieldNames.map { "?\($0)" }
+            }
+        )
+        return try await executor.executeRetainedProjectedInTransaction(
             pattern: pattern,
             transaction: transaction,
-            limit: pushdownLimit,
-            offset: 0,
+            orderBy: sortKeys,
+            projectionVariables: projectedVars,
+            projectionIsIdentity: possibleBindingVariables.isSubset(
+                of: Set(projectedVars)
+            ),
+            duplicatePolicy: isDistinct ? .distinct : .preserve,
+            offset: offsetCount,
+            limit: limitCount,
             workMeter: workMeter
         )
     }
@@ -391,49 +392,14 @@ public struct FederatedSPARQLBuilder: Sendable {
         stats: ExecutionStatistics,
         projectedVars: [String],
         startTime: MonotonicTimestamp,
-        workMeter: DatabaseWorkMeter
-    ) throws -> SPARQLResult {
-        var ordered = bindings
-
-        if !sortKeys.isEmpty {
-            ordered = try BindingSorter.sort(
-                ordered,
-                by: sortKeys,
-                workMeter: workMeter
-            )
-        }
-
-        let projectionSet = Set(projectedVars)
-        var projected = try ordered.map { binding in
-            try workMeter.consume(at: .projection)
-            return binding.project(projectionSet)
-        }
-
-        if isDistinct {
-            var seen = Set<VariableBinding>()
-            projected = try projected.filter { binding in
-                try workMeter.consume(at: .deduplication)
-                return seen.insert(binding).inserted
-            }
-        }
-
-        if offsetCount > 0 {
-            projected = Array(projected.dropFirst(offsetCount))
-        }
-        if let limitCount {
-            projected = Array(projected.prefix(limitCount))
-        }
-
+        isComplete: Bool,
+        limitReason: SPARQLLimitReason?
+    ) -> SPARQLResult {
         var finalStats = stats
         finalStats.durationNs = elapsed(since: startTime)
 
-        let resultCount = projected.count
-        let reachedLimit = limitCount.map { resultCount >= $0 } ?? false
-        let isComplete = !reachedLimit
-        let limitReason: SPARQLLimitReason? = reachedLimit ? .explicitLimit : nil
-
         return SPARQLResult(
-            bindings: projected,
+            bindings: bindings,
             projectedVariables: projectedVars,
             isComplete: isComplete,
             limitReason: limitReason,

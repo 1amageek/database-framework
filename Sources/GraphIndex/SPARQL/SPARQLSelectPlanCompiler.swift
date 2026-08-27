@@ -55,7 +55,7 @@ public enum SPARQLSelectPlanCompiler {
             query,
             additionalProjectionVariables: additionalProjectionVariables,
             isSubquery: false,
-            includesSolutionSlice: false,
+            includesSolutionSlice: true,
             inputVariables: [],
             context: &context
         )
@@ -154,10 +154,15 @@ public enum SPARQLSelectPlanCompiler {
             inputVariables: queryLevel.hasGrouping ? [] : inputVariables,
             requiresInScopeVariables: queryLevel.hasGrouping
         )
-        let possibleProjectionVariables = queryLevel.algebra.outputVariables
+        var possibleProjectionVariables = queryLevel.algebra.outputVariables
             .union(
                 queryLevel.hasGrouping ? [] : inputVariables
             )
+        if !queryLevel.hasGrouping {
+            possibleProjectionVariables.formUnion(
+                additionalProjectionVariables.map(prefixedVariable)
+            )
+        }
         let projectionIsIdentity = possibleProjectionVariables.isSubset(
             of: Set(projection)
         )

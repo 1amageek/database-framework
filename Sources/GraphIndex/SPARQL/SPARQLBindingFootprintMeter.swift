@@ -360,6 +360,114 @@ final class SPARQLBindingFootprintMeter {
         }
     }
 
+    /// Computes the exact retained binding shape for one admitted scan row
+    /// without allocating its VariableBinding dictionary or property names.
+    func footprint(
+        pattern: ExecutionTriple,
+        row: borrowing RDFDatasetScanStorageRow,
+        properties: [String: FieldValue]
+    ) throws -> SPARQLBindingMergeFootprint {
+        precondition(worklist.isEmpty)
+        defer { worklist.removeAll(keepingCapacity: true) }
+
+        var first: (name: String, value: FieldValue)?
+        var second: (name: String, value: FieldValue)?
+        var third: (name: String, value: FieldValue)?
+        var entryCount = 0
+
+        func existingValue(named name: String) -> FieldValue? {
+            if first?.name == name { return first?.value }
+            if second?.name == name { return second?.value }
+            if third?.name == name { return third?.value }
+            return nil
+        }
+
+        func record(
+            _ term: ExecutionTerm,
+            value: FieldValue
+        ) throws -> Bool {
+            guard case .variable(let name) = term else { return true }
+            if let existing = existingValue(named: name) {
+                return try valuesEqual(existing, value)
+            }
+            switch entryCount {
+            case 0: first = (name, value)
+            case 1: second = (name, value)
+            case 2: third = (name, value)
+            default: preconditionFailure("A triple has at most three variables")
+            }
+            entryCount = try Self.checkedCountAddition(entryCount, 1)
+            return true
+        }
+
+        guard try record(
+            pattern.subject,
+            value: .rdfTerm(row.quad.subject.term)
+        ), try record(
+            pattern.predicate,
+            value: .rdfTerm(row.quad.predicate.term)
+        ), try record(
+            pattern.object,
+            value: .rdfTerm(row.quad.object)
+        ) else {
+            return .incompatible
+        }
+
+        for (fieldName, value) in properties {
+            if let existing = existingPropertyValue(
+                fieldName: fieldName,
+                first: first,
+                second: second,
+                third: third
+            ) {
+                guard try valuesEqual(existing, value) else {
+                    return .incompatible
+                }
+            } else {
+                entryCount = try Self.checkedCountAddition(entryCount, 1)
+            }
+        }
+
+        var footprint = try Self.bindingFootprint(entryCount: entryCount)
+        if let entry = first {
+            try addEntry(
+                variable: entry.name,
+                value: entry.value,
+                to: &footprint
+            )
+        }
+        if let entry = second {
+            try addEntry(
+                variable: entry.name,
+                value: entry.value,
+                to: &footprint
+            )
+        }
+        if let entry = third {
+            try addEntry(
+                variable: entry.name,
+                value: entry.value,
+                to: &footprint
+            )
+        }
+        for (fieldName, value) in properties {
+            guard existingPropertyValue(
+                fieldName: fieldName,
+                first: first,
+                second: second,
+                third: third
+            ) == nil else {
+                continue
+            }
+            try addEntry(
+                variableUTF8Count: fieldName.utf8.count + 1,
+                value: value,
+                to: &footprint
+            )
+        }
+        return .compatible(footprint)
+    }
+
     /// Releases traversal scratch before a downstream owner is promoted.
     func shutdown() {
         worklist.removeAll(keepingCapacity: false)
@@ -551,6 +659,30 @@ final class SPARQLBindingFootprintMeter {
         return footprint
     }
 
+    private func existingPropertyValue(
+        fieldName: String,
+        first: (name: String, value: FieldValue)?,
+        second: (name: String, value: FieldValue)?,
+        third: (name: String, value: FieldValue)?
+    ) -> FieldValue? {
+        if let first,
+           first.name.utf8.first == 0x3f,
+           first.name.utf8.dropFirst().elementsEqual(fieldName.utf8) {
+            return first.value
+        }
+        if let second,
+           second.name.utf8.first == 0x3f,
+           second.name.utf8.dropFirst().elementsEqual(fieldName.utf8) {
+            return second.value
+        }
+        if let third,
+           third.name.utf8.first == 0x3f,
+           third.name.utf8.dropFirst().elementsEqual(fieldName.utf8) {
+            return third.value
+        }
+        return nil
+    }
+
     private func addEntry(
         variable: String,
         value: FieldValue,
@@ -558,6 +690,23 @@ final class SPARQLBindingFootprintMeter {
     ) throws {
         footprint = try footprint.adding(
             try Self.stringFootprint(variable)
+        )
+        try append(.field(value))
+        footprint = try drainWorklist(into: footprint)
+    }
+
+    private func addEntry(
+        variableUTF8Count: Int,
+        value: FieldValue,
+        to footprint: inout DatabaseIntermediateFootprint
+    ) throws {
+        footprint = try footprint.adding(
+            DatabaseIntermediateFootprint(
+                bytes: try Self.checkedAdd(
+                    Self.stringStorageByteCount,
+                    UInt64(variableUTF8Count)
+                )
+            )
         )
         try append(.field(value))
         footprint = try drainWorklist(into: footprint)

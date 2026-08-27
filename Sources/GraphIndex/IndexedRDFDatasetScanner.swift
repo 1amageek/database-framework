@@ -57,15 +57,15 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
         graphTarget: RDFGraphScanTarget,
         limit: Int?,
         readMode: RDFDatasetReadMode,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> RDFDatasetScanResult {
         if let limit, limit <= 0 {
-            return .empty()
+            return .empty(workMeter: workMeter)
         }
 
         if case .empty = graphTarget {
-            return .empty()
+            return .empty(workMeter: workMeter)
         }
 
         let mergesNamedGraphs: Bool
@@ -143,19 +143,25 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
                 do {
                     while let (key, value) = try await cursor.next() {
                         try workMeter.consume(at: .storageRow)
-                        let quad = try decodeQuad(
+                        let preflight = try preflightQuad(
                             key: key,
                             source: source,
                             ordering: ordering
                         )
-                        guard matches(
-                            quad,
-                            subject: subject,
-                            predicate: predicate,
-                            object: object,
-                            graphConstraint: graphConstraint
-                        ) else {
-                            continue
+                        let metrics = try RDFDatasetScanRetainedMetrics.preflight(
+                            preflight,
+                            mergesNamedGraphs: mergesNamedGraphs,
+                            coveringValueByteCount: value.count,
+                            includedFieldNames: source.includedFieldNames
+                        )
+                        let candidate = try workMeter.reserveIntermediate(
+                            rows: try metrics.admittedRowCount,
+                            bytes: try metrics.admittedByteCount,
+                            at: .deduplication
+                        )
+                        var transferred = false
+                        defer {
+                            if !transferred { candidate.release() }
                         }
                         try workMeter.consume(at: .deduplication)
                         if mergesNamedGraphs {
@@ -163,10 +169,19 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
                                 throw RDFDatasetScannerError
                                     .namedGraphMergeRequiresBoundGraph
                             }
-                            let triple = try mergedNamedGraphTriple(
-                                quad,
+                            guard let triple = try decodeMergedNamedGraphTriple(
+                                preflight,
+                                source: source,
+                                subject: subject,
+                                predicate: predicate,
+                                object: object,
+                                graphConstraint: graphConstraint,
                                 hasher: mergeBlankNodeHasher,
                                 workMeter: workMeter
+                            ) else { continue }
+                            candidate.releaseGuaranteedPartial(
+                                rows: metrics.transientRowCount,
+                                bytes: metrics.transientByteCount
                             )
                             guard seenMergedTriples.insert(triple).inserted else {
                                 continue
@@ -176,19 +191,21 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
                                 coveringValue: value,
                                 includedFieldNames: source.includedFieldNames
                             )
-                            let metrics = try RDFDatasetScanRetainedMetrics.measure(
-                                row.quad,
-                                mergesNamedGraphs: true,
-                                coveringValueByteCount: value.count,
-                                includedFieldNames: source.includedFieldNames
-                            )
-                            try reserveIntermediate(
-                                metrics,
-                                workMeter: workMeter,
-                                reservation: &intermediateReservation
-                            )
                             rows.append(row)
                         } else {
+                            let quad = try decodeQuad(
+                                preflight,
+                                source: source
+                            )
+                            guard matches(
+                                quad,
+                                subject: subject,
+                                predicate: predicate,
+                                object: object,
+                                graphConstraint: graphConstraint
+                            ) else {
+                                continue
+                            }
                             let row = RDFDatasetScanStorageRow(
                                 quad: quad,
                                 coveringValue: value,
@@ -197,20 +214,14 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
                             guard !seenRows.contains(row) else {
                                 continue
                             }
-                            let metrics = try RDFDatasetScanRetainedMetrics.measure(
-                                quad,
-                                mergesNamedGraphs: false,
-                                coveringValueByteCount: value.count,
-                                includedFieldNames: source.includedFieldNames
-                            )
-                            try reserveIntermediate(
-                                metrics,
-                                workMeter: workMeter,
-                                reservation: &intermediateReservation
-                            )
                             seenRows.insert(row)
                             rows.append(row)
                         }
+                        try retainCandidate(
+                            candidate,
+                            in: &intermediateReservation
+                        )
+                        transferred = true
                         if let limit, rows.count >= limit {
                             reachedLogicalLimit = true
                             break
@@ -238,28 +249,50 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
         return RDFDatasetScanResult(
             rows: rows,
             physicalScanCount: physicalScanCount,
-            intermediateReservation: intermediateReservation
+            intermediateReservation: intermediateReservation,
+            workMeter: workMeter
         )
     }
 
-    private func reserveIntermediate(
-        _ metrics: RDFDatasetScanRetainedMetrics,
-        workMeter: DatabaseWorkMeter,
-        reservation: inout DatabaseIntermediateReservation?
+    private func retainCandidate(
+        _ candidate: DatabaseIntermediateReservation,
+        in reservation: inout DatabaseIntermediateReservation?
     ) throws {
         if let reservation {
-            try reservation.reserveAdditional(
-                rows: metrics.rowCount,
-                bytes: metrics.retainedByteCount,
-                at: .deduplication
-            )
+            try reservation.absorbAll(from: candidate)
         } else {
-            reservation = try workMeter.reserveIntermediate(
-                rows: metrics.rowCount,
-                bytes: metrics.retainedByteCount,
-                at: .deduplication
-            )
+            reservation = candidate
         }
+    }
+
+    /// Returns only the merged retained value. The decoded source quad is
+    /// destroyed before this boundary, allowing its transient admission to be
+    /// released before the merged triple enters the retained Set and Array.
+    private func decodeMergedNamedGraphTriple(
+        _ preflight: RDFQuadIndexReadPreflight,
+        source: RDFDatasetSource,
+        subject: RDFTerm?,
+        predicate: RDFTerm?,
+        object: RDFTerm?,
+        graphConstraint: PhysicalGraphConstraint,
+        hasher: SHA256Accumulator,
+        workMeter: DatabaseWorkMeter
+    ) throws -> RDFTriple? {
+        let quad = try decodeQuad(preflight, source: source)
+        guard matches(
+            quad,
+            subject: subject,
+            predicate: predicate,
+            object: object,
+            graphConstraint: graphConstraint
+        ) else {
+            return nil
+        }
+        return try mergedNamedGraphTriple(
+            quad,
+            hasher: hasher,
+            workMeter: workMeter
+        )
     }
 
     private func namedGraphMergeHasher(
@@ -409,45 +442,37 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
     public func namedGraphs(
         limit: Int?,
         readMode: RDFDatasetReadMode,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
-    ) async throws -> [RDFGraphName] {
-        if let limit, limit <= 0 { return [] }
+    ) async throws -> RDFDatasetNamedGraphs {
+        if let limit, limit <= 0 {
+            return .empty(workMeter: workMeter)
+        }
 
-        var seen = Set<RDFGraphName>()
+        var graphs = RDFDatasetNamedGraphBuilder(workMeter: workMeter)
         for source in sources {
             switch source.coverage {
             case .defaultGraph:
                 continue
             case .namedGraph(let graph):
-                try workMeter.consume(at: .deduplication)
-                seen.insert(graph)
+                try graphs.append(graph)
             case .dataset:
                 try await collectNamedGraphs(
                     from: source,
                     readMode: readMode,
                     transaction: transaction,
                     workMeter: workMeter,
-                    into: &seen
+                    into: &graphs
                 )
             }
         }
-
-        try workMeter.consume(UInt64(seen.count), at: .sortInput)
-        var graphs = try seen.sorted { lhs, rhs in
-            try workMeter.consume(2, at: .sortComparison)
-            return lhs < rhs
-        }
-        if let limit, graphs.count > limit {
-            graphs.removeLast(graphs.count - limit)
-        }
-        return graphs
+        return try graphs.finish(limit: limit)
     }
 
     public func containsNamedGraph(
         _ graph: RDFGraphName,
         readMode: RDFDatasetReadMode,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> Bool {
         for source in sources {
@@ -477,9 +502,9 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
     private func collectNamedGraphs(
         from source: RDFDatasetSource,
         readMode: RDFDatasetReadMode,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter,
-        into seen: inout Set<RDFGraphName>
+        into graphs: inout RDFDatasetNamedGraphBuilder
     ) async throws {
         try workMeter.consume(at: .indexScan)
         let ordering = GraphIndexOrdering.gspo
@@ -514,6 +539,26 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
             // tags in the graph-first index, so no named graph can follow it.
             guard let encodedGraph = encoded.graph else { break }
 
+            let graphPreflight: RDFTermStorageValidation
+            do throws(RDFQuadIndexPhysicalCodecError) {
+                graphPreflight = try source.physicalCodec.preflightGraphComponent(
+                    encodedGraph
+                )
+            } catch let reason {
+                switch reason {
+                case .invalidComponent(let component, let error):
+                    throw RDFDatasetScannerError.invalidRDFComponent(
+                        source: sourceDescription(source),
+                        component: component,
+                        reason: error
+                    )
+                default:
+                    throw physicalIndexFailure(source, reason: reason)
+                }
+            }
+            let admission = try graphs.prepareAppend(
+                RDFDatasetNamedGraphRetainedMetrics.preflight(graphPreflight)
+            )
             let graphTerm: RDFTerm
             do throws(RDFQuadIndexPhysicalCodecError) {
                 graphTerm = try source.physicalCodec.decodeGraphComponent(
@@ -531,9 +576,10 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
                     throw physicalIndexFailure(source, reason: reason)
                 }
             }
-            let graph = try RDFGraphName(graphTerm)
-            try workMeter.consume(at: .deduplication)
-            seen.insert(graph)
+            try graphs.append(
+                try RDFGraphName(graphTerm),
+                using: admission
+            )
 
             let graphComponent: RDFQuadIndexComponentWritePlan
             do throws(RDFTermStorageError) {
@@ -734,16 +780,36 @@ public struct IndexedRDFDatasetScanner: RDFDatasetScanner {
         ))
     }
 
-    private func decodeQuad(
+    private func preflightQuad(
         key: ByteString,
         source: RDFDatasetSource,
         ordering: GraphIndexOrdering
-    ) throws -> RDFQuad {
+    ) throws -> RDFQuadIndexReadPreflight {
         do throws(RDFQuadIndexPhysicalCodecError) {
-            return try source.physicalCodec.decodeQuad(
+            return try source.physicalCodec.preflightQuad(
                 key: key,
                 ordering: ordering
             )
+        } catch let reason {
+            switch reason {
+            case .invalidComponent(let component, let error):
+                throw RDFDatasetScannerError.invalidRDFComponent(
+                    source: sourceDescription(source),
+                    component: component,
+                    reason: error
+                )
+            default:
+                throw physicalIndexFailure(source, reason: reason)
+            }
+        }
+    }
+
+    private func decodeQuad(
+        _ preflight: RDFQuadIndexReadPreflight,
+        source: RDFDatasetSource
+    ) throws -> RDFQuad {
+        do throws(RDFQuadIndexPhysicalCodecError) {
+            return try source.physicalCodec.decodeQuad(preflight)
         } catch let reason {
             switch reason {
             case .invalidComponent(let component, let error):

@@ -163,6 +163,7 @@ package struct DatabaseSharedRetainedArrayView<Element: Sendable>:
 
     package var startIndex: Int { 0 }
     package var endIndex: Int { range.count }
+    package var workMeter: DatabaseWorkMeter { owner.workMeter }
 
     package func index(after index: Int) -> Int { index + 1 }
     package func index(before index: Int) -> Int { index - 1 }
@@ -174,5 +175,34 @@ package struct DatabaseSharedRetainedArrayView<Element: Sendable>:
     package subscript(position: Int) -> Element {
         precondition(position >= startIndex && position < endIndex)
         return owner[range.lowerBound + position]
+    }
+
+    package func withElement<Result, Failure: Error>(
+        at index: Int,
+        _ body: (borrowing Element) throws(Failure) -> Result
+    ) throws(Failure) -> Result {
+        precondition(index >= startIndex && index < endIndex)
+        return try owner.withElement(at: range.lowerBound + index, body)
+    }
+
+    package func withSpan<Result, Failure: Error>(
+        _ body: (Span<Element>) throws(Failure) -> Result
+    ) throws(Failure) -> Result {
+        try owner.withSpan { (span: Span<Element>) throws(Failure) -> Result in
+            try body(span.extracting(range))
+        }
+    }
+
+    package func withElement<Result, Failure: Error>(
+        at index: Int,
+        isolation actor: isolated (any Actor)? = #isolation,
+        _ body: (borrowing Element) async throws(Failure) -> Result
+    ) async throws(Failure) -> Result {
+        precondition(index >= startIndex && index < endIndex)
+        return try await owner.withElement(
+            at: range.lowerBound + index,
+            isolation: actor,
+            body
+        )
     }
 }

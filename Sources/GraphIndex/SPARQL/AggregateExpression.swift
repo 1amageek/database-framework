@@ -74,6 +74,22 @@ public enum AggregateExpression: Sendable {
         }
     }
 
+    func resultOwnership() throws -> SPARQLExpressionResultOwnership {
+        switch self {
+        case .min, .max, .sample:
+            return .borrowed
+        case .count, .sum, .avg, .groupConcat:
+            return .produced(
+                maximumFootprint: try CanonicalRelationalFootprintMeter
+                    .maximumRDFTermValueFootprint(
+                        maximumUTF8ByteCount: UInt64(
+                            SPARQLExecutionLimits.maximumLiteralUTF8Count
+                        )
+                    )
+            )
+        }
+    }
+
     /// Evaluates exactly one aggregate expression for a group. The supplied
     /// evaluator owns query-scoped state and the caller's transaction.
     func evaluate(

@@ -34,7 +34,7 @@ struct SPARQLSubSelectExecutionTests {
         }
 
         func record(
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
         ) {
             state.withLock {
@@ -57,14 +57,14 @@ struct SPARQLSubSelectExecutionTests {
             graphTarget: RDFGraphScanTarget,
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> RDFDatasetScanResult {
             observations.record(
                 transaction: transaction,
                 workMeter: workMeter
             )
-            return RDFDatasetScanResult(
+            return try RDFDatasetScanResult(
                 quads: [
                     RDFQuad(
                         subject: .iri(try RDFIRI("urn:subject")),
@@ -72,23 +72,24 @@ struct SPARQLSubSelectExecutionTests {
                         object: try .iri(validating: "urn:object")
                     )
                 ],
-                physicalScanCount: 1
+                physicalScanCount: 1,
+                workMeter: workMeter
             )
         }
 
         func namedGraphs(
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
-        ) async throws -> [RDFGraphName] {
-            []
+        ) async throws -> RDFDatasetNamedGraphs {
+            .empty(workMeter: workMeter)
         }
 
         func containsNamedGraph(
             _ graph: RDFGraphName,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> Bool {
             false
@@ -98,7 +99,7 @@ struct SPARQLSubSelectExecutionTests {
     private struct RetryScanObservationState: Sendable {
         var innerScanCount = 0
         var rightScanCount = 0
-        var transactions: [ObjectIdentifier: any TransactionAccess] = [:]
+        var transactions: [ObjectIdentifier: any TransactionReadAccess] = [:]
         var workMeterIdentifiers: Set<ObjectIdentifier> = []
     }
 
@@ -123,7 +124,7 @@ struct SPARQLSubSelectExecutionTests {
 
         func record(
             predicate: String,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
         ) -> Int {
             state.withLock { state in
@@ -156,7 +157,7 @@ struct SPARQLSubSelectExecutionTests {
             graphTarget: RDFGraphScanTarget,
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> RDFDatasetScanResult {
             guard case .iri(let predicateIRI) = predicate else {
@@ -176,7 +177,7 @@ struct SPARQLSubSelectExecutionTests {
             switch predicateIRI.rawValue {
             case "urn:inner":
                 let value = call == 1 ? "urn:first" : "urn:second"
-                return RDFDatasetScanResult(
+                return try RDFDatasetScanResult(
                     quads: [
                         RDFQuad(
                             subject: .iri(
@@ -186,13 +187,14 @@ struct SPARQLSubSelectExecutionTests {
                             object: try .iri(validating: value)
                         )
                     ],
-                    physicalScanCount: 1
+                    physicalScanCount: 1,
+                    workMeter: workMeter
                 )
             case "urn:right":
                 if call == 1 {
                     throw StorageError.transactionConflict
                 }
-                return RDFDatasetScanResult(
+                return try RDFDatasetScanResult(
                     quads: [
                         RDFQuad(
                             subject: .iri(
@@ -202,7 +204,8 @@ struct SPARQLSubSelectExecutionTests {
                             object: try .iri(validating: "urn:second")
                         )
                     ],
-                    physicalScanCount: 1
+                    physicalScanCount: 1,
+                    workMeter: workMeter
                 )
             default:
                 throw StorageError(
@@ -217,16 +220,16 @@ struct SPARQLSubSelectExecutionTests {
         func namedGraphs(
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
-        ) async throws -> [RDFGraphName] {
-            []
+        ) async throws -> RDFDatasetNamedGraphs {
+            .empty(workMeter: workMeter)
         }
 
         func containsNamedGraph(
             _ graph: RDFGraphName,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> Bool {
             false
@@ -241,11 +244,14 @@ struct SPARQLSubSelectExecutionTests {
             graphTarget: RDFGraphScanTarget,
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> RDFDatasetScanResult {
             guard case .iri(let predicateIRI) = predicate else {
-                return RDFDatasetScanResult(quads: [], physicalScanCount: 1)
+                return .empty(
+                    physicalScanCount: 1,
+                    workMeter: workMeter
+                )
             }
 
             let quad: RDFQuad
@@ -268,27 +274,31 @@ struct SPARQLSubSelectExecutionTests {
                     )
                 )
             default:
-                return RDFDatasetScanResult(quads: [], physicalScanCount: 1)
+                return .empty(
+                    physicalScanCount: 1,
+                    workMeter: workMeter
+                )
             }
-            return RDFDatasetScanResult(
+            return try RDFDatasetScanResult(
                 quads: [quad],
-                physicalScanCount: 1
+                physicalScanCount: 1,
+                workMeter: workMeter
             )
         }
 
         func namedGraphs(
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
-        ) async throws -> [RDFGraphName] {
-            []
+        ) async throws -> RDFDatasetNamedGraphs {
+            .empty(workMeter: workMeter)
         }
 
         func containsNamedGraph(
             _ graph: RDFGraphName,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> Bool {
             false

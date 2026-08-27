@@ -159,14 +159,14 @@ public struct PathPatternQueryBuilder<T: Persistable>: Sendable {
                 return []
             }
             let snapshot = GraphReadSnapshot(
-                transaction: transaction.storageTransaction,
+                transaction: transaction,
                 monotonicClock: queryContext.context.container.monotonicClock
             )
             return try await executePaths(
                 source: .identifier(source),
                 target: targetNode.map(GraphIdentity.identifier),
                 scanner: resolvedIndex.scanner(snapshot: snapshot),
-                transaction: transaction.storageTransaction
+                transaction: transaction
             )
         }
     }
@@ -194,14 +194,14 @@ public struct PathPatternQueryBuilder<T: Persistable>: Sendable {
                 return []
             }
             let snapshot = GraphReadSnapshot(
-                transaction: transaction.storageTransaction,
+                transaction: transaction,
                 monotonicClock: queryContext.context.container.monotonicClock
             )
             return try await executeEndNodes(
                 source: .identifier(source),
                 target: targetNode.map(GraphIdentity.identifier),
                 scanner: resolvedIndex.scanner(snapshot: snapshot),
-                transaction: transaction.storageTransaction
+                transaction: transaction
             )
         }
         return try identities.map { try $0.requirePropertyGraphIdentifier() }
@@ -230,7 +230,7 @@ public struct PathPatternQueryBuilder<T: Persistable>: Sendable {
         source: GraphIdentity,
         target: GraphIdentity?,
         scanner: GraphEdgeScanner,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [GraphPath] {
         typealias PartialPath = (nodes: [GraphIdentity], edges: [GraphIdentity])
         let maximumDepth = pathLengthValue.effectiveMax(defaultLimit: 10)
@@ -310,7 +310,7 @@ public struct PathPatternQueryBuilder<T: Persistable>: Sendable {
         source: GraphIdentity,
         target: GraphIdentity?,
         scanner: GraphEdgeScanner,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [GraphIdentity] {
         let maximumDepth = pathLengthValue.effectiveMax(defaultLimit: 10)
         var orderedResults: [GraphIdentity] = []

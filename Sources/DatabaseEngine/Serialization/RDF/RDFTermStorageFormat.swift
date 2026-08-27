@@ -71,7 +71,13 @@ package enum RDFTermStorageFormat {
                         kind: metrics.kind,
                         fingerprint: RDFTermStorageFingerprint(buffer),
                         objectCount: metrics.objectCount,
-                        maximumDepth: metrics.maximumDepth
+                        maximumDepth: metrics.maximumDepth,
+                        literalCount: metrics.literalCount,
+                        stringCount: metrics.stringCount,
+                        decodedStringByteCount: metrics.decodedStringByteCount,
+                        blankNodeCount: metrics.blankNodeCount,
+                        blankNodeStringByteCount:
+                            metrics.blankNodeStringByteCount
                     )
                     return .success(body(buffer, validation))
                 } catch let error {
@@ -106,6 +112,25 @@ package enum RDFTermStorageFormat {
         limits: RDFTermStorageLimits = .default
     ) throws(RDFTermStorageError) -> Int {
         try encodingPlan(term, role: role, limits: limits).byteCount
+    }
+
+    /// Returns the exact canonical byte count after prefixing every blank-node
+    /// identifier, without allocating any qualified identifier String.
+    package static func encodedByteCount(
+        _ term: RDFTerm,
+        prefixingBlankNodeIdentifiersWith prefix: String,
+        role: RDFTermRole = .term,
+        limits: RDFTermStorageLimits = .default
+    ) throws(RDFTermStorageError) -> Int {
+        try validate(term.storageKind, for: role)
+        var measurement = TermEncoder(
+            sink: MeasurementSink(),
+            emitsBytes: false,
+            limits: limits,
+            blankNodeIdentifierPrefix: prefix
+        )
+        try measurement.encode(term)
+        return measurement.offset
     }
 
     /// Measures and validates a term once for direct initialization of final storage.
@@ -244,7 +269,12 @@ package enum RDFTermStorageFormat {
     ) throws(RDFTermStorageError) -> (
         kind: RDFTermKind,
         objectCount: Int,
-        maximumDepth: Int
+        maximumDepth: Int,
+        literalCount: Int,
+        stringCount: Int,
+        decodedStringByteCount: Int,
+        blankNodeCount: Int,
+        blankNodeStringByteCount: Int
     ) {
         var validator = RDFTermStorageValidator(
             bytes: buffer,
@@ -256,13 +286,19 @@ package enum RDFTermStorageFormat {
         return (
             kind: kind,
             objectCount: validator.objectCount,
-            maximumDepth: validator.maximumDepth
+            maximumDepth: validator.maximumDepth,
+            literalCount: validator.literalCount,
+            stringCount: validator.stringCount,
+            decodedStringByteCount: validator.decodedStringByteCount,
+            blankNodeCount: validator.blankNodeCount,
+            blankNodeStringByteCount: validator.blankNodeStringByteCount
         )
     }
 
     private enum EncodingStep {
         case term(RDFTerm, depth: Int)
         case string(String)
+        case prefixedString(prefix: String, value: String)
         case byte(UInt8)
     }
 
@@ -294,9 +330,22 @@ package enum RDFTermStorageFormat {
         var sink: Sink
         let emitsBytes: Bool
         let limits: RDFTermStorageLimits
+        let blankNodeIdentifierPrefix: String?
         var offset = 0
         var objectCount = 0
         var maximumDepth = 0
+
+        init(
+            sink: Sink,
+            emitsBytes: Bool,
+            limits: RDFTermStorageLimits,
+            blankNodeIdentifierPrefix: String? = nil
+        ) {
+            self.sink = sink
+            self.emitsBytes = emitsBytes
+            self.limits = limits
+            self.blankNodeIdentifierPrefix = blankNodeIdentifierPrefix
+        }
 
         mutating func encode(
             _ root: RDFTerm
@@ -308,12 +357,23 @@ package enum RDFTermStorageFormat {
                     try append(byte)
                 case .string(let value):
                     try appendString(value)
+                case .prefixedString(let prefix, let value):
+                    try appendPrefixedString(prefix, value)
                 case .term(let term, let depth):
                     try registerTerm(at: depth)
                     switch term {
                     case .blankNode(let identifier):
                         try append(1)
-                        encodingSteps.append(.string(identifier.rawValue))
+                        if let blankNodeIdentifierPrefix {
+                            encodingSteps.append(
+                                .prefixedString(
+                                    prefix: blankNodeIdentifierPrefix,
+                                    value: identifier.rawValue
+                                )
+                            )
+                        } else {
+                            encodingSteps.append(.string(identifier.rawValue))
+                        }
                     case .iri(let iri):
                         try append(2)
                         encodingSteps.append(.string(iri.rawValue))
@@ -410,6 +470,34 @@ package enum RDFTermStorageFormat {
                     sink.write(byte)
                 }
             }
+        }
+
+        private mutating func appendPrefixedString(
+            _ prefix: String,
+            _ value: String
+        ) throws(RDFTermStorageError) {
+            guard !emitsBytes else { throw .byteCountOverflow }
+            var encodedByteCount = 0
+
+            func count(_ string: String) throws(RDFTermStorageError) {
+                for byte in string.utf8 {
+                    let increment = byte == 0 ? 2 : 1
+                    let next = encodedByteCount.addingReportingOverflow(
+                        increment
+                    )
+                    guard !next.overflow else { throw .byteCountOverflow }
+                    encodedByteCount = next.partialValue
+                }
+            }
+
+            try count(prefix)
+            try count(value)
+            let storedByteCount = encodedByteCount.addingReportingOverflow(1)
+            guard !storedByteCount.overflow else {
+                throw .byteCountOverflow
+            }
+            try appendVarint(UInt64(storedByteCount.partialValue))
+            try reserve(encodedByteCount)
         }
 
         private mutating func appendVarint(

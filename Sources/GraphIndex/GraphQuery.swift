@@ -598,7 +598,7 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
                 return []
             }
             let snapshot = GraphReadSnapshot(
-                transaction: transaction.storageTransaction,
+                transaction: transaction,
                 monotonicClock: queryContext.context.container.monotonicClock
             )
             let scanner = GraphPropertyScanner(
@@ -613,7 +613,7 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
                 to: toValue.map(GraphIdentity.identifier),
                 graphTarget: .all,
                 propertyFilters: propertyFilters.isEmpty ? nil : propertyFilters,
-                transaction: transaction.storageTransaction
+                transaction: transaction
             )
 
             var results: [GraphEdge] = []

@@ -12,6 +12,7 @@ import Testing
 struct RDFDatasetScanReservationTests {
     private struct ReservedResultScanner: RDFDatasetScanner {
         let quad: RDFQuad
+        var resultWorkMeter: DatabaseWorkMeter?
 
         func scan(
             subject: RDFTerm?,
@@ -20,41 +21,85 @@ struct RDFDatasetScanReservationTests {
             graphTarget: RDFGraphScanTarget,
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> RDFDatasetScanResult {
-            let reservation = try workMeter.reserveIntermediate(
-                rows: 2,
-                bytes: 256,
-                at: .deduplication
-            )
-            return RDFDatasetScanResult(
+            return try RDFDatasetScanResult(
                 quads: [quad],
                 physicalScanCount: 1,
-                intermediateReservation: reservation
+                workMeter: resultWorkMeter ?? workMeter
             )
         }
 
         func namedGraphs(
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
-        ) async throws -> [RDFGraphName] {
-            []
+        ) async throws -> RDFDatasetNamedGraphs {
+            .empty(workMeter: workMeter)
         }
 
         func containsNamedGraph(
             _ graph: RDFGraphName,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> Bool {
             false
         }
     }
 
-    @Test("Scan result owns reservations until its last copy is released")
+    @Test("RDFS rejects a scan retained by another work meter")
+    func rdfsRejectsForeignScanMeter() async throws {
+        let quad = RDFQuad(
+            subject: .iri(try RDFIRI("https://example.com/Child")),
+            predicate: try RDFPredicateIRI(
+                "http://www.w3.org/2000/01/rdf-schema#subClassOf"
+            ),
+            object: .iri(try RDFIRI("https://example.com/Parent"))
+        )
+        let engine = InMemoryEngine()
+        let requestedMeter = makeMeter()
+        let foreignMeter = makeMeter()
+        let executor = SPARQLQueryExecutor(
+            database: engine,
+            monotonicClock: TestProcessMonotonicClock(),
+            wallClock: FixedTestWallClock(
+                now: Timestamp(secondsSinceUnixEpoch: 0)
+            ),
+            datasetScanner: ReservedResultScanner(
+                quad: quad,
+                resultWorkMeter: foreignMeter
+            )
+        )
+
+        _ = try await StorageTransactionExecutor(engine: engine).withTransaction(
+            configuration: .default,
+            clock: TestProcessMonotonicClock()
+        ) { transaction in
+            await #expect(
+                throws: DatabaseIntermediateReservationError
+                    .workMeterMismatch
+            ) {
+                _ = try await RDFSGraphEntailment.resolve(
+                    executor: executor,
+                    dataGraph: .defaultGraph,
+                    transaction: transaction,
+                    budget: SHACLValidationWorkBudget(
+                        workMeter: requestedMeter
+                    )
+                )
+            }
+        }
+
+        #expect(requestedMeter.retainedIntermediateRows == 0)
+        #expect(requestedMeter.retainedIntermediateBytes == 0)
+        #expect(foreignMeter.retainedIntermediateRows == 0)
+        #expect(foreignMeter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("Scan result owns reservations until its linear owner is released")
     func resultLifetimeOwnsReservation() async throws {
         let engine = InMemoryEngine()
         let store = CanonicalRDFGraphStore(rootSubspace: makeRoot())
@@ -63,41 +108,32 @@ struct RDFDatasetScanReservationTests {
         try await insert([quad], into: store, database: engine)
 
         let meter = makeMeter()
-        var result: RDFDatasetScanResult? = try await scan(
+        let metrics = try measure(
+            quad,
+            mergesNamedGraphs: false
+        )
+        try await withScan(
             scanner: IndexedRDFDatasetScanner(
                 sources: [store.datasetSource]
             ),
             graphTarget: .named(graph),
             database: engine,
             workMeter: meter
-        )
-        let metrics = try measure(
-            quad,
-            mergesNamedGraphs: false
-        )
-        #expect(result?.count == 1)
-        var retainedRow = result?.first
-        #expect(retainedRow?.quad == quad)
-        #expect(meter.retainedIntermediateRows == metrics.rowCount)
-        #expect(meter.retainedIntermediateBytes == metrics.retainedByteCount)
-        #expect(meter.peakIntermediateRows == metrics.rowCount)
-        #expect(meter.peakIntermediateBytes == metrics.retainedByteCount)
-
-        var resultCopy = result
-        var iterator = result?.makeIterator()
-        result = nil
-        #expect(resultCopy?.first?.quad == quad)
-        #expect(meter.retainedIntermediateRows == metrics.rowCount)
-        #expect(meter.retainedIntermediateBytes == metrics.retainedByteCount)
-
-        resultCopy = nil
-        var iteratorRow = iterator?.next()
-        #expect(iteratorRow?.quad == quad)
-        #expect(meter.retainedIntermediateRows == metrics.rowCount)
-        iterator = nil
-        retainedRow = nil
-        #expect(meter.retainedIntermediateRows == metrics.rowCount)
-        iteratorRow = nil
+        ) { result in
+            #expect(result.count == 1)
+            result.withQuad(at: 0) { retained in
+                #expect(retained == quad)
+                #expect(
+                    meter.retainedIntermediateRows == metrics.rowCount
+                )
+                #expect(
+                    meter.retainedIntermediateBytes
+                        == metrics.retainedByteCount
+                )
+            }
+            #expect(meter.peakIntermediateRows == metrics.rowCount)
+            #expect(meter.peakIntermediateBytes == metrics.retainedByteCount)
+        }
         #expect(meter.retainedIntermediateRows == 0)
         #expect(meter.retainedIntermediateBytes == 0)
     }
@@ -144,6 +180,113 @@ struct RDFDatasetScanReservationTests {
         #expect(meter.retainedIntermediateBytes == 0)
     }
 
+    @Test("RDFS closure admits its destination before the scan owner releases")
+    func rdfsClosureOwnsAdmittedDestination() async throws {
+        let quad = RDFQuad(
+            subject: .iri(try RDFIRI("https://example.com/Child")),
+            predicate: try RDFPredicateIRI(
+                "http://www.w3.org/2000/01/rdf-schema#subClassOf"
+            ),
+            object: .iri(try RDFIRI("https://example.com/Parent"))
+        )
+        let engine = InMemoryEngine()
+        let meter = makeMeter()
+        let scanMetrics = try measure(quad, mergesNamedGraphs: false)
+        let executor = SPARQLQueryExecutor(
+            database: engine,
+            monotonicClock: TestProcessMonotonicClock(),
+            wallClock: FixedTestWallClock(
+                now: Timestamp(secondsSinceUnixEpoch: 0)
+            ),
+            datasetScanner: ReservedResultScanner(quad: quad)
+        )
+
+        try await StorageTransactionExecutor(engine: engine).withTransaction(
+            configuration: .default,
+            clock: TestProcessMonotonicClock()
+        ) { transaction in
+            do {
+                let entailment = try await RDFSGraphEntailment.resolve(
+                    executor: executor,
+                    dataGraph: .defaultGraph,
+                    transaction: transaction,
+                    budget: SHACLValidationWorkBudget(workMeter: meter)
+                )
+                #expect(
+                    entailment.subsumes(
+                        superClass: "https://example.com/Parent",
+                        subClass: "https://example.com/Child"
+                    )
+                )
+                #expect(meter.retainedIntermediateBytes > 0)
+                #expect(
+                    meter.peakIntermediateBytes
+                        >= meter.retainedIntermediateBytes
+                            + scanMetrics.retainedByteCount
+                )
+            }
+            #expect(meter.retainedIntermediateRows == 0)
+            #expect(meter.retainedIntermediateBytes == 0)
+        }
+    }
+
+    @Test("Extracted RDFS ontology keeps its claims and failed admission cleans up")
+    func rdfsOntologyLifetimeAndFailureCleanup() throws {
+        let quad = RDFQuad(
+            subject: .iri(try RDFIRI("https://example.com/childProperty")),
+            predicate: try RDFPredicateIRI(
+                "http://www.w3.org/2000/01/rdf-schema#subPropertyOf"
+            ),
+            object: .iri(try RDFIRI("https://example.com/parentProperty"))
+        )
+        let measuringMeter = makeMeter()
+        var ontology: OntologyContext?
+        do {
+            let entailment = try RDFSGraphEntailment(
+                quads: [quad],
+                budget: SHACLValidationWorkBudget(
+                    workMeter: measuringMeter
+                )
+            )
+            ontology = entailment.ontologyContext
+            #expect(
+                ontology?.subProperties(
+                    of: "https://example.com/parentProperty"
+                ).contains("https://example.com/childProperty") == true
+            )
+            #expect(
+                ontology?.knownEntailedPropertyScans(
+                    of: "https://example.com/parentProperty"
+                )?.map(\.predicateIRI)
+                    == [
+                        "https://example.com/childProperty",
+                        "https://example.com/parentProperty",
+                    ]
+            )
+        }
+        let admittedPeak = measuringMeter.peakIntermediateBytes
+        #expect(measuringMeter.retainedIntermediateBytes > 0)
+        ontology = nil
+        #expect(measuringMeter.retainedIntermediateRows == 0)
+        #expect(measuringMeter.retainedIntermediateBytes == 0)
+
+        let rejectingMeter = makeMeter(
+            maximumIntermediateBytes: admittedPeak - 1
+        )
+        do {
+            _ = try RDFSGraphEntailment(
+                quads: [quad],
+                budget: SHACLValidationWorkBudget(
+                    workMeter: rejectingMeter
+                )
+            )
+            Issue.record("Expected RDFS destination admission to fail")
+        } catch is DatabaseWorkLimitError {
+            #expect(rejectingMeter.retainedIntermediateRows == 0)
+            #expect(rejectingMeter.retainedIntermediateBytes == 0)
+        }
+    }
+
     @Test("Aggregate row admission rejects the second unique quad")
     func aggregateRowLimitRejectsScan() async throws {
         let engine = InMemoryEngine()
@@ -159,15 +302,16 @@ struct RDFDatasetScanReservationTests {
             maximumIntermediateRows: UInt32(maximumRows)
         )
         do {
-            _ = try await scan(
+            try await withScan(
                 scanner: IndexedRDFDatasetScanner(
                     sources: [store.datasetSource]
                 ),
                 graphTarget: .named(graph),
                 database: engine,
                 workMeter: meter
-            )
-            Issue.record("Expected aggregate intermediate row rejection")
+            ) { _ in
+                Issue.record("Expected aggregate intermediate row rejection")
+            }
         } catch let error as DatabaseWorkLimitError {
             #expect(error == .maximumIntermediateRows(
                 stage: .deduplication,
@@ -204,15 +348,16 @@ struct RDFDatasetScanReservationTests {
         let meter = makeMeter(maximumIntermediateBytes: maximumBytes)
 
         do {
-            _ = try await scan(
+            try await withScan(
                 scanner: IndexedRDFDatasetScanner(
                     sources: [store.datasetSource]
                 ),
                 graphTarget: .named(graph),
                 database: engine,
                 workMeter: meter
-            )
-            Issue.record("Expected aggregate intermediate byte rejection")
+            ) { _ in
+                Issue.record("Expected aggregate intermediate byte rejection")
+            }
         } catch let error as DatabaseWorkLimitError {
             #expect(error == .maximumIntermediateBytes(
                 stage: .deduplication,
@@ -236,25 +381,36 @@ struct RDFDatasetScanReservationTests {
         try await insert([quad], into: store, database: engine)
 
         let meter = makeMeter()
-        var result: RDFDatasetScanResult? = try await scan(
+        let metrics = try measure(
+            quad,
+            mergesNamedGraphs: false
+        )
+        let admittedRows = try metrics.admittedRowCount
+        let admittedBytes = try metrics.admittedByteCount
+        try await withScan(
             scanner: IndexedRDFDatasetScanner(
                 sources: [store.datasetSource, store.datasetSource]
             ),
             graphTarget: .named(graph),
             database: engine,
             workMeter: meter
-        )
-        let metrics = try measure(
-            quad,
-            mergesNamedGraphs: false
-        )
-        #expect(result?.count == 1)
-        #expect(result?.first?.quad == quad)
-        #expect(result?.physicalScanCount == 2)
-        #expect(meter.peakIntermediateRows == metrics.rowCount)
-        #expect(meter.peakIntermediateBytes == metrics.retainedByteCount)
-
-        result = nil
+        ) { result in
+            #expect(result.count == 1)
+            result.withQuad(at: 0) { retained in
+                #expect(retained == quad)
+            }
+            #expect(result.physicalScanCount == 2)
+            #expect(
+                meter.peakIntermediateRows
+                    == metrics.rowCount + admittedRows
+            )
+            #expect(
+                meter.peakIntermediateBytes
+                    == metrics.retainedByteCount
+                        + admittedBytes
+            )
+            #expect(meter.retainedIntermediateRows == metrics.rowCount)
+        }
         #expect(meter.retainedIntermediateRows == 0)
         #expect(meter.retainedIntermediateBytes == 0)
     }
@@ -278,7 +434,13 @@ struct RDFDatasetScanReservationTests {
         try await insert([first, second], into: store, database: engine)
 
         let meter = makeMeter()
-        var result: RDFDatasetScanResult? = try await scan(
+        let metrics = try measure(
+            first,
+            mergesNamedGraphs: true
+        )
+        let admittedRows = try metrics.admittedRowCount
+        let admittedBytes = try metrics.admittedByteCount
+        try await withScan(
             scanner: IndexedRDFDatasetScanner(
                 sources: [store.datasetSource]
             ),
@@ -287,18 +449,23 @@ struct RDFDatasetScanReservationTests {
             ),
             database: engine,
             workMeter: meter
-        )
-        let metrics = try measure(
-            first,
-            mergesNamedGraphs: true
-        )
-        #expect(result?.count == 1)
-        #expect(result?.first?.quad == first.triple.quad)
-        #expect(result?.physicalScanCount == 2)
-        #expect(meter.peakIntermediateRows == metrics.rowCount)
-        #expect(meter.peakIntermediateBytes == metrics.retainedByteCount)
-
-        result = nil
+        ) { result in
+            #expect(result.count == 1)
+            result.withQuad(at: 0) { retained in
+                #expect(retained == first.triple.quad)
+            }
+            #expect(result.physicalScanCount == 2)
+            #expect(
+                meter.peakIntermediateRows
+                    == metrics.rowCount + admittedRows
+            )
+            #expect(
+                meter.peakIntermediateBytes
+                    == metrics.retainedByteCount
+                        + admittedBytes
+            )
+            #expect(meter.retainedIntermediateRows == metrics.rowCount)
+        }
         #expect(meter.retainedIntermediateRows == 0)
         #expect(meter.retainedIntermediateBytes == 0)
     }
@@ -335,7 +502,7 @@ struct RDFDatasetScanReservationTests {
         )
         try await insert([first, second], into: store, database: engine)
 
-        let result = try await scan(
+        try await withScan(
             scanner: IndexedRDFDatasetScanner(
                 sources: [store.datasetSource]
             ),
@@ -344,29 +511,100 @@ struct RDFDatasetScanReservationTests {
             ),
             database: engine,
             workMeter: makeMeter()
-        )
-
-        #expect(result.count == 2)
-        var sourceIdentifiers = Set<RDFBlankNodeIdentifier>()
-        for row in result {
-            let quad = row.quad
-            #expect(quad.graph == nil)
-            guard case .blankNode(let subjectIdentifier) = quad.subject,
-                  case .tripleTerm(
-                    let nestedSubject,
-                    _,
-                    let nestedObject
-                  ) = quad.object,
-                  case .blankNode(let nestedSubjectIdentifier) = nestedSubject,
-                  case .blankNode(let nestedObjectIdentifier) = nestedObject else {
-                Issue.record("Expected relabelled nested blank nodes")
-                continue
+        ) { result in
+            #expect(result.count == 2)
+            var sourceIdentifiers = Set<RDFBlankNodeIdentifier>()
+            for index in 0..<result.count {
+                result.withQuad(at: index) { quad in
+                    #expect(quad.graph == nil)
+                    guard case .blankNode(let subjectIdentifier) = quad.subject,
+                          case .tripleTerm(
+                            let nestedSubject,
+                            _,
+                            let nestedObject
+                          ) = quad.object,
+                          case .blankNode(let nestedSubjectIdentifier) = nestedSubject,
+                          case .blankNode(let nestedObjectIdentifier) = nestedObject else {
+                        Issue.record("Expected relabelled nested blank nodes")
+                        return
+                    }
+                    #expect(subjectIdentifier == nestedSubjectIdentifier)
+                    #expect(subjectIdentifier == nestedObjectIdentifier)
+                    sourceIdentifiers.insert(subjectIdentifier)
+                }
             }
-            #expect(subjectIdentifier == nestedSubjectIdentifier)
-            #expect(subjectIdentifier == nestedObjectIdentifier)
-            sourceIdentifiers.insert(subjectIdentifier)
+            #expect(sourceIdentifiers.count == 2)
         }
-        #expect(sourceIdentifiers.count == 2)
+    }
+
+    @Test("Named graph union admits the decoded source and merged output peak")
+    func namedGraphUnionAdmitsTransientSourceFootprint() async throws {
+        let engine = InMemoryEngine()
+        let store = CanonicalRDFGraphStore(rootSubspace: makeRoot())
+        let graph = try makeGraph(String(repeating: "g", count: 2_048))
+        let blank = try RDFBlankNodeIdentifier(
+            String(repeating: "b", count: 2_048)
+        )
+        let quad = RDFQuad(
+            subject: .blankNode(blank),
+            predicate: try RDFPredicateIRI(
+                "https://example.com/predicate/transient-union"
+            ),
+            object: .blankNode(blank),
+            graph: graph
+        )
+        try await insert([quad], into: store, database: engine)
+        let metrics = try measure(quad, mergesNamedGraphs: true)
+        let admittedByteCount = try metrics.admittedByteCount
+        #expect(metrics.transientRowCount == 1)
+        #expect(metrics.transientByteCount > 6_000)
+
+        let rejectingMeter = makeMeter(
+            maximumIntermediateBytes: admittedByteCount - 1
+        )
+        do {
+            try await withScan(
+                scanner: IndexedRDFDatasetScanner(
+                    sources: [store.datasetSource]
+                ),
+                graphTarget: .namedGraphUnion(RDFNamedGraphSet([graph])),
+                database: engine,
+                workMeter: rejectingMeter
+            ) { _ in
+                Issue.record("Expected transient union admission rejection")
+            }
+        } catch let error as DatabaseWorkLimitError {
+            #expect(error == .maximumIntermediateBytes(
+                stage: .deduplication,
+                consumed: 0,
+                requested: admittedByteCount,
+                maximum: admittedByteCount - 1
+            ))
+        }
+        #expect(rejectingMeter.peakIntermediateBytes == 0)
+
+        let admittedMeter = makeMeter(
+            maximumIntermediateBytes: admittedByteCount
+        )
+        try await withScan(
+            scanner: IndexedRDFDatasetScanner(
+                sources: [store.datasetSource]
+            ),
+            graphTarget: .namedGraphUnion(RDFNamedGraphSet([graph])),
+            database: engine,
+            workMeter: admittedMeter
+        ) { result in
+            #expect(result.count == 1)
+            #expect(
+                admittedMeter.peakIntermediateBytes
+                    == admittedByteCount
+            )
+            #expect(
+                admittedMeter.retainedIntermediateBytes
+                    == metrics.retainedByteCount
+            )
+        }
+        #expect(admittedMeter.retainedIntermediateBytes == 0)
     }
 
     @Test("Named graph set is sorted and deduplicated")
@@ -458,6 +696,229 @@ struct RDFDatasetScanReservationTests {
         }
     }
 
+    @Test("Physical preflight matches materialized nested RDF footprint")
+    func physicalPreflightMatchesMaterializedFootprint() throws {
+        let blank = try RDFBlankNodeIdentifier("preflight")
+        let predicate = try RDFPredicateIRI("https://example.com/nested")
+        let graph = try makeGraph("preflight")
+        let quad = RDFQuad(
+            subject: .blankNode(blank),
+            predicate: predicate,
+            object: .tripleTerm(
+                subject: .blankNode(blank),
+                predicate: predicate,
+                object: .literal(RDFLiteral(
+                    lexicalForm: "before\0after",
+                    datatype: .xsdString
+                ))
+            ),
+            graph: graph
+        )
+        let codec = RDFQuadIndexPhysicalCodec(baseSubspace: makeRoot())
+        let entry = try RDFQuadIndexWritePlan(quad: quad).primaryEntry
+        let preflight = try codec.preflightQuad(
+            key: codec.encode(entry),
+            ordering: .spo
+        )
+        let decoded = try codec.decodeQuad(preflight)
+
+        #expect(decoded == quad)
+        #expect(
+            try RDFDatasetScanRetainedMetrics.preflight(
+                preflight,
+                mergesNamedGraphs: false
+            ) == RDFDatasetScanRetainedMetrics.measure(
+                decoded,
+                mergesNamedGraphs: false
+            )
+        )
+    }
+
+    @Test("First-row admission rejection retains no decoded scan row")
+    func firstRowAdmissionRejectsBeforeRetention() async throws {
+        let engine = InMemoryEngine()
+        let store = CanonicalRDFGraphStore(rootSubspace: makeRoot())
+        let graph = try makeGraph("first-admission")
+        let quad = try makeQuad(graph: graph, suffix: "first-admission")
+        try await insert([quad], into: store, database: engine)
+        let metrics = try measure(quad, mergesNamedGraphs: false)
+        let meter = makeMeter(
+            maximumIntermediateBytes: metrics.retainedByteCount - 1
+        )
+
+        do {
+            try await withScan(
+                scanner: IndexedRDFDatasetScanner(
+                    sources: [store.datasetSource]
+                ),
+                graphTarget: .named(graph),
+                database: engine,
+                workMeter: meter
+            ) { _ in
+                Issue.record("Expected first-row admission rejection")
+            }
+        } catch let error as DatabaseWorkLimitError {
+            #expect(error == .maximumIntermediateBytes(
+                stage: .deduplication,
+                consumed: 0,
+                requested: metrics.retainedByteCount,
+                maximum: metrics.retainedByteCount - 1
+            ))
+        }
+        #expect(meter.peakIntermediateRows == 0)
+        #expect(meter.peakIntermediateBytes == 0)
+        #expect(meter.retainedIntermediateRows == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("Named graph discovery owns and releases its reservation")
+    func namedGraphDiscoveryOwnsReservation() async throws {
+        let engine = InMemoryEngine()
+        let store = CanonicalRDFGraphStore(rootSubspace: makeRoot())
+        let graph = try makeGraph("named-owner")
+        try await insert(
+            [try makeQuad(graph: graph, suffix: "named-owner")],
+            into: store,
+            database: engine
+        )
+        let meter = makeMeter()
+        let metrics = try RDFDatasetNamedGraphRetainedMetrics.measure(graph)
+        let retainedBytes = try metrics.retainedBytes(includesOwner: true)
+
+        try await StorageTransactionExecutor(engine: engine).withTransaction(
+            configuration: .default,
+            clock: TestProcessMonotonicClock()
+        ) { transaction in
+            do {
+                let graphs = try await store.namedGraphs(
+                    limit: nil,
+                    readMode: .snapshot,
+                    transaction: transaction,
+                    workMeter: meter
+                )
+                #expect(graphs.count == 1)
+                graphs.withGraph(at: 0) { retained in
+                    #expect(retained == graph)
+                }
+                #expect(
+                    meter.retainedIntermediateRows == metrics.retainedRows
+                )
+                #expect(
+                    meter.retainedIntermediateBytes
+                        == retainedBytes
+                )
+            }
+            #expect(meter.retainedIntermediateRows == 0)
+            #expect(meter.retainedIntermediateBytes == 0)
+        }
+    }
+
+    @Test("Duplicate named graph admission is released after deduplication")
+    func duplicateNamedGraphAdmissionIsReleased() async throws {
+        let engine = InMemoryEngine()
+        let store = CanonicalRDFGraphStore(rootSubspace: makeRoot())
+        let graph = try makeGraph("named-duplicate")
+        try await insert(
+            [try makeQuad(graph: graph, suffix: "named-duplicate")],
+            into: store,
+            database: engine
+        )
+        let meter = makeMeter()
+        let metrics = try RDFDatasetNamedGraphRetainedMetrics.measure(graph)
+        let admissionRows = try metrics.admissionRows()
+        let peakBytes = try metrics.admissionBytes(includesOwner: true)
+            + metrics.admissionBytes(includesOwner: false)
+        let retainedBytes = try metrics.retainedBytes(includesOwner: true)
+        let scanner = IndexedRDFDatasetScanner(
+            sources: [store.datasetSource, store.datasetSource]
+        )
+
+        try await StorageTransactionExecutor(engine: engine).withTransaction(
+            configuration: .default,
+            clock: TestProcessMonotonicClock()
+        ) { transaction in
+            do {
+                let graphs = try await scanner.namedGraphs(
+                    limit: nil,
+                    readMode: .snapshot,
+                    transaction: transaction,
+                    workMeter: meter
+                )
+                #expect(graphs.count == 1)
+                #expect(
+                    meter.peakIntermediateRows
+                        == admissionRows * 2
+                )
+                #expect(
+                    meter.peakIntermediateBytes
+                        == peakBytes
+                )
+                #expect(
+                    meter.retainedIntermediateRows == metrics.retainedRows
+                )
+                #expect(
+                    meter.retainedIntermediateBytes
+                        == retainedBytes
+                )
+            }
+            #expect(meter.retainedIntermediateRows == 0)
+            #expect(meter.retainedIntermediateBytes == 0)
+        }
+    }
+
+    @Test("Named graph limit releases construction and truncated payload claims")
+    func namedGraphLimitRetainsOnlyVisiblePayloadAndArrayCapacity() async throws {
+        let engine = InMemoryEngine()
+        let first = try makeGraph("limit-a")
+        let second = try makeGraph("limit-b")
+        let firstMetrics = try RDFDatasetNamedGraphRetainedMetrics
+            .measure(first)
+        let secondMetrics = try RDFDatasetNamedGraphRetainedMetrics
+            .measure(second)
+        let scanner = IndexedRDFDatasetScanner(sources: [
+            RDFDatasetSource(
+                entityName: "First",
+                indexName: "first",
+                indexSubspace: makeRoot().subspace("first"),
+                coverage: .namedGraph(second)
+            ),
+            RDFDatasetSource(
+                entityName: "Second",
+                indexName: "second",
+                indexSubspace: makeRoot().subspace("second"),
+                coverage: .namedGraph(first)
+            ),
+        ])
+        let meter = makeMeter()
+        let expectedRetainedBytes = try firstMetrics.retainedBytes(
+            includesOwner: true
+        ) + secondMetrics.retainedArrayBytes
+
+        try await StorageTransactionExecutor(engine: engine).withTransaction(
+            configuration: .default,
+            clock: TestProcessMonotonicClock()
+        ) { transaction in
+            do {
+                let graphs = try await scanner.namedGraphs(
+                    limit: 1,
+                    readMode: .snapshot,
+                    transaction: transaction,
+                    workMeter: meter
+                )
+                #expect(graphs.count == 1)
+                graphs.withGraph(at: 0) { graph in
+                    #expect(graph == first)
+                }
+                #expect(meter.retainedIntermediateRows == 1)
+                #expect(
+                    meter.retainedIntermediateBytes == expectedRetainedBytes
+                )
+            }
+            #expect(meter.retainedIntermediateRows == 0)
+            #expect(meter.retainedIntermediateBytes == 0)
+        }
+    }
+
     private func measure(
         _ quad: RDFQuad,
         mergesNamedGraphs: Bool
@@ -468,18 +929,21 @@ struct RDFDatasetScanReservationTests {
         )
     }
 
-    private func scan(
+    private func withScan(
         scanner: IndexedRDFDatasetScanner,
         graphTarget: RDFGraphScanTarget,
         database: InMemoryEngine,
-        workMeter: DatabaseWorkMeter
-    ) async throws -> RDFDatasetScanResult {
+        workMeter: DatabaseWorkMeter,
+        _ body: @escaping @Sendable (
+            borrowing RDFDatasetScanResult
+        ) throws -> Void
+    ) async throws {
         try await StorageTransactionExecutor(engine: database).withTransaction(
             configuration: .default,
             clock: TestProcessMonotonicClock()
         ) {
             transaction in
-            try await scanner.scan(
+            let result = try await scanner.scan(
                 subject: nil,
                 predicate: nil,
                 object: nil,
@@ -489,6 +953,7 @@ struct RDFDatasetScanReservationTests {
                 transaction: transaction,
                 workMeter: workMeter
             )
+            try body(result)
         }
     }
 

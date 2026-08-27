@@ -7,7 +7,7 @@ extension SPARQLQueryExecutor {
     package func executeAskInTransaction(
         _ query: AskQuery,
         structuralLimits: QueryStructuralLimits,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> Bool {
         let plan = try SPARQLQueryLevelPlanCompiler.compile(
@@ -27,7 +27,7 @@ extension SPARQLQueryExecutor {
         _ query: ConstructQuery,
         nodeNamespace: GraphResultNodeNamespace,
         structuralLimits: QueryStructuralLimits,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> DatabaseRetainedRDFGraph {
         let plan = try SPARQLQueryLevelPlanCompiler.compile(
@@ -54,7 +54,7 @@ extension SPARQLQueryExecutor {
             sourceIndex,
             fingerprint,
             occurrence in
-            var blankNodeResolver = try SPARQLConstructBlankNodeResolver(
+            var blankNodeResolver = SPARQLConstructBlankNodeResolver(
                 nodeNamespace: nodeNamespace,
                 bindingFingerprint: copy fingerprint,
                 occurrence: occurrence,
@@ -78,7 +78,7 @@ extension SPARQLQueryExecutor {
     package func executeDescribeInTransaction(
         _ query: DescribeQuery,
         structuralLimits: QueryStructuralLimits,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> DatabaseRetainedRDFGraph {
         let plan = try SPARQLQueryLevelPlanCompiler.compile(
@@ -156,10 +156,10 @@ extension SPARQLQueryExecutor {
             workMeter: workMeter
         )
         for index in 0..<retainedResources.count {
-            let scan = try await retainedResources.withElement(
+            try await retainedResources.withElement(
                 at: index
             ) { resource in
-                try await datasetScanner.scan(
+                let scan = try await datasetScanner.scanRetained(
                     subject: copy resource,
                     predicate: nil,
                     object: nil,
@@ -169,9 +169,11 @@ extension SPARQLQueryExecutor {
                     transaction: transaction,
                     workMeter: workMeter
                 )
-            }
-            for row in scan {
-                try output.append(row.quad)
+                for scanIndex in 0..<scan.count {
+                    try scan.withQuad(at: scanIndex) { quad in
+                        try output.appendBorrowed(quad)
+                    }
+                }
             }
         }
         return output.finish()

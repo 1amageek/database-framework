@@ -24,169 +24,166 @@ package struct RDFDatasetScanStorageRow: Sendable, Hashable {
             includedFieldNames: includedFieldNames
         )
     }
+
+    package func withDecodedProperties<Result, Failure: Error>(
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage,
+        _ body: (borrowing [String: FieldValue]) async throws(Failure) -> Result
+    ) async throws -> Result {
+        let footprint = try CoveringValueBuilder
+            .decodedPropertiesWorkspaceFootprint(
+                coveringValue,
+                includedFieldNames: includedFieldNames
+            )
+        let reservation = try workMeter.reserveIntermediate(
+            rows: footprint.rows,
+            bytes: footprint.bytes,
+            at: stage
+        )
+        defer { reservation.release() }
+        let properties = try decodeProperties()
+        return try await body(properties)
+    }
 }
 
-/// Canonical quads returned by one logical dataset scan.
+/// Linear ownership of one canonical RDF dataset scan.
 ///
-/// Each element is an owner-linked row. Copying a row out of the collection
-/// therefore retains the request-scoped reservation for as long as any data
-/// from that row can be used through the public scan API.
-public struct RDFDatasetScanResult: Sendable, RandomAccessCollection {
-    public typealias Element = RDFDatasetScanRow
-    public typealias Index = Int
-
-    private static let emptyOwner = RDFDatasetScanOwner(
-        storage: [],
-        intermediateReservation: nil
-    )
-
-    private let owner: RDFDatasetScanOwner
+/// Package execution borrows one row while this owner keeps both the backing
+/// Array and its request reservation alive. Any retained projection must be
+/// admitted to this same request meter before package code copies it out.
+public struct RDFDatasetScanResult: ~Copyable, Sendable {
+    private let owner: RDFDatasetScanOwner?
     public let physicalScanCount: Int
-
-    package init(
-        quads: consuming [RDFQuad],
-        physicalScanCount: Int
-    ) {
-        let rows = quads.map { RDFDatasetScanStorageRow(quad: $0) }
-        self.owner = rows.isEmpty
-            ? Self.emptyOwner
-            : RDFDatasetScanOwner(
-                storage: rows,
-                intermediateReservation: nil
-            )
-        self.physicalScanCount = physicalScanCount
-    }
-
-    /// Creates an empty scan result without a request-scoped heap owner.
-    public static func empty(
-        physicalScanCount: Int = 0
-    ) -> RDFDatasetScanResult {
-        RDFDatasetScanResult(
-            quads: [],
-            physicalScanCount: physicalScanCount
-        )
-    }
-
-    /// Takes ownership of admitted result storage and its request reservation.
-    ///
-    /// The reservation must cover every retained owner represented by `quads`.
-    public init(
-        quads: consuming [RDFQuad],
-        physicalScanCount: Int,
-        intermediateReservation: DatabaseIntermediateReservation
-    ) {
-        let rows = quads.map { RDFDatasetScanStorageRow(quad: $0) }
-        self.owner = RDFDatasetScanOwner(
-            storage: rows,
-            intermediateReservation: intermediateReservation
-        )
-        self.physicalScanCount = physicalScanCount
-    }
-
-    init(
-        quads: consuming [RDFQuad],
-        physicalScanCount: Int,
-        intermediateReservation: DatabaseIntermediateReservation?
-    ) {
-        let rows = quads.map { RDFDatasetScanStorageRow(quad: $0) }
-        if rows.isEmpty, intermediateReservation == nil {
-            self.owner = Self.emptyOwner
-        } else {
-            self.owner = RDFDatasetScanOwner(
-                storage: rows,
-                intermediateReservation: intermediateReservation
-            )
-        }
-        self.physicalScanCount = physicalScanCount
-    }
+    package let workMeter: DatabaseWorkMeter
 
     package init(
         rows: consuming [RDFDatasetScanStorageRow],
         physicalScanCount: Int,
-        intermediateReservation: DatabaseIntermediateReservation?
+        intermediateReservation: DatabaseIntermediateReservation?,
+        workMeter: DatabaseWorkMeter
     ) {
-        if rows.isEmpty, intermediateReservation == nil {
-            self.owner = Self.emptyOwner
-        } else {
-            self.owner = RDFDatasetScanOwner(
-                storage: rows,
-                intermediateReservation: intermediateReservation
+        precondition(
+            rows.isEmpty == (intermediateReservation == nil),
+            "Retained scan rows and reservation must have the same lifetime"
+        )
+        if let intermediateReservation {
+            precondition(
+                intermediateReservation.workMeter === workMeter,
+                "Scan storage and reservation must use the same work meter"
             )
         }
+        self.owner = rows.isEmpty
+            ? nil
+            : RDFDatasetScanOwner(
+                storage: rows,
+                intermediateReservation: intermediateReservation!
+            )
         self.physicalScanCount = physicalScanCount
+        self.workMeter = workMeter
     }
 
-    public var startIndex: Int { owner.storage.startIndex }
-    public var endIndex: Int { owner.storage.endIndex }
-
-    public subscript(position: Int) -> RDFDatasetScanRow {
-        precondition(owner.storage.indices.contains(position))
-        return RDFDatasetScanRow(owner: owner, position: position)
+    /// Constructs admitted scan storage for package tests and injected scanner
+    /// implementations. Production physical scans use byte preflight instead.
+    package init(
+        quads: consuming [RDFQuad],
+        physicalScanCount: Int,
+        workMeter: DatabaseWorkMeter
+    ) throws {
+        var reservation: DatabaseIntermediateReservation?
+        var rows: [RDFDatasetScanStorageRow] = []
+        for quad in quads {
+            let metrics = try RDFDatasetScanRetainedMetrics.measure(
+                quad,
+                mergesNamedGraphs: false
+            )
+            let candidate = try workMeter.reserveIntermediate(
+                rows: metrics.rowCount,
+                bytes: metrics.retainedByteCount,
+                at: .deduplication
+            )
+            var transferred = false
+            defer {
+                if !transferred { candidate.release() }
+            }
+            if let reservation {
+                try reservation.absorbAll(from: candidate)
+            } else {
+                reservation = candidate
+            }
+            transferred = true
+            rows.append(RDFDatasetScanStorageRow(quad: quad))
+        }
+        self.init(
+            rows: rows,
+            physicalScanCount: physicalScanCount,
+            intermediateReservation: reservation,
+            workMeter: workMeter
+        )
     }
 
-    public func index(after index: Int) -> Int {
-        owner.storage.index(after: index)
+    package static func empty(
+        physicalScanCount: Int = 0,
+        workMeter: DatabaseWorkMeter
+    ) -> RDFDatasetScanResult {
+        RDFDatasetScanResult(
+            rows: [],
+            physicalScanCount: physicalScanCount,
+            intermediateReservation: nil,
+            workMeter: workMeter
+        )
     }
 
-    public func index(before index: Int) -> Int {
-        owner.storage.index(before: index)
+    public var count: Int { owner?.storage.count ?? 0 }
+    public var isEmpty: Bool { owner == nil }
+
+    /// Package execution must admit any copy before it escapes this borrow.
+    package borrowing func withQuad<Failure: Error>(
+        at index: Int,
+        _ body: (borrowing RDFQuad) throws(Failure) -> Void
+    ) throws(Failure) {
+        guard let owner else { preconditionFailure("Scan index is out of range") }
+        precondition(owner.storage.indices.contains(index))
+        try body(owner.storage[index].quad)
     }
 
-    public func index(_ index: Int, offsetBy distance: Int) -> Int {
-        owner.storage.index(index, offsetBy: distance)
+    /// Keeps the scan owner alive across an asynchronous scoped quad borrow.
+    package borrowing func withQuad<Failure: Error>(
+        at index: Int,
+        _ body: (borrowing RDFQuad) async throws(Failure) -> Void
+    ) async throws(Failure) {
+        guard let owner else { preconditionFailure("Scan index is out of range") }
+        precondition(owner.storage.indices.contains(index))
+        try await body(owner.storage[index].quad)
     }
 
-    public func distance(from start: Int, to end: Int) -> Int {
-        owner.storage.distance(from: start, to: end)
+    package borrowing func withRow<Failure: Error>(
+        at index: Int,
+        _ body: (borrowing RDFDatasetScanStorageRow) throws(Failure) -> Void
+    ) throws(Failure) {
+        guard let owner else { preconditionFailure("Scan index is out of range") }
+        precondition(owner.storage.indices.contains(index))
+        try body(owner.storage[index])
     }
 
-}
-
-/// One quad whose lifetime is tied to the scan owner's memory reservation.
-///
-/// Raw RDF values are package-scoped because they are Copyable and could
-/// otherwise outlive the reservation. Framework execution paths must admit
-/// any retained projection before releasing this row.
-public struct RDFDatasetScanRow: Sendable {
-    private let owner: RDFDatasetScanOwner
-    private let position: Int
-
-    fileprivate init(owner: RDFDatasetScanOwner, position: Int) {
-        self.owner = owner
-        self.position = position
-    }
-
-    package var quad: RDFQuad { owner.storage[position].quad }
-
-    /// Materializes one owned quad at the server mutation boundary. The scan
-    /// owner cannot outlive its request reservation, while transfer mutations
-    /// must retain the quad across an asynchronous storage call.
-    @_spi(DatabaseExecution)
-    public func ownedQuad() -> RDFQuad { owner.storage[position].quad }
-    package var subject: RDFTerm {
-        owner.storage[position].quad.subject.term
-    }
-    package var predicate: RDFTerm {
-        owner.storage[position].quad.predicate.term
-    }
-    package var object: RDFTerm { owner.storage[position].quad.object }
-    package var graph: RDFTerm? {
-        owner.storage[position].quad.graph?.term
-    }
-    package func decodeProperties() throws -> [String: FieldValue] {
-        try owner.storage[position].decodeProperties()
+    package borrowing func withRow<Failure: Error>(
+        at index: Int,
+        _ body: (borrowing RDFDatasetScanStorageRow) async throws(Failure) -> Void
+    ) async throws(Failure) {
+        guard let owner else { preconditionFailure("Scan index is out of range") }
+        precondition(owner.storage.indices.contains(index))
+        try await body(owner.storage[index])
     }
 }
 
 private final class RDFDatasetScanOwner: Sendable {
-    // Declaration order is intentional: storage is destroyed before the
-    // reservation releases its request ledger claim.
+    // Declaration order keeps storage destruction inside the reservation
+    // lifetime, matching the retained-buffer ownership contract.
     let storage: [RDFDatasetScanStorageRow]
-    let intermediateReservation: DatabaseIntermediateReservation?
+    let intermediateReservation: DatabaseIntermediateReservation
 
     init(
         storage: consuming [RDFDatasetScanStorageRow],
-        intermediateReservation: DatabaseIntermediateReservation?
+        intermediateReservation: DatabaseIntermediateReservation
     ) {
         self.storage = storage
         self.intermediateReservation = intermediateReservation

@@ -17,6 +17,8 @@ package final class DatabaseRDFQuadFootprintMeter {
     private var worklist: [RDFTerm]
     private var accountedCapacity: Int
 
+    package var requestWorkMeter: DatabaseWorkMeter { workMeter }
+
     private init(
         workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage,
@@ -46,12 +48,26 @@ package final class DatabaseRDFQuadFootprintMeter {
     package func footprint(
         of quad: borrowing RDFQuad
     ) throws -> DatabaseIntermediateFootprint {
+        try footprint(
+            subject: quad.subject,
+            predicate: quad.predicate,
+            object: quad.object,
+            graph: quad.graph
+        )
+    }
+
+    package func footprint(
+        subject: borrowing RDFSubject,
+        predicate: borrowing RDFPredicateIRI,
+        object: borrowing RDFTerm,
+        graph: borrowing RDFGraphName?
+    ) throws -> DatabaseIntermediateFootprint {
         precondition(worklist.isEmpty)
         defer { worklist.removeAll(keepingCapacity: true) }
-        try append(quad.object)
-        try append(quad.predicate.term)
-        try append(quad.subject.term)
-        if let graph = quad.graph {
+        try append(copy object)
+        try append(predicate.term)
+        try append(subject.term)
+        if let graph = copy graph {
             try append(graph.term)
         }
 

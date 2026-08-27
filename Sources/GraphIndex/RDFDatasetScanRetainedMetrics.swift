@@ -9,6 +9,20 @@ import DatabaseTypes
 struct RDFDatasetScanRetainedMetrics: Sendable, Equatable {
     let rowCount: UInt64
     let retainedByteCount: UInt64
+    let transientRowCount: UInt64
+    let transientByteCount: UInt64
+
+    var admittedRowCount: UInt64 {
+        get throws {
+            try Self.checkedAdd(rowCount, transientRowCount)
+        }
+    }
+
+    var admittedByteCount: UInt64 {
+        get throws {
+            try Self.checkedAdd(retainedByteCount, transientByteCount)
+        }
+    }
 
     // Fixed v1 admission constants. They intentionally do not depend on
     // platform pointer width, Swift ABI layout, or allocator capacity.
@@ -21,6 +35,54 @@ struct RDFDatasetScanRetainedMetrics: Sendable, Equatable {
     private static let storedFieldArrayOverhead: UInt64 = 64
     private static let storedFieldSlotByteCount: UInt64 = 16
     private static let stringStorageOverhead: UInt64 = 16
+    private static let mergedBlankNodeByteCount: UInt64 = 65
+
+    /// Measures one prospective retained row from canonical physical bytes.
+    /// No RDF term, String, Set entry, or result row exists at this point.
+    static func preflight(
+        _ proof: RDFQuadIndexReadPreflight,
+        mergesNamedGraphs: Bool,
+        coveringValueByteCount: Int = 0,
+        includedFieldNames: [String] = []
+    ) throws -> RDFDatasetScanRetainedMetrics {
+        let replacement = mergesNamedGraphs
+            ? mergedBlankNodeByteCount
+            : nil
+        var termByteCount = try RDFTermRetainedFootprint.measure(
+            proof.object,
+            replacingBlankNodeByteCount: replacement
+        ).bytes
+        termByteCount = try checkedAdd(
+            termByteCount,
+            RDFTermRetainedFootprint.measure(
+                proof.predicate,
+                replacingBlankNodeByteCount: replacement
+            ).bytes
+        )
+        termByteCount = try checkedAdd(
+            termByteCount,
+            RDFTermRetainedFootprint.measure(
+                proof.subject,
+                replacingBlankNodeByteCount: replacement
+            ).bytes
+        )
+        if !mergesNamedGraphs, let graph = proof.graph {
+            termByteCount = try checkedAdd(
+                termByteCount,
+                RDFTermRetainedFootprint.measure(graph).bytes
+            )
+        }
+        let transientByteCount = try mergesNamedGraphs
+            ? decodedSourceByteCount(proof)
+            : 0
+        return try make(
+            termByteCount: termByteCount,
+            transientByteCount: transientByteCount,
+            mergesNamedGraphs: mergesNamedGraphs,
+            coveringValueByteCount: coveringValueByteCount,
+            includedFieldNames: includedFieldNames
+        )
+    }
 
     /// Reuses admitted caller-owned traversal storage across a physical scan.
     static func measure(
@@ -28,6 +90,57 @@ struct RDFDatasetScanRetainedMetrics: Sendable, Equatable {
         mergesNamedGraphs: Bool,
         coveringValueByteCount: Int = 0,
         includedFieldNames: [String] = []
+    ) throws -> RDFDatasetScanRetainedMetrics {
+        var termByteCount = try RDFTermRetainedFootprint.measure(
+            quad.object,
+            replacingBlankNodeByteCount: mergesNamedGraphs
+                ? mergedBlankNodeByteCount
+                : nil
+        ).bytes
+        termByteCount = try checkedAdd(
+            termByteCount,
+            RDFTermRetainedFootprint.measure(
+                quad.predicate.term,
+                replacingBlankNodeByteCount: mergesNamedGraphs
+                    ? mergedBlankNodeByteCount
+                    : nil
+            ).bytes
+        )
+        termByteCount = try checkedAdd(
+            termByteCount,
+            RDFTermRetainedFootprint.measure(
+                quad.subject.term,
+                replacingBlankNodeByteCount: mergesNamedGraphs
+                    ? mergedBlankNodeByteCount
+                    : nil
+            ).bytes
+        )
+        if !mergesNamedGraphs, let graph = quad.graph {
+            termByteCount = try checkedAdd(
+                termByteCount,
+                RDFTermRetainedFootprint.measure(graph.term).bytes
+            )
+        }
+
+        let transientByteCount = try mergesNamedGraphs
+            ? decodedSourceByteCount(quad)
+            : 0
+
+        return try make(
+            termByteCount: termByteCount,
+            transientByteCount: transientByteCount,
+            mergesNamedGraphs: mergesNamedGraphs,
+            coveringValueByteCount: coveringValueByteCount,
+            includedFieldNames: includedFieldNames
+        )
+    }
+
+    private static func make(
+        termByteCount: UInt64,
+        transientByteCount: UInt64,
+        mergesNamedGraphs: Bool,
+        coveringValueByteCount: Int,
+        includedFieldNames: [String]
     ) throws -> RDFDatasetScanRetainedMetrics {
         let setValueByteCount = mergesNamedGraphs
             ? tripleValueBaseline
@@ -52,28 +165,6 @@ struct RDFDatasetScanRetainedMetrics: Sendable, Equatable {
             retainedByteCount,
             resultOwnerOverhead
         )
-
-        var termByteCount = try RDFTermRetainedFootprint.measure(
-            quad.object
-        ).bytes
-        termByteCount = try checkedAdd(
-            termByteCount,
-            RDFTermRetainedFootprint.measure(quad.predicate.term).bytes
-        )
-        termByteCount = try checkedAdd(
-            termByteCount,
-            RDFTermRetainedFootprint.measure(quad.subject.term).bytes
-        )
-        if !mergesNamedGraphs, let graph = quad.graph {
-            termByteCount = try checkedAdd(
-                termByteCount,
-                RDFTermRetainedFootprint.measure(graph.term).bytes
-            )
-        }
-
-        // Set and Array values share Swift value payloads today. Counting the
-        // term payload for both owners remains conservative if that ownership
-        // representation changes.
         retainedByteCount = try checkedAdd(
             retainedByteCount,
             checkedMultiply(termByteCount, 2)
@@ -112,8 +203,60 @@ struct RDFDatasetScanRetainedMetrics: Sendable, Equatable {
 
         return RDFDatasetScanRetainedMetrics(
             rowCount: 2,
-            retainedByteCount: retainedByteCount
+            retainedByteCount: retainedByteCount,
+            transientRowCount: mergesNamedGraphs ? 1 : 0,
+            transientByteCount: transientByteCount
         )
+    }
+
+    private static func decodedSourceByteCount(
+        _ proof: RDFQuadIndexReadPreflight
+    ) throws -> UInt64 {
+        var bytes = quadValueBaseline
+        bytes = try checkedAdd(
+            bytes,
+            RDFTermRetainedFootprint.measure(proof.object).bytes
+        )
+        bytes = try checkedAdd(
+            bytes,
+            RDFTermRetainedFootprint.measure(proof.predicate).bytes
+        )
+        bytes = try checkedAdd(
+            bytes,
+            RDFTermRetainedFootprint.measure(proof.subject).bytes
+        )
+        if let graph = proof.graph {
+            bytes = try checkedAdd(
+                bytes,
+                RDFTermRetainedFootprint.measure(graph).bytes
+            )
+        }
+        return bytes
+    }
+
+    private static func decodedSourceByteCount(
+        _ quad: borrowing RDFQuad
+    ) throws -> UInt64 {
+        var bytes = quadValueBaseline
+        bytes = try checkedAdd(
+            bytes,
+            RDFTermRetainedFootprint.measure(quad.object).bytes
+        )
+        bytes = try checkedAdd(
+            bytes,
+            RDFTermRetainedFootprint.measure(quad.predicate.term).bytes
+        )
+        bytes = try checkedAdd(
+            bytes,
+            RDFTermRetainedFootprint.measure(quad.subject.term).bytes
+        )
+        if let graph = quad.graph {
+            bytes = try checkedAdd(
+                bytes,
+                RDFTermRetainedFootprint.measure(graph.term).bytes
+            )
+        }
+        return bytes
     }
 
     private static func addRetainedString(

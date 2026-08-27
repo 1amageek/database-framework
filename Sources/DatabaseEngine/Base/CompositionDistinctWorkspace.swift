@@ -11,15 +11,51 @@ package actor CompositionDistinctWorkspace {
     }
 
     private struct Entry: Sendable {
+        let fingerprint: ByteString
         let identity: ByteString
-        let row: QueryRow
+        let ownedRow: DatabaseQueryScopedQueryRowOwner
         var contributors: [Base.ID]
     }
 
-    private struct Pointer: Sendable {
-        let sequence: UInt64
-        let fingerprint: ByteString
-        let collisionOrdinal: Int
+    private struct FieldFramePlan: Sendable {
+        let fields: [PersistableField]
+        let encodedByteCount: UInt64
+        let scratchReservation: DatabaseIntermediateReservation
+    }
+
+    private enum ContributorInput: Sendable {
+        case single(Base.ID)
+        case multiple([Base.ID])
+
+        var count: Int {
+            switch self {
+            case .single: return 1
+            case .multiple(let values): return values.count
+            }
+        }
+
+        subscript(index: Int) -> Base.ID {
+            switch self {
+            case .single(let value):
+                precondition(index == 0)
+                return value
+            case .multiple(let values):
+                return values[index]
+            }
+        }
+    }
+
+    private struct ContributorPlan: Sendable {
+        let count: Int
+        let capacity: Int
+        let retainedByteCount: UInt64
+        let addsContributor: Bool
+    }
+
+    private struct ArrayStorageReplacement: Sendable {
+        let capacity: Int
+        let oldFootprint: UInt64
+        let newFootprint: UInt64
     }
 
     private enum State: Sendable, Equatable {
@@ -31,16 +67,16 @@ package actor CompositionDistinctWorkspace {
     private static let identityMagic: [UInt8] = [0x44, 0x43, 0x44, 0x52]
     private static let identityVersion: UInt16 = 1
     private static let identityEntity = "composition-distinct-row"
-    private static let annotationsEntity =
-        "composition-distinct-row-annotations"
     private static let maximumDigestCollisionRecords = 1_024
-    private static let newEntryOverhead: UInt64 = 256
+    private static let fingerprintByteCount: UInt64 = 32
+    private static let initialSlotCapacity = 8
 
     private let workMeter: DatabaseWorkMeter
     private let identityFingerprint: @Sendable (ByteString) -> ByteString
     private let maximumPayloadBytes: UInt64
-    private var entries: [ByteString: [Entry]] = [:]
-    private var pointers: [Pointer] = []
+    private var entries: [Entry] = []
+    private var slots: [Int?] = []
+    private var accountedEntryCapacity = 0
     private var previousSequence: UInt64?
     private var retainedPayloadBytes: UInt64 = 0
     private var reservation: DatabaseIntermediateReservation?
@@ -71,91 +107,244 @@ package actor CompositionDistinctWorkspace {
     }
 
     package func insert(
-        _ row: QueryRow,
+        _ producedRow: consuming DatabaseQueryScopedQueryRow,
         origin: CompositionOrigin,
         sequence: UInt64
     ) throws {
-        guard state == .accumulating else {
-            throw CompositionQueryError.workspaceCorrupted
-        }
-        guard previousSequence.map({ $0 < sequence }) ?? true else {
-            throw CompositionQueryError.workspaceCorrupted
-        }
-        let identity = try Self.encodeFields(
-            row.fields,
-            entity: Self.identityEntity
+        try insert(
+            producedRow.moveToRetainedOwner(),
+            origin: origin,
+            sequence: sequence
         )
-        let fingerprint = identityFingerprint(identity)
-        guard fingerprint.count == 32 else {
+    }
+
+    package func insert(
+        _ ownedRow: DatabaseQueryScopedQueryRowOwner,
+        origin: CompositionOrigin,
+        sequence: UInt64
+    ) throws {
+        guard state == .accumulating,
+              ownedRow.workMeter === workMeter,
+              ownedRow.footprint.rows == 1,
+              previousSequence.map({ $0 < sequence }) ?? true else {
             throw CompositionQueryError.workspaceCorrupted
         }
-        try workMeter.consume(at: .deduplication)
-        let incomingContributors = try Self.validatedContributors(origin)
 
-        if let index = entries[fingerprint]?.firstIndex(where: {
-            $0.identity == identity
-        }) {
-            guard let existing = entries[fingerprint]?[index] else {
+        try workMeter.consume(at: .deduplication)
+        let contributorInput = try Self.validatedContributorInput(origin)
+        let framePlan = try ownedRow.withRow { row in
+            try Self.makeFieldFramePlan(
+                row.fields,
+                entity: Self.identityEntity,
+                workMeter: workMeter
+            )
+        }
+        defer { framePlan.scratchReservation.release() }
+
+        let identityClaimBytes = try Self.adding(
+            framePlan.encodedByteCount,
+            Self.fingerprintByteCount
+        )
+        let identityReservation = try workMeter.reserveIntermediate(
+            bytes: identityClaimBytes,
+            at: .deduplication
+        )
+        var identityWasAdopted = false
+        defer {
+            if !identityWasAdopted {
+                identityReservation.release()
+            }
+        }
+
+        let identity = try PersistableFieldFrameCodec.encode(
+            magic: Self.identityMagic,
+            version: Self.identityVersion,
+            entity: Self.identityEntity,
+            fields: framePlan.fields
+        )
+        guard UInt64(identity.count) == framePlan.encodedByteCount else {
+            throw CompositionQueryError.workspaceCorrupted
+        }
+        let fingerprint = identityFingerprint(identity)
+        guard UInt64(fingerprint.count) == Self.fingerprintByteCount else {
+            throw CompositionQueryError.workspaceCorrupted
+        }
+
+        let lookup = try findEntry(
+            fingerprint: fingerprint,
+            identity: identity
+        )
+        if let index = lookup.index {
+            guard let reservation else {
                 throw CompositionQueryError.workspaceCorrupted
             }
-            let merged = Self.mergeContributors(
-                existing.contributors,
-                incomingContributors
+            let mergePlan = try Self.mergedContributorPlan(
+                entries[index].contributors,
+                contributorInput
             )
-            guard merged != existing.contributors else {
+            guard mergePlan.addsContributor else {
                 previousSequence = sequence
                 return
             }
-            let oldBytes = try Self.contributorByteCount(
-                existing.contributors
+            let oldBytes = try Self.contributorFootprint(
+                .multiple(entries[index].contributors)
+            ).retainedByteCount
+            let nextPayloadBytes = try Self.replacing(
+                consumed: retainedPayloadBytes,
+                removed: oldBytes,
+                inserted: mergePlan.retainedByteCount,
+                maximum: maximumPayloadBytes
             )
-            let newBytes = try Self.contributorByteCount(merged)
-            guard newBytes >= oldBytes else {
+            let mergedReservation = try workMeter.reserveIntermediate(
+                bytes: mergePlan.retainedByteCount,
+                at: .deduplication
+            )
+            let merged = Self.mergeContributors(
+                entries[index].contributors,
+                contributorInput,
+                capacity: mergePlan.capacity
+            )
+            guard merged.count == mergePlan.count,
+                  try Self.contributorFootprint(.multiple(merged))
+                    .retainedByteCount == mergePlan.retainedByteCount else {
+                mergedReservation.release()
                 throw CompositionQueryError.workspaceCorrupted
             }
-            try admit(bytes: newBytes - oldBytes)
-            entries[fingerprint, default: []][index].contributors = merged
+            do {
+                try reservation.absorbAll(from: mergedReservation)
+            } catch {
+                mergedReservation.release()
+                throw error
+            }
+            try replaceContributors(
+                at: index,
+                with: consume merged
+            )
+            reservation.releaseGuaranteedPartial(bytes: oldBytes)
+            retainedPayloadBytes = nextPayloadBytes
             previousSequence = sequence
             return
         }
 
-        let collisionCount = entries[fingerprint]?.count ?? 0
-        guard collisionCount < Self.maximumDigestCollisionRecords else {
+        guard lookup.collisionCount < Self.maximumDigestCollisionRecords else {
             throw CompositionQueryError.workspaceCorrupted
         }
-        let annotations = try Self.encodeFields(
-            row.annotations,
-            entity: Self.annotationsEntity
+        let contributorPlan = try Self.contributorFootprint(contributorInput)
+        let entryLayout = try DatabaseRetainedArrayLayout.forElement(Entry.self)
+        let requiredEntryCount = try Self.incremented(entries.count)
+        let entryReplacement = try makeEntryReplacementPlan(
+            layout: entryLayout,
+            requiredEntryCount: requiredEntryCount
         )
-        var requested = Self.newEntryOverhead
-        requested = try Self.adding(requested, UInt64(identity.count))
-        requested = try Self.adding(requested, UInt64(annotations.count))
-        requested = try Self.adding(requested, UInt64(fingerprint.count))
-        if let version = row.version {
-            requested = try Self.adding(
-                requested,
-                UInt64(version.value.utf8.count)
+        let entryOwnerBytes = reservation == nil
+            ? entryLayout.containerByteCount
+            : 0
+        let slotReplacement = try makeSlotReplacementPlan(
+            requiredEntryCount: requiredEntryCount
+        )
+
+        var finalPayloadBytes = retainedPayloadBytes
+        if let entryReplacement {
+            finalPayloadBytes = try Self.replacing(
+                consumed: finalPayloadBytes,
+                removed: entryReplacement.oldFootprint,
+                inserted: entryReplacement.newFootprint,
+                maximum: maximumPayloadBytes
             )
         }
-        let contributorBytes = try Self.contributorByteCount(
-            incomingContributors
-        )
-        requested = try Self.adding(requested, contributorBytes)
-        try admit(rows: 1, bytes: requested)
-        entries[fingerprint, default: []].append(
-            Entry(
-                identity: identity,
-                row: row,
-                contributors: incomingContributors
+        if let slotReplacement {
+            finalPayloadBytes = try Self.replacing(
+                consumed: finalPayloadBytes,
+                removed: slotReplacement.oldFootprint,
+                inserted: slotReplacement.newFootprint,
+                maximum: maximumPayloadBytes
             )
+        }
+        var retainedEntryBytes = try Self.adding(
+            ownedRow.footprint.bytes,
+            identityClaimBytes
         )
-        pointers.append(
-            Pointer(
-                sequence: sequence,
-                fingerprint: fingerprint,
-                collisionOrdinal: collisionCount
+        retainedEntryBytes = try Self.adding(
+            retainedEntryBytes,
+            contributorPlan.retainedByteCount
+        )
+        retainedEntryBytes = try Self.adding(
+            retainedEntryBytes,
+            entryOwnerBytes
+        )
+        let nextPayloadBytes = try Self.admit(
+            consumed: finalPayloadBytes,
+            requested: retainedEntryBytes,
+            maximum: maximumPayloadBytes
+        )
+
+        var additionalAdmissionBytes = try Self.adding(
+            contributorPlan.retainedByteCount,
+            entryOwnerBytes
+        )
+        if let entryReplacement {
+            additionalAdmissionBytes = try Self.adding(
+                additionalAdmissionBytes,
+                entryReplacement.newFootprint
             )
+        }
+        if let slotReplacement {
+            additionalAdmissionBytes = try Self.adding(
+                additionalAdmissionBytes,
+                slotReplacement.newFootprint
+            )
+        }
+        try identityReservation.reserveAdditional(
+            bytes: additionalAdmissionBytes,
+            at: .deduplication
         )
+
+        let replacementSlots = try slotReplacement.map {
+            try materializeSlotReplacement(capacity: $0.capacity)
+        }
+
+        let contributors = Self.materializeContributors(
+            contributorInput,
+            capacity: contributorPlan.capacity
+        )
+        guard contributors.count == contributorPlan.count,
+              try Self.contributorFootprint(.multiple(contributors))
+                .retainedByteCount == contributorPlan.retainedByteCount else {
+            throw CompositionQueryError.workspaceCorrupted
+        }
+        let entry = Entry(
+            fingerprint: fingerprint,
+            identity: identity,
+            ownedRow: ownedRow,
+            contributors: contributors
+        )
+
+        if let reservation {
+            try reservation.absorbAll(from: identityReservation)
+        } else {
+            self.reservation = identityReservation
+        }
+        identityWasAdopted = true
+        guard let activeReservation = self.reservation else {
+            throw CompositionQueryError.workspaceCorrupted
+        }
+
+        if let entryReplacement {
+            entries.reserveCapacity(entryReplacement.capacity)
+            accountedEntryCapacity = entryReplacement.capacity
+            activeReservation.releaseGuaranteedPartial(
+                bytes: entryReplacement.oldFootprint
+            )
+        }
+        if let slotReplacement, let replacementSlots {
+            slots = replacementSlots
+            activeReservation.releaseGuaranteedPartial(
+                bytes: slotReplacement.oldFootprint
+            )
+        }
+        entries.append(entry)
+        try placeEntryIndex(entries.count - 1)
+        retainedPayloadBytes = nextPayloadBytes
         previousSequence = sequence
     }
 
@@ -163,32 +352,25 @@ package actor CompositionDistinctWorkspace {
         batchSize: Int,
         _ body: @Sendable (Result) async throws -> Bool
     ) async throws {
-        guard batchSize > 0, state == .accumulating else {
+        guard batchSize > 0, state == .accumulating,
+              let activeReservation = reservation else {
             throw CompositionQueryError.workspaceCorrupted
         }
         state = .reading
+        defer { withExtendedLifetime(activeReservation) {} }
         var index = 0
-        while index < pointers.count {
+        while index < entries.count {
             guard state == .reading else {
                 throw CompositionQueryError.workspaceCorrupted
             }
-            let pointer = pointers[index]
-            if index > 0 {
-                guard pointers[index - 1].sequence < pointer.sequence else {
-                    throw CompositionQueryError.workspaceCorrupted
-                }
-            }
-            guard let bucket = entries[pointer.fingerprint],
-                  bucket.indices.contains(pointer.collisionOrdinal) else {
-                throw CompositionQueryError.workspaceCorrupted
-            }
-            let entry = bucket[pointer.collisionOrdinal]
+            let entry = entries[index]
             let origin: CompositionOrigin = entry.contributors.count == 1
                 ? .source(entry.contributors[0])
                 : .derived(contributors: entry.contributors)
-            guard try await body(Result(row: entry.row, origin: origin)) else {
-                return
+            let result = entry.ownedRow.withRow {
+                Result(row: $0, origin: origin)
             }
+            guard try await body(result) else { return }
             index += 1
             if index % batchSize == 0 {
                 await Task.yield()
@@ -197,59 +379,234 @@ package actor CompositionDistinctWorkspace {
     }
 
     package func removeAll() {
-        reservation?.release()
+        state = .removed
+        let retainedReservation = reservation
         reservation = nil
         entries.removeAll(keepingCapacity: false)
-        pointers.removeAll(keepingCapacity: false)
+        slots.removeAll(keepingCapacity: false)
+        accountedEntryCapacity = 0
         previousSequence = nil
         retainedPayloadBytes = 0
-        state = .removed
+        withExtendedLifetime(retainedReservation) {}
     }
 
-    private func admit(rows: UInt64 = 0, bytes: UInt64) throws {
-        let nextPayloadBytes = try Self.admit(
-            consumed: retainedPayloadBytes,
-            requested: bytes,
-            maximum: maximumPayloadBytes
-        )
-        if let reservation {
-            try reservation.reserveAdditional(
-                rows: rows,
-                bytes: bytes,
-                at: .deduplication
-            )
-        } else {
-            reservation = try workMeter.reserveIntermediate(
-                rows: rows,
-                bytes: bytes,
-                at: .deduplication
-            )
-        }
-        retainedPayloadBytes = nextPayloadBytes
-    }
-
-    private static func encodeFields(
-        _ values: [String: FieldValue],
-        entity: String
-    ) throws -> ByteString {
-        let names = values.keys.sorted()
-        let fields = try names.enumerated().map { offset, name in
-            guard let number = UInt32(exactly: offset + 1),
-                  let value = values[name] else {
+    private func findEntry(
+        fingerprint: ByteString,
+        identity: ByteString
+    ) throws -> (index: Int?, collisionCount: Int) {
+        guard !slots.isEmpty else { return (nil, 0) }
+        var slot = Self.slotIndex(for: fingerprint, capacity: slots.count)
+        var collisionCount = 0
+        for _ in 0..<slots.count {
+            guard let entryIndex = slots[slot] else {
+                return (nil, collisionCount)
+            }
+            guard entries.indices.contains(entryIndex) else {
                 throw CompositionQueryError.workspaceCorrupted
             }
-            return try PersistableField(
-                number: number,
-                name: name,
-                value: value
+            let entry = entries[entryIndex]
+            if entry.fingerprint == fingerprint {
+                if entry.identity == identity {
+                    return (entryIndex, collisionCount)
+                }
+                collisionCount += 1
+            }
+            slot = (slot + 1) & (slots.count - 1)
+        }
+        throw CompositionQueryError.workspaceCorrupted
+    }
+
+    private func replaceContributors(
+        at index: Int,
+        with contributors: consuming [Base.ID]
+    ) throws {
+        guard entries.indices.contains(index) else {
+            throw CompositionQueryError.workspaceCorrupted
+        }
+        entries[index].contributors = consume contributors
+    }
+
+    private func makeEntryReplacementPlan(
+        layout: DatabaseRetainedArrayLayout,
+        requiredEntryCount: Int
+    ) throws -> ArrayStorageReplacement? {
+        let growth = try layout.growth(
+            from: accountedEntryCapacity,
+            toFit: requiredEntryCount
+        )
+        guard growth.capacity != accountedEntryCapacity else { return nil }
+        return ArrayStorageReplacement(
+            capacity: growth.capacity,
+            oldFootprint: try Self.entryStorageFootprint(
+                capacity: accountedEntryCapacity,
+                layout: layout
+            ),
+            newFootprint: try Self.entryStorageFootprint(
+                capacity: growth.capacity,
+                layout: layout
+            )
+        )
+    }
+
+    private func makeSlotReplacementPlan(
+        requiredEntryCount: Int
+    ) throws -> ArrayStorageReplacement? {
+        let targetCapacity = try Self.slotCapacity(
+            current: slots.count,
+            requiredEntryCount: requiredEntryCount
+        )
+        guard targetCapacity != slots.count else { return nil }
+        let oldFootprint = try Self.slotStorageFootprint(capacity: slots.count)
+        let newFootprint = try Self.slotStorageFootprint(capacity: targetCapacity)
+        return ArrayStorageReplacement(
+            capacity: targetCapacity,
+            oldFootprint: oldFootprint,
+            newFootprint: newFootprint
+        )
+    }
+
+    private func materializeSlotReplacement(
+        capacity: Int
+    ) throws -> [Int?] {
+        var replacement = Array<Int?>(repeating: nil, count: capacity)
+        for index in entries.indices {
+            try Self.place(
+                index,
+                fingerprint: entries[index].fingerprint,
+                in: &replacement
             )
         }
-        return try PersistableFieldFrameCodec.encode(
-            magic: identityMagic,
-            version: identityVersion,
-            entity: entity,
-            fields: fields
+        return replacement
+    }
+
+    private func placeEntryIndex(_ index: Int) throws {
+        guard entries.indices.contains(index) else {
+            throw CompositionQueryError.workspaceCorrupted
+        }
+        try Self.place(
+            index,
+            fingerprint: entries[index].fingerprint,
+            in: &slots
         )
+    }
+
+    private static func place(
+        _ index: Int,
+        fingerprint: ByteString,
+        in slots: inout [Int?]
+    ) throws {
+        guard !slots.isEmpty else {
+            throw CompositionQueryError.workspaceCorrupted
+        }
+        var slot = slotIndex(for: fingerprint, capacity: slots.count)
+        for _ in 0..<slots.count {
+            if slots[slot] == nil {
+                slots[slot] = index
+                return
+            }
+            slot = (slot + 1) & (slots.count - 1)
+        }
+        throw CompositionQueryError.workspaceCorrupted
+    }
+
+    private static func slotIndex(
+        for fingerprint: ByteString,
+        capacity: Int
+    ) -> Int {
+        precondition(capacity > 0 && capacity.isPowerOfTwo)
+        return Int(UInt(bitPattern: fingerprint.hashValue) & UInt(capacity - 1))
+    }
+
+    private static func slotCapacity(
+        current: Int,
+        requiredEntryCount: Int
+    ) throws -> Int {
+        var capacity = max(initialSlotCapacity, current)
+        while requiredEntryCount > capacity / 2 {
+            let next = capacity.multipliedReportingOverflow(by: 2)
+            guard !next.overflow else {
+                throw CompositionQueryError.workspaceCorrupted
+            }
+            capacity = next.partialValue
+        }
+        return capacity
+    }
+
+    private static func slotStorageFootprint(capacity: Int) throws -> UInt64 {
+        guard capacity > 0 else { return 0 }
+        let layout = try DatabaseRetainedArrayLayout.forElement(Int?.self)
+        let growth = try layout.growth(from: 0, toFit: capacity)
+        return try adding(layout.containerByteCount, growth.additionalByteCount)
+    }
+
+    private static func entryStorageFootprint(
+        capacity: Int,
+        layout: DatabaseRetainedArrayLayout
+    ) throws -> UInt64 {
+        guard capacity > 0 else { return 0 }
+        return try layout.growth(
+            from: 0,
+            toFit: capacity
+        ).additionalByteCount
+    }
+
+    private static func makeFieldFramePlan(
+        _ values: [String: FieldValue],
+        entity: String,
+        workMeter: DatabaseWorkMeter
+    ) throws -> FieldFramePlan {
+        let layout = try DatabaseRetainedArrayLayout.forElement(
+            PersistableField.self
+        )
+        let growth = try layout.growth(from: 0, toFit: values.count)
+        let scratchBytes = try adding(
+            layout.containerByteCount,
+            growth.additionalByteCount
+        )
+        let scratchReservation = try workMeter.reserveIntermediate(
+            bytes: scratchBytes,
+            at: .deduplication
+        )
+        do {
+            var fields: [PersistableField] = []
+            fields.reserveCapacity(growth.capacity)
+            for (name, value) in values {
+                fields.append(
+                    try PersistableField(number: 1, name: name, value: value)
+                )
+            }
+            fields.sort { $0.name < $1.name }
+            for index in fields.indices {
+                guard let number = UInt32(exactly: index + 1) else {
+                    throw CompositionQueryError.workspaceCorrupted
+                }
+                let field = fields[index]
+                fields[index] = try PersistableField(
+                    number: number,
+                    name: field.name,
+                    value: field.value
+                )
+            }
+            let encodedByteCount = try PersistableFieldFrameCodec
+                .encodedByteCount(
+                    magic: identityMagic,
+                    version: identityVersion,
+                    entity: entity,
+                    fields: fields
+                )
+            guard let encodedByteCount = UInt64(exactly: encodedByteCount)
+            else {
+                throw CompositionQueryError.workspaceCorrupted
+            }
+            return FieldFramePlan(
+                fields: fields,
+                encodedByteCount: encodedByteCount,
+                scratchReservation: scratchReservation
+            )
+        } catch {
+            scratchReservation.release()
+            throw error
+        }
     }
 
     private static func fingerprint(_ identity: ByteString) -> ByteString {
@@ -258,50 +615,128 @@ package actor CompositionDistinctWorkspace {
         return hasher.finalize()
     }
 
-    private static func validatedContributors(
+    private static func validatedContributorInput(
         _ origin: CompositionOrigin
-    ) throws -> [Base.ID] {
-        let contributors: [Base.ID]
+    ) throws -> ContributorInput {
         switch origin {
         case .source(let baseID):
-            contributors = [baseID]
+            return .single(baseID)
         case .derived(let values):
-            contributors = values
-        }
-        guard !contributors.isEmpty else {
-            throw CompositionQueryError.workspaceCorrupted
-        }
-        for (previous, current) in zip(
-            contributors,
-            contributors.dropFirst()
-        ) {
-            guard previous < current else {
+            guard !values.isEmpty else {
                 throw CompositionQueryError.workspaceCorrupted
             }
+            for (previous, current) in zip(values, values.dropFirst()) {
+                guard previous < current else {
+                    throw CompositionQueryError.workspaceCorrupted
+                }
+            }
+            return .multiple(values)
         }
-        return contributors
+    }
+
+    private static func contributorFootprint(
+        _ input: ContributorInput
+    ) throws -> ContributorPlan {
+        let layout = try DatabaseRetainedArrayLayout.forElement(Base.ID.self)
+        let growth = try layout.growth(from: 0, toFit: input.count)
+        var bytes = try adding(
+            layout.containerByteCount,
+            growth.additionalByteCount
+        )
+        for index in 0..<input.count {
+            bytes = try adding(bytes, UInt64(input[index].value.utf8.count))
+        }
+        return ContributorPlan(
+            count: input.count,
+            capacity: growth.capacity,
+            retainedByteCount: bytes,
+            addsContributor: input.count > 0
+        )
+    }
+
+    private static func mergedContributorPlan(
+        _ lhs: borrowing [Base.ID],
+        _ rhs: ContributorInput
+    ) throws -> ContributorPlan {
+        var left = 0
+        var right = 0
+        var count = 0
+        var utf8Bytes: UInt64 = 0
+        var addsContributor = false
+        while left < lhs.count || right < rhs.count {
+            let value: Base.ID
+            if right >= rhs.count
+                || (left < lhs.count && lhs[left] < rhs[right]) {
+                value = lhs[left]
+                left += 1
+            } else if left >= lhs.count || rhs[right] < lhs[left] {
+                value = rhs[right]
+                right += 1
+                addsContributor = true
+            } else {
+                value = lhs[left]
+                left += 1
+                right += 1
+            }
+            count = try incremented(count)
+            utf8Bytes = try adding(
+                utf8Bytes,
+                UInt64(value.value.utf8.count)
+            )
+        }
+        let layout = try DatabaseRetainedArrayLayout.forElement(Base.ID.self)
+        let growth = try layout.growth(from: 0, toFit: count)
+        let retainedByteCount = try adding(
+            try adding(
+                layout.containerByteCount,
+                growth.additionalByteCount
+            ),
+            utf8Bytes
+        )
+        return ContributorPlan(
+            count: count,
+            capacity: growth.capacity,
+            retainedByteCount: retainedByteCount,
+            addsContributor: addsContributor
+        )
+    }
+
+    private static func materializeContributors(
+        _ input: ContributorInput,
+        capacity: Int
+    ) -> [Base.ID] {
+        var result: [Base.ID] = []
+        result.reserveCapacity(capacity)
+        for index in 0..<input.count {
+            result.append(input[index])
+        }
+        return result
     }
 
     private static func mergeContributors(
-        _ lhs: [Base.ID],
-        _ rhs: [Base.ID]
+        _ lhs: borrowing [Base.ID],
+        _ rhs: ContributorInput,
+        capacity: Int
     ) -> [Base.ID] {
-        var values = Set(lhs)
-        values.formUnion(rhs)
-        return values.sorted()
-    }
-
-    private static func contributorByteCount(
-        _ contributors: [Base.ID]
-    ) throws -> UInt64 {
-        var count: UInt64 = 0
-        for contributor in contributors {
-            count = try adding(
-                count,
-                UInt64(contributor.value.utf8.count) + 16
-            )
+        var merged: [Base.ID] = []
+        merged.reserveCapacity(capacity)
+        var left = 0
+        var right = 0
+        while left < lhs.count || right < rhs.count {
+            if right >= rhs.count
+                || (left < lhs.count && lhs[left] < rhs[right]) {
+                merged.append(lhs[left])
+                left += 1
+            } else if left >= lhs.count || rhs[right] < lhs[left] {
+                merged.append(rhs[right])
+                right += 1
+            } else {
+                merged.append(lhs[left])
+                left += 1
+                right += 1
+            }
         }
-        return count
+        return merged
     }
 
     private static func admit(
@@ -321,6 +756,30 @@ package actor CompositionDistinctWorkspace {
         return consumed + requested
     }
 
+    private static func replacing(
+        consumed: UInt64,
+        removed: UInt64,
+        inserted: UInt64,
+        maximum: UInt64
+    ) throws -> UInt64 {
+        guard removed <= consumed else {
+            throw CompositionQueryError.workspaceCorrupted
+        }
+        return try admit(
+            consumed: consumed - removed,
+            requested: inserted,
+            maximum: maximum
+        )
+    }
+
+    private static func incremented(_ value: Int) throws -> Int {
+        let result = value.addingReportingOverflow(1)
+        guard !result.overflow else {
+            throw CompositionQueryError.workspaceCorrupted
+        }
+        return result.partialValue
+    }
+
     private static func adding(_ lhs: UInt64, _ rhs: UInt64) throws -> UInt64 {
         let result = lhs.addingReportingOverflow(rhs)
         guard !result.overflow else {
@@ -328,6 +787,10 @@ package actor CompositionDistinctWorkspace {
         }
         return result.partialValue
     }
+}
+
+private extension Int {
+    var isPowerOfTwo: Bool { self > 0 && (self & (self - 1)) == 0 }
 }
 
 #endif

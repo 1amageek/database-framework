@@ -5,70 +5,25 @@ import DatabaseTypes
 /// Deterministic, request-accounted blank-node identity for one solution.
 struct SPARQLConstructBlankNodeResolver: ~Copyable {
     private static let domain: ByteString = [0x43, 0x42, 0x4e, 0x01]
-    private static let cacheContainerByteCount: UInt64 = 64
-    private static let cacheSlotByteCount: UInt64 = 128
-    private static let stringStorageByteCount: UInt64 = 16
-    private static let identifierUTF8Count: UInt64 = 65
 
     private let nodeNamespace: GraphResultNodeNamespace
     private let bindingFingerprint: ByteString
     private let occurrence: UInt64
     private let workMeter: DatabaseWorkMeter
-    private let reservation: DatabaseIntermediateReservation
-    private var identifiers: [String: String]
-    private var accountedCapacity: Int
 
     init(
         nodeNamespace: GraphResultNodeNamespace,
         bindingFingerprint: ByteString,
         occurrence: UInt64,
         workMeter: DatabaseWorkMeter
-    ) throws {
+    ) {
         self.nodeNamespace = nodeNamespace
         self.bindingFingerprint = bindingFingerprint
         self.occurrence = occurrence
         self.workMeter = workMeter
-        self.reservation = try workMeter.reserveIntermediate(
-            bytes: Self.cacheContainerByteCount,
-            at: .resultMaterialization
-        )
-        self.identifiers = [:]
-        self.accountedCapacity = 0
     }
 
     mutating func identifier(for label: String) throws -> String {
-        if let identifier = identifiers[label] {
-            return identifier
-        }
-        let requiredCount = try checkedIncrement(identifiers.count)
-        let targetCapacity = try targetCapacity(
-            current: accountedCapacity,
-            requiredCount: requiredCount
-        )
-        let capacityBytes = try checkedMultiply(
-            UInt64(targetCapacity - accountedCapacity),
-            Self.cacheSlotByteCount
-        )
-        let retainedStrings = try checkedAdd(
-            try checkedAdd(
-                Self.stringStorageByteCount,
-                UInt64(label.utf8.count)
-            ),
-            try checkedAdd(
-                Self.stringStorageByteCount,
-                Self.identifierUTF8Count
-            )
-        )
-        try reservation.reserveAdditional(
-            rows: 1,
-            bytes: try checkedAdd(capacityBytes, retainedStrings),
-            at: .resultMaterialization
-        )
-        if targetCapacity != accountedCapacity {
-            identifiers.reserveCapacity(targetCapacity)
-            accountedCapacity = targetCapacity
-        }
-
         let hashWork = try checkedAdd(
             UInt64(label.utf8.count),
             UInt64(
@@ -79,13 +34,7 @@ struct SPARQLConstructBlankNodeResolver: ~Copyable {
             )
         )
         try workMeter.consume(hashWork, at: .resultMaterialization)
-        let identifier = makeIdentifier(for: label)
-        let previous = identifiers.updateValue(identifier, forKey: label)
-        precondition(
-            previous == nil,
-            "Blank-node cache membership changed during admitted insertion"
-        )
-        return identifier
+        return makeIdentifier(for: label)
     }
 
     private func makeIdentifier(for label: String) -> String {
@@ -157,40 +106,11 @@ struct SPARQLConstructBlankNodeResolver: ~Copyable {
         }
     }
 
-    private func targetCapacity(
-        current: Int,
-        requiredCount: Int
-    ) throws -> Int {
-        guard requiredCount > current else { return current }
-        var capacity = max(1, current)
-        while capacity < requiredCount {
-            let (next, overflow) = capacity.multipliedReportingOverflow(by: 2)
-            guard !overflow else { throw limitError() }
-            capacity = next
-        }
-        return capacity
-    }
-
-    private func checkedIncrement(_ value: Int) throws -> Int {
-        let (result, overflow) = value.addingReportingOverflow(1)
-        guard !overflow else { throw limitError() }
-        return result
-    }
-
     private func checkedAdd(
         _ left: UInt64,
         _ right: UInt64
     ) throws -> UInt64 {
         let (result, overflow) = left.addingReportingOverflow(right)
-        guard !overflow else { throw limitError() }
-        return result
-    }
-
-    private func checkedMultiply(
-        _ left: UInt64,
-        _ right: UInt64
-    ) throws -> UInt64 {
-        let (result, overflow) = left.multipliedReportingOverflow(by: right)
         guard !overflow else { throw limitError() }
         return result
     }

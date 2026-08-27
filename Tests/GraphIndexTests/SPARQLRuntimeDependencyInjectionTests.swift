@@ -32,6 +32,7 @@ struct SPARQLRuntimeDependencyInjectionTests {
 
     private struct IdentityFunction: SPARQLFunction {
         let identifier: RDFIRI
+        let maximumResultByteCount: UInt64 = 1_024 * 1_024
 
         func evaluate(
             arguments: [FieldValue]

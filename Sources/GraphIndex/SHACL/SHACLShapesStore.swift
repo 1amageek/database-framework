@@ -68,7 +68,7 @@ struct SHACLShapesStore: Sendable {
     /// - Returns: The shapes graph, or nil if not found
     func get(
         iri: String,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> SHACLShapesGraph? {
         let key = graphKey(iri)
         guard let data = try await transaction.getValue(for: key, snapshot: true) else {
@@ -84,7 +84,7 @@ struct SHACLShapesStore: Sendable {
     /// - Parameter transaction: The FDB transaction
     /// - Returns: Array of shapes graph IRIs
     func listGraphIRIs(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [String] {
         let (beginKey, endKey) = graphsSubspace.range()
         let stream = try await TransactionRangeCollection.collect(using: transaction,

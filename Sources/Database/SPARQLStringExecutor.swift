@@ -88,19 +88,21 @@ func _executeSPARQLString(
         selectPlan: plan,
         workMeter: workMeter
     )
-    var (bindings, statistics) = executionResult
+    let executionStats = executionResult.statistics
+    let projectedVariables = executionResult.projectedVariables
+    let isComplete = executionResult.isComplete
+    let limitReason = executionResult.limitReason
+    let bindings = executionResult.bindings
+    var statistics = executionStats
     statistics.durationNs = DatabaseMonotonicMeasurement.nanoseconds(
         from: startTime,
         to: monotonicClock.now
     )
-    let reachedLimit = plan.slice.limit.map {
-        bindings.count >= $0
-    } ?? false
     return SPARQLResult(
         bindings: consume bindings,
-        projectedVariables: plan.projectionVariables,
-        isComplete: !reachedLimit,
-        limitReason: reachedLimit ? .explicitLimit : nil,
+        projectedVariables: projectedVariables,
+        isComplete: isComplete,
+        limitReason: limitReason,
         statistics: statistics
     )
 }
@@ -128,7 +130,7 @@ func _executeRetainedSPARQLString(
     let startTime = monotonicClock.now
     let result = try await executor.executeRetainedInTransaction(
         selectPlan: plan,
-        transaction: transaction.storageTransaction,
+        transaction: transaction,
         workMeter: workMeter
     )
     return result.recordingDuration(

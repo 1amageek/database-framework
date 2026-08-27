@@ -29,6 +29,21 @@ enum SPARQLRetainedBindings: ~Copyable, Sendable {
 
     var isEmpty: Bool { count == 0 }
 
+    var originatingWorkMeter: DatabaseWorkMeter? {
+        borrowing get {
+            switch self {
+            case .empty:
+                return nil
+            case .unique(let storage):
+                return storage.workMeter
+            case .shared(let storage):
+                return storage.workMeter
+            case .sharedSlice(let storage, _):
+                return storage.workMeter
+            }
+        }
+    }
+
     var isUnique: Bool {
         borrowing get {
             switch self {
@@ -272,8 +287,9 @@ enum SPARQLRetainedBindings: ~Copyable, Sendable {
     }
 
     /// Produces the public Array result at the top-level execution boundary.
-    /// A unique relation transfers its buffer. Shared storage copies only row
-    /// headers because other readers may retain the immutable owner.
+    /// Unique and full-range shared relations transfer the same COW buffer.
+    /// A bounded shared slice must materialize because Array cannot retain a
+    /// logical range without also exposing the rows outside that range.
     consuming func promoteToOutput() -> [VariableBinding] {
         switch consume self {
         case .empty:
@@ -281,9 +297,7 @@ enum SPARQLRetainedBindings: ~Copyable, Sendable {
         case .unique(let storage):
             return storage.promoteToOutput()
         case .shared(let storage):
-            return storage.withSpan { span in
-                Self.materialize(span, range: span.indices)
-            }
+            return storage.promoteToOutput()
         case .sharedSlice(let storage, let range):
             return storage.withSpan { span in
                 Self.materialize(span, range: range)

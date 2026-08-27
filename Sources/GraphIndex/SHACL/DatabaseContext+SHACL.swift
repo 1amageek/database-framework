@@ -190,7 +190,7 @@ public struct SHACLContextAPI: Sendable {
                 let rdfs = try await RDFSGraphEntailment.resolve(
                     executor: executor,
                     dataGraph: .defaultGraph,
-                    transaction: transaction.storageTransaction,
+                    transaction: transaction,
                     budget: workBudget
                 )
                 entailmentContext = rdfs
@@ -204,14 +204,14 @@ public struct SHACLContextAPI: Sendable {
             )
             let targetResolver = SHACLTargetResolver(
                 executor: validationExecutor,
-                transaction: transaction.storageTransaction,
+                transaction: transaction,
                 dataGraph: .defaultGraph,
                 entailmentContext: entailmentContext,
                 budget: workBudget
             )
             let constraintEvaluator = SHACLConstraintEvaluator(
                 executor: validationExecutor,
-                transaction: transaction.storageTransaction,
+                transaction: transaction,
                 dataGraph: .defaultGraph,
                 entailmentContext: entailmentContext,
                 budget: workBudget
@@ -272,13 +272,13 @@ public struct SHACLContextAPI: Sendable {
             )
             let targetResolver = SHACLTargetResolver(
                 executor: executor,
-                transaction: transaction.storageTransaction,
+                transaction: transaction,
                 dataGraph: .defaultGraph,
                 budget: workBudget
             )
             let constraintEvaluator = SHACLConstraintEvaluator(
                 executor: executor,
-                transaction: transaction.storageTransaction,
+                transaction: transaction,
                 dataGraph: .defaultGraph,
                 budget: workBudget
             )
@@ -306,7 +306,7 @@ public struct SHACLContextAPI: Sendable {
             try await self.context.indexQueryContext.withTransaction {
                 transaction in
                 try await store.listGraphIRIs(
-                    transaction: transaction.storageTransaction
+                    transaction: transaction
                 )
             }
         }
@@ -322,7 +322,7 @@ public struct SHACLContextAPI: Sendable {
                 transaction in
                 try await store.get(
                     iri: iri,
-                    transaction: transaction.storageTransaction
+                    transaction: transaction
                 )
             }
         }

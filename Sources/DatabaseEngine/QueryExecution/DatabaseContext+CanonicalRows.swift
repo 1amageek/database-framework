@@ -476,140 +476,9 @@ struct CanonicalRetainedQueryRowView: Sendable {
     }
 }
 
-/// A derived scalar exceeded the safe maximum admitted before construction.
-enum CanonicalQueryScopedFieldValueError: Error, Sendable, Equatable {
-    case payloadFootprintExceeded(
-        maximumRows: UInt64,
-        maximumBytes: UInt64,
-        actualRows: UInt64,
-        actualBytes: UInt64
-    )
-}
-
-/// One query-scoped scalar whose retained payload stays coupled to the
-/// request meter until a relational destination has admitted its own copy.
-/// Values borrowed directly from the current source row do not need a second
-/// owner; scalar-subquery and aggregate values do.
-struct CanonicalQueryScopedFieldValue: Sendable {
-    private enum Provenance: Sendable {
-        case borrowedSource
-        case ownedDerived(DatabaseIntermediateReservation)
-    }
-
-    private let value: FieldValue
-    private let provenance: Provenance
-
-    private init(
-        value: FieldValue,
-        provenance: Provenance
-    ) {
-        self.value = value
-        self.provenance = provenance
-    }
-
-    static func borrowing(_ value: FieldValue) -> Self {
-        Self(value: value, provenance: .borrowedSource)
-    }
-
-    static func retaining(
-        _ value: FieldValue,
-        workMeter: DatabaseWorkMeter,
-        stage: DatabaseWorkStage
-    ) throws -> Self {
-        let footprint = try CanonicalRelationalFootprintMeter.valueFootprint(
-                of: value,
-                workMeter: workMeter,
-                stage: stage
-        )
-        let reservation = try workMeter.reserveIntermediate(
-            bytes: footprint.bytes,
-            at: stage
-        )
-        return Self(value: value, provenance: .ownedDerived(reservation))
-    }
-
-    static func retaining(
-        _ value: FieldValue,
-        reservation: DatabaseIntermediateReservation
-    ) -> Self {
-        return Self(value: value, provenance: .ownedDerived(reservation))
-    }
-
-    /// Admits a safe maximum before invoking the producer, validates the
-    /// resulting value, and shrinks the live claim to its exact footprint.
-    static func producing(
-        maximumFootprint: DatabaseIntermediateFootprint,
-        workMeter: DatabaseWorkMeter,
-        stage: DatabaseWorkStage,
-        _ makeValue: () throws -> FieldValue
-    ) throws -> Self {
-        let reservation = try workMeter.reserveIntermediate(
-            rows: maximumFootprint.rows,
-            bytes: maximumFootprint.bytes,
-            at: stage
-        )
-        return try producing(
-            maximumFootprint: maximumFootprint,
-            reservation: reservation,
-            stage: stage,
-            makeValue
-        )
-    }
-
-    static func producing(
-        maximumFootprint: DatabaseIntermediateFootprint,
-        reservation: DatabaseIntermediateReservation,
-        stage: DatabaseWorkStage,
-        _ makeValue: () throws -> FieldValue
-    ) throws -> Self {
-        do {
-            let value = try makeValue()
-            let actualFootprint = try CanonicalRelationalFootprintMeter
-                .valueFootprint(
-                    of: value,
-                    workMeter: reservation.workMeter,
-                    stage: stage
-                )
-            guard actualFootprint.rows <= maximumFootprint.rows,
-                  actualFootprint.bytes <= maximumFootprint.bytes else {
-                throw CanonicalQueryScopedFieldValueError
-                    .payloadFootprintExceeded(
-                        maximumRows: maximumFootprint.rows,
-                        maximumBytes: maximumFootprint.bytes,
-                        actualRows: actualFootprint.rows,
-                        actualBytes: actualFootprint.bytes
-                    )
-            }
-            try reservation.releasePartial(
-                rows: maximumFootprint.rows - actualFootprint.rows,
-                bytes: maximumFootprint.bytes - actualFootprint.bytes
-            )
-            return retaining(value, reservation: reservation)
-        } catch {
-            reservation.release()
-            throw error
-        }
-    }
-
-    func withValue<Result, Failure: Error>(
-        _ body: (borrowing FieldValue) throws(Failure) -> Result
-    ) throws(Failure) -> Result {
-        defer { withExtendedLifetime(provenance) {} }
-        return try body(value)
-    }
-
-    fileprivate var retainedReservation: DatabaseIntermediateReservation? {
-        guard case .ownedDerived(let reservation) = provenance else {
-            return nil
-        }
-        return reservation
-    }
-
-}
-
 private func prospectiveQueryRowFootprint(
     fieldNames: [String],
-    values: [CanonicalQueryScopedFieldValue],
+    values: [DatabaseQueryScopedFieldValue],
     annotations: [String: FieldValue] = [:],
     version: PersistableVersionToken? = nil,
     workMeter: DatabaseWorkMeter,
@@ -642,7 +511,7 @@ private func prospectiveQueryRowFootprint(
 
 private func prospectiveSourceRowFootprint(
     fieldNames: [String],
-    values: [CanonicalQueryScopedFieldValue],
+    values: [DatabaseQueryScopedFieldValue],
     sourceName: String?,
     annotations: [String: FieldValue] = [:],
     version: PersistableVersionToken? = nil,
@@ -921,7 +790,7 @@ private func reserveQueryScopedValues(
 ) throws -> DatabaseIntermediateReservation {
     let footprint = try DatabaseIntermediateCollectionMeter.arrayFootprint(
         count: count,
-        element: CanonicalQueryScopedFieldValue.self
+        element: DatabaseQueryScopedFieldValue.self
     )
     return try workMeter.reserveIntermediate(
         bytes: footprint.bytes,
@@ -1460,6 +1329,14 @@ struct CanonicalRetainedQueryResponse: ~Copyable, Sendable {
             affectedRows: affectedRows
         )
     }
+
+    consuming func retainVisibleRows() -> DatabaseRetainedQueryRows {
+        let visibleRange = visibleRange
+        let retainedRows = DatabaseRetainedQueryRows(
+            sharedStorage: rows.boundedView(visibleRange)
+        )
+        return retainedRows
+    }
 }
 
 private struct CanonicalRelation: Sendable {
@@ -1849,6 +1726,30 @@ extension DatabaseContext {
                 session: session
             )
             return response.promoteToPublicResponse()
+        } catch {
+            throw sanitizedFusionExecutionError(error)
+        }
+    }
+
+    package func retainedSessionBoundPage(
+        _ selectQuery: SelectQuery,
+        execution: ReadExecutionContext,
+        graphPartitions: FieldObject = FieldObject(),
+        session: DatabaseReadSession
+    ) async throws -> DatabaseRetainedQueryPage {
+        do {
+            let response = try await querySessionBoundRetainedUnmapped(
+                selectQuery,
+                execution: execution,
+                graphPartitions: graphPartitions,
+                session: session
+            )
+            let continuation = response.continuation
+            let rows = response.retainVisibleRows()
+            return DatabaseRetainedQueryPage(
+                rows: consume rows,
+                continuation: continuation
+            )
         } catch {
             throw sanitizedFusionExecutionError(error)
         }
@@ -2838,18 +2739,24 @@ extension DatabaseContext {
         try leftRows.withSpan { rows in
             for index in rows.indices {
                 let row = rows[index]
-                let canonical = CanonicalSourceRow.fromBaseFields(
-                    row.fields,
-                    sourceName: leftTable.effectiveName,
-                    annotations: row.annotations,
-                    version: row.version
-                )
                 try leftBuilder.append(
-                    footprint: try CanonicalRelationalFootprintMeter.footprint(
-                        of: canonical,
-                        workMeter: options.workMeter
-                    ),
-                    make: { canonical }
+                    footprint: try CanonicalRelationalFootprintMeter
+                        .sourceRowFootprint(
+                            fields: row.fields,
+                            sourceName: leftTable.effectiveName,
+                            annotations: row.annotations,
+                            version: row.version,
+                            workMeter: options.workMeter,
+                            stage: .joinCandidate
+                        ),
+                    make: {
+                        CanonicalSourceRow.fromBaseFields(
+                            row.fields,
+                            sourceName: leftTable.effectiveName,
+                            annotations: row.annotations,
+                            version: row.version
+                        )
+                    }
                 )
             }
         }
@@ -2864,18 +2771,24 @@ extension DatabaseContext {
         try rightRows.withSpan { rows in
             for index in rows.indices {
                 let row = rows[index]
-                let canonical = CanonicalSourceRow.fromBaseFields(
-                    row.fields,
-                    sourceName: rightTable.effectiveName,
-                    annotations: row.annotations,
-                    version: row.version
-                )
                 try rightBuilder.append(
-                    footprint: try CanonicalRelationalFootprintMeter.footprint(
-                        of: canonical,
-                        workMeter: options.workMeter
-                    ),
-                    make: { canonical }
+                    footprint: try CanonicalRelationalFootprintMeter
+                        .sourceRowFootprint(
+                            fields: row.fields,
+                            sourceName: rightTable.effectiveName,
+                            annotations: row.annotations,
+                            version: row.version,
+                            workMeter: options.workMeter,
+                            stage: .joinCandidate
+                        ),
+                    make: {
+                        CanonicalSourceRow.fromBaseFields(
+                            row.fields,
+                            sourceName: rightTable.effectiveName,
+                            annotations: row.annotations,
+                            version: row.version
+                        )
+                    }
                 )
             }
         }
@@ -2996,7 +2909,7 @@ extension DatabaseContext {
                 options: options,
                 partitions: partitionValues ?? FieldObject()
             )
-            let rows = try materializeLogicalQueryRows(
+            let rows = try retainLogicalQueryRows(
                 consume retainedRows,
                 workMeter: options.workMeter,
                 stage: .resultMaterialization
@@ -3004,7 +2917,8 @@ extension DatabaseContext {
             let page = try CanonicalQueryPagination.retainedWindow(
                 rows: rows,
                 selectQuery: selectQuery,
-                options: options
+                options: options,
+                rowsAreLogicalQueryRelative: true
             )
             return CanonicalRetainedQueryResponse(
                 rows: rows,
@@ -3814,7 +3728,7 @@ extension DatabaseContext {
                         stage: .bindingCandidate
                     )
                     defer { scopedValueReservation.release() }
-                    var scopedValues: [CanonicalQueryScopedFieldValue] = []
+                    var scopedValues: [DatabaseQueryScopedFieldValue] = []
                     scopedValues.reserveCapacity(columns.count)
                     for column in columns {
                         scopedValues.append(
@@ -5302,14 +5216,14 @@ extension DatabaseContext {
                 count: rows.count,
                 element: (
                     CanonicalSourceRow,
-                    [CanonicalQueryScopedFieldValue],
+                    [DatabaseQueryScopedFieldValue],
                     ByteString
                 ).self
             )
         let nestedValuesFootprint = try DatabaseIntermediateCollectionMeter
             .arrayFootprint(
                 count: orderBy.count,
-                element: CanonicalQueryScopedFieldValue.self
+                element: DatabaseQueryScopedFieldValue.self
             )
             .multiplied(by: UInt64(rows.count))
         let decorationFootprint = try outerArrayFootprint
@@ -5331,12 +5245,12 @@ extension DatabaseContext {
         try workMeter.consume(UInt64(rows.count), at: .sortInput)
         var decorated: [(
             CanonicalSourceRow,
-            [CanonicalQueryScopedFieldValue],
+            [DatabaseQueryScopedFieldValue],
             ByteString
         )] = []
         decorated.reserveCapacity(rows.count)
         for row in rows {
-            var values: [CanonicalQueryScopedFieldValue] = []
+            var values: [DatabaseQueryScopedFieldValue] = []
             values.reserveCapacity(orderBy.count)
             for key in orderBy {
                 values.append(
@@ -5360,7 +5274,7 @@ extension DatabaseContext {
         }
         let sorted: [(
             CanonicalSourceRow,
-            [CanonicalQueryScopedFieldValue],
+            [DatabaseQueryScopedFieldValue],
             ByteString
         )]
         do {
@@ -5484,7 +5398,7 @@ extension DatabaseContext {
                     stage: .projection
                 )
                 defer { scopedValueReservation.release() }
-                var scopedValues: [CanonicalQueryScopedFieldValue] = []
+                var scopedValues: [DatabaseQueryScopedFieldValue] = []
                 scopedValues.reserveCapacity(items.count)
                 for item in items {
                     scopedValues.append(
@@ -5640,7 +5554,7 @@ extension DatabaseContext {
                 stage: .aggregateInput
             )
             defer { scopedValueReservation.release() }
-            var scopedValues: [CanonicalQueryScopedFieldValue] = []
+            var scopedValues: [DatabaseQueryScopedFieldValue] = []
             scopedValues.reserveCapacity(groupBy.count)
             for expression in groupBy {
                 scopedValues.append(
@@ -5844,13 +5758,13 @@ extension DatabaseContext {
                 count: groups.count,
                 element: (
                     CanonicalGroupedRow,
-                    [CanonicalQueryScopedFieldValue]
+                    [DatabaseQueryScopedFieldValue]
                 ).self
             )
         let nestedValuesFootprint = try DatabaseIntermediateCollectionMeter
             .arrayFootprint(
                 count: orderBy.count,
-                element: CanonicalQueryScopedFieldValue.self
+                element: DatabaseQueryScopedFieldValue.self
             )
             .multiplied(by: UInt64(groups.count))
         let decorationFootprint = try outerArrayFootprint
@@ -5868,11 +5782,11 @@ extension DatabaseContext {
         try workMeter.consume(UInt64(groups.count), at: .sortInput)
         var decorated: [(
             CanonicalGroupedRow,
-            [CanonicalQueryScopedFieldValue]
+            [DatabaseQueryScopedFieldValue]
         )] = []
         decorated.reserveCapacity(groups.count)
         for group in groups {
-            var values: [CanonicalQueryScopedFieldValue] = []
+            var values: [DatabaseQueryScopedFieldValue] = []
             values.reserveCapacity(orderBy.count)
             for sortKey in orderBy {
                 let expression = groupedOrderExpression(
@@ -5893,7 +5807,7 @@ extension DatabaseContext {
         }
         let sorted: [(
             CanonicalGroupedRow,
-            [CanonicalQueryScopedFieldValue]
+            [DatabaseQueryScopedFieldValue]
         )]
         do {
             sorted = try decorated.sorted { lhs, rhs in
@@ -6063,7 +5977,7 @@ extension DatabaseContext {
                     stage: .projection
                 )
                 defer { scopedValueReservation.release() }
-                var scopedValues: [CanonicalQueryScopedFieldValue] = []
+                var scopedValues: [DatabaseQueryScopedFieldValue] = []
                 scopedValues.reserveCapacity(items.count)
                 for (_, item) in zip(names, items) {
                     scopedValues.append(
@@ -6174,7 +6088,7 @@ extension DatabaseContext {
         groupBy: [Expression],
         workMeter: DatabaseWorkMeter,
         evaluationContext: CanonicalQueryEvaluationContext?
-    ) async throws -> CanonicalQueryScopedFieldValue {
+    ) async throws -> DatabaseQueryScopedFieldValue {
         var retainedLifetimes = try DatabaseRetainedArrayBuilder<
             DatabaseIntermediateReservation
         >(
@@ -6562,7 +6476,7 @@ extension DatabaseContext {
         rows: CanonicalRetainedRows,
         workMeter: DatabaseWorkMeter,
         evaluationContext: CanonicalQueryEvaluationContext?
-    ) async throws -> CanonicalQueryScopedFieldValue {
+    ) async throws -> DatabaseQueryScopedFieldValue {
         let functionName: String
         let expression: Expression?
         let distinct: Bool
@@ -6628,7 +6542,7 @@ extension DatabaseContext {
             ).adding(
                 DatabaseIntermediateCollectionMeter.arrayFootprint(
                     count: orderedRows.count,
-                    element: CanonicalQueryScopedFieldValue.self
+                    element: DatabaseQueryScopedFieldValue.self
                 )
             )
         if case .groupConcat = aggregate {
@@ -6650,7 +6564,7 @@ extension DatabaseContext {
                 .adding(
                     try DatabaseIntermediateCollectionMeter.arrayFootprint(
                         count: orderedRows.count,
-                        element: CanonicalQueryScopedFieldValue.self
+                        element: DatabaseQueryScopedFieldValue.self
                     )
                 )
                 .adding(
@@ -6670,7 +6584,7 @@ extension DatabaseContext {
             at: .aggregateInput
         )
         defer { aggregateScratchReservation.release() }
-        var scopedValues: [CanonicalQueryScopedFieldValue] = []
+        var scopedValues: [DatabaseQueryScopedFieldValue] = []
         scopedValues.reserveCapacity(orderedRows.count)
         var values: [FieldValue] = []
         values.reserveCapacity(orderedRows.count)
@@ -6695,7 +6609,7 @@ extension DatabaseContext {
         if distinct {
             var seen = Set<FieldValue>()
             var distinctValues: [FieldValue] = []
-            var distinctScopedValues: [CanonicalQueryScopedFieldValue] = []
+            var distinctScopedValues: [DatabaseQueryScopedFieldValue] = []
             distinctValues.reserveCapacity(values.count)
             distinctScopedValues.reserveCapacity(scopedValues.count)
             for (value, scopedValue) in zip(values, scopedValues) {
@@ -6714,7 +6628,7 @@ extension DatabaseContext {
 
         func retainingResult(
             _ value: FieldValue
-        ) throws -> CanonicalQueryScopedFieldValue {
+        ) throws -> DatabaseQueryScopedFieldValue {
             try .retaining(
                 value,
                 workMeter: workMeter,
@@ -6911,7 +6825,7 @@ extension DatabaseContext {
         on row: CanonicalSourceRow,
         context: CanonicalQueryEvaluationContext?,
         workMeter: DatabaseWorkMeter
-    ) async throws -> CanonicalQueryScopedFieldValue {
+    ) async throws -> DatabaseQueryScopedFieldValue {
         let effectiveRowConstruction = try workMeter.reserveIntermediate(
             bytes: prospectiveSourceCompositionFootprint(
                 row,
@@ -6981,8 +6895,8 @@ extension DatabaseContext {
         on row: CanonicalSourceRow,
         context: CanonicalQueryEvaluationContext?,
         workMeter: DatabaseWorkMeter
-    ) async throws -> [CanonicalQueryScopedFieldValue] {
-        var values: [CanonicalQueryScopedFieldValue] = []
+    ) async throws -> [DatabaseQueryScopedFieldValue] {
+        var values: [DatabaseQueryScopedFieldValue] = []
         values.reserveCapacity(expressions.count)
         for expression in expressions {
             values.append(
@@ -6998,7 +6912,7 @@ extension DatabaseContext {
     }
 
     private func retainQueryScopedLiteral(
-        _ value: CanonicalQueryScopedFieldValue,
+        _ value: DatabaseQueryScopedFieldValue,
         retainedLifetimes: inout DatabaseRetainedArrayBuilder<
             DatabaseIntermediateReservation
         >
@@ -7137,7 +7051,7 @@ extension DatabaseContext {
             guard !visibleRows.isEmpty else {
                 return .literal(.null)
             }
-            var retainedValue: CanonicalQueryScopedFieldValue?
+            var retainedValue: DatabaseQueryScopedFieldValue?
             try visibleRows.withElement(at: 0) { resultRow in
                 guard resultRow.fields.count == 1,
                       let value = resultRow.fields.values.first else {
@@ -7170,7 +7084,7 @@ extension DatabaseContext {
 
         case .inSubquery(let value, let query):
             let resolvedValue = try await resolve(value)
-            let candidate: CanonicalQueryScopedFieldValue
+            let candidate: DatabaseQueryScopedFieldValue
             let candidateMaximumFootprint = try
                 prospectiveExpressionResultFootprint(
                     resolvedValue,
@@ -8363,6 +8277,9 @@ extension DatabaseContext {
         workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage
     ) throws -> CanonicalRetainedRows {
+        guard rows.workMeter === workMeter else {
+            throw DatabaseIntermediateReservationError.workMeterMismatch
+        }
         var retained = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
             workMeter: workMeter,
             stage: stage,
@@ -8401,31 +8318,15 @@ extension DatabaseContext {
         return try retained.finish().moveToSharedOwnership(at: stage)
     }
 
-    private func materializeLogicalQueryRows(
+    private func retainLogicalQueryRows(
         _ rows: consuming DatabaseRetainedQueryRows,
         workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage
     ) throws -> CanonicalRetainedQueryRows {
-        var retained = try DatabaseRetainedArrayBuilder<QueryRow>(
-            workMeter: workMeter,
-            stage: stage,
-            layout: try DatabaseRetainedArrayLayout.forElement(QueryRow.self),
-            expectedCount: rows.count
-        )
-        for index in 0..<rows.count {
-            try rows.withElement(at: index) { row in
-                try workMeter.consume(at: stage)
-                try retained.append(
-                    footprint: try CanonicalRelationalFootprintMeter.footprint(
-                        of: row,
-                        workMeter: workMeter,
-                        stage: stage
-                    ),
-                    make: { row }
-                )
-            }
+        guard rows.workMeter === workMeter else {
+            throw DatabaseIntermediateReservationError.workMeterMismatch
         }
-        return try retained.finish().moveToSharedOwnership(at: stage)
+        return try rows.moveToSharedOwnership(at: stage)
     }
 
     private func retainedCanonicalRow(

@@ -234,18 +234,21 @@ extension DatabaseContext {
         }
         let startTime = indexQueryContext.graphClock.now()
 
-        let hasOrderBy = !orderBy.isEmpty
-        let needsAllResults = hasOrderBy || distinct
+        let possibleBindingVariables = pattern.outputVariables.union(
+            selection.includedFieldNames.map { "?\($0)" }
+        )
+        let projectionIsIdentity = possibleBindingVariables.isSubset(
+            of: Set(projectedVars)
+        )
 
-        // Step 1: Pattern evaluation (WHERE + GROUP BY / HAVING)
-        var (bindings, stats) = try await indexQueryContext
+        let executionResult = try await indexQueryContext
             .withReadableIndex(
                 named: selection.indexName,
                 indexType: selection.indexType,
                 for: T.self
             ) {
                 readableIndex,
-                transaction -> ([VariableBinding], ExecutionStatistics) in
+                transaction -> SPARQLResult in
                 let sources: [RDFDatasetSource]
                 if let readableIndex {
                     sources = [
@@ -259,63 +262,37 @@ extension DatabaseContext {
                     sources = []
                 }
                 let executor = SPARQLQueryExecutor(
-                    database: self.container.engine,
                     monotonicClock: self.container.monotonicClock,
                     wallClock: self.container.wallClock,
-                    sources: sources,
+                    datasetScanner: IndexedRDFDatasetScanner(
+                        sources: sources
+                    ),
                     dataset: dataset
                 )
-                return try await executor.executeInTransaction(
+                let retained = try await executor
+                    .executeRetainedProjectedInTransaction(
                     pattern: pattern,
-                    transaction: transaction.storageTransaction,
-                    limit: needsAllResults ? nil : limit,
-                    offset: needsAllResults ? 0 : offset,
+                    transaction: transaction,
+                    orderBy: orderBy,
+                    projectionVariables: projectedVars,
+                    projectionIsIdentity: projectionIsIdentity,
+                    duplicatePolicy: distinct ? .distinct : .preserve,
+                    offset: offset,
+                    limit: limit,
                     workMeter: workMeter
                 )
+                return retained.promoteToResult()
             }
 
-        // Step 2: ORDER BY (before projection, per W3C Section 15)
-        if hasOrderBy {
-            bindings = try BindingSorter.sort(
-                bindings,
-                by: orderBy,
-                workMeter: workMeter
-            )
-        }
-
-        // Step 3: Projection (SELECT)
-        let projectionSet = Set(projectedVars)
-        var projected = try bindings.map { binding in
-            try workMeter.consume(at: .projection)
-            return binding.project(projectionSet)
-        }
-
-        // Step 4: DISTINCT
-        if distinct {
-            var seen = Set<VariableBinding>()
-            projected = try projected.filter { binding in
-                try workMeter.consume(at: .deduplication)
-                return seen.insert(binding).inserted
-            }
-        }
-
-        // Step 5: OFFSET / LIMIT (Slice)
-        if needsAllResults {
-            if offset > 0 {
-                projected = Array(projected.dropFirst(offset))
-            }
-            if let lim = limit {
-                projected = Array(projected.prefix(lim))
-            }
-        }
-
+        let executionStats = executionResult.statistics
+        let isComplete = executionResult.isComplete
+        let limitReason = executionResult.limitReason
+        let projected = executionResult.bindings
         let endTime = indexQueryContext.graphClock.now()
+        var stats = executionStats
         stats.durationNs = endTime.uptimeNanoseconds - startTime.uptimeNanoseconds
 
         let resultCount = projected.count
-        let reachedLimit = limit.map { resultCount >= $0 } ?? false
-        let isComplete = !reachedLimit
-        let limitReason: SPARQLLimitReason? = reachedLimit ? .explicitLimit : nil
 
         guard let outputRows = UInt32(exactly: resultCount) else {
             throw DatabaseWorkLimitError.maximumRows(
@@ -355,14 +332,14 @@ extension DatabaseContext {
             monotonicClock: container.monotonicClock
         )
         let startTime = indexQueryContext.graphClock.now()
-        var (bindings, statistics) = try await indexQueryContext
+        let executionResult = try await indexQueryContext
             .withReadableIndex(
                 named: selection.indexName,
                 indexType: selection.indexType,
                 for: T.self
             ) {
                 readableIndex,
-                transaction -> ([VariableBinding], ExecutionStatistics) in
+                transaction -> SPARQLResult in
                 let sources: [RDFDatasetSource]
                 if let readableIndex {
                     sources = [
@@ -376,17 +353,26 @@ extension DatabaseContext {
                     sources = []
                 }
                 let executor = SPARQLQueryExecutor(
-                    database: self.container.engine,
                     monotonicClock: self.container.monotonicClock,
                     wallClock: self.container.wallClock,
-                    sources: sources
+                    datasetScanner: IndexedRDFDatasetScanner(
+                        sources: sources
+                    )
                 )
-                return try await executor.executeInTransaction(
+                let retained = try await executor.executeRetainedInTransaction(
                     selectPlan: plan,
-                    transaction: transaction.storageTransaction,
+                    transaction: transaction,
                     workMeter: workMeter
                 )
+                return retained.promoteToResult()
             }
+
+        let executionStats = executionResult.statistics
+        let projectedVariables = executionResult.projectedVariables
+        let isComplete = executionResult.isComplete
+        let limitReason = executionResult.limitReason
+        let bindings = executionResult.bindings
+        var statistics = executionStats
         statistics.durationNs = indexQueryContext.graphClock.now().uptimeNanoseconds
             - startTime.uptimeNanoseconds
 
@@ -399,14 +385,11 @@ extension DatabaseContext {
             )
         }
         try workMeter.recordOutputRows(outputRows)
-        let reachedLimit = plan.slice.limit.map {
-            bindings.count >= $0
-        } ?? false
         return SPARQLResult(
             bindings: consume bindings,
-            projectedVariables: plan.projectionVariables,
-            isComplete: !reachedLimit,
-            limitReason: reachedLimit ? .explicitLimit : nil,
+            projectedVariables: projectedVariables,
+            isComplete: isComplete,
+            limitReason: limitReason,
             statistics: statistics
         )
     }

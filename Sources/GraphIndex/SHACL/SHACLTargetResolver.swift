@@ -22,14 +22,14 @@ import DatabaseTypes
 public struct SHACLTargetResolver: Sendable {
 
     private let executor: SPARQLQueryExecutor
-    private let transaction: any TransactionAccess
+    private let transaction: any TransactionReadAccess
     private let dataGraph: SHACLDataGraphTarget
     private let entailmentContext: (any SHACLEntailmentContext)?
     private let budget: SHACLValidationWorkBudget
 
     public init(
         executor: SPARQLQueryExecutor,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         dataGraph: SHACLDataGraphTarget,
         entailmentContext: (any SHACLEntailmentContext)? = nil,
         budget: SHACLValidationWorkBudget

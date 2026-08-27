@@ -7,7 +7,7 @@ extension SPARQLQueryExecutor {
     func evaluateMinusPattern(
         left: ExecutionPattern,
         right: ExecutionPattern,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         activeGraph: ActiveGraph,
         seed: VariableBinding,
         resultLimit: Int?,

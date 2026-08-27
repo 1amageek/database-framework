@@ -2,14 +2,27 @@ import DatabaseEngine
 import DatabaseTypes
 import DatabaseWire
 import DatabaseKit
-import GraphIndex
+@testable import GraphIndex
 import StorageKit
+import Synchronization
 import TestHeartbeat
 import Testing
 import TestSupport
 
 @Suite("SPARQL runtime expression execution", .heartbeat)
 struct SPARQLRuntimeExpressionExecutionTests {
+    private final class InvocationCounter: Sendable {
+        private let state = Mutex(0)
+
+        func record() {
+            state.withLock { $0 += 1 }
+        }
+
+        var value: Int {
+            state.withLock { $0 }
+        }
+    }
+
     private struct ExistsLimitScanner: RDFDatasetScanner {
         func scan(
             subject: RDFTerm?,
@@ -18,7 +31,7 @@ struct SPARQLRuntimeExpressionExecutionTests {
             graphTarget: RDFGraphScanTarget,
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> RDFDatasetScanResult {
             guard limit == 1 else {
@@ -31,7 +44,7 @@ struct SPARQLRuntimeExpressionExecutionTests {
                     "SPARQL query reads must use snapshot isolation"
                 )
             }
-            return RDFDatasetScanResult(
+            return try RDFDatasetScanResult(
                 quads: [
                     RDFQuad(
                         subject: .iri(
@@ -45,23 +58,24 @@ struct SPARQLRuntimeExpressionExecutionTests {
                         )
                     )
                 ],
-                physicalScanCount: 1
+                physicalScanCount: 1,
+                workMeter: workMeter
             )
         }
 
         func namedGraphs(
             limit: Int?,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
-        ) async throws -> [RDFGraphName] {
-            []
+        ) async throws -> RDFDatasetNamedGraphs {
+            .empty(workMeter: workMeter)
         }
 
         func containsNamedGraph(
             _ graph: RDFGraphName,
             readMode: RDFDatasetReadMode,
-            transaction: any TransactionAccess,
+            transaction: any TransactionReadAccess,
             workMeter: DatabaseWorkMeter
         ) async throws -> Bool {
             false
@@ -70,6 +84,7 @@ struct SPARQLRuntimeExpressionExecutionTests {
 
     private struct EchoFunction: SPARQLFunction {
         let identifier: RDFIRI
+        let maximumResultByteCount: UInt64 = 1_024 * 1_024
 
         func evaluate(
             arguments: [FieldValue]
@@ -85,6 +100,7 @@ struct SPARQLRuntimeExpressionExecutionTests {
 
     private struct FailureFunction: SPARQLFunction {
         let identifier: RDFIRI
+        let maximumResultByteCount: UInt64 = 1_024 * 1_024
 
         func evaluate(
             arguments: [FieldValue]
@@ -92,6 +108,20 @@ struct SPARQLRuntimeExpressionExecutionTests {
             throw SPARQLExpressionEvaluationError.runtimeInvariant(
                 "failure function was evaluated"
             )
+        }
+    }
+
+    private struct CountingFunction: SPARQLFunction {
+        let identifier: RDFIRI
+        let maximumResultByteCount: UInt64
+        let result: FieldValue
+        let counter: InvocationCounter
+
+        func evaluate(
+            arguments: [FieldValue]
+        ) throws(SPARQLExpressionEvaluationError) -> FieldValue {
+            counter.record()
+            return result
         }
     }
 
@@ -276,6 +306,147 @@ struct SPARQLRuntimeExpressionExecutionTests {
                 functionRegistry: registry
             )
         }
+    }
+
+    @Test("BIND rejects an unadmitted derived result before function invocation")
+    func bindRejectsDerivedProducerBeforeInvocation() async throws {
+        let identifier = try RDFIRI("did:example:bounded-bind")
+        let counter = InvocationCounter()
+        let boundCounter = InvocationCounter()
+        let registry = try SPARQLFunctionRegistry([
+            CountingFunction(
+                identifier: identifier,
+                maximumResultByteCount: 1_000_000,
+                result: try .rdfTerm(
+                    .literal(
+                        RDFLiteral(
+                            lexicalForm: "value",
+                            datatype:
+                                "http://www.w3.org/2001/XMLSchema#string"
+                        )
+                    )
+                ),
+                counter: counter
+            )
+        ])
+        let expression = try SPARQLExpressionPlan(
+            .function(
+                FunctionCall(
+                    name: identifier.rawValue,
+                    arguments: []
+                )
+            )
+        )
+        let pattern = ExecutionPattern.extend(
+            .basic([]),
+            variable: "?value",
+            expression: expression
+        )
+        let scratchMeter = DatabaseWorkMeter(
+            budget: ExecutionBudget(
+                maximumRows: 1,
+                maximumWorkUnits: 1,
+                maximumIntermediateRows: 1,
+                maximumIntermediateBytes: 0,
+                timeoutMilliseconds: 30_000
+            ),
+            monotonicClock: TestProcessMonotonicClock()
+        )
+        var scratchFailure: Error?
+        do {
+            _ = try expression.resultOwnership(
+                binding: VariableBinding(),
+                workMeter: scratchMeter,
+                stage: .expressionEvaluation
+            ) { _ in
+                boundCounter.record()
+                return 1_000_000
+            }
+            Issue.record("Expected expression scratch admission to fail")
+        } catch {
+            scratchFailure = error
+        }
+        guard let scratchLimit = scratchFailure as? DatabaseWorkLimitError,
+              case .maximumIntermediateBytes(
+                let scratchStage,
+                let scratchConsumed,
+                let scratchRequested,
+                let scratchMaximum
+              ) = scratchLimit else {
+            Issue.record(
+                "Expected expression scratch byte-limit failure, got \(String(describing: scratchFailure))"
+            )
+            return
+        }
+        #expect(scratchStage == .expressionEvaluation)
+        #expect(scratchConsumed == 0)
+        #expect(scratchRequested > 0)
+        #expect(scratchMaximum == 0)
+        #expect(boundCounter.value == 0)
+        #expect(scratchMeter.peakIntermediateBytes == 0)
+        #expect(scratchMeter.retainedIntermediateRows == 0)
+        #expect(scratchMeter.retainedIntermediateBytes == 0)
+
+        await #expect(throws: DatabaseWorkLimitError.self) {
+            _ = try await execute(
+                pattern,
+                functionRegistry: registry,
+                maximumIntermediateBytes: 128 * 1_024
+            )
+        }
+        #expect(counter.value == 0)
+    }
+
+    @Test("GROUP_CONCAT rejects output before evaluating its expression")
+    func groupConcatRejectsProducerBeforeExpressionEvaluation() async throws {
+        let identifier = try RDFIRI("did:example:bounded-group")
+        let counter = InvocationCounter()
+        let registry = try SPARQLFunctionRegistry([
+            CountingFunction(
+                identifier: identifier,
+                maximumResultByteCount: 1_024,
+                result: try .rdfTerm(
+                    .literal(
+                        RDFLiteral(
+                            lexicalForm: "value",
+                            datatype:
+                                "http://www.w3.org/2001/XMLSchema#string"
+                        )
+                    )
+                ),
+                counter: counter
+            )
+        ])
+        let expression = try SPARQLExpressionPlan(
+            .function(
+                FunctionCall(
+                    name: identifier.rawValue,
+                    arguments: []
+                )
+            )
+        )
+        let pattern = ExecutionPattern.groupBy(
+            .basic([]),
+            grouping: .implicitSingleGroup,
+            aggregates: [
+                .groupConcat(
+                    expression: expression,
+                    separator: ",",
+                    distinct: false,
+                    alias: "?joined"
+                )
+            ],
+            having: nil
+        )
+
+        await #expect(throws: DatabaseWorkLimitError.self) {
+            _ = try await execute(
+                pattern,
+                functionRegistry: registry,
+                maximumIntermediateBytes: 1_500_000
+            )
+        }
+        #expect(counter.value == 0)
     }
 
     @Test("An invalid EXISTS source fails during compilation")
@@ -566,7 +737,8 @@ struct SPARQLRuntimeExpressionExecutionTests {
 
     private func execute(
         _ pattern: ExecutionPattern,
-        functionRegistry: SPARQLFunctionRegistry = .empty
+        functionRegistry: SPARQLFunctionRegistry = .empty,
+        maximumIntermediateBytes: UInt64 = 16 * 1_024 * 1_024
     ) async throws -> [VariableBinding] {
         let result = try await SPARQLQueryExecutor(
             database: InMemoryEngine(),
@@ -582,6 +754,8 @@ struct SPARQLRuntimeExpressionExecutionTests {
                 budget: ExecutionBudget(
                     maximumRows: 1_000,
                     maximumWorkUnits: 10_000,
+                    maximumIntermediateRows: 1_000,
+                    maximumIntermediateBytes: maximumIntermediateBytes,
                     timeoutMilliseconds: 30_000
                 ),
                 monotonicClock: TestProcessMonotonicClock()

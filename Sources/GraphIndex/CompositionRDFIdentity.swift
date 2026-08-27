@@ -6,6 +6,11 @@ import DatabaseTypes
 /// Qualifies every RDF blank-node identity by its source Base before values
 /// cross a Composition boundary.
 enum CompositionRDFIdentity {
+    static func qualificationPrefix(baseID: Base.ID) -> String {
+        let base = baseID.value
+        return "base:\(base.utf8.count):\(base):"
+    }
+
     static func qualifyBlankNodes(
         in row: DatabaseEngine.QueryRow,
         baseID: Base.ID
@@ -106,9 +111,8 @@ enum CompositionRDFIdentity {
         _ identifier: RDFBlankNodeIdentifier,
         baseID: Base.ID
     ) throws -> RDFBlankNodeIdentifier {
-        let base = baseID.value
         return try RDFBlankNodeIdentifier(
-            "base:\(base.utf8.count):\(base):\(identifier.rawValue)"
+            qualificationPrefix(baseID: baseID) + identifier.rawValue
         )
     }
 }

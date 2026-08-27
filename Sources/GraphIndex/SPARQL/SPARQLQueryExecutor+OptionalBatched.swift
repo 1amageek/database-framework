@@ -7,7 +7,7 @@ extension SPARQLQueryExecutor {
     func evaluateOptionalBatchedSingleTriple(
         leftBindings: borrowing SPARQLRetainedBindings,
         rightTriple: ExecutionTriple,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         activeGraph: ActiveGraph,
         resultLimit: Int?
     ) async throws -> EvaluationResult {
@@ -21,9 +21,10 @@ extension SPARQLQueryExecutor {
             stage: .joinCandidate,
             expectedCount: 0
         )
-        var scanCache: [
-            ScanSignature: SPARQLSharedBindingSnapshot
-        ] = [:]
+        let workMeter = try requiredWorkMeter()
+        var scanCache = try SPARQLScanResultCache.make(
+            workMeter: workMeter
+        )
 
         for leftIndex in 0..<leftBindings.count {
             try requiredWorkMeter().consume(at: .deduplication)
@@ -36,8 +37,8 @@ extension SPARQLQueryExecutor {
                     graphTarget: activeGraph.graphTarget
                 )
                 let rightBindings: SPARQLRetainedBindings
-                if let cached = scanCache[signature] {
-                    rightBindings = cached.retainedBindings()
+                if let cached = scanCache.value(for: signature) {
+                    rightBindings = cached
                 } else {
                     let rightResult = try await evaluate(
                         pattern: .basic([substitutedTriple]),
@@ -52,7 +53,11 @@ extension SPARQLQueryExecutor {
                     ).sharingForFanOut(
                         at: .joinCandidate
                     )
-                    scanCache[signature] = sharedOwnership.snapshot
+                    try scanCache.insert(
+                        sharedOwnership.snapshot,
+                        for: signature,
+                        sourceWorkMeter: workMeter
+                    )
                     rightBindings = consume sharedOwnership.retained
                 }
 

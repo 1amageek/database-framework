@@ -13,6 +13,7 @@ struct SPARQLFunctionRegistryTests {
         }
 
         let identifier: RDFIRI
+        let maximumResultByteCount: UInt64 = 1_024 * 1_024
         let behavior: Behavior
 
         func evaluate(

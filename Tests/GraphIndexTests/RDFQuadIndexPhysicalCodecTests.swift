@@ -442,7 +442,9 @@ struct RDFQuadIndexPhysicalCodecTests {
                 )
             )
             #expect(result.count == 1)
-            #expect(result.first?.quad == expected)
+            result.withQuad(at: 0) { quad in
+                #expect(quad == expected)
+            }
             #expect(result.physicalScanCount == 1)
         }
     }

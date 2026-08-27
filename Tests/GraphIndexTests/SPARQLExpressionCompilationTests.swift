@@ -254,6 +254,32 @@ struct SPARQLExpressionCompilationTests {
         )
     }
 
+    @Test("Canonical explicit projection excludes covering fields")
+    func canonicalExplicitProjectionIncludesCoveringFieldsInIdentityCheck()
+        throws
+    {
+        let query = SelectQuery(
+            projection: .items([
+                ProjectionItem(.variable(Variable("target"))),
+            ]),
+            source: .graphPattern(
+                .values(
+                    variables: ["target"],
+                    bindings: [[.int(1)]]
+                )
+            )
+        )
+
+        let plan = try SPARQLSelectPlanCompiler
+            .compileForCanonicalPagination(
+                query,
+                additionalProjectionVariables: ["hidden"]
+            )
+
+        #expect(plan.projectionVariables == ["?target"])
+        #expect(!plan.projectionIsIdentity)
+    }
+
     @Test("GROUP_CONCAT separators obey the expression string limit")
     func aggregateSeparatorsAreBounded() {
         let binding = AggregateBinding(

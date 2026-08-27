@@ -1240,4 +1240,23 @@ public struct DatabaseReadSession: Sendable {
         }
     }
 
+    @_spi(DatabaseExecution)
+    public func retainedCanonicalPage(
+        _ query: SelectQuery,
+        execution: ReadExecutionContext,
+        graphPartitions: FieldObject = FieldObject()
+    ) async throws -> DatabaseRetainedQueryPage {
+        try scope.requireWorkMeter(execution.workMeter)
+        return try await scope.withNoncopyableOperation { owners, operation in
+            let page = try await owners.context.retainedSessionBoundPage(
+                query,
+                execution: execution,
+                graphPartitions: graphPartitions,
+                session: self
+            )
+            try operation.validate()
+            return page
+        }
+    }
+
 }

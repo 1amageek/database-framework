@@ -86,7 +86,7 @@ public struct GraphEdgeScanner: Sendable {
     public func scanOutgoing(
         from source: GraphIdentity,
         edgeLabel: GraphIdentity?,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) -> GraphEdgeScan {
         scan(
             source: source,
@@ -99,7 +99,7 @@ public struct GraphEdgeScanner: Sendable {
     public func scanIncoming(
         to target: GraphIdentity,
         edgeLabel: GraphIdentity?,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) -> GraphEdgeScan {
         scan(
             source: nil,
@@ -111,7 +111,7 @@ public struct GraphEdgeScanner: Sendable {
 
     public func scanAllEdges(
         edgeLabel: GraphIdentity?,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) -> GraphEdgeScan {
         scan(
             source: nil,
@@ -124,7 +124,7 @@ public struct GraphEdgeScanner: Sendable {
     public func batchScanOutgoing(
         from sources: [GraphIdentity],
         edgeLabel: GraphIdentity?,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) -> GraphEdgeBatchScan {
         batchScan(
             identities: sources,
@@ -137,7 +137,7 @@ public struct GraphEdgeScanner: Sendable {
     public func batchScanIncoming(
         to targets: [GraphIdentity],
         edgeLabel: GraphIdentity?,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) -> GraphEdgeBatchScan {
         batchScan(
             identities: targets,
@@ -149,7 +149,7 @@ public struct GraphEdgeScanner: Sendable {
 
     public func getAllNodes(
         edgeLabel: GraphIdentity?,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Set<GraphIdentity> {
         var nodes = Set<GraphIdentity>()
         let edgeSequence = scanAllEdges(
@@ -167,7 +167,7 @@ public struct GraphEdgeScanner: Sendable {
     public func getAllNodes(
         edgeLabel: GraphIdentity?,
         maxNodes: Int,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Set<GraphIdentity> {
         guard maxNodes > 0 else { return [] }
         var nodes = Set<GraphIdentity>()
@@ -188,7 +188,7 @@ public struct GraphEdgeScanner: Sendable {
     public func scanAllOutgoing(
         from source: GraphIdentity,
         edgeLabel: GraphIdentity?,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [EdgeInfo] {
         var edges: [EdgeInfo] = []
         let edgeSequence = scanOutgoing(
@@ -206,7 +206,7 @@ public struct GraphEdgeScanner: Sendable {
     public func scanAllIncoming(
         to target: GraphIdentity,
         edgeLabel: GraphIdentity?,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [EdgeInfo] {
         var edges: [EdgeInfo] = []
         let edgeSequence = scanIncoming(
@@ -223,7 +223,7 @@ public struct GraphEdgeScanner: Sendable {
 
     public func scanAllEdges(
         edgeLabel: GraphIdentity?,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         while shouldContinue: (EdgeInfo) throws -> Bool
     ) async throws {
         let edgeSequence = scanAllEdges(
@@ -240,7 +240,7 @@ public struct GraphEdgeScanner: Sendable {
         source: GraphIdentity?,
         target: GraphIdentity?,
         edgeLabel: GraphIdentity?,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) -> GraphEdgeScan {
         GraphEdgeScan(
             entries: scanEntries(
@@ -256,7 +256,7 @@ public struct GraphEdgeScanner: Sendable {
         source: GraphIdentity?,
         target: GraphIdentity?,
         edgeLabel: GraphIdentity?,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) -> GraphEdgeEntryScan {
         GraphEdgeEntryScan(
             scanner: self,
@@ -271,7 +271,7 @@ public struct GraphEdgeScanner: Sendable {
         identities: [GraphIdentity],
         direction: Direction,
         edgeLabel: GraphIdentity?,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) -> GraphEdgeBatchScan {
         let identityPlan: GraphEdgeBatchIdentityPlan
         if requiresFullScanForBatch(edgeLabel: edgeLabel) {
@@ -902,14 +902,14 @@ public struct GraphEdgeBatchScan: Sendable {
     private let identityPlan: GraphEdgeBatchIdentityPlan
     private let direction: GraphEdgeScanner.Direction
     private let edgeLabel: GraphIdentity?
-    private let transaction: any TransactionAccess
+    private let transaction: any TransactionReadAccess
 
     fileprivate init(
         scanner: GraphEdgeScanner,
         identityPlan: GraphEdgeBatchIdentityPlan,
         direction: GraphEdgeScanner.Direction,
         edgeLabel: GraphIdentity?,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) {
         self.scanner = scanner
         self.identityPlan = identityPlan
@@ -933,7 +933,7 @@ public struct GraphEdgeBatchScan: Sendable {
         private let identityPlan: GraphEdgeBatchIdentityPlan
         private let direction: GraphEdgeScanner.Direction
         private let edgeLabel: GraphIdentity?
-        private let transaction: any TransactionAccess
+        private let transaction: any TransactionReadAccess
         private var identityIndex = 0
         private var activeCursor: GraphEdgeScan.Cursor?
         private var isFinished = false
@@ -943,7 +943,7 @@ public struct GraphEdgeBatchScan: Sendable {
             identityPlan: GraphEdgeBatchIdentityPlan,
             direction: GraphEdgeScanner.Direction,
             edgeLabel: GraphIdentity?,
-            transaction: any TransactionAccess
+            transaction: any TransactionReadAccess
         ) {
             self.scanner = scanner
             self.identityPlan = identityPlan
@@ -1038,14 +1038,14 @@ package struct GraphEdgeEntryScan: Sendable {
     private let source: GraphIdentity?
     private let target: GraphIdentity?
     private let edgeLabel: GraphIdentity?
-    private let transaction: any TransactionAccess
+    private let transaction: any TransactionReadAccess
 
     package init(
         scanner: GraphEdgeScanner,
         source: GraphIdentity?,
         target: GraphIdentity?,
         edgeLabel: GraphIdentity?,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) {
         self.scanner = scanner
         self.source = source
@@ -1069,7 +1069,7 @@ package struct GraphEdgeEntryScan: Sendable {
         private let source: GraphIdentity?
         private let target: GraphIdentity?
         private let edgeLabel: GraphIdentity?
-        private let transaction: any TransactionAccess
+        private let transaction: any TransactionReadAccess
         private var preparedScan: GraphEdgePreparedScan?
         private var cursor: KeyValueCursor?
         private var reservation: GraphPhysicalReadReservation?
@@ -1080,7 +1080,7 @@ package struct GraphEdgeEntryScan: Sendable {
             source: GraphIdentity?,
             target: GraphIdentity?,
             edgeLabel: GraphIdentity?,
-            transaction: any TransactionAccess
+            transaction: any TransactionReadAccess
         ) {
             self.scanner = scanner
             self.source = source

@@ -1,14 +1,126 @@
 import DatabaseEngine
 import DatabaseTypes
 import DatabaseWire
-import GraphIndex
 import DatabaseKit
 import StorageKit
+import Synchronization
 import Testing
 import TestSupport
+@_spi(DatabaseExecution) @testable import GraphIndex
 
 @Suite("SPARQL VALUES execution")
 struct SPARQLValuesExecutionTests {
+    private final class FilterInvocationCounter: Sendable {
+        private let count = Mutex(0)
+
+        func record() {
+            count.withLock { $0 += 1 }
+        }
+
+        var value: Int {
+            count.withLock { $0 }
+        }
+    }
+
+    @Test("Public modifiers retain intermediates in SPARQL evaluation order")
+    func retainedPublicModifierPipeline() async throws {
+        let pattern = try GraphPatternConverter.convert(
+            .values(
+                variables: ["sort", "projected", "discarded"],
+                bindings: [
+                    [.int(2), .string("same"), .string("a")],
+                    [.int(1), .string("same"), .string("b")],
+                    [.int(3), .string("other"), .string("c")],
+                    [.int(0), .string("same"), .string("d")],
+                ]
+            )
+        )
+        let engine = InMemoryEngine()
+        let transaction = try engine.createTransaction()
+        let meter = DatabaseWorkMeter(
+            budget: ExecutionBudget(),
+            monotonicClock: TestProcessMonotonicClock()
+        )
+
+        let retained = try await SPARQLQueryExecutor(
+            monotonicClock: TestProcessMonotonicClock(),
+            wallClock: FixedTestWallClock(),
+            datasetScanner: IndexedRDFDatasetScanner(sources: [])
+        ).executeRetainedProjectedInTransaction(
+            pattern: pattern,
+            transaction: transaction,
+            orderBy: [.variable("?sort")],
+            projectionVariables: ["?projected"],
+            projectionIsIdentity: false,
+            duplicatePolicy: .distinct,
+            offset: 1,
+            limit: 1,
+            workMeter: meter
+        )
+
+        #expect(retained.count == 1)
+        #expect(meter.retainedIntermediateRows > 0)
+        let result = retained.promoteToResult()
+        let bindings = result.bindings
+        #expect(bindings.count == 1)
+        #expect(bindings[0].count == 1)
+        guard case .rdfTerm(.literal(let literal)) = bindings[0]["?projected"] else {
+            Issue.record("Expected the projected RDF literal")
+            return
+        }
+        #expect(literal.lexicalForm == "other")
+        #expect(meter.retainedIntermediateRows == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("An incompatible VALUES row is rejected before filter evaluation")
+    func incompatibleRowSkipsFilterAndCandidateConstruction() async throws {
+        let counter = FilterInvocationCounter()
+        let meter = DatabaseWorkMeter(
+            budget: ExecutionBudget(),
+            monotonicClock: TestProcessMonotonicClock()
+        )
+        let engine = InMemoryEngine()
+        let transaction = try engine.createTransaction()
+        let executor = try SPARQLQueryExecutor(
+            database: engine,
+            monotonicClock: TestProcessMonotonicClock(),
+            wallClock: FixedTestWallClock(),
+            sources: []
+        ).requestScoped(by: meter)
+        let table = SPARQLValuesTable(
+            variables: ["?value"],
+            rowCount: 1,
+            cells: [.int64(2)]
+        )
+        let filter = FilterExpression.customWithVariables(
+            { _ in
+                counter.record()
+                throw SPARQLQueryError.executionFailed(
+                    "incompatible VALUES row reached its filter"
+                )
+            },
+            variables: ["?value"]
+        )
+
+        do {
+            let result = try await executor.evaluateValuesPattern(
+                table,
+                transaction: transaction,
+                activeGraph: .defaultGraph,
+                filter: filter,
+                seed: VariableBinding(["?value": .int64(1)]),
+                resultLimit: nil,
+                statistics: ExecutionStatistics()
+            )
+            let isEmpty = result.bindings.isEmpty
+            #expect(isEmpty)
+        }
+        #expect(counter.value == 0)
+        #expect(meter.retainedIntermediateRows == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
     @Test("VALUES preserves row order, duplicates, and UNDEF bindings")
     func valuesMultisetSemantics() async throws {
         let pattern = try GraphPatternConverter.convert(

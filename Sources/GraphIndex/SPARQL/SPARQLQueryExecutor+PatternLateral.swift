@@ -7,7 +7,7 @@ extension SPARQLQueryExecutor {
     func evaluateLateralPattern(
         left: ExecutionPattern,
         right: ExecutionPattern,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         activeGraph: ActiveGraph,
         seed: VariableBinding,
         resultLimit: Int?,

@@ -7,6 +7,11 @@ struct RDFTermStorageValidator {
     private(set) var offset = 0
     private(set) var objectCount = 0
     private(set) var maximumDepth = 0
+    private(set) var literalCount = 0
+    private(set) var stringCount = 0
+    private(set) var decodedStringByteCount = 0
+    private(set) var blankNodeCount = 0
+    private(set) var blankNodeStringByteCount = 0
 
     var isAtEnd: Bool { offset == bytes.count }
 
@@ -18,15 +23,22 @@ struct RDFTermStorageValidator {
         switch try readByte() {
         case 1:
             let identifier = try readStringRange()
-            try validateUTF8(identifier)
+            let decodedByteCount = try validateUTF8(identifier)
             guard !identifier.isEmpty else {
                 throw .invalidBlankNodeIdentifier
             }
+            try registerString(
+                decodedByteCount: decodedByteCount,
+                isBlankNode: true
+            )
             kind = .blankNode
         case 2:
-            try validateIRI(try readStringRange())
+            let iri = try readStringRange()
+            let decodedByteCount = try validateIRI(iri)
+            try registerString(decodedByteCount: decodedByteCount)
             kind = .iri
         case 3:
+            try increment(&literalCount)
             try validateLiteral()
             kind = .literal
         case 4:
@@ -50,12 +62,14 @@ struct RDFTermStorageValidator {
     private mutating func validateLiteral(
     ) throws(RDFTermStorageError) {
         let lexicalForm = try readStringRange()
-        try validateUTF8(lexicalForm)
+        let lexicalByteCount = try validateUTF8(lexicalForm)
+        try registerString(decodedByteCount: lexicalByteCount)
         switch try readByte() {
         case 1:
             let datatype = try readStringRange()
+            let datatypeByteCount: Int
             do {
-                try validateIRI(datatype)
+                datatypeByteCount = try validateIRI(datatype)
                 guard !matchesASCII(
                     datatype,
                     RDFIRI.rdfLanguageString.rawValue
@@ -68,10 +82,15 @@ struct RDFTermStorageValidator {
             } catch {
                 throw .invalidDatatypeIRI
             }
+            try registerString(decodedByteCount: datatypeByteCount)
         case 2:
-            try validateLanguageTag(try readStringRange())
+            let language = try readStringRange()
+            let languageByteCount = try validateLanguageTag(language)
+            try registerString(decodedByteCount: languageByteCount)
         case 3:
-            try validateLanguageTag(try readStringRange())
+            let language = try readStringRange()
+            let languageByteCount = try validateLanguageTag(language)
+            try registerString(decodedByteCount: languageByteCount)
             switch try readByte() {
             case 1, 2:
                 break
@@ -149,13 +168,54 @@ struct RDFTermStorageValidator {
         maximumDepth = max(maximumDepth, depth)
     }
 
+    private mutating func registerString(
+        decodedByteCount: Int,
+        isBlankNode: Bool = false
+    ) throws(RDFTermStorageError) {
+        try increment(&stringCount)
+        try add(decodedByteCount, to: &decodedStringByteCount)
+        if isBlankNode {
+            try increment(&blankNodeCount)
+            try add(decodedByteCount, to: &blankNodeStringByteCount)
+        }
+    }
+
     private func validateUTF8(
         _ range: Range<Int>
-    ) throws(RDFTermStorageError) {
+    ) throws(RDFTermStorageError) -> Int {
+        var count = 0
         var index = range.lowerBound
         while index < range.upperBound {
-            index = try readScalar(at: index, end: range.upperBound).nextIndex
+            let decoded = try readScalar(
+                at: index,
+                end: range.upperBound
+            )
+            let increment = decoded.scalar == 0
+                ? 1
+                : decoded.nextIndex - index
+            let (next, overflow) = count.addingReportingOverflow(increment)
+            guard !overflow else { throw .byteCountOverflow }
+            count = next
+            index = decoded.nextIndex
         }
+        return count
+    }
+
+    private func increment(
+        _ value: inout Int
+    ) throws(RDFTermStorageError) {
+        let (next, overflow) = value.addingReportingOverflow(1)
+        guard !overflow else { throw .byteCountOverflow }
+        value = next
+    }
+
+    private func add(
+        _ amount: Int,
+        to value: inout Int
+    ) throws(RDFTermStorageError) {
+        let (next, overflow) = value.addingReportingOverflow(amount)
+        guard !overflow else { throw .byteCountOverflow }
+        value = next
     }
 
     private func readScalar(
@@ -228,8 +288,8 @@ struct RDFTermStorageValidator {
 
     private func validateIRI(
         _ range: Range<Int>
-    ) throws(RDFTermStorageError) {
-        try validateUTF8(range)
+    ) throws(RDFTermStorageError) -> Int {
+        let decodedByteCount = try validateUTF8(range)
         guard let colon = firstIndex(of: 0x3A, in: range) else {
             throw .invalidIRI(.missingScheme)
         }
@@ -285,6 +345,7 @@ struct RDFTermStorageValidator {
                 sourceStart: range.lowerBound
             )
         }
+        return decodedByteCount
     }
 
     private func validateIRIScheme(
@@ -539,8 +600,8 @@ struct RDFTermStorageValidator {
 
     private func validateLanguageTag(
         _ range: Range<Int>
-    ) throws(RDFTermStorageError) {
-        try validateUTF8(range)
+    ) throws(RDFTermStorageError) -> Int {
+        let decodedByteCount = try validateUTF8(range)
         guard RDFLanguageTag.isValid(utf8: bytes, in: range) else {
             throw .invalidLanguageTag
         }
@@ -553,6 +614,7 @@ struct RDFTermStorageValidator {
             }
             index += 1
         }
+        return decodedByteCount
     }
 
     private func matchesASCII(

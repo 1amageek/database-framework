@@ -11,6 +11,15 @@ package struct RDFQuadIndexEncodedQuad: Sendable {
     package let graph: ByteString?
 }
 
+/// Validated canonical components and their nonallocating semantic footprint.
+package struct RDFQuadIndexReadPreflight: Sendable {
+    package let encoded: RDFQuadIndexEncodedQuad
+    package let subject: RDFTermStorageValidation
+    package let predicate: RDFTermStorageValidation
+    package let object: RDFTermStorageValidation
+    package let graph: RDFTermStorageValidation?
+}
+
 /// Role-aware physical codec for the six canonical RDF quad indexes.
 package struct RDFQuadIndexPhysicalCodec: Sendable {
     private let spo: Subspace
@@ -143,6 +152,55 @@ package struct RDFQuadIndexPhysicalCodec: Sendable {
         }
     }
 
+    /// Validates every physical component and measures the semantic values
+    /// without creating RDF terms or Strings. Callers must complete admission
+    /// from this proof before calling `decodeQuad(_:)`.
+    package func preflightQuad(
+        key: ByteString,
+        ordering: GraphIndexOrdering
+    ) throws(RDFQuadIndexPhysicalCodecError) -> RDFQuadIndexReadPreflight {
+        let encoded = try decodeEncodedQuad(key: key, ordering: ordering)
+        let graph: RDFTermStorageValidation?
+        if let encodedGraph = encoded.graph {
+            graph = try validate(encodedGraph, component: .graph)
+        } else {
+            graph = nil
+        }
+        return RDFQuadIndexReadPreflight(
+            encoded: encoded,
+            subject: try validate(encoded.subject, component: .subject),
+            predicate: try validate(encoded.predicate, component: .predicate),
+            object: try validate(encoded.object, component: .object),
+            graph: graph
+        )
+    }
+
+    /// Materializes one previously validated quad after caller admission.
+    package func decodeQuad(
+        _ preflight: RDFQuadIndexReadPreflight
+    ) throws(RDFQuadIndexPhysicalCodecError) -> RDFQuad {
+        let encoded = preflight.encoded
+        let subject = try decode(encoded.subject, component: .subject)
+        let predicate = try decode(encoded.predicate, component: .predicate)
+        let object = try decode(encoded.object, component: .object)
+        let graph: RDFTerm?
+        if let encodedGraph = encoded.graph {
+            graph = try decode(encodedGraph, component: .graph)
+        } else {
+            graph = nil
+        }
+        do {
+            return try RDFQuad(
+                validatingSubject: subject,
+                predicate: predicate,
+                object: object,
+                graph: graph
+            )
+        } catch {
+            throw .invalidQuad(error)
+        }
+    }
+
     /// Reorders four borrowed tuple slices without materializing RDF strings.
     package func decodeEncodedQuad(
         key: ByteString,
@@ -221,6 +279,12 @@ package struct RDFQuadIndexPhysicalCodec: Sendable {
         _ bytes: ByteString
     ) throws(RDFQuadIndexPhysicalCodecError) -> RDFTerm {
         try decode(bytes, component: .graph)
+    }
+
+    package func preflightGraphComponent(
+        _ bytes: ByteString
+    ) throws(RDFQuadIndexPhysicalCodecError) -> RDFTermStorageValidation {
+        try validate(bytes, component: .graph)
     }
 
     private func encodedByteCount(
@@ -303,6 +367,29 @@ package struct RDFQuadIndexPhysicalCodec: Sendable {
                 bytes,
                 role: role
             )
+        } catch {
+            throw .invalidComponent(component, error)
+        }
+    }
+
+    private func validate(
+        _ bytes: ByteString,
+        component: RDFDatasetIndexComponent
+    ) throws(RDFQuadIndexPhysicalCodecError) -> RDFTermStorageValidation {
+        let role: RDFTermRole
+        switch component {
+        case .subject: role = .subject
+        case .predicate: role = .predicate
+        case .object: role = .object
+        case .graph: role = .graphName
+        }
+        do {
+            return try RDFTermStorageFormat.withValidatedBytes(
+                bytes,
+                role: role
+            ) { _, validation in
+                validation
+            }
         } catch {
             throw .invalidComponent(component, error)
         }

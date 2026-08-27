@@ -50,7 +50,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         ).executeAskInTransaction(
             askQuery,
             structuralLimits: options.queryStructuralLimits,
-            transaction: session.transaction.storageTransaction,
+            transaction: session.transaction,
             workMeter: options.workMeter
         )
     }
@@ -75,7 +75,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
             constructQuery,
             nodeNamespace: nodeNamespace,
             structuralLimits: options.queryStructuralLimits,
-            transaction: session.transaction.storageTransaction,
+            transaction: session.transaction,
             workMeter: options.workMeter
         )
     }
@@ -98,7 +98,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         ).executeDescribeInTransaction(
             describeQuery,
             structuralLimits: options.queryStructuralLimits,
-            transaction: session.transaction.storageTransaction,
+            transaction: session.transaction,
             workMeter: options.workMeter
         )
     }
@@ -207,51 +207,16 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
                 additionalProjectionVariables: includedFieldNames,
                 structuralLimits: options.queryStructuralLimits
             )
-        let projectedVariables = selectPlan.projectionVariables
         let executor = try makeExecutor(
             session: session,
             scanner: datasetScanner,
             dataset: selectQuery.dataset
         )
-        let (bindings, _) = try await executor.executeInTransaction(
+        let result = try await executor.executeRetainedInTransaction(
             selectPlan: selectPlan,
-            transaction: transaction.storageTransaction,
+            transaction: transaction,
             workMeter: options.workMeter
         )
-
-        var rows = try DatabaseRetainedQueryRowsBuilder(
-            workMeter: options.workMeter,
-            stage: .resultMaterialization,
-            expectedCount: bindings.count
-        )
-        for binding in bindings {
-            let row = DatabaseEngine.QueryRow(
-                fields: rowFields(
-                    from: binding,
-                    projectedVariables: projectedVariables
-                )
-            )
-            try rows.append(consume row)
-        }
-        return rows.finish()
-    }
-
-    private func rowFields(
-        from binding: VariableBinding,
-        projectedVariables: [String]
-    ) -> [String: FieldValue] {
-        var fields: [String: FieldValue] = [:]
-        for variable in projectedVariables {
-            guard let value = binding[variable] else { continue }
-            fields[unprefixedVariable(variable)] = value
-        }
-        return fields
-    }
-
-    private func unprefixedVariable(_ name: String) -> String {
-        if name.hasPrefix("?") || name.hasPrefix("$") {
-            return String(name.dropFirst())
-        }
-        return name
+        return try result.retainedQueryRows(workMeter: options.workMeter)
     }
 }

@@ -8,7 +8,7 @@ public protocol RDFGraphMutationStore: RDFDatasetScanner {
     func containsGraph(
         _ graph: RDFGraphName,
         readMode: RDFDatasetReadMode,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> Bool
 
@@ -51,7 +51,7 @@ extension RDFGraphMutationStore {
     public func containsNamedGraph(
         _ graph: RDFGraphName,
         readMode: RDFDatasetReadMode,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> Bool {
         try await containsGraph(

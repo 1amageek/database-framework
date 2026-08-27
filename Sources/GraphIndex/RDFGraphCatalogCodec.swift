@@ -3,6 +3,11 @@ import DatabaseEngine
 import DatabaseKit
 import StorageKit
 
+package struct RDFGraphCatalogReadPreflight: Sendable {
+    package let encoded: ByteString
+    package let validation: RDFTermStorageValidation
+}
+
 /// Physical codec for persistent named-graph identity. The graph term is
 /// streamed directly into the final tuple key allocation.
 package struct RDFGraphCatalogCodec: Sendable {
@@ -73,6 +78,14 @@ package struct RDFGraphCatalogCodec: Sendable {
     package func decodeGraph(
         from key: ByteString
     ) throws -> RDFGraphName {
+        try decodeGraph(try preflightGraph(from: key))
+    }
+
+    /// Validates and measures the canonical graph component without creating
+    /// its semantic RDF term or String storage.
+    package func preflightGraph(
+        from key: ByteString
+    ) throws -> RDFGraphCatalogReadPreflight {
         var cursor: TupleCursor
         do {
             cursor = try subspace.tupleCursor(for: key)
@@ -96,10 +109,27 @@ package struct RDFGraphCatalogCodec: Sendable {
             )
         }
 
+        do {
+            let validation = try RDFTermStorageFormat.withValidatedBytes(
+                bytes,
+                role: .graphName
+            ) { _, validation in validation }
+            return RDFGraphCatalogReadPreflight(
+                encoded: bytes,
+                validation: validation
+            )
+        } catch let error {
+            throw RDFGraphStoreError.invalidCatalogGraph(error)
+        }
+    }
+
+    package func decodeGraph(
+        _ preflight: RDFGraphCatalogReadPreflight
+    ) throws -> RDFGraphName {
         let term: RDFTerm
         do {
             term = try RDFTermStorageFormat.decode(
-                bytes,
+                preflight.encoded,
                 role: .graphName
             )
         } catch let error {

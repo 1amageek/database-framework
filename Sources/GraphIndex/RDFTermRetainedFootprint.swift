@@ -12,7 +12,8 @@ enum RDFTermRetainedFootprint {
     private static let stringStorageByteCount: UInt64 = 16
 
     static func measure(
-        _ term: borrowing RDFTerm
+        _ term: borrowing RDFTerm,
+        replacingBlankNodeByteCount replacement: UInt64? = nil
     ) throws -> DatabaseIntermediateFootprint {
         var footprint = DatabaseIntermediateFootprint()
         var current = copy term
@@ -27,7 +28,8 @@ enum RDFTermRetainedFootprint {
 
             case .blankNode(let identifier):
                 return try footprint.adding(
-                    stringFootprint(identifier.rawValue)
+                    replacement.map(stringFootprint(byteCount:))
+                        ?? stringFootprint(identifier.rawValue)
                 )
 
             case .literal(let literal):
@@ -50,7 +52,10 @@ enum RDFTermRetainedFootprint {
 
             case .tripleTerm(let subject, let predicate, let object):
                 footprint = try footprint.adding(
-                    leafFootprint(subject)
+                    leafFootprint(
+                        subject,
+                        replacingBlankNodeByteCount: replacement
+                    )
                 ).adding(
                     iriFootprint(predicate.iri)
                 )
@@ -59,8 +64,64 @@ enum RDFTermRetainedFootprint {
         }
     }
 
+    /// Computes the same retained semantic footprint from validated canonical
+    /// bytes, before any RDF value or String has been materialized.
+    static func measure(
+        _ validation: RDFTermStorageValidation,
+        replacingBlankNodeByteCount replacement: UInt64? = nil
+    ) throws -> DatabaseIntermediateFootprint {
+        let termNodes = try checkedMultiply(
+            UInt64(validation.objectCount),
+            termNodeByteCount
+        )
+        let literals = try checkedMultiply(
+            UInt64(validation.literalCount),
+            literalByteCount
+        )
+        let strings = try checkedMultiply(
+            UInt64(validation.stringCount),
+            stringStorageByteCount
+        )
+        var stringBytes = UInt64(validation.decodedStringByteCount)
+        if let replacement {
+            let originalBlankNodeBytes = UInt64(
+                validation.blankNodeStringByteCount
+            )
+            let replacementBytes = try checkedMultiply(
+                UInt64(validation.blankNodeCount),
+                replacement
+            )
+            guard stringBytes >= originalBlankNodeBytes else {
+                throw RDFDatasetScannerError.retainedByteCountOverflow(
+                    operation: .addition,
+                    left: stringBytes,
+                    right: originalBlankNodeBytes
+                )
+            }
+            stringBytes = try RDFDatasetScanRetainedMetrics.checkedAdd(
+                stringBytes - originalBlankNodeBytes,
+                replacementBytes
+            )
+        }
+        var bytes = try RDFDatasetScanRetainedMetrics.checkedAdd(
+            termNodes,
+            literals
+        )
+        bytes = try RDFDatasetScanRetainedMetrics.checkedAdd(bytes, strings)
+        bytes = try RDFDatasetScanRetainedMetrics.checkedAdd(bytes, stringBytes)
+        return DatabaseIntermediateFootprint(bytes: bytes)
+    }
+
+    private static func checkedMultiply(
+        _ left: UInt64,
+        _ right: UInt64
+    ) throws -> UInt64 {
+        try RDFDatasetScanRetainedMetrics.checkedMultiply(left, right)
+    }
+
     private static func leafFootprint(
-        _ subject: RDFSubject
+        _ subject: RDFSubject,
+        replacingBlankNodeByteCount replacement: UInt64? = nil
     ) throws -> DatabaseIntermediateFootprint {
         switch subject {
         case .iri(let iri):
@@ -69,7 +130,8 @@ enum RDFTermRetainedFootprint {
             return try DatabaseIntermediateFootprint(
                 bytes: termNodeByteCount
             ).adding(
-                stringFootprint(identifier.rawValue)
+                replacement.map(stringFootprint(byteCount:))
+                    ?? stringFootprint(identifier.rawValue)
             )
         }
     }
@@ -87,10 +149,16 @@ enum RDFTermRetainedFootprint {
     private static func stringFootprint(
         _ value: String
     ) throws -> DatabaseIntermediateFootprint {
+        try stringFootprint(byteCount: UInt64(value.utf8.count))
+    }
+
+    private static func stringFootprint(
+        byteCount: UInt64
+    ) throws -> DatabaseIntermediateFootprint {
         try DatabaseIntermediateFootprint(
             bytes: stringStorageByteCount
         ).adding(
-            DatabaseIntermediateFootprint(bytes: UInt64(value.utf8.count))
+            DatabaseIntermediateFootprint(bytes: byteCount)
         )
     }
 }

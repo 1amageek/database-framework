@@ -125,6 +125,7 @@ public enum CanonicalQueryPagination {
         rows: DatabaseSharedRetainedArray<QueryRow>,
         selectQuery: SelectQuery,
         options: ReadExecutionContext,
+        rowsAreLogicalQueryRelative: Bool = false,
         rowsAreContinuationRelative: Bool = false,
         continuationPosition: ByteString? = nil,
         prevalidatedQueryFingerprint: ByteString? = nil
@@ -133,6 +134,7 @@ public enum CanonicalQueryPagination {
             rows: rows,
             selectQuery: selectQuery,
             options: options,
+            rowsAreLogicalQueryRelative: rowsAreLogicalQueryRelative,
             rowsAreContinuationRelative: rowsAreContinuationRelative,
             continuationPosition: continuationPosition,
             prevalidatedQueryFingerprint: prevalidatedQueryFingerprint
@@ -143,6 +145,7 @@ public enum CanonicalQueryPagination {
         rows: Rows,
         selectQuery: SelectQuery,
         options: ReadExecutionContext,
+        rowsAreLogicalQueryRelative: Bool = false,
         rowsAreContinuationRelative: Bool,
         continuationPosition: ByteString?,
         prevalidatedQueryFingerprint: ByteString?
@@ -186,8 +189,8 @@ public enum CanonicalQueryPagination {
             }
             let visible = trimOwnedRows(
                 totalCount: rows.count,
-                offset: queryOffset,
-                count: logicalLimit
+                offset: rowsAreLogicalQueryRelative ? 0 : queryOffset,
+                count: rowsAreLogicalQueryRelative ? nil : logicalLimit
             )
             try options.workMeter.consume(
                 UInt64(visible.count),
@@ -237,7 +240,14 @@ public enum CanonicalQueryPagination {
         guard !offsetOverflow else {
             throw CanonicalReadError.invalidContinuation
         }
-        let baseOffset = rowsAreContinuationRelative ? 0 : absoluteOffset
+        let baseOffset: Int
+        if rowsAreContinuationRelative {
+            baseOffset = 0
+        } else if rowsAreLogicalQueryRelative {
+            baseOffset = continuationOffset
+        } else {
+            baseOffset = absoluteOffset
+        }
 
         let remainingLimit = logicalLimit.map {
             continuationOffset >= $0 ? 0 : $0 - continuationOffset

@@ -21,6 +21,15 @@ enum SPARQLSharedBindingSnapshot: Sendable {
         }
     }
 
+    var originatingWorkMeter: DatabaseWorkMeter? {
+        switch self {
+        case .empty:
+            return nil
+        case .shared(let storage, _):
+            return storage.workMeter
+        }
+    }
+
     func withElement<Result, Failure: Error>(
         at index: Int,
         _ body: (borrowing VariableBinding) throws(Failure) -> Result

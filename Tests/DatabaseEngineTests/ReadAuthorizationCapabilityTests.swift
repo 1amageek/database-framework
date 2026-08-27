@@ -379,6 +379,51 @@ private struct ReadCapabilityProbeSPARQLExecutor: SPARQLSourceExecutor {
     }
 }
 
+private struct ForeignMeterSPARQLExecutor: SPARQLSourceExecutor {
+    let workMeter: DatabaseWorkMeter
+
+    func executeInTransaction(
+        session: DatabaseReadSession,
+        selectQuery: SelectQuery,
+        options: ReadExecutionContext,
+        partitions: FieldObject
+    ) async throws -> DatabaseRetainedQueryRows {
+        let rows = try DatabaseRetainedQueryRowsBuilder(
+            workMeter: workMeter,
+            stage: .resultMaterialization
+        )
+        return rows.finish()
+    }
+
+    func executeAskInTransaction(
+        session: DatabaseReadSession,
+        askQuery: AskQuery,
+        options: ReadExecutionContext,
+        partitions: FieldObject
+    ) async throws -> Bool {
+        throw CanonicalReadError.unsupportedSource("SELECT is required")
+    }
+
+    func executeConstructInTransaction(
+        session: DatabaseReadSession,
+        constructQuery: ConstructQuery,
+        nodeNamespace: GraphResultNodeNamespace,
+        options: ReadExecutionContext,
+        partitions: FieldObject
+    ) async throws -> DatabaseRetainedRDFGraph {
+        throw CanonicalReadError.unsupportedSource("SELECT is required")
+    }
+
+    func executeDescribeInTransaction(
+        session: DatabaseReadSession,
+        describeQuery: DescribeQuery,
+        options: ReadExecutionContext,
+        partitions: FieldObject
+    ) async throws -> DatabaseRetainedRDFGraph {
+        throw CanonicalReadError.unsupportedSource("SELECT is required")
+    }
+}
+
 private struct AdmittedOperationSPARQLExecutor: SPARQLSourceExecutor {
     let barrier: StorageOperationBarrier
     let cursorBarrier: StorageOperationBarrier
@@ -1249,6 +1294,41 @@ struct ReadAuthorizationCapabilityTests {
                 )
             }
         }
+
+        let foreignResultMeter = DatabaseWorkMeter(
+            budget: ExecutionBudget(),
+            monotonicClock: container.monotonicClock
+        )
+        let foreignResultContainer = try await makeLogicalSourceContainer(
+            sparqlExecutor: ForeignMeterSPARQLExecutor(
+                workMeter: foreignResultMeter
+            )
+        )
+        defer { await foreignResultContainer.shutdown() }
+        let executionMeter = DatabaseWorkMeter(
+            budget: ExecutionBudget(),
+            monotonicClock: foreignResultContainer.monotonicClock
+        )
+        _ = try await foreignResultContainer.testBaseContext().withReadSnapshot(
+            workMeter: executionMeter
+        ) { snapshot in
+            await #expect(
+                throws: DatabaseIntermediateReservationError.workMeterMismatch
+            ) {
+                _ = try await snapshot.session.executeCanonical(
+                    SelectQuery(
+                        projection: .all,
+                        source: .graphPattern(.basic([]))
+                    ),
+                    execution: ReadExecutionContext(
+                        monotonicClock: foreignResultContainer.monotonicClock,
+                        workMeter: executionMeter
+                    )
+                )
+            }
+        }
+        #expect(foreignResultMeter.retainedIntermediateRows == 0)
+        #expect(foreignResultMeter.retainedIntermediateBytes == 0)
     }
 
     @Test("Context-owned reads ignore a forged ambient authorization")

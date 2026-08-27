@@ -18,7 +18,7 @@ import OntologyIndex
 public struct SHACLConstraintEvaluator: Sendable {
 
     private let executor: SPARQLQueryExecutor
-    private let transaction: any TransactionAccess
+    private let transaction: any TransactionReadAccess
     private let dataGraph: SHACLDataGraphTarget
     private let valueComparator: SPARQLValueComparator
     private let entailmentContext: (any SHACLEntailmentContext)?
@@ -26,7 +26,7 @@ public struct SHACLConstraintEvaluator: Sendable {
 
     public init(
         executor: SPARQLQueryExecutor,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         dataGraph: SHACLDataGraphTarget,
         xsdValidationLimits: XSDValidationLimits = .default,
         entailmentContext: (any SHACLEntailmentContext)? = nil,

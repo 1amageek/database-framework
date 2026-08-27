@@ -57,7 +57,7 @@ extension SPARQLQueryExecutor {
     /// snapshot. `offset`/`limit` behave identically to `execute(pattern:limit:offset:)`.
     public func executeInTransaction(
         pattern: ExecutionPattern,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         limit: Int?,
         offset: Int,
         workMeter: DatabaseWorkMeter
@@ -85,9 +85,70 @@ extension SPARQLQueryExecutor {
         )
     }
 
+    /// Executes the complete SELECT modifier pipeline and keeps its result
+    /// owned by the request meter across the executor boundary.
+    package func executeRetainedProjectedInTransaction(
+        pattern: ExecutionPattern,
+        transaction: any TransactionReadAccess,
+        orderBy: [BindingSortKey],
+        projectionVariables: [String],
+        projectionIsIdentity: Bool,
+        duplicatePolicy: SPARQLDuplicatePolicy,
+        offset: Int,
+        limit: Int?,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> SPARQLRetainedResult {
+        guard offset >= 0, limit.map({ $0 >= 0 }) ?? true else {
+            throw SPARQLQueryError.invalidPagination
+        }
+        let slice = try SPARQLSlice(
+            offset: UInt64(offset),
+            limit: limit.map { UInt64($0) }
+        )
+        let resultLimit = orderBy.isEmpty && duplicatePolicy == .preserve
+            ? try evaluationResultLimit(offset: offset, limit: limit)
+            : nil
+        let executor = try requestScoped(by: workMeter)
+            .transactionAttemptScoped()
+        let evaluated = try await executor.evaluate(
+            pattern: pattern,
+            transaction: transaction,
+            activeGraph: executor.initialActiveGraph,
+            resultLimit: resultLimit
+        )
+        let result = executor.includingNestedExpressionStatistics(
+            consume evaluated
+        )
+        let statistics = result.stats
+        let ordered = try BindingSorter.sort(
+            consume result.bindings,
+            by: orderBy,
+            workMeter: workMeter
+        )
+        let selected = try executor.applyProjectionDuplicateAndSlice(
+            consume ordered,
+            projectionVariables: projectionVariables,
+            projectionIsIdentity: projectionIsIdentity,
+            duplicatePolicy: duplicatePolicy,
+            slice: slice
+        )
+        let bindings = try (consume selected).moveToSharedSnapshot(
+            at: .resultMaterialization
+        )
+        let reachedLimit = limit.map { bindings.count >= $0 } ?? false
+        return SPARQLRetainedResult(
+            bindings: bindings,
+            workMeter: workMeter,
+            projectedVariables: projectionVariables,
+            isComplete: !reachedLimit,
+            limitReason: reachedLimit ? .explicitLimit : nil,
+            statistics: statistics
+        )
+    }
+
     func evaluateOrderedInTransaction(
         plan: SPARQLOrderedSolutionPlan,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> EvaluationResult {
         let executor = try scoped(to: plan.dataset)
@@ -106,7 +167,7 @@ extension SPARQLQueryExecutor {
 
     func evaluateSlicedSolutionFormInTransaction(
         plan: SPARQLSolutionFormExecutionPlan,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> EvaluationResult {
         let executor = try scoped(to: plan.ordered.dataset)
@@ -135,7 +196,7 @@ extension SPARQLQueryExecutor {
     package func execute(
         selectPlan: SPARQLSelectExecutionPlan,
         workMeter: DatabaseWorkMeter
-    ) async throws -> ([VariableBinding], ExecutionStatistics) {
+    ) async throws -> SPARQLResult {
         let executor = try scoped(to: selectPlan.ordered.dataset)
             .requestScoped(by: workMeter)
         guard let database else {
@@ -148,49 +209,20 @@ extension SPARQLQueryExecutor {
                 configuration: .default,
                 clock: monotonicClock
             ) { transaction in
-            let attemptExecutor = try executor.transactionAttemptScoped()
-            let evaluated = try await attemptExecutor.evaluateSelectPlan(
-                selectPlan,
+            let retained = try await executor.executeRetainedInTransaction(
+                selectPlan: selectPlan,
                 transaction: transaction,
-                activeGraph: attemptExecutor.initialActiveGraph,
-                seed: VariableBinding()
+                workMeter: workMeter
             )
-            let result = attemptExecutor.includingNestedExpressionStatistics(
-                consume evaluated
-            )
-            let stats = result.stats
-            let bindings = (consume result.bindings).promoteToOutput()
-            return (bindings, stats)
+            return retained.promoteToResult()
         }
-    }
-
-    package func executeInTransaction(
-        selectPlan: SPARQLSelectExecutionPlan,
-        transaction: any TransactionAccess,
-        workMeter: DatabaseWorkMeter
-    ) async throws -> ([VariableBinding], ExecutionStatistics) {
-        let executor = try scoped(to: selectPlan.ordered.dataset)
-            .requestScoped(by: workMeter)
-            .transactionAttemptScoped()
-        let evaluated = try await executor.evaluateSelectPlan(
-            selectPlan,
-            transaction: transaction,
-            activeGraph: executor.initialActiveGraph,
-            seed: VariableBinding()
-        )
-        let result = executor.includingNestedExpressionStatistics(
-            consume evaluated
-        )
-        let stats = result.stats
-        let bindings = (consume result.bindings).promoteToOutput()
-        return (bindings, stats)
     }
 
     /// Executes a SELECT plan for an intermediate database operator without
     /// promoting its binding buffer outside request accounting.
     package func executeRetainedInTransaction(
         selectPlan: SPARQLSelectExecutionPlan,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> SPARQLRetainedResult {
         let executor = try scoped(to: selectPlan.ordered.dataset)
