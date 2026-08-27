@@ -123,17 +123,19 @@ public struct VersionIndexMaintainer<Item: PersistedEntityValue>: SubspaceIndexM
 
     // MARK: - Query Methods
 
-    /// Get version history for an item
+    /// Gets version history for an item as an explicitly materialized public
+    /// result. Canonical index execution uses the retained reader instead of
+    /// this array boundary.
     ///
     /// - Parameters:
     ///   - primaryKey: Primary key values
     ///   - limit: Maximum number of versions to return (optional)
-    ///   - transaction: FDB transaction
-    /// - Returns: Array of (version, timestamp, data) tuples, sorted by version (newest first)
+    ///   - transaction: Read-only transaction used for the history read
+    /// - Returns: Version and model-payload tuples, newest first
     public func getVersionHistory(
         primaryKey: [any TupleElement],
         limit: Int? = nil,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(version: Version, data: ByteString)] {
         try await VersionIndexReader(subspace: subspace).history(
             primaryKey: primaryKey,
@@ -145,7 +147,7 @@ public struct VersionIndexMaintainer<Item: PersistedEntityValue>: SubspaceIndexM
     /// Get latest version of an item
     public func getLatestVersion(
         primaryKey: [any TupleElement],
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> ByteString? {
         try await VersionIndexReader(subspace: subspace).latest(
             primaryKey: primaryKey,
