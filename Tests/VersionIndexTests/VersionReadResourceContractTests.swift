@@ -1,4 +1,4 @@
-@_spi(PolymorphicRuntime) @testable import DatabaseEngine
+@_spi(DatabaseExecution) @_spi(PolymorphicRuntime) @testable import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
@@ -269,7 +269,7 @@ struct VersionReadResourceContractTests {
         let (container, control) = try await makeRegularCanonicalContainer()
         defer { await container.shutdown() }
 
-        let authorized = container.newContext(
+        let authorized = try container.makeActiveDataContext(
             authorization: .authenticated(
                 Principal(
                     identifier: "version-authorized",
@@ -284,7 +284,7 @@ struct VersionReadResourceContractTests {
         #expect(history.allSatisfy { $0.version.bytes.count == 10 })
 
         let readsBeforeDeniedQuery = control.dataReadOperationCount
-        let denied = container.newContext(
+        let denied = try container.makeActiveDataContext(
             authorization: .authenticated(
                 Principal(identifier: "version-denied")
             )
@@ -302,7 +302,7 @@ struct VersionReadResourceContractTests {
         let (container, control) = try await makePolymorphicCanonicalContainer()
         defer { await container.shutdown() }
 
-        let authorized = container.newContext(
+        let authorized = try container.makeActiveDataContext(
             authorization: .authenticated(
                 Principal(
                     identifier: "polymorphic-version-authorized",
@@ -340,7 +340,7 @@ struct VersionReadResourceContractTests {
         #expect(row.annotations["version"]?.bytesValue?.count == 10)
 
         let readsBeforeDeniedQuery = control.dataReadOperationCount
-        let denied = container.newContext(
+        let denied = try container.makeActiveDataContext(
             authorization: .authenticated(
                 Principal(identifier: "polymorphic-version-denied")
             )

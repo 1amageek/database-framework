@@ -415,16 +415,20 @@ struct PolymorphicFetchTests {
                         workMeter: workMeter,
                         expectedCount: 1
                     ) { rows in
-                        #expect(
-                            try retained.appendIndexRow(at: 0, to: &rows)
+                        let appendedPresent = try retained.appendIndexRow(
+                            at: 0,
+                            to: &rows
                         )
-                        #expect(
-                            try !retained.appendIndexRow(at: 1, to: &rows)
+                        #expect(appendedPresent)
+                        let appendedMissing = try retained.appendIndexRow(
+                            at: 1,
+                            to: &rows
                         )
+                        #expect(!appendedMissing)
                     }
                 }
                 #expect(fetched?.count == 1)
-                try fetched?.withRow(at: 0) { row in
+                fetched?.withRow(at: 0) { row in
                     #expect(row.fields["title"] == .string("Read your writes"))
                 }
                 fetched = nil

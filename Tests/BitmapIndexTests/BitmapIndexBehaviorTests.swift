@@ -754,16 +754,22 @@ struct BitmapIndexMaintainerBehaviorTests {
         }
 
         // Get bitmaps and perform AND
+        let workMeter = DatabaseWorkMeter(
+            budget: ExecutionBudget(),
+            monotonicClock: TestProcessMonotonicClock()
+        )
         let electronicsBitmap = try await database.withTransaction { transaction in
             try await categoryMaintainer.getBitmap(
                 for: [.string("electronics")],
-                transaction: transaction
+                transaction: transaction,
+                workMeter: workMeter
             )
         }
         let sonyBitmap = try await database.withTransaction { transaction in
             try await brandMaintainer.getBitmap(
                 for: [.string("Sony")],
-                transaction: transaction
+                transaction: transaction,
+                workMeter: workMeter
             )
         }
 

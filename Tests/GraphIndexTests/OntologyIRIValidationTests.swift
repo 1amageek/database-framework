@@ -201,7 +201,7 @@ struct OntologyIRIValidationTests {
             try await validator.validateClass(
                 "http://test.org/onto#Employee",
                 in: Self.ontologyIRI,
-                transaction: transaction
+                transaction: transaction.storageTransaction
             )
         }
     }
@@ -220,7 +220,7 @@ struct OntologyIRIValidationTests {
                 try await validator.validateClass(
                     "http://test.org/onto#NonExistentClass",
                     in: Self.ontologyIRI,
-                    transaction: transaction
+                    transaction: transaction.storageTransaction
                 )
                 Issue.record("Expected classNotFound error")
             } catch let error as OntologyValidationError {
@@ -249,7 +249,7 @@ struct OntologyIRIValidationTests {
             try await validator.validateObjectProperty(
                 "http://test.org/onto#worksOn",
                 in: Self.ontologyIRI,
-                transaction: transaction
+                transaction: transaction.storageTransaction
             )
         }
     }
@@ -268,7 +268,7 @@ struct OntologyIRIValidationTests {
                 try await validator.validateObjectProperty(
                     "http://test.org/onto#nonExistentProp",
                     in: Self.ontologyIRI,
-                    transaction: transaction
+                    transaction: transaction.storageTransaction
                 )
                 Issue.record("Expected propertyNotFound error")
             } catch let error as OntologyValidationError {
@@ -297,7 +297,7 @@ struct OntologyIRIValidationTests {
                 try await validator.validateObjectProperty(
                     "http://test.org/onto#name",
                     in: Self.ontologyIRI,
-                    transaction: transaction
+                    transaction: transaction.storageTransaction
                 )
                 Issue.record("Expected propertyTypeMismatch error")
             } catch let error as OntologyValidationError {
