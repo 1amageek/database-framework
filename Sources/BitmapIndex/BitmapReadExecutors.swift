@@ -178,16 +178,16 @@ private struct BitmapReadExecutor: IndexReadExecutor {
 
     private func decodeTupleArray(
         _ value: FieldValue?
-    ) throws -> [any TupleElement & Sendable] {
+    ) throws -> [any TupleElement] {
         guard let values = value?.arrayValue else {
             throw BitmapReadError.missingParameter(BitmapReadParameter.values)
         }
-        return try values.map { try DatabaseEngine.CanonicalTupleElementCodec.decode($0) }
+        return try values.map { try $0.toTupleElement() }
     }
 
     private func decodeTupleMatrix(
         _ value: FieldValue?
-    ) throws -> [[any TupleElement & Sendable]] {
+    ) throws -> [[any TupleElement]] {
         guard let rows = value?.arrayValue else {
             throw BitmapReadError.missingParameter(BitmapReadParameter.valueSets)
         }
@@ -195,7 +195,7 @@ private struct BitmapReadExecutor: IndexReadExecutor {
             guard let values = row.arrayValue else {
                 throw BitmapReadError.invalidParameter(BitmapReadParameter.valueSets)
             }
-            return try values.map { try DatabaseEngine.CanonicalTupleElementCodec.decode($0) }
+            return try values.map { try $0.toTupleElement() }
         }
     }
 }
@@ -353,16 +353,16 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
 
     private func decodeTupleArray(
         _ value: FieldValue?
-    ) throws -> [any TupleElement & Sendable] {
+    ) throws -> [any TupleElement] {
         guard let values = value?.arrayValue else {
             throw BitmapReadError.missingParameter(BitmapReadParameter.values)
         }
-        return try values.map { try DatabaseEngine.CanonicalTupleElementCodec.decode($0) }
+        return try values.map { try $0.toTupleElement() }
     }
 
     private func decodeTupleMatrix(
         _ value: FieldValue?
-    ) throws -> [[any TupleElement & Sendable]] {
+    ) throws -> [[any TupleElement]] {
         guard let rows = value?.arrayValue else {
             throw BitmapReadError.missingParameter(BitmapReadParameter.valueSets)
         }
@@ -370,7 +370,7 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
             guard let values = row.arrayValue else {
                 throw BitmapReadError.invalidParameter(BitmapReadParameter.valueSets)
             }
-            return try values.map { try DatabaseEngine.CanonicalTupleElementCodec.decode($0) }
+            return try values.map { try $0.toTupleElement() }
         }
     }
 

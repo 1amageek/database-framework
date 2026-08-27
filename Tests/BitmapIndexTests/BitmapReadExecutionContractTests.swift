@@ -211,9 +211,10 @@ struct BitmapReadExecutionContractTests {
         let query = try bitmapPolymorphicQuery()
         let readsBefore = storage.control.dataReadOperationCount
         let response = try await context.query(query)
+        let row = try #require(response.rows.first)
         #expect(response.rows.count == 1)
-        #expect(response.rows[0].fields["id"] == .string("poly-active"))
-        #expect(response.rows[0].fields["status"] == .string("active"))
+        #expect(row.fields["id"] == .string("poly-active"))
+        #expect(row.fields["status"] == .string("active"))
         #expect(storage.control.dataReadOperationCount > readsBefore)
     }
 

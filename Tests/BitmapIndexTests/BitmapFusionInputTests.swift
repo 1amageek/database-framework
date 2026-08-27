@@ -272,9 +272,10 @@ struct BitmapFusionInputTests {
                 )
             )
         )
+        let row = try #require(response.rows.first)
         #expect(response.rows.count == 1)
-        #expect(response.rows[0].fields["id"] == .string("canonical-active"))
-        #expect(response.rows[0].fields["status"] == .string("active"))
+        #expect(row.fields["id"] == .string("canonical-active"))
+        #expect(row.fields["status"] == .string("active"))
     }
 
     @Test("Missing bitmap ID mappings fail as corruption")
