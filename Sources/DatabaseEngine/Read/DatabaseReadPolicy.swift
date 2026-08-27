@@ -202,6 +202,26 @@ package struct DatabaseReadPolicy: Sendable {
         )
     }
 
+    /// Authorizes complete-model reads for already resolved polymorphic IDs.
+    /// Exact-ID reads do not require list authority, but every field that can
+    /// leave the public or index output boundary is sealed before storage.
+    package func authorizePolymorphicModelRead(
+        group: PolymorphicGroup
+    ) throws -> DatabaseReadAuthorization {
+        var fieldsByEntity: [String: Set<String>] = [:]
+        fieldsByEntity.reserveCapacity(group.memberTypeNames.count)
+        for typeName in group.memberTypeNames {
+            let runtime = try requiredRuntime(named: typeName, in: group)
+            fieldsByEntity[typeName] = Set(runtime.entity.allFields)
+        }
+        return try authorizeRead(
+            listRequirements: [],
+            fields: DatabaseFieldReadAuthorizationPlan(
+                fieldsByEntity: fieldsByEntity
+            )
+        )
+    }
+
     package func authorizeFields(
         _ plan: DatabaseFieldReadAuthorizationPlan
     ) throws {

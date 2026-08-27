@@ -2204,20 +2204,22 @@ extension DatabaseContext {
                 group: group,
                 selectQuery: selectQuery
             )
+            let workMeter = DatabaseWorkMeter(
+                budget: ExecutionBudget(),
+                monotonicClock: container.monotonicClock
+            )
             return try await withReadSnapshot(
-                workMeter: DatabaseWorkMeter(
-                    budget: ExecutionBudget(),
-                    monotonicClock: container.monotonicClock
-                )
+                workMeter: workMeter
             ) { snapshot in
                 let authorizedSession = try snapshot.session.authorizedSession(
                     authorization
                 )
-                return try await self.scanPolymorphicItems(
+                let entities = try await authorizedSession
+                    .scanRetainedPolymorphicItems(
                     group: group,
-                    selectQuery: selectQuery,
-                    session: authorizedSession
-                ).map { $0.item }
+                    selectQuery: selectQuery
+                )
+                return entities.promoteModelsToPublicOutput()
             }
         }
     }

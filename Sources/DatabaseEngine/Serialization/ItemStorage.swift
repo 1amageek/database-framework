@@ -105,14 +105,14 @@ public struct ItemStorage: Sendable {
         workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage
     ) async throws -> ByteString? {
-        guard let envelopeBytes = try await transaction.getValue(
+        guard let envelopeBytes = try await transaction.readPointValue(
             for: key,
-            snapshot: snapshot
+            snapshot: snapshot,
+            workMeter: workMeter,
+            at: stage
         ) else {
-            try workMeter.checkpoint(at: stage)
             return nil
         }
-        try workMeter.checkpoint(at: stage)
         return try await decodeStoredValueRetained(
             envelopeBytes,
             for: key,
@@ -444,14 +444,14 @@ public struct ItemStorage: Sendable {
                 throw ItemStorageError.invalidChunkLayout
             }
             let chunkKey = blobBase.pack(Tuple([encodedIndex]))
-            guard let chunk = try await transaction.getValue(
+            guard let chunk = try await transaction.readPointValue(
                 for: chunkKey,
-                snapshot: snapshot
+                snapshot: snapshot,
+                workMeter: workMeter,
+                at: stage
             ) else {
-                try workMeter.checkpoint(at: stage)
                 throw ItemEnvelopeError.chunkMissing(index: index)
             }
-            try workMeter.checkpoint(at: stage)
             let expectedByteCount = Swift.min(
                 chunkSize,
                 totalSize - loadedByteCount

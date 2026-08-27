@@ -76,6 +76,38 @@ public struct DatabaseReadSession: Sendable {
         ]>.stride
     )
 
+    /// Non-forgeable proof that this session admitted one polymorphic read.
+    package struct PolymorphicReadAdmission: Sendable {
+        package enum Operation: Sendable, Equatable {
+            case scan
+            case orderedPointFetch
+        }
+
+        private let groupIdentifier: String
+        private let operation: Operation
+        package let workMeter: DatabaseWorkMeter
+
+        fileprivate init(
+            groupIdentifier: String,
+            operation: Operation,
+            workMeter: DatabaseWorkMeter
+        ) {
+            self.groupIdentifier = groupIdentifier
+            self.operation = operation
+            self.workMeter = workMeter
+        }
+
+        package func require(
+            groupIdentifier: String,
+            operation: Operation
+        ) throws {
+            guard self.groupIdentifier == groupIdentifier,
+                  self.operation == operation else {
+                throw DatabaseReadSessionError.authorizationMismatch
+            }
+        }
+    }
+
     private final class Scope: Sendable {
         private typealias CursorCleanup = @Sendable () async throws -> Void
 
@@ -281,6 +313,10 @@ public struct DatabaseReadSession: Sendable {
             guard workMeter === candidate else {
                 throw DatabaseReadSessionError.workMeterMismatch
             }
+        }
+
+        func operationWorkMeter() -> DatabaseWorkMeter {
+            workMeter
         }
 
         func makeCursor(
@@ -770,6 +806,37 @@ public struct DatabaseReadSession: Sendable {
         }
     }
 
+    /// Validates complete-model field authority for already resolved IDs.
+    /// This check happens before Core can form or read a storage key.
+    package func requirePolymorphicModelReadAuthorization(
+        group: PolymorphicGroup
+    ) throws {
+        let (owners, operation) = try scope.beginOperation()
+        defer { operation.end() }
+        guard let authorization = transaction.authorization else {
+            throw DatabaseReadSessionError.authorizationMismatch
+        }
+        try owners.policy.validate(authorization)
+        var fieldsByEntity: [String: Set<String>] = [:]
+        fieldsByEntity.reserveCapacity(group.memberTypeNames.count)
+        for entityName in group.memberTypeNames {
+            guard let runtime = owners.policy.entityRuntime(
+                named: entityName
+            ) else {
+                throw DatabaseReadSessionError.authorizationMismatch
+            }
+            fieldsByEntity[entityName] = Set(runtime.entity.allFields)
+        }
+        guard authorization.covers(
+            listRequirements: [],
+            fields: DatabaseFieldReadAuthorizationPlan(
+                fieldsByEntity: fieldsByEntity
+            )
+        ) else {
+            throw DatabaseReadSessionError.authorizationMismatch
+        }
+    }
+
     package func requireCanonicalPolymorphicIndexReadAuthorization(
         index: IndexDeclaration<String>,
         group: PolymorphicGroup,
@@ -1143,6 +1210,66 @@ public struct DatabaseReadSession: Sendable {
         }
     }
 
+    package func scanRetainedPolymorphicItems(
+        group: PolymorphicGroup,
+        selectQuery: SelectQuery
+    ) async throws -> sending DatabaseRetainedPolymorphicEntities {
+        try await scope.withNoncopyableOperation { owners, operation in
+            try requirePolymorphicReadAuthorization(
+                group: group,
+                selectQuery: selectQuery
+            )
+            let admission = PolymorphicReadAdmission(
+                groupIdentifier: group.identifier,
+                operation: .scan,
+                workMeter: scope.operationWorkMeter()
+            )
+            let entities = try await owners.context
+                .scanRetainedPolymorphicItems(
+                    group: group,
+                    session: self,
+                    admission: admission
+                )
+            try operation.validate()
+            return entities
+        }
+    }
+
+    package func fetchRetainedPolymorphicItemsPreservingOrder(
+        group: PolymorphicGroup,
+        ids: any DatabaseRetainedPrimaryKeyCollection,
+        snapshot: Bool = false
+    ) async throws -> sending DatabaseRetainedPolymorphicEntities {
+        let workMeter = scope.operationWorkMeter()
+        guard ids.workMeter === workMeter else {
+            throw DatabaseIntermediateReservationError.workMeterMismatch
+        }
+        return try await scope.withNoncopyableOperation {
+            owners,
+            operation in
+            try requirePolymorphicModelReadAuthorization(group: group)
+            let admission = PolymorphicReadAdmission(
+                groupIdentifier: group.identifier,
+                operation: .orderedPointFetch,
+                workMeter: workMeter
+            )
+            let entities = try await owners.context
+                .fetchRetainedPolymorphicItemsPreservingOrder(
+                    group: group,
+                    ids: ids,
+                    session: self,
+                    snapshot: snapshot,
+                    admission: admission
+                )
+            try operation.validate()
+            return entities
+        }
+    }
+
+    // FIXME(INCOMPLETE_IMPLEMENTATION): Bitmap, Rank, FullText, and Vector
+    // production executors still use this raw entity-array bridge. DF-06F is
+    // complete only after those callers consume the retained aggregate and
+    // this declaration is deleted.
     package func fetchPolymorphicItemsPreservingOrder<Identifiers>(
         group: PolymorphicGroup,
         ids: Identifiers,

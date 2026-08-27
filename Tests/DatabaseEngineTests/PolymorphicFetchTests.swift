@@ -404,7 +404,7 @@ struct PolymorphicFetchTests {
             }
             #expect(fetched.count == 2)
             #expect(
-                try fetched[0]?.unmeteredEntity().item
+                try fetched[0]?.item
                     .decode(as: PolymorphicFetchArticle.self).title
                     == "Read your writes"
             )

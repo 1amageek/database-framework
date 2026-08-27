@@ -133,7 +133,14 @@ let package = Package(
                 .product(name: "DatabaseKit", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
             ],
-            exclude: ["README.md"],
+            exclude: [
+                "README.md",
+                "DESIGN.md",
+                "Core/DESIGN.md",
+                "QueryExecution/DESIGN.md",
+                "Read/DESIGN.md",
+                "Serialization/DESIGN.md",
+            ],
             swiftSettings: [
                 .define(
                     "DATABASE_MULTI_BASE",

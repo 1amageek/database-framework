@@ -3388,40 +3388,24 @@ extension DatabaseContext {
     }
 
     private func materializePolymorphicSourceRows(
-        _ entities: [PolymorphicEntity],
+        _ entities: borrowing DatabaseRetainedPolymorphicEntities,
         sourceName: String,
-        workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage
     ) throws -> CanonicalRetainedRows {
         var sourceRows = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
-            workMeter: workMeter,
+            workMeter: entities.workMeter,
             stage: stage,
             layout: try DatabaseRetainedArrayLayout.forElement(
                 CanonicalSourceRow.self
             ),
             expectedCount: entities.count
         )
-        for entity in entities {
-            try workMeter.consume(at: stage)
-            let row = try QueryRowCodec.encode(
-                entity.item,
-                annotations: [
-                    PolymorphicRowAnnotation.typeName: .string(entity.typeName),
-                    PolymorphicRowAnnotation.typeCode: .int64(entity.typeCode),
-                ]
-            )
-            let sourceRow = CanonicalSourceRow.fromBaseFields(
-                row.fields,
+        for index in 0..<entities.count {
+            _ = try entities.appendCanonicalSourceRow(
+                at: index,
                 sourceName: sourceName,
-                annotations: row.annotations,
-                version: row.version
-            )
-            try sourceRows.append(
-                footprint: try CanonicalRelationalFootprintMeter.footprint(
-                    of: sourceRow,
-                    workMeter: workMeter
-                ),
-                make: { sourceRow }
+                to: &sourceRows,
+                stage: stage
             )
         }
         return try sourceRows.finish().moveToSharedOwnership(at: stage)
@@ -3435,16 +3419,15 @@ extension DatabaseContext {
         evaluationContext: CanonicalQueryEvaluationContext
     ) async throws -> CanonicalRetainedQueryResponse {
         let group = try container.polymorphicGroup(identifier: logicalSource.identifier)
-        let entities = try await scanPolymorphicItems(
+        let entities = try await evaluationContext.fusionSession
+            .scanRetainedPolymorphicItems(
             group: group,
-            selectQuery: selectQuery,
-            session: evaluationContext.fusionSession
+            selectQuery: selectQuery
         )
         let sourceName = logicalSource.alias ?? logicalSource.effectiveName
         let sourceRows = try materializePolymorphicSourceRows(
             entities,
             sourceName: sourceName,
-            workMeter: options.workMeter,
             stage: .resultMaterialization
         )
 
@@ -3524,16 +3507,15 @@ extension DatabaseContext {
                 )
             }
             let group = try container.polymorphicGroup(identifier: logicalSource.identifier)
-            let entities = try await scanPolymorphicItems(
+            let entities = try await fusionSession
+                .scanRetainedPolymorphicItems(
                 group: group,
-                selectQuery: authorizationQuery,
-                session: fusionSession
+                selectQuery: authorizationQuery
             )
             let sourceName = logicalSource.alias ?? logicalSource.effectiveName
             let rows = try materializePolymorphicSourceRows(
                 entities,
                 sourceName: sourceName,
-                workMeter: options.workMeter,
                 stage: .bindingCandidate
             )
             return CanonicalRelation(

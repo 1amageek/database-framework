@@ -161,6 +161,8 @@ public struct IndexReadResult: Sendable {
 public struct IndexReadResultBuilder: ~Copyable {
     private var storage: DatabaseRetainedArrayBuilder<IndexReadRow>
 
+    package var workMeter: DatabaseWorkMeter { storage.workMeter }
+
     fileprivate init(
         workMeter: DatabaseWorkMeter,
         expectedCount: Int

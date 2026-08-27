@@ -37,25 +37,32 @@ extension DatabaseContext {
         )
     }
 
-    /// Scans polymorphic rows after validating the session's sealed list and
-    /// field authorization. Row-level policy is still evaluated for every
-    /// decoded model because it may depend on stored data.
-    package func scanPolymorphicItems(
+    /// Scans polymorphic rows into one request-owned aggregate.
+    ///
+    /// Collection storage is admitted before the cursor is created. Each row
+    /// slot is then admitted before identifier decoding, model decoding, or
+    /// row-level authorization begins.
+    package func scanRetainedPolymorphicItems(
         group: PolymorphicGroup,
-        selectQuery: SelectQuery,
-        session: DatabaseReadSession
-    ) async throws -> [PolymorphicEntity] {
-        try session.requirePolymorphicReadAuthorization(
-            group: group,
-            selectQuery: selectQuery
+        session: DatabaseReadSession,
+        admission: DatabaseReadSession.PolymorphicReadAdmission
+    ) async throws -> sending DatabaseRetainedPolymorphicEntities {
+        try admission.require(
+            groupIdentifier: group.identifier,
+            operation: .scan
         )
+        let workMeter = admission.workMeter
         let transaction = session.transaction
         let typeMap = try session.polymorphicTypeMap(for: group)
+        var builder = try DatabaseRetainedPolymorphicEntities.Builder(
+            workMeter: workMeter,
+            stage: .storageRow
+        )
         guard let subspace = try await container.openPolymorphicDirectory(
             for: group.identifier,
             transaction: transaction.storageAccess
         ) else {
-            return []
+            return builder.finish()
         }
         let itemSubspace = subspace.subspace(SubspaceKey.items)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
@@ -64,40 +71,254 @@ extension DatabaseContext {
             blobsSubspace: blobsSubspace
         )
         let (begin, end) = itemSubspace.range()
-        var entities: [PolymorphicEntity] = []
-        var iterator = storage.scan(
+        try await storage.consumeRetainedScan(
             begin: begin,
             end: end,
-            snapshot: true
-        ).makeAsyncIterator()
-        while let (key, data) = try await iterator.next() {
-            let tuple = try itemSubspace.unpack(key)
-            guard tuple.count > 0 else {
+            snapshot: true,
+            workMeter: workMeter,
+            stage: .storageRow
+        ) { key, data in
+            let admission = try builder.prepareEntry(at: .storageRow)
+            guard key.count >= itemSubspace.prefix.count else {
                 throw PolymorphicRuntimeError.invalidStoredIdentifier
             }
-            let typeCodeValue = try tuple.value(at: 0)
-            guard case .signedInteger(let typeCode) = typeCodeValue else {
-                throw PolymorphicRuntimeError.invalidStoredIdentifier
-            }
+            let identifier = try self.retainedPolymorphicIdentifier(
+                packed: key[itemSubspace.prefix.count..<key.count],
+                workMeter: workMeter,
+                stage: .storageRow
+            )
+            let typeCode = try self.polymorphicTypeCode(in: identifier)
             guard let runtime = typeMap[typeCode] else {
                 throw PolymorphicRuntimeError.unknownTypeCode(typeCode)
             }
-            let persistedModel = try DataAccess.deserializePersistedModel(
+            let model = try DatabaseRetainedStoredModel.decode(
                 data,
-                expectedEntity: runtime.entity.name
+                entity: runtime.entity.name,
+                runtime: runtime,
+                workMeter: workMeter,
+                stage: .storageRow
             )
-            let item = try runtime.canonicalized(persistedModel)
-            try session.authorizeGet(item)
-            entities.append(
-                PolymorphicEntity(
-                    item: item,
-                    typeName: runtime.entity.name,
-                    typeCode: typeCode,
-                    polymorphicIdentifier: tuple
-                )
+            try model.withModel { try session.authorizeGet($0) }
+            try builder.append(
+                model: model,
+                identifier: identifier,
+                runtime: runtime,
+                using: admission
             )
         }
-        return entities
+        return builder.finish()
+    }
+
+    /// Fetches one retained polymorphic slot for every retained identifier.
+    /// Missing values remain explicit nil slots in the original order.
+    package func fetchRetainedPolymorphicItemsPreservingOrder(
+        group: PolymorphicGroup,
+        ids: any DatabaseRetainedPrimaryKeyCollection,
+        session: DatabaseReadSession,
+        snapshot: Bool,
+        admission: DatabaseReadSession.PolymorphicReadAdmission
+    ) async throws -> sending DatabaseRetainedPolymorphicEntities {
+        try admission.require(
+            groupIdentifier: group.identifier,
+            operation: .orderedPointFetch
+        )
+        let workMeter = admission.workMeter
+        guard ids.workMeter === workMeter else {
+            throw DatabaseIntermediateReservationError.workMeterMismatch
+        }
+        let transaction = session.transaction
+        let typeMap = try session.polymorphicTypeMap(for: group)
+        var builder = try DatabaseRetainedPolymorphicEntities.Builder(
+            workMeter: workMeter,
+            stage: .storageRow,
+            expectedCount: ids.count
+        )
+        guard let subspace = try await container.openPolymorphicDirectory(
+            for: group.identifier,
+            transaction: transaction.storageAccess
+        ) else {
+            for _ in 0..<ids.count {
+                let admission = try builder.prepareEntry(at: .storageRow)
+                builder.appendMissing(using: admission)
+            }
+            return builder.finish()
+        }
+        let itemSubspace = subspace.subspace(SubspaceKey.items)
+        let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
+        let storage = container.itemStorageFactory.make(
+            transaction: transaction.storageAccess,
+            blobsSubspace: blobsSubspace
+        )
+
+        for index in 0..<ids.count {
+            try workMeter.consume(at: .storageRow)
+            let admission = try builder.prepareEntry(at: .storageRow)
+            var retainedIdentifier: DatabaseRetainedPrimaryKey?
+            var retainedKey: ByteString?
+            try ids.withRetainedPrimaryKey(at: index) { identifier in
+                retainedIdentifier = try self.retainedPolymorphicIdentifier(
+                    identifier,
+                    workMeter: workMeter,
+                    stage: .storageRow
+                )
+                retainedKey = try self.retainedPolymorphicStorageKey(
+                    identifier,
+                    subspace: itemSubspace,
+                    workMeter: workMeter,
+                    stage: .storageRow
+                )
+            }
+            guard let identifier = retainedIdentifier,
+                  let key = retainedKey else {
+                preconditionFailure(
+                    "A retained primary-key collection did not yield its element"
+                )
+            }
+            let typeCode = try polymorphicTypeCode(
+                in: identifier,
+                invalidIdentifierError: .invalidRequestedIdentifier
+            )
+            guard let runtime = typeMap[typeCode] else {
+                throw PolymorphicRuntimeError.unknownTypeCode(typeCode)
+            }
+            guard let data = try await storage.readRetained(
+                for: key,
+                snapshot: snapshot,
+                workMeter: workMeter,
+                stage: .storageRow
+            ) else {
+                builder.appendMissing(using: admission)
+                continue
+            }
+            let model = try DatabaseRetainedStoredModel.decode(
+                data,
+                entity: runtime.entity.name,
+                runtime: runtime,
+                workMeter: workMeter,
+                stage: .storageRow
+            )
+            try model.withModel { try session.authorizeGet($0) }
+            try builder.append(
+                model: model,
+                identifier: identifier,
+                runtime: runtime,
+                using: admission
+            )
+        }
+        return builder.finish()
+    }
+
+    private func retainedPolymorphicIdentifier(
+        _ identifier: borrowing Tuple,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> DatabaseRetainedPrimaryKey {
+        let reservation = try workMeter.reserveIntermediate(
+            bytes: UInt64(identifier.packedByteCount),
+            at: stage
+        )
+        do {
+            let packed = identifier.pack()
+            let retained = try DatabaseRetainedByteString.make(
+                packed,
+                reservation: reservation,
+                at: stage
+            )
+            let tuple = try Tuple(packed: retained) { additionalByteCount in
+                try reservation.reserveAdditional(
+                    bytes: UInt64(additionalByteCount),
+                    at: stage
+                )
+            }
+            return DatabaseRetainedPrimaryKey(
+                value: tuple,
+                reservation: reservation
+            )
+        } catch {
+            reservation.release()
+            throw error
+        }
+    }
+
+    private func retainedPolymorphicIdentifier(
+        packed: ByteString,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> DatabaseRetainedPrimaryKey {
+        let reservation = try workMeter.reserveIntermediate(
+            bytes: UInt64(packed.count),
+            at: stage
+        )
+        do {
+            let retained = try DatabaseRetainedByteString.copying(
+                packed,
+                reservation: reservation,
+                at: stage
+            )
+            let tuple = try Tuple(packed: retained) { additionalByteCount in
+                try reservation.reserveAdditional(
+                    bytes: UInt64(additionalByteCount),
+                    at: stage
+                )
+            }
+            return DatabaseRetainedPrimaryKey(
+                value: tuple,
+                reservation: reservation
+            )
+        } catch {
+            reservation.release()
+            throw error
+        }
+    }
+
+    private func retainedPolymorphicStorageKey(
+        _ identifier: borrowing Tuple,
+        subspace: Subspace,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> ByteString {
+        let (keyByteCount, overflow) = subspace.prefix.count
+            .addingReportingOverflow(identifier.packedByteCount)
+        guard !overflow else {
+            throw DatabaseIntermediateFootprintError.byteAdditionOverflow(
+                left: UInt64(subspace.prefix.count),
+                right: UInt64(identifier.packedByteCount)
+            )
+        }
+        let reservation = try workMeter.reserveIntermediate(
+            bytes: UInt64(keyByteCount),
+            at: stage
+        )
+        do {
+            return try DatabaseRetainedByteString.make(
+                subspace.pack(identifier),
+                reservation: reservation,
+                at: stage
+            )
+        } catch {
+            reservation.release()
+            throw error
+        }
+    }
+
+    private func polymorphicTypeCode(
+        in identifier: DatabaseRetainedPrimaryKey,
+        invalidIdentifierError: PolymorphicRuntimeError =
+            .invalidStoredIdentifier
+    ) throws -> Int64 {
+        var result: Int64?
+        try identifier.withValue { tuple in
+            guard tuple.count > 0,
+                  case .signedInteger(let typeCode) = try tuple.value(at: 0)
+            else {
+                throw invalidIdentifierError
+            }
+            result = typeCode
+        }
+        guard let result else {
+            throw invalidIdentifierError
+        }
+        return result
     }
 
     public func fetchPolymorphicItems(
@@ -105,33 +326,69 @@ extension DatabaseContext {
         ids: [Tuple],
         configuration: TransactionConfiguration = .default
     ) async throws -> [PolymorphicEntity] {
-        try await withStorageAccess(
-            requiredAccess: .read,
-            configuration: configuration
-        ) { transaction in
-            try await self.fetchPolymorphicItems(
-                group: group,
-                ids: ids,
-                transaction: transaction
+        try await withDataOperation { [self] in
+            let authorization = try readPolicy()
+                .authorizePolymorphicModelRead(group: group)
+            let workMeter = DatabaseWorkMeter(
+                budget: ExecutionBudget(),
+                monotonicClock: container.monotonicClock
             )
+            let retainedIdentifiers = try retainedPolymorphicIdentifiers(
+                ids,
+                workMeter: workMeter
+            )
+            return try await withReadSnapshot(
+                configuration: configuration,
+                workMeter: workMeter
+            ) { snapshot in
+                let session = try snapshot.session.authorizedSession(
+                    authorization
+                )
+                let entities = try await session
+                    .fetchRetainedPolymorphicItemsPreservingOrder(
+                        group: group,
+                        ids: retainedIdentifiers
+                    )
+                return entities.promoteEntitiesToPublicOutput()
+            }
         }
     }
 
-    /// Fetches polymorphic rows on the caller-owned transaction snapshot.
-    package func fetchPolymorphicItems(
-        group: PolymorphicGroup,
-        ids: [Tuple],
-        transaction: any TransactionAccess
-    ) async throws -> [PolymorphicEntity] {
-        try await fetchPolymorphicItemsPreservingOrder(
-            group: group,
-            ids: ids,
-            transaction: transaction
-        ).compactMap { $0 }
+    private func retainedPolymorphicIdentifiers(
+        _ identifiers: [Tuple],
+        workMeter: DatabaseWorkMeter
+    ) throws -> DatabaseRetainedPrimaryKeys {
+        var builder = try DatabaseRetainedArrayBuilder<
+            DatabaseRetainedPrimaryKey
+        >(
+            workMeter: workMeter,
+            stage: .storageRow,
+            layout: try DatabaseRetainedArrayLayout.forElement(
+                DatabaseRetainedPrimaryKey.self
+            ),
+            expectedCount: identifiers.count
+        )
+        for identifier in identifiers {
+            try builder.append(
+                footprint: DatabaseIntermediateFootprint(rows: 1),
+                at: .storageRow
+            ) {
+                try retainedPolymorphicIdentifier(
+                    identifier,
+                    workMeter: workMeter,
+                    stage: .storageRow
+                )
+            }
+        }
+        return try DatabaseRetainedPrimaryKeys(buffer: builder.finish())
     }
 
     /// Fetches polymorphic rows without discarding unresolved identifiers.
     /// The returned array has exactly one slot for every requested identifier.
+    // FIXME(INCOMPLETE_IMPLEMENTATION): Bitmap, Rank, FullText, and Vector
+    // production executors still depend on this raw optional entity array.
+    // DF-06F is complete only after those callers consume the retained owner
+    // and this declaration is deleted.
     package func fetchPolymorphicItemsPreservingOrder(
         group: PolymorphicGroup,
         ids: [Tuple],

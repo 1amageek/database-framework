@@ -79,6 +79,58 @@ struct ItemStorageResourceTests {
         await engine.waitUntilShutdown()
     }
 
+    @Test("Retained external reads bound the envelope and every chunk")
+    func retainedExternalReadsUseBoundedPointReads() async throws {
+        let engine = ControlledStorageEngine(base: InMemoryEngine())
+        defer { await engine.waitUntilShutdown() }
+        let configuration = try ItemStorageConfiguration(
+            encoding: .identity,
+            maximumPlainByteCount: 64,
+            maximumStoredByteCount: 64,
+            maximumInlineByteCount: 2,
+            chunkByteCount: 4
+        )
+        let items = Subspace("item-resource-bounded", "items")
+        let blobs = Subspace("item-resource-bounded", "blobs")
+        let key = items.pack(Tuple("external"))
+        let payload = ByteString(repeating: 0x3C, count: 12)
+
+        try await engine.withTransaction { transaction in
+            try await ItemStorage(
+                transaction: transaction,
+                blobsSubspace: blobs,
+                configuration: configuration
+            ).write(payload, for: key)
+        }
+
+        let meter = makeMeter(maximumWorkUnits: 100)
+        var retained = try await engine.withTransaction { transaction in
+            try await ItemStorage(
+                transaction: transaction,
+                blobsSubspace: blobs,
+                configuration: configuration
+            ).readRetained(
+                for: key,
+                workMeter: meter,
+                stage: .storageRow
+            )
+        }
+
+        #expect(retained == payload)
+        // The 12-byte payload uses one envelope read and three 4-byte chunks.
+        #expect(engine.control.boundedValueReadMaximums.count == 4)
+        #expect(
+            engine.control.boundedValueReadMaximums.allSatisfy {
+                $0 > 0 && $0 <= 64
+            }
+        )
+        #expect(meter.retainedIntermediateBytes == UInt64(payload.count))
+
+        retained = nil
+        #expect(meter.retainedIntermediateRows == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
     private func makeMeter(maximumWorkUnits: UInt64) -> DatabaseWorkMeter {
         DatabaseWorkMeter(
             budget: ExecutionBudget(
