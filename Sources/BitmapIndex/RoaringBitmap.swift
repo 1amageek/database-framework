@@ -851,6 +851,48 @@ public struct RoaringBitmap: Sendable, Equatable, Sequence {
         return maximum
     }
 
+    /// Returns the maximum temporary storage used while intersecting one
+    /// pair of containers. The final result is admitted separately. Bitmap
+    /// containers materialize one 8 KiB word array, while run/mixed
+    /// containers first materialize the two sorted value arrays used by the
+    /// generic intersection implementation.
+    func intersectionScratchByteCount(with other: RoaringBitmap) throws -> UInt64 {
+        var maximum: UInt64 = 0
+        for (high, left) in containers {
+            guard let right = other.containers[high] else { continue }
+
+            let candidate: UInt64
+            switch (left, right) {
+            case (.bitmap, .bitmap):
+                candidate = UInt64(1024 * MemoryLayout<UInt64>.stride)
+            case (.array, .array), (.array, .bitmap), (.bitmap, .array):
+                candidate = 0
+            default:
+                let elementCount = UInt64(left.cardinality)
+                    .addingReportingOverflow(UInt64(right.cardinality))
+                guard !elementCount.overflow else {
+                    throw RoaringBitmapFormatError.encodedSizeOverflow
+                }
+                let payload = elementCount.partialValue
+                    .multipliedReportingOverflow(
+                        by: UInt64(MemoryLayout<UInt16>.stride)
+                    )
+                guard !payload.overflow else {
+                    throw RoaringBitmapFormatError.encodedSizeOverflow
+                }
+                let overhead = UInt64(2 * MemoryLayout<[UInt16]>.stride)
+                    + UInt64(2 * 64)
+                let total = payload.partialValue.addingReportingOverflow(overhead)
+                guard !total.overflow else {
+                    throw RoaringBitmapFormatError.encodedSizeOverflow
+                }
+                candidate = total.partialValue
+            }
+            maximum = Swift.max(maximum, candidate)
+        }
+        return maximum
+    }
+
     /// Returns an upper bound for the logical retained storage of a union.
     /// A pair of compact run containers can expand into an 8 KiB bitmap, so
     /// the sum of the input footprints is not a valid admission bound.

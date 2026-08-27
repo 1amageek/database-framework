@@ -334,8 +334,12 @@ struct BitmapFusionInputTests {
                 subspace: readable.subspace
             ).bitmap(
                 for: [try FieldValue.string(value).toTupleElement()],
-                transaction: transaction
-            )
+                transaction: transaction,
+                workMeter: DatabaseWorkMeter(
+                    budget: ExecutionBudget(),
+                    monotonicClock: TestProcessMonotonicClock()
+                )
+            ).promoteToOutput()
             return (bitmap.cardinality, Array(bitmap))
         }
     }

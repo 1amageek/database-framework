@@ -173,21 +173,29 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
         return try await withResolvedBitmap(
             configuration: configuration,
             missing: { [] }
-        ) { bitmap, maintainer, transaction in
-            var resultBitmap = bitmap
-            if let limit = self.limitCount {
-                let array = bitmap.toArray()
-                if UInt64(array.count) > limit {
-                    resultBitmap = RoaringBitmap()
-                    for id in array.prefix(Int(limit)) {
-                        resultBitmap.add(id)
-                    }
+        ) { bitmap, reader, transaction, workMeter in
+            let retainedPrimaryKeys = try await reader.primaryKeys(
+                for: bitmap,
+                transaction: transaction.storageTransaction,
+                limit: self.limitCount.flatMap { Int(exactly: $0) },
+                workMeter: workMeter
+            )
+            var primaryKeys: [Tuple] = []
+            primaryKeys.reserveCapacity(retainedPrimaryKeys.count)
+            for position in 0..<retainedPrimaryKeys.count {
+                retainedPrimaryKeys.withRetainedPrimaryKey(
+                    at: position
+                ) { key in
+                    primaryKeys.append(copy key)
                 }
             }
-            let primaryKeys = try await maintainer.primaryKeys(
-                for: resultBitmap,
-                transaction: transaction.storageTransaction
-            )
+            let primaryKeyReservation = try DatabaseIntermediateCollectionMeter
+                .reserveTuples(
+                    primaryKeys,
+                    workMeter: workMeter,
+                    stage: .indexScan
+                )
+            defer { primaryKeyReservation.release() }
             let items = try await self.queryContext.fetchItemsPreservingOrder(
                 ids: primaryKeys,
                 type: T.self,
@@ -223,7 +231,7 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
         return try await withResolvedBitmap(
             configuration: configuration,
             missing: { 0 }
-        ) { bitmap, _, _ in
+        ) { bitmap, _, _, _ in
             bitmap.cardinality
         }
     }
@@ -241,8 +249,8 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
         return try await withResolvedBitmap(
             configuration: configuration,
             missing: { RoaringBitmap() }
-        ) { bitmap, _, _ in
-            bitmap
+        ) { bitmap, _, _, _ in
+            bitmap.promoteToOutput()
         }
     }
 
@@ -256,9 +264,10 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
         configuration: TransactionConfiguration,
         missing: @Sendable @escaping () -> R,
         _ body: @escaping @Sendable (
-            RoaringBitmap,
+            consuming BitmapReadOwner,
             BitmapIndexReader,
-            DatabaseReadTransaction
+            DatabaseReadTransaction,
+            DatabaseWorkMeter
         ) async throws -> R
     ) async throws -> R {
         guard let op = operation else {
@@ -275,12 +284,20 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
             throw BitmapQueryError.invalidIndex(indexName)
         }
         guard descriptor.type == .bitmap else { throw BitmapQueryError.invalidIndex(descriptor.name) }
-        return try await queryContext.withReadableIndex(
-            named: indexName,
-            indexType: .bitmap,
-            for: T.self,
-            configuration: configuration
-        ) { readableIndex, transaction in
+        let workMeter = DatabaseWorkMeter(
+            budget: ExecutionBudget(),
+            monotonicClock: queryContext.context.container.monotonicClock
+        )
+        return try await queryContext.withTransaction(
+            configuration: configuration,
+            workMeter: workMeter
+        ) { transaction in
+            let readableIndex = try await queryContext.readableIndex(
+                named: indexName,
+                indexType: .bitmap,
+                for: T.self,
+                transaction: transaction
+            )
             guard let readableIndex else {
                 return missing()
             }
@@ -288,30 +305,38 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
                 subspace: readableIndex.subspace
             )
 
-            let bitmap: RoaringBitmap
+            let bitmap: BitmapReadOwner
             switch op {
             case .equals(let value):
                 bitmap = try await reader.bitmap(
                     for: [value],
-                    transaction: transaction.storageTransaction
+                    transaction: transaction.storageTransaction,
+                    workMeter: workMeter
                 )
 
             case .in(let values):
                 let valueSets = values.map { [$0] as [any TupleElement] }
                 bitmap = try await reader.union(
                     of: valueSets,
-                    transaction: transaction.storageTransaction
+                    transaction: transaction.storageTransaction,
+                    workMeter: workMeter
                 )
 
             case .and(let valueSets):
                 let converted = valueSets.map { $0 as [any TupleElement] }
                 bitmap = try await reader.intersection(
                     of: converted,
-                    transaction: transaction.storageTransaction
+                    transaction: transaction.storageTransaction,
+                    workMeter: workMeter
                 )
             }
 
-            return try await body(bitmap, reader, transaction)
+            return try await body(
+                consume bitmap,
+                reader,
+                transaction,
+                workMeter
+            )
         }
     }
 

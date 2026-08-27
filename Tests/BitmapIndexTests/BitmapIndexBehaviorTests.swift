@@ -73,7 +73,11 @@ private struct BitmapIndexContext {
         try await database.withTransaction { transaction in
             try await maintainer.getBitmap(
                 for: [.string(value)],
-                transaction: transaction
+                transaction: transaction,
+                workMeter: DatabaseWorkMeter(
+                    budget: ExecutionBudget(),
+                    monotonicClock: TestProcessMonotonicClock()
+                )
             )
         }
     }
@@ -82,26 +86,51 @@ private struct BitmapIndexContext {
         try await database.withTransaction { transaction in
             try await maintainer.getCount(
                 for: [.string(value)],
-                transaction: transaction
+                transaction: transaction,
+                workMeter: DatabaseWorkMeter(
+                    budget: ExecutionBudget(),
+                    monotonicClock: TestProcessMonotonicClock()
+                )
             )
         }
     }
 
     func andQuery(values: [[FieldValue]]) async throws -> RoaringBitmap {
         try await database.withTransaction { transaction in
-            try await maintainer.andQuery(values: values, transaction: transaction)
+            try await maintainer.andQuery(
+                values: values,
+                transaction: transaction,
+                workMeter: DatabaseWorkMeter(
+                    budget: ExecutionBudget(),
+                    monotonicClock: TestProcessMonotonicClock()
+                )
+            )
         }
     }
 
     func orQuery(values: [[FieldValue]]) async throws -> RoaringBitmap {
         try await database.withTransaction { transaction in
-            try await maintainer.orQuery(values: values, transaction: transaction)
+            try await maintainer.orQuery(
+                values: values,
+                transaction: transaction,
+                workMeter: DatabaseWorkMeter(
+                    budget: ExecutionBudget(),
+                    monotonicClock: TestProcessMonotonicClock()
+                )
+            )
         }
     }
 
     func getPrimaryKeys(from bitmap: RoaringBitmap) async throws -> [Tuple] {
         try await database.withTransaction { transaction in
-            try await maintainer.getPrimaryKeys(from: bitmap, transaction: transaction)
+            try await maintainer.getPrimaryKeys(
+                from: bitmap,
+                transaction: transaction,
+                workMeter: DatabaseWorkMeter(
+                    budget: ExecutionBudget(),
+                    monotonicClock: TestProcessMonotonicClock()
+                )
+            )
         }
     }
 

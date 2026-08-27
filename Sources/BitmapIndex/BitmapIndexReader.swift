@@ -17,189 +17,201 @@ struct BitmapIndexReader: Sendable {
 
     func bitmap(
         for fieldValues: [any TupleElement],
-        transaction: any TransactionAccess,
-        workMeter: DatabaseWorkMeter? = nil
-    ) async throws -> RoaringBitmap {
+        transaction: any TransactionReadAccess,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> BitmapReadOwner {
         let key = dataSubspace.pack(Tuple(fieldValues))
-        guard let bytes = try await transaction.getValue(
+        guard let bytes = try await transaction.readPointValue(
             for: key,
-            snapshot: false
-        ) else {
-            return RoaringBitmap()
-        }
-        let decodeAdmission = try workMeter?.reserveIntermediate(
-            bytes: try DatabaseIntermediateFootprint(
-                bytes: UInt64(bytes.count)
-            ).adding(
-                DatabaseIntermediateFootprint(bytes: 64)
-            ).bytes,
+            snapshot: false,
+            workMeter: workMeter,
             at: .indexScan
-        )
-        defer { decodeAdmission?.release() }
-        let bitmap = try RoaringBitmap(serializedBytes: bytes)
-        let serializedFootprint = try DatabaseIntermediateFootprint(
-            bytes: UInt64(bytes.count)
-        ).adding(
-            DatabaseIntermediateFootprint(bytes: 64)
-        ).bytes
-        let retainedBytes = try bitmap.retainedStorageByteCount()
-        if retainedBytes > serializedFootprint {
-            try decodeAdmission?.reserveAdditional(
-                bytes: retainedBytes - serializedFootprint,
-                at: .indexScan
-            )
+        ) else {
+            return try BitmapReadOwner.empty(workMeter: workMeter)
         }
-        return bitmap
+
+        let reservation = try workMeter.reserveIntermediate(at: .indexScan)
+        do {
+            var admittedBytes: UInt64 = 0
+            let value = try RoaringBitmap(
+                serializedBytes: bytes,
+                admittingRetainedBytes: { amount in
+                    try reservation.reserveAdditional(
+                        bytes: amount,
+                        at: .indexScan
+                    )
+                    let (next, overflow) = admittedBytes
+                        .addingReportingOverflow(amount)
+                    guard !overflow else {
+                        throw RoaringBitmapFormatError.encodedSizeOverflow
+                    }
+                    admittedBytes = next
+                }
+            )
+            let retainedBytes = try value.retainedStorageByteCount()
+            if retainedBytes > admittedBytes {
+                try reservation.reserveAdditional(
+                    bytes: retainedBytes - admittedBytes,
+                    at: .indexScan
+                )
+            } else if admittedBytes > retainedBytes {
+                try reservation.releasePartial(
+                    bytes: admittedBytes - retainedBytes
+                )
+            }
+            return BitmapReadOwner(
+                value: value,
+                reservation: reservation
+            )
+        } catch {
+            reservation.release()
+            throw error
+        }
     }
 
     func intersection(
         of values: [[any TupleElement]],
-        transaction: any TransactionAccess,
-        workMeter: DatabaseWorkMeter? = nil
-    ) async throws -> RoaringBitmap {
+        transaction: any TransactionReadAccess,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> BitmapReadOwner {
         guard let first = values.first else {
-            return RoaringBitmap()
+            return try BitmapReadOwner.empty(workMeter: workMeter)
         }
         var result = try await bitmap(
             for: first,
             transaction: transaction,
             workMeter: workMeter
         )
-        var resultReservation = try workMeter?.reserveIntermediate(
-            bytes: try result.retainedStorageByteCount(),
-            at: .indexScan
-        )
-        defer { resultReservation?.release() }
         for value in values.dropFirst() {
             let next = try await bitmap(
                 for: value,
                 transaction: transaction,
                 workMeter: workMeter
             )
-            let nextBytes = try next.retainedStorageByteCount()
-            let nextReservation = try workMeter?.reserveIntermediate(
-                bytes: nextBytes,
-                at: .indexScan
-            )
-            defer { nextReservation?.release() }
-            let maximumOutputBytes = try DatabaseIntermediateFootprint(
-                bytes: try result.retainedStorageByteCount()
-            ).adding(
-                DatabaseIntermediateFootprint(bytes: nextBytes)
-            ).bytes
-            let outputAdmission = try workMeter?.reserveIntermediate(
-                bytes: maximumOutputBytes,
-                at: .indexScan
-            )
-            let output = result && next
-            let outputBytes = try output.retainedStorageByteCount()
-            if outputBytes < maximumOutputBytes {
-                try outputAdmission?.releasePartial(
-                    bytes: maximumOutputBytes - outputBytes
-                )
-            }
-            resultReservation?.release()
-            resultReservation = outputAdmission
-            result = output
+            result = try result.intersect(with: consume next)
         }
         return result
     }
 
     func union(
         of values: [[any TupleElement]],
-        transaction: any TransactionAccess,
-        workMeter: DatabaseWorkMeter? = nil
-    ) async throws -> RoaringBitmap {
-        var result = RoaringBitmap()
-        var resultReservation = try workMeter?.reserveIntermediate(
-            bytes: try result.retainedStorageByteCount(),
-            at: .indexScan
-        )
-        defer { resultReservation?.release() }
+        transaction: any TransactionReadAccess,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> BitmapReadOwner {
+        var result = try BitmapReadOwner.empty(workMeter: workMeter)
         for value in values {
             let next = try await bitmap(
                 for: value,
                 transaction: transaction,
                 workMeter: workMeter
             )
-            let nextBytes = try next.retainedStorageByteCount()
-            let nextReservation = try workMeter?.reserveIntermediate(
-                bytes: nextBytes,
-                at: .indexScan
-            )
-            defer { nextReservation?.release() }
-            let maximumOutputBytes = try DatabaseIntermediateFootprint(
-                bytes: try result.retainedStorageByteCount()
-            ).adding(
-                DatabaseIntermediateFootprint(bytes: nextBytes)
-            ).bytes
-            let outputAdmission = try workMeter?.reserveIntermediate(
-                bytes: maximumOutputBytes,
-                at: .indexScan
-            )
-            let output = result || next
-            let outputBytes = try output.retainedStorageByteCount()
-            if outputBytes < maximumOutputBytes {
-                try outputAdmission?.releasePartial(
-                    bytes: maximumOutputBytes - outputBytes
-                )
-            }
-            resultReservation?.release()
-            resultReservation = outputAdmission
-            result = output
+            result = try result.union(with: consume next)
         }
         return result
     }
 
+    /// Resolves sequential identifiers into a retained collection. The
+    /// collection keeps the same meter alive until the consumer has fetched or
+    /// promoted every borrowed primary key.
     func primaryKeys(
-        for bitmap: RoaringBitmap,
-        transaction: any TransactionAccess,
+        for bitmap: borrowing BitmapReadOwner,
+        transaction: any TransactionReadAccess,
         limit: Int? = nil,
-        workMeter: DatabaseWorkMeter? = nil
-    ) async throws -> [Tuple] {
-        var results: [Tuple] = []
-        results.reserveCapacity(min(bitmap.cardinality, limit ?? bitmap.cardinality))
-        let bitmapReservation = try workMeter?.reserveIntermediate(
-            bytes: try bitmap.retainedStorageByteCount(),
-            at: .indexScan
+        workMeter: DatabaseWorkMeter
+    ) async throws -> DatabaseRetainedPrimaryKeys {
+        guard bitmap.workMeter === workMeter else {
+            throw DatabaseIntermediateReservationError.workMeterMismatch
+        }
+        let requestedLimit = max(0, limit ?? bitmap.cardinality)
+        let count = min(bitmap.cardinality, requestedLimit)
+        var identifiers = try DatabaseRetainedArrayBuilder<UInt32>(
+            workMeter: workMeter,
+            stage: .indexScan,
+            layout: try DatabaseRetainedArrayLayout.forElement(UInt32.self),
+            expectedCount: count
         )
-        defer { bitmapReservation?.release() }
-        let resultReservation = try workMeter?.reserveIntermediate(
-            bytes: UInt64(MemoryLayout<[Tuple]>.stride),
-            at: .indexScan
-        )
-        defer { resultReservation?.release() }
-
-        for identifier in bitmap {
-            guard results.count < (limit ?? Int.max) else { break }
-            try workMeter?.consume(at: .indexScan)
-            let key = idsSubspace.pack(Tuple(Int(identifier)))
-            if let bytes = try await transaction.getValue(
-                for: key,
-                snapshot: false
-            ) {
-                let tuple = Tuple(try Tuple.unpack(from: bytes))
-                let retainedBytes = try DatabaseIntermediateFootprint(
-                    bytes: UInt64(bytes.count)
-                ).adding(
-                    DatabaseIntermediateFootprint(bytes: 64)
-                ).bytes
-                try resultReservation?.reserveAdditional(
-                    rows: 1,
-                    bytes: retainedBytes,
+        try bitmap.withValue { value in
+            let iteratorReservation = try workMeter.reserveIntermediate(
+                bytes: try value.iteratorRetainedStorageByteCount(),
+                at: .indexScan
+            )
+            defer { iteratorReservation.release() }
+            var seen = 0
+            for identifier in value {
+                guard seen < requestedLimit else { break }
+                try identifiers.append(
+                    footprint: DatabaseIntermediateFootprint(
+                        bytes: UInt64(MemoryLayout<UInt32>.stride)
+                    ),
                     at: .indexScan
-                )
-                results.append(tuple)
+                ) {
+                    identifier
+                }
+                seen += 1
             }
         }
-        return results
+        let retainedIdentifiers = identifiers.finish()
+
+        var primaryKeys = try DatabaseRetainedArrayBuilder<
+            DatabaseRetainedPrimaryKey
+        >(
+            workMeter: workMeter,
+            stage: .indexScan,
+            layout: try DatabaseRetainedArrayLayout.forElement(
+                DatabaseRetainedPrimaryKey.self
+            ),
+            expectedCount: count
+        )
+        for index in 0..<retainedIdentifiers.count {
+            try await retainedIdentifiers.withElement(at: index) { identifier in
+                try workMeter.consume(at: .indexScan)
+                let key = idsSubspace.pack(Tuple(Int(identifier)))
+                guard let bytes = try await transaction.readPointValue(
+                    for: key,
+                    snapshot: false,
+                    workMeter: workMeter,
+                    at: .indexScan
+                ) else {
+                    return
+                }
+                let tuple = Tuple(try Tuple.unpack(from: bytes))
+                let reservation = try workMeter.reserveIntermediate(
+                    rows: 1,
+                    bytes: try DatabaseIntermediateFootprint(
+                        bytes: UInt64(tuple.packedByteCount)
+                    ).adding(
+                        DatabaseIntermediateFootprint(bytes: 64)
+                    ).bytes,
+                    at: .indexScan
+                )
+                do {
+                    let retained = DatabaseRetainedPrimaryKey(
+                        value: tuple,
+                        reservation: reservation
+                    )
+                    try primaryKeys.append(
+                        footprint: DatabaseIntermediateFootprint(rows: 1),
+                        at: .indexScan
+                    ) {
+                        retained
+                    }
+                } catch {
+                    reservation.release()
+                    throw error
+                }
+            }
+        }
+        return try DatabaseRetainedPrimaryKeys(
+            buffer: primaryKeys.finish()
+        )
     }
 
     func distinctValues(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [[any TupleElement]] {
         let range = dataSubspace.range()
-        let sequence = try await TransactionRangeCollection.collect(using: transaction,
+        let sequence = try await TransactionRangeCollection.collect(
+            using: transaction,
             from: .firstGreaterOrEqual(range.begin),
             to: .firstGreaterOrEqual(range.end),
             limit: 0,

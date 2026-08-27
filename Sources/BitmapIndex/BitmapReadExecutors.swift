@@ -89,7 +89,7 @@ private struct BitmapReadExecutor: IndexReadExecutor {
             return .empty
         }
         let reader = BitmapIndexReader(subspace: readableIndex.subspace)
-        let bitmap: RoaringBitmap
+        let bitmap: BitmapReadOwner
         switch operation {
         case BitmapReadParameter.equalsOperation:
             let values = try decodeTupleArray(
@@ -128,12 +128,20 @@ private struct BitmapReadExecutor: IndexReadExecutor {
             )
         }
 
-        let primaryKeys = try await reader.primaryKeys(
+        let retainedPrimaryKeys = try await reader.primaryKeys(
             for: bitmap,
             transaction: transaction.storageTransaction,
             limit: resultLimit,
             workMeter: options.workMeter
         )
+        var primaryKeys: [Tuple] = []
+        primaryKeys.reserveCapacity(retainedPrimaryKeys.count)
+        for position in 0..<retainedPrimaryKeys.count {
+            retainedPrimaryKeys.withRetainedPrimaryKey(at: position) {
+                key in
+                primaryKeys.append(copy key)
+            }
+        }
         let primaryKeyReservation = try DatabaseIntermediateCollectionMeter
             .reserveTuples(
                 primaryKeys,
@@ -262,7 +270,7 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
             subspace: readableIndex.subspace
         )
 
-        let bitmap: RoaringBitmap
+        let bitmap: BitmapReadOwner
         switch operation {
         case BitmapReadParameter.equalsOperation:
             let values = try decodeTupleArray(
@@ -307,47 +315,40 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
             )
         }
 
-        let primaryKeys = try await reader.primaryKeys(
+        let retainedPrimaryKeys = try await reader.primaryKeys(
             for: bitmap,
             transaction: transaction.storageTransaction,
             limit: resultLimit,
             workMeter: options.workMeter
         )
-        let primaryKeyReservation = try DatabaseIntermediateCollectionMeter
-            .reserveTuples(
-                primaryKeys,
-                workMeter: options.workMeter,
-                stage: .indexScan
-            )
-        defer { primaryKeyReservation.release() }
-        let fetched = try await session.fetchPolymorphicItemsPreservingOrder(
+        let fetched = try await session.fetchRetainedPolymorphicItemsPreservingOrder(
             group: group,
-            ids: primaryKeys,
-            snapshot: execution.consistency == .snapshot,
-            workMeter: options.workMeter
+            ids: retainedPrimaryKeys,
+            snapshot: execution.consistency == .snapshot
         )
         return try IndexReadResult.build(
             workMeter: options.workMeter,
             ordering: .unordered,
             expectedCount: fetched.count
         ) { rows in
-            for (primaryKey, entity) in zip(primaryKeys, fetched) {
-                guard let entity else {
-                    throw BitmapReadError.missingFetchedEntity(
-                        primaryKey.pack()
-                    )
+            for position in 0..<fetched.count {
+                guard try fetched.appendIndexRow(
+                    at: position,
+                    to: &rows
+                ) else {
+                    var primaryKey: ByteString?
+                    retainedPrimaryKeys.withRetainedPrimaryKey(
+                        at: position
+                    ) { key in
+                        primaryKey = key.pack()
+                    }
+                    guard let primaryKey else {
+                        throw BitmapReadError.missingFetchedEntity(
+                            ByteString()
+                        )
+                    }
+                    throw BitmapReadError.missingFetchedEntity(primaryKey)
                 }
-                try rows.append(
-                    try IndexReadRow.materializing(
-                        entity.item,
-                        annotations: [
-                            PolymorphicRowAnnotation.typeName:
-                                .string(entity.typeName),
-                            PolymorphicRowAnnotation.typeCode:
-                                .int64(entity.typeCode),
-                        ]
-                    )
-                )
             }
         }
     }

@@ -379,7 +379,7 @@ let package = Package(
                 .product(name: "DatabaseTypes", package: "database-types"),
                 .product(name: "StorageKit", package: "storage-kit"),
             ],
-            exclude: ["README.md"]
+            exclude: ["README.md", "DESIGN.md"]
         ),
         .target(
             name: "LeaderboardIndex",
