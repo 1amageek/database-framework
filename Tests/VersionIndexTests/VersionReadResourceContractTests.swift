@@ -269,7 +269,7 @@ struct VersionReadResourceContractTests {
         let (container, control) = try await makeRegularCanonicalContainer()
         defer { await container.shutdown() }
 
-        let authorized = try container.makeActiveDataContext(
+        let authorized = container.testBaseContext(
             authorization: .authenticated(
                 Principal(
                     identifier: "version-authorized",
@@ -284,7 +284,7 @@ struct VersionReadResourceContractTests {
         #expect(history.allSatisfy { $0.version.bytes.count == 10 })
 
         let readsBeforeDeniedQuery = control.dataReadOperationCount
-        let denied = try container.makeActiveDataContext(
+        let denied = container.testBaseContext(
             authorization: .authenticated(
                 Principal(identifier: "version-denied")
             )
@@ -302,7 +302,7 @@ struct VersionReadResourceContractTests {
         let (container, control) = try await makePolymorphicCanonicalContainer()
         defer { await container.shutdown() }
 
-        let authorized = try container.makeActiveDataContext(
+        let authorized = container.testBaseContext(
             authorization: .authenticated(
                 Principal(
                     identifier: "polymorphic-version-authorized",
@@ -340,7 +340,7 @@ struct VersionReadResourceContractTests {
         #expect(row.annotations["version"]?.bytesValue?.count == 10)
 
         let readsBeforeDeniedQuery = control.dataReadOperationCount
-        let denied = try container.makeActiveDataContext(
+        let denied = container.testBaseContext(
             authorization: .authenticated(
                 Principal(identifier: "polymorphic-version-denied")
             )
@@ -609,6 +609,16 @@ private func makeRegularCanonicalContainer() async throws -> (
         runtimeConfiguration: configuration,
         security: .enabled()
     )
+    #if MultiBase
+    try await container.grantTestBaseAccess(
+        to: .principalRole("version-reader"),
+        access: .read
+    )
+    try await container.grantTestBaseAccess(
+        to: .principal("version-denied"),
+        access: .read
+    )
+    #endif
     let entitySubspace = try await container.testBaseDirectory(
         for: VersionCanonicalDocument.self
     )
@@ -682,6 +692,16 @@ private func makePolymorphicCanonicalContainer() async throws -> (
         runtimeConfiguration: configuration,
         security: .enabled()
     )
+    #if MultiBase
+    try await container.grantTestBaseAccess(
+        to: .principalRole("version-reader"),
+        access: .read
+    )
+    try await container.grantTestBaseAccess(
+        to: .principal("polymorphic-version-denied"),
+        access: .read
+    )
+    #endif
     let group = try #require(
         container.schema.polymorphicGroup(
             identifier: VersionCanonicalArticle.polymorphableType

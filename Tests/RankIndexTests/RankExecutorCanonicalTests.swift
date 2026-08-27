@@ -197,6 +197,16 @@ struct RankExecutorCanonicalTests {
         let container = try await makeAuthorizationContainer(storage: storage)
         defer { await container.shutdown() }
 
+        #if MultiBase
+        try await container.grantTestBaseAccess(
+            to: .principal("rank-reader"),
+            access: .write
+        )
+        try await container.grantTestBaseAccess(
+            to: .principal("rank-denied"),
+            access: .read
+        )
+        #endif
         let writer = container.testBaseContext(
             authorization: .authenticated(
                 Principal(identifier: "rank-reader")

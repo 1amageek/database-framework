@@ -376,14 +376,18 @@ struct VectorConversionTests {
         #expect(candidateOwner.borrowCount - candidateBorrowsBeforeSearch == 1)
     }
 
-    @Test("PQ validation keeps code and vector payloads borrowed")
-    func pqValidationKeepsPersistedPayloadsBorrowed() async throws {
+    @Test("PQ read admission detaches enclosing codebook storage once")
+    func pqReadAdmissionDetachesEnclosingCodebookStorage() async throws {
         let database = InMemoryEngine()
         let subspace = Subspace(prefix: Tuple("zero-copy", "pq").pack())
         var codebookValues = [Float](repeating: 0, count: 256 * 2)
         codebookValues[0] = 1
+        let codebookBytes = VectorConversion.floatArrayToBytes(
+            codebookValues
+        ).copyBytes()
         let codebookOwner = BorrowCountingVectorBytesOwner(
-            bytes: VectorConversion.floatArrayToBytes(codebookValues).copyBytes()
+            bytes: codebookBytes,
+            minimumRetainedCapacity: codebookBytes.count + 1
         )
         let codeOwner = BorrowCountingVectorBytesOwner(bytes: [0])
         let vectorOwner = BorrowCountingVectorBytesOwner(
@@ -440,7 +444,10 @@ struct VectorConversionTests {
         }
 
         #expect(results.count == 1)
-        #expect(codebookOwner.borrowCount - codebookBorrowsBeforeSearch == 2)
+        // The array owner retains capacity beyond its visible codebook bytes,
+        // so point-read admission borrows it once to create the exact retained
+        // owner used by both distance-table construction and code validation.
+        #expect(codebookOwner.borrowCount - codebookBorrowsBeforeSearch == 1)
         #expect(codeOwner.borrowCount - codeBorrowsBeforeSearch == 1)
         #expect(vectorOwner.borrowCount - vectorBorrowsBeforeSearch == 1)
     }
@@ -577,8 +584,15 @@ private final class BorrowCountingVectorBytesOwner: ByteStringOwner {
     let bytes: [UInt8]
     private let state = Mutex(0)
 
-    init(bytes: [UInt8]) {
-        self.bytes = bytes
+    init(
+        bytes: [UInt8],
+        minimumRetainedCapacity: Int? = nil
+    ) {
+        var storedBytes = bytes
+        if let minimumRetainedCapacity {
+            storedBytes.reserveCapacity(minimumRetainedCapacity)
+        }
+        self.bytes = storedBytes
     }
 
     var count: Int { bytes.count }

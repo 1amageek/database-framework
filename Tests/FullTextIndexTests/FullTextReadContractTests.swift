@@ -328,6 +328,16 @@ struct FullTextReadContractTests {
         let container = try await makeDeniedContainer(storage: storage)
         defer { await container.shutdown() }
 
+        #if MultiBase
+        try await container.grantTestBaseAccess(
+            to: .principal("fulltext-allowed"),
+            access: .write
+        )
+        try await container.grantTestBaseAccess(
+            to: .principal("fulltext-denied"),
+            access: .read
+        )
+        #endif
         let allowed = container.testBaseContext(
             authorization: .authenticated(
                 Principal(identifier: "fulltext-allowed")
