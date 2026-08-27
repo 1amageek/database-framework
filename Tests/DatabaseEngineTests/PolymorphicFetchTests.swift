@@ -389,26 +389,48 @@ struct PolymorphicFetchTests {
                 for: entity,
                 identifier: Tuple("missing")
             )
-            let fetched = try await DatabaseReadSession.withSession(
-                context: context,
-                workMeter: DatabaseWorkMeter(
-                    budget: ExecutionBudget(),
-                    monotonicClock: container.monotonicClock
-                )
-            ) { session in
-                try await context.fetchPolymorphicItemsPreservingOrder(
-                    group: group,
-                    ids: [compositeIdentifier, missingIdentifier],
-                    transaction: session.transaction
-                )
-            }
-            #expect(fetched.count == 2)
-            #expect(
-                try fetched[0]?.item
-                    .decode(as: PolymorphicFetchArticle.self).title
-                    == "Read your writes"
+            let workMeter = DatabaseWorkMeter(
+                budget: ExecutionBudget(),
+                monotonicClock: container.monotonicClock
             )
-            #expect(fetched[1] == nil)
+            do {
+                let retainedIdentifiers = try PolymorphicFetchRetainedPrimaryKeys(
+                    keys: [compositeIdentifier, missingIdentifier],
+                    workMeter: workMeter
+                )
+                var fetched: IndexReadResult? = try await DatabaseReadSession.withSession(
+                    context: context,
+                    workMeter: workMeter,
+                ) { session in
+                    let authorization = try context.readPolicy()
+                        .authorizePolymorphicModelRead(group: group)
+                    let retained = try await session.authorizedSession(
+                        authorization
+                    ).fetchRetainedPolymorphicItemsPreservingOrder(
+                        group: group,
+                        ids: retainedIdentifiers
+                    )
+                    #expect(retained.count == 2)
+                    return try IndexReadResult.build(
+                        workMeter: workMeter,
+                        expectedCount: 1
+                    ) { rows in
+                        #expect(
+                            try retained.appendIndexRow(at: 0, to: &rows)
+                        )
+                        #expect(
+                            try !retained.appendIndexRow(at: 1, to: &rows)
+                        )
+                    }
+                }
+                #expect(fetched?.count == 1)
+                try fetched?.withRow(at: 0) { row in
+                    #expect(row.fields["title"] == .string("Read your writes"))
+                }
+                fetched = nil
+            }
+            #expect(workMeter.retainedIntermediateRows == 0)
+            #expect(workMeter.retainedIntermediateBytes == 0)
 
             let query = SelectQuery(
                 projection: .all,
@@ -806,6 +828,48 @@ struct PolymorphicFetchTests {
             try survivingReport?.decode(as: PolymorphicFetchReport.self).pageCount
                 == 9
         )
+    }
+}
+
+private final class PolymorphicFetchRetainedPrimaryKeys:
+    DatabaseRetainedPrimaryKeyCollection,
+    Sendable
+{
+    private let keys: [Tuple]
+    private let reservation: DatabaseIntermediateReservation
+
+    init(
+        keys: [Tuple],
+        workMeter: DatabaseWorkMeter
+    ) throws {
+        self.keys = keys
+        self.reservation = try DatabaseIntermediateCollectionMeter
+            .reserveTuples(
+                keys,
+                workMeter: workMeter,
+                stage: .indexScan
+            )
+    }
+
+    package var count: Int { keys.count }
+    package var workMeter: DatabaseWorkMeter { reservation.workMeter }
+
+    package func withRetainedPrimaryKey<Failure: Error>(
+        at position: Int,
+        _ body: (borrowing Tuple) throws(Failure) -> Void
+    ) throws(Failure) {
+        precondition(keys.indices.contains(position))
+        try body(keys[position])
+        withExtendedLifetime(reservation) {}
+    }
+
+    package func withRetainedPrimaryKey<Failure: Error>(
+        at position: Int,
+        _ body: (borrowing Tuple) async throws(Failure) -> Void
+    ) async throws(Failure) {
+        precondition(keys.indices.contains(position))
+        defer { withExtendedLifetime(reservation) {} }
+        try await body(keys[position])
     }
 }
 #endif

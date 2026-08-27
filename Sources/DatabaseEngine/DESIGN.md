@@ -84,8 +84,8 @@ Read closure/admission -> QueryExecution retained primary-key borrow
 
 Authorization, meter mismatch, malformed/unknown type, bounded-read, decode,
 budget, cancellation, and cleanup remain distinct failures. One transaction is
-used serially. A still-callable raw array bridge is incomplete: it carries the
-required marker and blocks DF-06F closeout until all production callers move.
+used serially. Intermediate polymorphic reads expose only the retained owner;
+raw entity arrays exist only at the consuming public-output boundary.
 
 ## Verification and Change Impact
 

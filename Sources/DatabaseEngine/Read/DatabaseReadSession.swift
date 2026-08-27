@@ -1410,34 +1410,6 @@ public struct DatabaseReadSession: Sendable {
         }
     }
 
-    // FIXME(INCOMPLETE_IMPLEMENTATION): Bitmap, Rank, FullText, and Vector
-    // production executors still use this raw entity-array bridge. DF-06F is
-    // complete only after those callers consume the retained aggregate and
-    // this declaration is deleted.
-    package func fetchPolymorphicItemsPreservingOrder<Identifiers>(
-        group: PolymorphicGroup,
-        ids: Identifiers,
-        snapshot: Bool = false,
-        workMeter: DatabaseWorkMeter
-    ) async throws -> [PolymorphicEntity?]
-    where Identifiers: Collection & Sendable,
-        Identifiers.Element == Tuple {
-        try scope.requireWorkMeter(workMeter)
-        return try await scope.withOperation { owners, operation in
-            try await owners.policy.withAuthorization {
-                let entities = try await owners.context
-                    .fetchPolymorphicItemsPreservingOrder(
-                        group: group,
-                        ids: Array(ids),
-                        transaction: transaction.storageAccess,
-                        workMeter: workMeter
-                    )
-                try operation.validate()
-                return entities
-            }
-        }
-    }
-
     package func polymorphicTypeMap(
         for group: PolymorphicGroup
     ) throws -> [Int64: EntityRuntimeRegistration] {
