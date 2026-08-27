@@ -2,8 +2,8 @@
 
 ## Purpose and Scope
 
-Module authority for platform-neutral in-process execution. DF-06F0 composes
-the retained polymorphic path from [Read](Read/DESIGN.md),
+Module authority for platform-neutral in-process execution. DF-06F0 and
+DF-06R compose retained polymorphic and regular-model paths from [Read](Read/DESIGN.md),
 [Core](Core/DESIGN.md), [Serialization](Serialization/DESIGN.md), and
 [QueryExecution](QueryExecution/DESIGN.md).
 
@@ -51,6 +51,12 @@ sealed authority + snapshot + exact request meter
   by the Core context API.
 - Capacity and every present/missing slot are admitted before allocation or
   decode, and all retained values use the session meter.
+- Regular model fetch accepts retained primary keys through an async scoped
+  borrow. The source owner and claim remain live through each point read, and
+  no canonical path requires a raw `Collection<Tuple>` view.
+- Complete regular-model output requires whole-entity field authority. Fusion
+  candidate materialization remains projection-bound through a distinct
+  session entry point that derives fields from its sealed query authorization.
 - The aggregate exposes purpose-specific destinations and consuming public
   promotion, not general copyable model/identifier/array access.
 - Point-fetch slots preserve input order and absence; scans preserve cursor
@@ -59,7 +65,8 @@ sealed authority + snapshot + exact request meter
 ## Runtime Flows
 
 ```text
-Read closure/admission -> Core runtime resolution -> bounded retained item read
+Read closure/admission -> QueryExecution retained primary-key borrow
+  -> bounded retained item read
   -> runtime-bound decode/row authorization -> pre-admitted retained slot
   -> admitted destination or consuming public output -> owner release
 ```
@@ -85,7 +92,7 @@ required marker and blocks DF-06F closeout until all production callers move.
 | Contract | Evidence |
 |---|---|
 | Scan meter provenance | Signature/source audit proves no external meter input and session-meter derivation. |
-| Point authority/meter | Denial and foreign-key-meter tests observe zero point reads. |
+| Point authority/meter | Regular and polymorphic denial and foreign-key-meter tests observe zero point reads. |
 | Admission, order, absence | Budget-before-read and present/missing sequence tests. |
 | Failure/cancellation/release | Later-failure and suspended-read tests end at zero retained resources. |
 | No raw escape | Source audit rejects general borrows, raw returns, and unmarked bridges. |

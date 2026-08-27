@@ -108,6 +108,37 @@ public struct DatabaseReadSession: Sendable {
         }
     }
 
+    /// Linear proof that one retained-model point-fetch batch was admitted by
+    /// this session before QueryExecution can form a storage key.
+    package struct RetainedModelFetchAdmission: ~Copyable, Sendable {
+        package let entity: Schema.Entity
+        package let transaction: DatabaseReadTransaction
+        package let admittedFieldNames: Set<String>
+        package let snapshot: Bool
+        package let workMeter: DatabaseWorkMeter
+
+        // Retaining the exact evidence also retains its schema lease. The
+        // initializer is file-private so only DatabaseReadSession can bind
+        // these execution values into one admission.
+        private let authorization: DatabaseReadAuthorization
+
+        fileprivate init(
+            entity: Schema.Entity,
+            transaction: DatabaseReadTransaction,
+            admittedFieldNames: Set<String>,
+            snapshot: Bool,
+            workMeter: DatabaseWorkMeter,
+            authorization: DatabaseReadAuthorization
+        ) {
+            self.entity = entity
+            self.transaction = transaction
+            self.admittedFieldNames = admittedFieldNames
+            self.snapshot = snapshot
+            self.workMeter = workMeter
+            self.authorization = authorization
+        }
+    }
+
     private final class Scope: Sendable {
         private typealias CursorCleanup = @Sendable () async throws -> Void
 
@@ -1173,21 +1204,27 @@ public struct DatabaseReadSession: Sendable {
         primaryKeys: PrimaryKeys,
         partitions: FieldObject,
         snapshot: Bool,
-        workMeter: DatabaseWorkMeter,
-        authorization: DatabaseReadAuthorization? = nil
+        workMeter: DatabaseWorkMeter
     ) async throws -> DatabaseRetainedPersistedModels
     where PrimaryKeys: Collection & Sendable,
         PrimaryKeys.Element == Tuple {
         try scope.requireWorkMeter(workMeter)
         return try await scope.withOperation { owners, operation in
             try await owners.policy.withAuthorization {
-                guard let admittedAuthorization = authorization
-                    ?? transaction.authorization else {
+                guard let admittedAuthorization = transaction.authorization
+                else {
                     throw DatabaseReadSessionError.authorizationMismatch
                 }
                 try owners.policy.validate(admittedAuthorization)
-                guard let admittedFieldNames = admittedAuthorization
-                    .admittedFieldNames(forEntityName: entity.name) else {
+                let admittedFieldNames = Set(entity.allFields)
+                guard admittedAuthorization.covers(
+                    listRequirements: [],
+                    fields: DatabaseFieldReadAuthorizationPlan(
+                        fieldsByEntity: [
+                            entity.name: admittedFieldNames
+                        ]
+                    )
+                ) else {
                     throw DatabaseReadSessionError.authorizationMismatch
                 }
                 let admittedTransaction = DatabaseReadTransaction(
@@ -1203,6 +1240,113 @@ public struct DatabaseReadSession: Sendable {
                         snapshot: snapshot,
                         workMeter: workMeter,
                         admittedFieldNames: admittedFieldNames
+                    )
+                try operation.validate()
+                return models
+            }
+        }
+    }
+
+    package func fetchRetainedPersistedModelsPreservingOrder(
+        entity: Schema.Entity,
+        primaryKeys: any DatabaseRetainedPrimaryKeyCollection,
+        partitions: FieldObject,
+        snapshot: Bool
+    ) async throws -> DatabaseRetainedPersistedModels {
+        try await fetchRetainedModelsPreservingOrder(
+            entity: entity,
+            primaryKeys: primaryKeys,
+            partitions: partitions,
+            snapshot: snapshot,
+            readAuthority: .complete
+        )
+    }
+
+    package func fetchRetainedFusionCandidateModelsPreservingOrder(
+        entity: Schema.Entity,
+        primaryKeys: any DatabaseRetainedPrimaryKeyCollection,
+        partitions: FieldObject,
+        snapshot: Bool,
+        authorization: DatabaseReadAuthorization
+    ) async throws -> DatabaseRetainedPersistedModels {
+        try await fetchRetainedModelsPreservingOrder(
+            entity: entity,
+            primaryKeys: primaryKeys,
+            partitions: partitions,
+            snapshot: snapshot,
+            readAuthority: .fusionProjection(authorization)
+        )
+    }
+
+    private enum RetainedModelReadAuthority: Sendable {
+        case complete
+        case fusionProjection(DatabaseReadAuthorization)
+    }
+
+    private func fetchRetainedModelsPreservingOrder(
+        entity: Schema.Entity,
+        primaryKeys: any DatabaseRetainedPrimaryKeyCollection,
+        partitions: FieldObject,
+        snapshot: Bool,
+        readAuthority: RetainedModelReadAuthority
+    ) async throws -> DatabaseRetainedPersistedModels {
+        let workMeter = scope.operationWorkMeter()
+        guard primaryKeys.workMeter === workMeter else {
+            throw DatabaseIntermediateReservationError.workMeterMismatch
+        }
+        return try await scope.withOperation { owners, operation in
+            try await owners.policy.withAuthorization {
+                let admittedAuthorization: DatabaseReadAuthorization
+                switch readAuthority {
+                case .complete:
+                    guard let transactionAuthorization = transaction
+                        .authorization
+                    else {
+                        throw DatabaseReadSessionError.authorizationMismatch
+                    }
+                    admittedAuthorization = transactionAuthorization
+                case .fusionProjection(let authorization):
+                    admittedAuthorization = authorization
+                }
+                try owners.policy.validate(admittedAuthorization)
+                let admittedFieldNames: Set<String>
+                switch readAuthority {
+                case .complete:
+                    admittedFieldNames = Set(entity.allFields)
+                case .fusionProjection:
+                    guard let fields = admittedAuthorization
+                        .admittedFieldNames(forEntityName: entity.name) else {
+                        throw DatabaseReadSessionError.authorizationMismatch
+                    }
+                    admittedFieldNames = fields
+                }
+                guard admittedAuthorization.covers(
+                    listRequirements: [],
+                    fields: DatabaseFieldReadAuthorizationPlan(
+                        fieldsByEntity: [
+                            entity.name: admittedFieldNames
+                        ]
+                    )
+                ) else {
+                    throw DatabaseReadSessionError.authorizationMismatch
+                }
+                let admittedTransaction = DatabaseReadTransaction(
+                    storageAccess: transaction.storageAccess,
+                    authorization: admittedAuthorization
+                )
+                let admission = RetainedModelFetchAdmission(
+                    entity: entity,
+                    transaction: admittedTransaction,
+                    admittedFieldNames: admittedFieldNames,
+                    snapshot: snapshot,
+                    workMeter: workMeter,
+                    authorization: admittedAuthorization
+                )
+                let models = try await owners.context
+                    .fetchRetainedPersistedModelsPreservingOrder(
+                        primaryKeys: primaryKeys,
+                        partitions: partitions,
+                        admission: consume admission
                     )
                 try operation.validate()
                 return models

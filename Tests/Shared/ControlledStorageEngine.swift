@@ -203,7 +203,8 @@ public final class ControlledStorageEngine<Base: StorageEngine>:
             maximumByteCount: Int
         ) async throws -> ByteString? {
             control.recordBoundedValueRead(
-                maximumByteCount: maximumByteCount
+                maximumByteCount: maximumByteCount,
+                snapshot: snapshot
             )
             await control.suspendBoundedValueReadIfRequested(for: key)
             let value = try await base.getValue(

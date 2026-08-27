@@ -151,26 +151,24 @@ struct FusionExecution: Sendable {
         let primaryKeys = try builder.finish().moveToSharedOwnership(
             at: .storageRow
         )
-        return try await primaryKeys.withElements { primaryKeys in
-            let snapshot = CanonicalReadExecution.resolve(
-                requested: options.consistency,
-                default: .serializable
-            ).consistency == .snapshot
-            let models = try await session.fetchPersistedModelsPreservingOrder(
+        let snapshot = CanonicalReadExecution.resolve(
+            requested: options.consistency,
+            default: .serializable
+        ).consistency == .snapshot
+        let models = try await session
+            .fetchRetainedFusionCandidateModelsPreservingOrder(
                 entity: plan.entity,
                 primaryKeys: primaryKeys,
                 partitions: plan.tableRef.partitions,
                 snapshot: snapshot,
-                workMeter: options.workMeter,
                 authorization: authorization
             )
-            return try FusionCandidateDomain.make(
-                models: models,
-                primaryKeys: primaryKeys,
-                entity: plan.entity,
-                workMeter: options.workMeter
-            )
-        }
+        return try FusionCandidateDomain.make(
+            models: models,
+            primaryKeys: primaryKeys,
+            entity: plan.entity,
+            workMeter: options.workMeter
+        )
     }
 
     private static func scoringOutputPrefixLimit(

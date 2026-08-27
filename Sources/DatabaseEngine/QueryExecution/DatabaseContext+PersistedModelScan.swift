@@ -130,6 +130,71 @@ extension DatabaseContext {
         )
     }
 
+    package func fetchRetainedPersistedModelsPreservingOrder(
+        primaryKeys: any DatabaseRetainedPrimaryKeyCollection,
+        partitions: FieldObject,
+        admission: consuming DatabaseReadSession.RetainedModelFetchAdmission
+    ) async throws -> DatabaseRetainedPersistedModels {
+        guard primaryKeys.workMeter === admission.workMeter else {
+            throw DatabaseIntermediateReservationError.workMeterMismatch
+        }
+        #if DATABASE_MULTI_BASE
+        _ = try requireOperationDataRoot()
+        #endif
+        let entity = admission.entity
+        let transaction = admission.transaction
+        let snapshot = admission.snapshot
+        let workMeter = admission.workMeter
+        let admittedFieldNames = admission.admittedFieldNames
+        let partition = try CanonicalPartitionBinding.makeAnyBinding(
+            for: entity,
+            partitions: partitions
+        )
+        let databaseTransaction = DatabaseTransaction(
+            storageAccess: transaction.storageAccess,
+            container: container,
+            readPolicy: try readPolicy(),
+            readAuthorization: transaction.authorization
+        )
+        var models = try DatabaseRetainedArrayBuilder<
+            DatabaseRetainedPersistedModels.Entry?
+        >(
+            workMeter: workMeter,
+            stage: .storageRow,
+            layout: try DatabaseRetainedArrayLayout.forElement(
+                DatabaseRetainedPersistedModels.Entry?.self
+            ),
+            expectedCount: primaryKeys.count
+        )
+        for position in 0..<primaryKeys.count {
+            // Admit the destination slot before the point read can allocate or
+            // decode its retained payload.
+            let appendAdmission = try models.prepareAppend(
+                footprint: DatabaseIntermediateFootprint(),
+                at: .storageRow
+            )
+            var model: DatabaseRetainedPersistedModels.Entry?
+            try await primaryKeys.withRetainedPrimaryKey(at: position) {
+                primaryKey in
+                // DatabaseTransaction deliberately rejects overlapping
+                // operations. Preserve one serial transaction snapshot until
+                // StorageKit owns a backend-neutral batch-read contract.
+                try workMeter.consume(at: .storageRow)
+                model = try await databaseTransaction
+                    .loadRetainedPersistedModel(
+                        entity: entity.name,
+                        id: primaryKey,
+                        partition: partition,
+                        snapshot: snapshot,
+                        workMeter: workMeter,
+                        fields: admittedFieldNames
+                    )
+            }
+            models.append(model, using: appendAdmission)
+        }
+        return try DatabaseRetainedPersistedModels(buffer: models.finish())
+    }
+
     package func authorizeCanonicalListAccess(
         entity: Schema.Entity,
         selectQuery: SelectQuery

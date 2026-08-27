@@ -13,6 +13,11 @@ package protocol DatabaseRetainedPrimaryKeyCollection: Sendable {
         at position: Int,
         _ body: (borrowing Tuple) throws(Failure) -> Void
     ) throws(Failure)
+
+    func withRetainedPrimaryKey<Failure: Error>(
+        at position: Int,
+        _ body: (borrowing Tuple) async throws(Failure) -> Void
+    ) async throws(Failure)
 }
 
 extension DatabaseSharedRetainedArray:
@@ -22,6 +27,13 @@ extension DatabaseSharedRetainedArray:
         _ body: (borrowing Tuple) throws(Failure) -> Void
     ) throws(Failure) {
         try withElement(at: position, body)
+    }
+
+    package func withRetainedPrimaryKey<Failure: Error>(
+        at position: Int,
+        _ body: (borrowing Tuple) async throws(Failure) -> Void
+    ) async throws(Failure) {
+        try await withElement(at: position, body)
     }
 }
 
@@ -46,6 +58,13 @@ package struct DatabaseRetainedPrimaryKey: Sendable {
     ) throws(Failure) {
         try body(value)
         withExtendedLifetime(reservation) {}
+    }
+
+    package func withValue<Failure: Error>(
+        _ body: (borrowing Tuple) async throws(Failure) -> Void
+    ) async throws(Failure) {
+        defer { withExtendedLifetime(reservation) {} }
+        try await body(value)
     }
 }
 
@@ -74,5 +93,17 @@ package final class DatabaseRetainedPrimaryKeys:
             try retained.withValue(body)
         }
         try values.withElement(at: position, apply)
+    }
+
+    package func withRetainedPrimaryKey<Failure: Error>(
+        at position: Int,
+        _ body: (borrowing Tuple) async throws(Failure) -> Void
+    ) async throws(Failure) {
+        func apply(
+            _ retained: borrowing DatabaseRetainedPrimaryKey
+        ) async throws(Failure) {
+            try await retained.withValue(body)
+        }
+        try await values.withElement(at: position, apply)
     }
 }

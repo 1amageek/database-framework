@@ -32,6 +32,7 @@ public final class StorageTransactionControl: Sendable {
         var maximumSuspendedRangeAdvanceCount = 0
         var valueReadCount = 0
         var boundedValueReadMaximums: [Int] = []
+        var boundedValueReadSnapshots: [Bool] = []
         var keyReadCount = 0
         var openedRangeCursorCount = 0
         var rangeCursorLimits: [Int] = []
@@ -143,6 +144,10 @@ public final class StorageTransactionControl: Sendable {
         state.withLock { $0.boundedValueReadMaximums }
     }
 
+    public var boundedValueReadSnapshots: [Bool] {
+        state.withLock { $0.boundedValueReadSnapshots }
+    }
+
     public var openedRangeCursorCount: Int {
         state.withLock { $0.openedRangeCursorCount }
     }
@@ -166,10 +171,14 @@ public final class StorageTransactionControl: Sendable {
         state.withLock { $0.valueReadCount += 1 }
     }
 
-    func recordBoundedValueRead(maximumByteCount: Int) {
+    func recordBoundedValueRead(
+        maximumByteCount: Int,
+        snapshot: Bool
+    ) {
         state.withLock { state in
             state.valueReadCount += 1
             state.boundedValueReadMaximums.append(maximumByteCount)
+            state.boundedValueReadSnapshots.append(snapshot)
         }
     }
 

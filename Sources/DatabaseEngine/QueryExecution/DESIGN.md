@@ -2,21 +2,23 @@
 
 ## Purpose and Scope
 
-The QueryExecution component owns the DF-06F0 retained polymorphic aggregate
-and the only operations that may transform it into canonical rows, index rows,
-or an explicit final public output.
+The QueryExecution component owns the DF-06F0 retained polymorphic aggregate,
+the DF-06R retained regular-model fetch, and the only operations that may
+transform retained values into canonical rows, index rows, or an explicit
+final public output.
 
 - Parent: [DatabaseEngine](../DESIGN.md).
 - Children: none in the DF-06F0 scope.
 
 ## Responsibilities and Boundaries
 
-QueryExecution couples aggregate array storage, present/missing slot claims,
+QueryExecution couples retained primary-key sources, aggregate array storage, present/missing slot claims,
 retained identifiers, decoded model reservations, runtime-derived type
 metadata, and destination footprint admission. It rejects cross-meter
 composition before constructing a destination value.
 
-It does not authorize storage access, resolve runtime registrations, decode
+It consumes a Read-owned admission and never creates or widens authority. It
+does not authorize storage access, resolve runtime registrations, decode
 stored envelopes, or own specialized scoring/ranking/search policy. It does
 not expose a general model or identifier borrow because those values are
 copyable and could escape without their reservation.
@@ -40,6 +42,15 @@ Builder
               +-> append canonical source row
               +-> append index row with admitted annotations
               +-> consuming public-output promotion
+
+retained primary-key source + Read admission
+  -> async scoped key borrow
+      -> bounded point fetch
+          -> pre-admitted retained regular-model slot
+
+Fusion sealed projection + retained primary-key source
+  -> projection-bound Read admission
+      -> the same bounded retained point-fetch implementation
 ```
 
 ## Contracts and Invariants
@@ -52,6 +63,17 @@ Builder
   are validated as one entry invariant before append.
 - A missing input is represented by a committed missing slot, preserving count
   and order.
+- Regular retained fetch rejects a foreign source meter before authorization,
+  storage, or destination allocation. Each key is borrowed asynchronously so
+  its owner and reservation remain live until the point fetch completes.
+- Regular retained fetch preserves source order, duplicates, missing `nil`
+  slots, the sealed snapshot mode, and the session transaction.
+- The regular complete-model entry point requires all entity fields. Fusion
+  uses a separate projection-bound entry point whose field set is derived only
+  from its sealed authorization evidence; QueryExecution consumes either as
+  the same immutable Read-owned admission and never chooses the field set.
+- Canonical retained primary-key owners do not conform to `Collection` and do
+  not expose a raw `Tuple` subscript or return value.
 - Destination builders must share the aggregate meter. Complete destination
   footprint and array growth are admitted before the row or annotation map is
   materialized.
@@ -85,6 +107,7 @@ entries and the aggregate array claim.
 | Aggregate array/capacity | Noncopyable retained buffer | Aggregate is consumed or destroyed |
 | Slot row claim | Array append admission, then retained buffer | Append is abandoned or aggregate ends |
 | Identifier tuple/bytes | Retained primary key in entry | Entry ends |
+| Regular fetch source key | Retained primary-key collection | Its async point fetch completes |
 | Decoded model | Retained model entry | Entry ends or explicit final promotion consumes aggregate |
 | Canonical/index row | Destination retained builder/owner | Downstream query owner ends |
 
@@ -106,3 +129,6 @@ typed failures; no partial destination row is committed.
   an intermediate `QueryRow` array.
 - Specialized index migration tests own their annotation semantics; this
   component owns only footprint-first append and same-meter rejection.
+- [RetainedRegularModelFetchContractTests](../../../Tests/DatabaseEngineTests/RetainedRegularModelFetchContractTests.swift)
+  proves regular order, duplicates, missing slots, suspended source lifetime,
+  authorization, failure, cancellation, and final release.

@@ -64,6 +64,37 @@ struct DatabaseRetainedPrimaryKeyCollectionTests {
         #expect(meter.retainedIntermediateBytes == 0)
     }
 
+    @Test("primary-key owner remains retained through an async borrow")
+    func primaryKeyOwnerRemainsRetainedThroughAsyncBorrow() async throws {
+        let meter = makeMeter()
+        let owner = try TestRetainedPrimaryKeys(
+            keys: [Tuple("async-primary-key")],
+            workMeter: meter
+        )
+        let barrier = StorageOperationBarrier()
+
+        let task = Task {
+            try await owner.withRetainedPrimaryKey(at: 0) { key in
+                #expect(key == Tuple("async-primary-key"))
+                await barrier.enterAndWait()
+                #expect(meter.retainedIntermediateRows == 1)
+                #expect(meter.retainedIntermediateBytes > 0)
+                try Task.checkCancellation()
+            }
+        }
+        let monitor = try await barrier.waitUntilEntered(
+            beforeCompletionOf: task
+        )
+        #expect(meter.retainedIntermediateRows == 1)
+        barrier.release()
+        _ = await monitor.value
+        try await task.value
+
+        owner.release()
+        #expect(meter.retainedIntermediateRows == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
     private func inspect<C: DatabaseRetainedPrimaryKeyCollection>(
         _ collection: borrowing C
     ) {
@@ -115,6 +146,15 @@ private final class TestRetainedPrimaryKeys:
         precondition(position >= keys.startIndex && position < keys.endIndex)
         try body(keys[position])
         withExtendedLifetime(reservation) {}
+    }
+
+    package func withRetainedPrimaryKey<Failure: Error>(
+        at position: Int,
+        _ body: (borrowing Tuple) async throws(Failure) -> Void
+    ) async throws(Failure) {
+        precondition(position >= keys.startIndex && position < keys.endIndex)
+        defer { withExtendedLifetime(reservation) {} }
+        try await body(keys[position])
     }
 
     func release() {

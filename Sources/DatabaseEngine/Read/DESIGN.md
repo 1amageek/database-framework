@@ -3,14 +3,16 @@
 ## Purpose and Scope
 
 Owns schema/principal-bound sessions and operation admission, including the
-DF-06F0 retained polymorphic entry gate. Parent:
+DF-06F0 retained polymorphic entry gate and DF-06R regular retained-fetch
+admission. Parent:
 [DatabaseEngine](../DESIGN.md). Children: none in this scope.
 
 ## Responsibilities and Boundaries
 
-Read owns authorization, schema lease, session scope, transaction, revocation,
-and meter identity. It does not resolve stored types, decode values, or build
-rows. TaskLocal state and a caller's earlier temporal validation are not
+Read owns authorization, schema lease, session scope, transaction, snapshot,
+revocation, and meter identity. It creates the noncopyable admission consumed
+by regular retained fetch. It does not resolve stored types, decode values, or
+build rows. TaskLocal state and a caller's earlier temporal validation are not
 authority.
 
 ## Related Designs
@@ -24,7 +26,7 @@ authority.
 
 ```text
 ReadPolicy -> sealed authorization -> ReadSession closure
-  -> validate required list/fields -> nested admission -> Core
+  -> validate required list/fields -> nested admission -> Core/QueryExecution
 ```
 
 ## Contracts and Invariants
@@ -34,6 +36,14 @@ ReadPolicy -> sealed authorization -> ReadSession closure
   after exact coverage validation, and required by Core.
 - Scan derives its meter from session scope and has no external meter input.
 - Point fetch rejects retained keys from another meter before storage.
+- Regular retained fetch derives its work meter from the session scope and
+  requires complete entity-field authority, then seals entity, admitted
+  fields, transaction, snapshot, and schema generation into one non-forgeable
+  admission.
+- Fusion candidate materialization uses a distinct session entry point. It
+  derives the immutable field set from Fusion's explicit sealed authorization
+  rather than accepting a caller-supplied field map, so projected reads do not
+  widen authority or weaken the complete-model entry point.
 - Per-entity authorization after decode supplements, not replaces,
   pre-storage list/field admission.
 
@@ -41,7 +51,8 @@ ReadPolicy -> sealed authorization -> ReadSession closure
 
 ```text
 requirement -> validate coverage -> begin scoped closure/create admission
-  -> Core call -> validate operation -> return retained result
+  -> async retained-key borrow -> QueryExecution call
+  -> validate operation -> return retained result
 ```
 
 ## State, Ownership, and Lifecycle
@@ -58,6 +69,8 @@ one transaction.
 ## Verification and Change Impact
 
 [Authorization tests](../../../Tests/DatabaseEngineTests/ReadAuthorizationCapabilityTests.swift)
-prove sealed denial; [retained polymorphic tests](../../../Tests/DatabaseEngineTests/PolymorphicRetainedResourceContractTests.swift)
-prove point foreign-meter rejection. Scan meter provenance is a signature and
-source audit. Admission changes invalidate Core and index-caller evidence.
+prove sealed denial; [retained regular fetch tests](../../../Tests/DatabaseEngineTests/RetainedRegularModelFetchContractTests.swift)
+prove async source lifetime, order, missing slots, and foreign-meter rejection;
+[retained polymorphic tests](../../../Tests/DatabaseEngineTests/PolymorphicRetainedResourceContractTests.swift)
+prove polymorphic point rejection. Scan meter provenance is a signature and
+source audit. Admission changes invalidate QueryExecution, Fusion, and index-caller evidence.

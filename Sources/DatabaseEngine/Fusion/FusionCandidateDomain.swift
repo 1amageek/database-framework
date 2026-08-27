@@ -288,7 +288,7 @@ package struct FusionCandidateDomain: Sendable {
 
     static func make(
         models: DatabaseRetainedPersistedModels,
-        primaryKeys: [Tuple],
+        primaryKeys: any DatabaseRetainedPrimaryKeyCollection,
         entity: Schema.Entity,
         workMeter: DatabaseWorkMeter
     ) throws -> FusionCandidateDomain {
@@ -304,60 +304,63 @@ package struct FusionCandidateDomain: Sendable {
             layout: try DatabaseRetainedArrayLayout.forElement(Entry.self),
             expectedCount: models.count
         )
-        for index in primaryKeys.indices {
+        for index in 0..<primaryKeys.count {
             try workMeter.consume(at: .storageRow)
-            let primaryKey = primaryKeys[index]
-            let packedPrimaryKeyByteCount = primaryKey.packedByteCount
-            try models.withEntry(at: index) { retained in
-                guard let retained else {
-                    throw FusionExecutionContractError.missingCandidateRow(
-                        primaryKey.pack()
-                    )
-                }
-                let footprint = try retained.queryRowFootprint.adding(
-                    DatabaseIntermediateFootprint(
-                        bytes: UInt64(packedPrimaryKeyByteCount) + 64
-                    )
-                )
-                try builder.append(footprint: footprint) {
-                    let packedPrimaryKey = primaryKey.pack()
-                    precondition(
-                        packedPrimaryKey.count == packedPrimaryKeyByteCount
-                    )
-                    var candidate: Entry?
-                    try retained.withModel { model in
-                        let row = try QueryRowCodec.encode(model)
-                        guard let identity = row.fields["id"],
-                              identity != .null else {
-                            throw FusionExecutionContractError
-                                .missingIdentity(field: "id")
-                        }
-                        let actualPrimaryKey = try PersistableIdentifierKeyCodec
-                            .tuple(forPersistedIdentifier: identity)
-                        _ = try PersistableIdentifierKeyCodec.value(
-                            from: actualPrimaryKey,
-                            expectedType: entity.identifierType
-                        )
-                        // Structural comparison avoids materializing a second
-                        // packed identifier while the retained key is alive.
-                        guard actualPrimaryKey == primaryKey else {
-                            throw FusionExecutionContractError
-                                .inconsistentPayload(packedPrimaryKey)
-                        }
-                        candidate = Entry(
-                            identity: identity,
-                            packedPrimaryKey: packedPrimaryKey,
-                            row: row,
-                            rowFootprint: retained.queryRowFootprint,
-                            retainedFootprint: footprint
+            try primaryKeys.withRetainedPrimaryKey(at: index) { primaryKey in
+                let packedPrimaryKeyByteCount = primaryKey.packedByteCount
+                try models.withEntry(at: index) { retained in
+                    guard let retained else {
+                        throw FusionExecutionContractError.missingCandidateRow(
+                            primaryKey.pack()
                         )
                     }
-                    guard let candidate else {
-                        preconditionFailure(
-                            "Scoped retained model did not produce a candidate"
+                    let footprint = try retained.queryRowFootprint.adding(
+                        DatabaseIntermediateFootprint(
+                            bytes: UInt64(packedPrimaryKeyByteCount) + 64
                         )
+                    )
+                    try builder.append(footprint: footprint) {
+                        let packedPrimaryKey = primaryKey.pack()
+                        precondition(
+                            packedPrimaryKey.count == packedPrimaryKeyByteCount
+                        )
+                        var candidate: Entry?
+                        try retained.withModel { model in
+                            let row = try QueryRowCodec.encode(model)
+                            guard let identity = row.fields["id"],
+                                  identity != .null else {
+                                throw FusionExecutionContractError
+                                    .missingIdentity(field: "id")
+                            }
+                            let actualPrimaryKey = try
+                                PersistableIdentifierKeyCodec
+                                .tuple(forPersistedIdentifier: identity)
+                            _ = try PersistableIdentifierKeyCodec.value(
+                                from: actualPrimaryKey,
+                                expectedType: entity.identifierType
+                            )
+                            // Structural comparison avoids materializing a
+                            // second packed identifier while the retained key
+                            // is alive.
+                            guard actualPrimaryKey == primaryKey else {
+                                throw FusionExecutionContractError
+                                    .inconsistentPayload(packedPrimaryKey)
+                            }
+                            candidate = Entry(
+                                identity: identity,
+                                packedPrimaryKey: packedPrimaryKey,
+                                row: row,
+                                rowFootprint: retained.queryRowFootprint,
+                                retainedFootprint: footprint
+                            )
+                        }
+                        guard let candidate else {
+                            preconditionFailure(
+                                "Scoped retained model did not produce a candidate"
+                            )
+                        }
+                        return candidate
                     }
-                    return candidate
                 }
             }
         }
