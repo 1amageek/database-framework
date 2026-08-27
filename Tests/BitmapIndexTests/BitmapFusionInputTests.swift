@@ -234,6 +234,49 @@ struct BitmapFusionInputTests {
         ])
     }
 
+    @Test("Bitmap canonical execution uses the retained regular model path")
+    func executesCanonicalRegularRead() async throws {
+        let container = try await makeContainer()
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        try context.insert(
+            BitmapFusionExecutionItem(
+                id: "canonical-active",
+                status: "active",
+                region: "north",
+                priority: 10
+            )
+        )
+        try await context.save()
+
+        let response = try await context.query(
+            SelectQuery(
+                projection: .all,
+                source: .table(
+                    TableRef(BitmapFusionExecutionItem.persistableType)
+                ),
+                accessPath: .index(
+                    IndexScanSource(
+                        indexName: "bitmap_fusion_status",
+                        indexType: .bitmap,
+                        parameters: [
+                            BitmapReadParameter.fieldName: .string("status"),
+                            BitmapReadParameter.operation: .string(
+                                BitmapReadParameter.equalsOperation
+                            ),
+                            BitmapReadParameter.values: .array([
+                                .string("active")
+                            ])
+                        ]
+                    )
+                )
+            )
+        )
+        #expect(response.rows.count == 1)
+        #expect(response.rows[0].fields["id"] == .string("canonical-active"))
+        #expect(response.rows[0].fields["status"] == .string("active"))
+    }
+
     @Test("Missing bitmap ID mappings fail as corruption")
     func missingIdentifierMappingFailsExplicitly() async throws {
         let container = try await makeContainer()

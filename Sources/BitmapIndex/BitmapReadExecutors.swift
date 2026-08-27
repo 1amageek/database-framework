@@ -134,38 +134,26 @@ private struct BitmapReadExecutor: IndexReadExecutor {
             limit: resultLimit,
             workMeter: options.workMeter
         )
-        var primaryKeys: [Tuple] = []
-        primaryKeys.reserveCapacity(retainedPrimaryKeys.count)
-        for position in 0..<retainedPrimaryKeys.count {
-            retainedPrimaryKeys.withRetainedPrimaryKey(at: position) {
-                key in
-                primaryKeys.append(copy key)
-            }
-        }
-        let primaryKeyReservation = try DatabaseIntermediateCollectionMeter
-            .reserveTuples(
-                primaryKeys,
-                workMeter: options.workMeter,
-                stage: .indexScan
-            )
-        defer { primaryKeyReservation.release() }
-        let fetched = try await session.fetchPersistedModelsPreservingOrder(
+        let fetched = try await session.fetchRetainedPersistedModelsPreservingOrder(
             entity: entity,
-            primaryKeys: primaryKeys,
+            primaryKeys: retainedPrimaryKeys,
             partitions: partitions,
-            snapshot: execution.consistency == .snapshot,
-            workMeter: options.workMeter
+            snapshot: execution.consistency == .snapshot
         )
         return try IndexReadResult.build(
             workMeter: options.workMeter,
             ordering: .unordered,
             expectedCount: fetched.count
         ) { rows in
-            for (primaryKey, retained) in zip(primaryKeys, fetched) {
-                guard let retained else {
-                    throw BitmapReadError.missingFetchedEntity(
-                        primaryKey.pack()
-                    )
+            for position in 0..<fetched.count {
+                guard let retained = fetched[position] else {
+                    var primaryKey = ByteString()
+                    retainedPrimaryKeys.withRetainedPrimaryKey(
+                        at: position
+                    ) { key in
+                        primaryKey = key.pack()
+                    }
+                    throw BitmapReadError.missingFetchedEntity(primaryKey)
                 }
                 try retained.withModel { model in
                     try rows.append(

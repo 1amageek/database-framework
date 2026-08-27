@@ -174,36 +174,56 @@ struct BitmapIndexReader: Sendable {
                 ) else {
                     return
                 }
-                let tuple = Tuple(try Tuple.unpack(from: bytes))
-                let reservation = try workMeter.reserveIntermediate(
-                    rows: 1,
-                    bytes: try DatabaseIntermediateFootprint(
-                        bytes: UInt64(tuple.packedByteCount)
-                    ).adding(
-                        DatabaseIntermediateFootprint(bytes: 64)
-                    ).bytes,
+                let admission = try primaryKeys.prepareAppend(
+                    footprint: DatabaseIntermediateFootprint(rows: 1),
                     at: .indexScan
                 )
-                do {
-                    let retained = DatabaseRetainedPrimaryKey(
-                        value: tuple,
-                        reservation: reservation
-                    )
-                    try primaryKeys.append(
-                        footprint: DatabaseIntermediateFootprint(rows: 1),
-                        at: .indexScan
-                    ) {
-                        retained
-                    }
-                } catch {
-                    reservation.release()
-                    throw error
-                }
+                let retained = try retainedPrimaryKey(
+                    from: bytes,
+                    workMeter: workMeter,
+                    stage: .indexScan
+                )
+                primaryKeys.append(retained, using: admission)
             }
         }
         return try DatabaseRetainedPrimaryKeys(
             buffer: primaryKeys.finish()
         )
+    }
+
+    /// Decodes one mapping value only after its exact retained payload has
+    /// been admitted. The backend-owned read result is copied into a
+    /// framework-owned byte owner before tuple decoding can outlive the read.
+    private func retainedPrimaryKey(
+        from bytes: ByteString,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> DatabaseRetainedPrimaryKey {
+        let reservation = try workMeter.reserveIntermediate(
+            bytes: UInt64(bytes.count),
+            at: stage
+        )
+        do {
+            let retainedBytes = try DatabaseRetainedByteString.copying(
+                bytes,
+                reservation: reservation,
+                at: stage
+            )
+            let tuple = try Tuple(packed: retainedBytes) {
+                additionalByteCount in
+                try reservation.reserveAdditional(
+                    bytes: UInt64(additionalByteCount),
+                    at: stage
+                )
+            }
+            return DatabaseRetainedPrimaryKey(
+                value: tuple,
+                reservation: reservation
+            )
+        } catch {
+            reservation.release()
+            throw error
+        }
     }
 
     func distinctValues(

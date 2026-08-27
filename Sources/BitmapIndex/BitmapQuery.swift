@@ -3,7 +3,7 @@
 //
 // Provides DatabaseContext extension and query builder for set operations.
 
-import DatabaseEngine
+@_spi(DatabaseExecution) import DatabaseEngine
 import DatabaseKit
 import StorageKit
 
@@ -169,50 +169,66 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
     internal func executeDirect(
         configuration: TransactionConfiguration = .default
     ) async throws -> [T] {
-        let indexName = try resolveIndexName()
-        return try await withResolvedBitmap(
-            configuration: configuration,
-            missing: { [] }
-        ) { bitmap, reader, transaction, workMeter in
-            let retainedPrimaryKeys = try await reader.primaryKeys(
-                for: bitmap,
-                transaction: transaction.storageTransaction,
-                limit: self.limitCount.flatMap { Int(exactly: $0) },
-                workMeter: workMeter
-            )
-            var primaryKeys: [Tuple] = []
-            primaryKeys.reserveCapacity(retainedPrimaryKeys.count)
-            for position in 0..<retainedPrimaryKeys.count {
-                retainedPrimaryKeys.withRetainedPrimaryKey(
-                    at: position
-                ) { key in
-                    primaryKeys.append(copy key)
-                }
+        return try await queryContext.withReadOperation {
+            let indexName = try self.resolveIndexName()
+            guard let entity = self.queryContext.schema.entitiesByName[
+                T.persistableType
+            ] else {
+                throw BitmapQueryError.indexNotFound(indexName)
             }
-            let primaryKeyReservation = try DatabaseIntermediateCollectionMeter
-                .reserveTuples(
-                    primaryKeys,
-                    workMeter: workMeter,
-                    stage: .indexScan
-                )
-            defer { primaryKeyReservation.release() }
-            let items = try await self.queryContext.fetchItemsPreservingOrder(
-                ids: primaryKeys,
-                type: T.self,
-                transaction: transaction
-            )
-            var results: [T] = []
-            results.reserveCapacity(items.count)
-            for (primaryKey, item) in zip(primaryKeys, items) {
-                guard let item else {
-                    throw BitmapQueryError.indexedItemMissing(
-                        index: indexName,
-                        primaryKey: primaryKey.pack()
+            let selectQuery = try self.toSelectQuery()
+            let policy = try self.queryContext.context.readPolicy()
+            let authorization = try policy.authorizeRead(
+                    listRequirements: [
+                        try DatabaseReadPolicy.listRequirement(
+                            entityName: entity.name,
+                            selectQuery: selectQuery
+                        )
+                    ],
+                    fields: .make(
+                        query: selectQuery,
+                        schema: policy.schema
                     )
+                )
+            return try await self.withResolvedBitmap(
+                configuration: configuration,
+                authorization: authorization,
+                missing: { [] }
+            ) { bitmap, reader, session, workMeter in
+                let retainedPrimaryKeys = try await reader.primaryKeys(
+                    for: bitmap,
+                    transaction: session.transaction.storageTransaction,
+                    limit: self.limitCount.flatMap { Int(exactly: $0) },
+                    workMeter: workMeter
+                )
+                let items = try await session
+                    .fetchRetainedPersistedModelsPreservingOrder(
+                        entity: entity,
+                        primaryKeys: retainedPrimaryKeys,
+                        partitions: FieldObject(),
+                        snapshot: true
+                    )
+                var results: [T] = []
+                results.reserveCapacity(items.count)
+                for position in 0..<items.count {
+                    guard let retained = items[position] else {
+                        var primaryKey = ByteString()
+                        retainedPrimaryKeys.withRetainedPrimaryKey(
+                            at: position
+                        ) { key in
+                            primaryKey = key.pack()
+                        }
+                        throw BitmapQueryError.indexedItemMissing(
+                            index: indexName,
+                            primaryKey: primaryKey
+                        )
+                    }
+                    try retained.withModel { model in
+                        results.append(try model.decode(as: T.self))
+                    }
                 }
-                results.append(item)
+                return results
             }
-            return results
         }
     }
 
@@ -262,11 +278,12 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
     /// `execute()`, `count()`, and `getBitmap()`.
     private func withResolvedBitmap<R: Sendable>(
         configuration: TransactionConfiguration,
+        authorization: DatabaseReadAuthorization? = nil,
         missing: @Sendable @escaping () -> R,
         _ body: @escaping @Sendable (
             consuming BitmapReadOwner,
             BitmapIndexReader,
-            DatabaseReadTransaction,
+            DatabaseReadSession,
             DatabaseWorkMeter
         ) async throws -> R
     ) async throws -> R {
@@ -288,10 +305,17 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
             budget: ExecutionBudget(),
             monotonicClock: queryContext.context.container.monotonicClock
         )
-        return try await queryContext.withTransaction(
+        return try await queryContext.withSession(
             configuration: configuration,
             workMeter: workMeter
-        ) { transaction in
+        ) { session in
+            let admittedSession: DatabaseReadSession
+            if let authorization {
+                admittedSession = try session.authorizedSession(authorization)
+            } else {
+                admittedSession = session
+            }
+            let transaction = admittedSession.transaction
             let readableIndex = try await queryContext.readableIndex(
                 named: indexName,
                 indexType: .bitmap,
@@ -334,7 +358,7 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
             return try await body(
                 consume bitmap,
                 reader,
-                transaction,
+                admittedSession,
                 workMeter
             )
         }
