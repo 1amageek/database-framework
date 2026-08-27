@@ -21,6 +21,8 @@ ONLY_TESTING=()
 SKIP_TESTING=()
 ADDITIONAL_XCODEBUILD_ARGUMENTS=()
 XCODE_HARNESS_WORK_ROOT=""
+HARNESS_LOCK_DIRECTORY=""
+HARNESS_LOCK_OWNED=false
 PRESERVE_WORK_ROOT=false
 REUSE_WORK_ROOT=""
 REUSE_BUILT_TESTS=false
@@ -226,6 +228,15 @@ cleanup() {
   if [[ -z "$XCODE_HARNESS_WORK_ROOT" || ! -d "$XCODE_HARNESS_WORK_ROOT" ]]; then
     return
   fi
+  if [[ "$HARNESS_LOCK_OWNED" == true \
+      && -n "$HARNESS_LOCK_DIRECTORY" \
+      && "$HARNESS_LOCK_DIRECTORY" == "$XCODE_HARNESS_WORK_ROOT/.harness-lock" \
+      && -d "$HARNESS_LOCK_DIRECTORY" ]]; then
+    rm -f -- "$HARNESS_LOCK_DIRECTORY/owner-pid"
+    rmdir "$HARNESS_LOCK_DIRECTORY" 2>/dev/null || true
+    HARNESS_LOCK_DIRECTORY=""
+    HARNESS_LOCK_OWNED=false
+  fi
   if [[ "$PRESERVE_WORK_ROOT" == true ]]; then
     echo "Preserved harness work root: $XCODE_HARNESS_WORK_ROOT" >&2
     return
@@ -412,6 +423,33 @@ extract_summary_number() {
 write_normalized_pins() {
   local resolved_path="$1"
   local output_path="$2"
+  if command -v jq >/dev/null 2>&1; then
+    plutil -convert json -o - "$resolved_path" \
+      | jq -r '
+          .pins
+          | if type != "array" then
+              error("Package.resolved has an invalid pins array")
+            else
+              .[]
+            end
+          | [
+              .identity,
+              .kind,
+              .location,
+              (.state.version // ""),
+              (.state.branch // ""),
+              .state.revision
+            ]
+          | if all(.[]; type == "string" and (test("[\\t\\n]") | not)) then
+              @tsv
+            else
+              error("dependency pin contains an unsupported value")
+            end
+        ' \
+      | LC_ALL=C sort > "$output_path"
+    return
+  fi
+
   local index=0
   local identity
   local kind
@@ -452,7 +490,118 @@ write_normalized_pins() {
   LC_ALL=C sort -o "$output_path" "$output_path"
 }
 
-for command in cmp grep shasum swift xcodebuild xcrun plutil perl rsync tee; do
+write_build_input_state() {
+  local repository_root="$1"
+  local scratch_root="$2"
+  local work_tree="$3"
+  local normalized_manifest="$4"
+  local base_object_directory
+  local index_path
+  local input_object
+  local input_path
+  local object_directory
+  local state_tree
+
+  if ! git -C "$repository_root" rev-parse --verify HEAD >/dev/null 2>&1; then
+    echo "error: build input fingerprint requires a committed Git baseline" >&2
+    return 1
+  fi
+
+  base_object_directory="$(git -C "$repository_root" rev-parse --git-path objects)"
+  index_path="$scratch_root/build-input-index.$$"
+  object_directory="$(mktemp -d "$scratch_root/build-input-objects.XXXXXX")"
+  if ! env \
+      GIT_INDEX_FILE="$index_path" \
+      GIT_OBJECT_DIRECTORY="$object_directory" \
+      GIT_ALTERNATE_OBJECT_DIRECTORIES="$base_object_directory" \
+      git -C "$repository_root" read-tree HEAD; then
+    rm -rf -- "$object_directory"
+    return 1
+  fi
+  if ! env \
+      GIT_INDEX_FILE="$index_path" \
+      GIT_OBJECT_DIRECTORY="$object_directory" \
+      GIT_ALTERNATE_OBJECT_DIRECTORIES="$base_object_directory" \
+      GIT_WORK_TREE="$work_tree" \
+      git -C "$repository_root" add -A -f \
+        -- Sources Tests Package.resolved; then
+    rm -f -- "$index_path"
+    rm -rf -- "$object_directory"
+    return 1
+  fi
+  if ! state_tree="$(env \
+      GIT_INDEX_FILE="$index_path" \
+      GIT_OBJECT_DIRECTORY="$object_directory" \
+      GIT_ALTERNATE_OBJECT_DIRECTORIES="$base_object_directory" \
+      git -C "$repository_root" write-tree)"; then
+    rm -f -- "$index_path"
+    rm -rf -- "$object_directory"
+    return 1
+  fi
+  if ! input_object="$(env \
+      GIT_OBJECT_DIRECTORY="$object_directory" \
+      GIT_ALTERNATE_OBJECT_DIRECTORIES="$base_object_directory" \
+      git -C "$repository_root" hash-object -w --no-filters \
+        "$normalized_manifest")"; then
+    rm -f -- "$index_path"
+    rm -rf -- "$object_directory"
+    return 1
+  fi
+  printf 'path=Package.swift\0object=%s\0' "$input_object"
+  for input_path in Sources Tests Package.resolved; do
+    if input_object="$(env \
+        GIT_OBJECT_DIRECTORY="$object_directory" \
+        GIT_ALTERNATE_OBJECT_DIRECTORIES="$base_object_directory" \
+        git -C "$repository_root" rev-parse "$state_tree:$input_path" \
+          2>/dev/null)"; then
+      printf 'path=%s\0object=%s\0' "$input_path" "$input_object"
+    else
+      printf 'path=%s\0missing\0' "$input_path"
+    fi
+  done
+  rm -f -- "$index_path"
+  rm -rf -- "$object_directory"
+}
+
+compute_build_fingerprint() {
+  local work_tree="$1"
+  local normalized_manifest="$2"
+  local additional_build_argument
+  {
+    printf 'traits=%s\n' "$TRAITS"
+    printf 'scheme=%s\n' "$SCHEME"
+    printf 'destination=%s\n' "$DESTINATION"
+    printf 'manifest-toolchain=%s\n' "$XCODE_TOOLCHAIN_IDENTIFIER"
+    printf 'swift-toolchain=%s\n' "$TOOLCHAIN_IDENTIFIER"
+    printf 'xcodebuild-path=%s\n' "$(command -v xcodebuild)"
+    printf 'swiftc-path=%s\n' "$PINNED_SWIFTC"
+    printf 'developer-directory=%s\n' "${DEVELOPER_DIR:-}"
+    xcodebuild -version
+    xcrun --toolchain "$TOOLCHAIN_IDENTIFIER" swiftc -version
+    printf 'fdb-include=%s\n' "${FDB_CLIENT_INCLUDE_DIRECTORY:-}"
+    printf 'fdb-library=%s\n' "${FDB_CLIENT_LIBRARY_DIRECTORY:-}"
+    if [[ -n "${FDB_CLUSTER_FILE:-}" ]]; then
+      printf 'fdb-build-settings-enabled=true\n'
+    else
+      printf 'fdb-build-settings-enabled=false\n'
+    fi
+    printf 'additional-build-argument-count=%d\0' \
+      "${#ADDITIONAL_XCODEBUILD_ARGUMENTS[@]}"
+    if (( ${#ADDITIONAL_XCODEBUILD_ARGUMENTS[@]} > 0 )); then
+      for additional_build_argument in \
+          "${ADDITIONAL_XCODEBUILD_ARGUMENTS[@]}"; do
+        printf 'additional-build-argument\0%s\0' "$additional_build_argument"
+      done
+    fi
+    write_build_input_state \
+      "$ROOT_DIR" \
+      "$XCODE_HARNESS_WORK_ROOT" \
+      "$work_tree" \
+      "$normalized_manifest"
+  } | shasum -a 256 | awk '{print $1}'
+}
+
+for command in awk cmp env git grep mv rmdir shasum swift xcodebuild xcrun plutil perl rsync tee; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "error: required command not found: $command" >&2
     exit 1
@@ -477,6 +626,10 @@ if [[ -n "$REUSE_WORK_ROOT" ]]; then
     echo "error: invalid reusable harness work root: $REUSE_WORK_ROOT" >&2
     exit 2
   fi
+  if [[ ! -f "$REUSE_WORK_ROOT/.reusable-work-root" ]]; then
+    echo "error: work root was not created for reuse: $REUSE_WORK_ROOT" >&2
+    exit 2
+  fi
   XCODE_HARNESS_WORK_ROOT="$REUSE_WORK_ROOT"
 else
   temporary_root="${TMPDIR:-/tmp}"
@@ -490,6 +643,29 @@ derived_data="$XCODE_HARNESS_WORK_ROOT/DerivedData"
 source_packages="$XCODE_HARNESS_WORK_ROOT/SourcePackages"
 mkdir -p "$source_copy" "$derived_data" "$source_packages" "$RESULT_DIRECTORY"
 
+HARNESS_LOCK_DIRECTORY="$XCODE_HARNESS_WORK_ROOT/.harness-lock"
+if ! mkdir "$HARNESS_LOCK_DIRECTORY" 2>/dev/null; then
+  lock_owner=""
+  if [[ -f "$HARNESS_LOCK_DIRECTORY/owner-pid" ]]; then
+    lock_owner="$(<"$HARNESS_LOCK_DIRECTORY/owner-pid")"
+  fi
+  if [[ "$lock_owner" =~ ^[1-9][0-9]*$ ]] \
+      && ! kill -0 "$lock_owner" 2>/dev/null; then
+    rm -f -- "$HARNESS_LOCK_DIRECTORY/owner-pid"
+    rmdir "$HARNESS_LOCK_DIRECTORY" 2>/dev/null || true
+  fi
+  if ! mkdir "$HARNESS_LOCK_DIRECTORY" 2>/dev/null; then
+    echo "error: harness work root is already in use: $XCODE_HARNESS_WORK_ROOT" >&2
+    exit 2
+  fi
+fi
+printf '%s\n' "$$" > "$HARNESS_LOCK_DIRECTORY/owner-pid"
+HARNESS_LOCK_OWNED=true
+if [[ "$PRESERVE_WORK_ROOT" == true ]]; then
+  printf 'database-framework-xcode-test-work-root-v1\n' \
+    > "$XCODE_HARNESS_WORK_ROOT/.reusable-work-root"
+fi
+
 normalized_package="$(mktemp "$XCODE_HARNESS_WORK_ROOT/Package.swift.XXXXXX")"
 cp "$ROOT_DIR/Package.swift" "$normalized_package"
 TRAIT_LITERAL="$traits_literal" perl -0pi -e '
@@ -501,56 +677,14 @@ TRAIT_LITERAL="$traits_literal" perl -0pi -e '
   }
 ' "$normalized_package"
 
-rsync_arguments=(
-  -a
-  --delete
-  --exclude '.git'
-  --exclude '.build'
-  --exclude '.swiftpm'
-  --exclude '/Benchmarks'
-  --exclude '.fdb-test'
-  --exclude '.test-results'
-  --exclude '*.xcresult'
-)
-manifest_reused=false
-resolved_file_reused=false
-if [[ -n "$REUSE_WORK_ROOT" && -f "$source_copy/Package.swift" ]]; then
-  if cmp -s "$normalized_package" "$source_copy/Package.swift"; then
-    # Keep the already-normalized manifest timestamp so an unchanged trait
-    # graph does not invalidate every SwiftPM target on each focused rerun.
-    rsync_arguments+=(--exclude '/Package.swift')
-    manifest_reused=true
-  else
-    # SwiftPM/Xcode can retain dependency-trait activation from the previous
-    # normalized manifest. A different trait graph must never reuse those
-    # products because the dependent package may expose a different API.
-    rm -rf -- "$derived_data"
-    mkdir -p "$derived_data"
-  fi
-  if [[ -f "$ROOT_DIR/Package.resolved" \
-      && -f "$source_copy/Package.resolved" ]] \
-      && cmp -s "$ROOT_DIR/Package.resolved" "$source_copy/Package.resolved"; then
-    # A resolve with an unchanged manifest and lock file can still rewrite
-    # SwiftPM workspace state and reorder trait conditions, invalidating the
-    # complete Xcode build graph. Preserve the already-validated lock file for
-    # focused reruns and reuse the resolved graph below.
-    rsync_arguments+=(--exclude '/Package.resolved')
-    resolved_file_reused=true
-  fi
-fi
-rsync "${rsync_arguments[@]}" "$ROOT_DIR/" "$source_copy/"
-if ! cmp -s "$normalized_package" "$source_copy/Package.swift"; then
-  rsync -a "$normalized_package" "$source_copy/Package.swift"
-fi
-rm -f -- "$normalized_package"
-
-if grep -En '\.package\(path:' \
-    "$source_copy/Package.swift" >/dev/null; then
+has_local_dependencies=false
+if grep -En '\.package\(path:' "$normalized_package" >/dev/null; then
+  has_local_dependencies=true
   if [[ "${DATABASE_FRAMEWORK_ALLOW_LOCAL_DEPENDENCIES:-0}" != "1" ]]; then
     echo "error: release verification requires URL dependencies" >&2
     exit 2
   fi
-  if grep -En '\.package\(path:' "$source_copy/Package.swift" \
+  if grep -En '\.package\(path:' "$normalized_package" \
       | grep -Ev '\.package\(path:[[:space:]]*"\.\./database-kit"' \
       | grep -q .; then
     echo "error: local dependency diagnosis supports only ../database-kit" >&2
@@ -560,77 +694,23 @@ if grep -En '\.package\(path:' \
     echo "error: built-test reuse is unavailable with local dependencies" >&2
     exit 2
   fi
-  database_kit_source="$ROOT_DIR/../database-kit"
-  database_kit_copy="$XCODE_HARNESS_WORK_ROOT/database-kit"
-  if [[ ! -f "$database_kit_source/Package.swift" ]]; then
-    echo "error: local database-kit source is unavailable" >&2
-    exit 2
-  fi
-  rsync -a --delete \
-    --exclude '.git' \
-    --exclude '.build' \
-    --exclude '.swiftpm' \
-    --exclude '*.xcresult' \
-    "$database_kit_source/" "$database_kit_copy/"
 fi
 
 locked_pins="$XCODE_HARNESS_WORK_ROOT/locked-pins.tsv"
 resolved_pins="$XCODE_HARNESS_WORK_ROOT/resolved-pins.tsv"
-if [[ -f "$ROOT_DIR/Package.resolved" ]]; then
-  write_normalized_pins "$ROOT_DIR/Package.resolved" "$locked_pins"
-fi
 
-if [[ -f "$ROOT_DIR/Package.resolved" ]]; then
-  echo "Using the repository's pinned SwiftPM dependency graph."
-else
-  (
-    cd "$source_copy"
-    timeout_command "$RESOLVE_TIMEOUT_SECONDS" \
-      xcrun --toolchain "$TOOLCHAIN_IDENTIFIER" swift package resolve
-  )
-fi
-write_normalized_pins "$source_copy/Package.resolved" "$resolved_pins"
-if [[ -f "$locked_pins" ]]; then
-  while IFS= read -r locked_pin; do
-    if ! grep -Fqx "$locked_pin" "$resolved_pins"; then
-      echo "error: trait resolution changed an existing dependency pin" >&2
-      diff -u "$locked_pins" "$resolved_pins" || true
-      exit 1
-    fi
-  done < "$locked_pins"
-fi
-echo "Resolved dependency pins:"
-awk -F '\t' '{ selected = ($4 == "" ? $6 : $4); print "  " $1 " " selected " " $6 }' \
-  "$resolved_pins"
-
-build_fingerprint="$({
-  printf 'traits=%s\n' "$TRAITS"
-  printf 'scheme=%s\n' "$SCHEME"
-  printf 'destination=%s\n' "$DESTINATION"
-  printf 'manifest-toolchain=%s\n' "$XCODE_TOOLCHAIN_IDENTIFIER"
-  printf 'swift-toolchain=%s\n' "$TOOLCHAIN_IDENTIFIER"
-  xcodebuild -version
-  xcrun --toolchain "$TOOLCHAIN_IDENTIFIER" swiftc -version
-  printf 'fdb-include=%s\n' "${FDB_CLIENT_INCLUDE_DIRECTORY:-}"
-  printf 'fdb-library=%s\n' "${FDB_CLIENT_LIBRARY_DIRECTORY:-}"
-  printf 'additional-build-argument=%s\n' \
-    "${ADDITIONAL_XCODEBUILD_ARGUMENTS[@]:-}"
-  while IFS= read -r -d '' input_path; do
-    relative_path="${input_path#"$source_copy/"}"
-    printf 'file=%s\n' "$relative_path"
-    shasum -a 256 "$input_path"
-  done < <(
-    find \
-      "$source_copy/Sources" \
-      "$source_copy/Tests" \
-      "$source_copy/Package.swift" \
-      "$source_copy/Package.resolved" \
-      -type f -print0 2>/dev/null | sort -z
-  )
-} | shasum -a 256 | awk '{print $1}')"
-build_fingerprint_path="$XCODE_HARNESS_WORK_ROOT/build-input.sha256"
+build_fingerprint="$(compute_build_fingerprint "$ROOT_DIR" "$normalized_package")"
+build_fingerprint_path="$XCODE_HARNESS_WORK_ROOT/build-input-v2.sha256"
 reuse_compiled_tests=false
 if [[ "$REUSE_BUILT_TESTS" == true ]]; then
+  if ! git -C "$ROOT_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
+    echo "error: built-test reuse requires a committed Git baseline" >&2
+    exit 2
+  fi
+  if [[ ! -f "$ROOT_DIR/Package.resolved" ]]; then
+    echo "error: built-test reuse requires a repository Package.resolved" >&2
+    exit 2
+  fi
   if [[ ! -f "$build_fingerprint_path" ]]; then
     echo "error: preserved work root has no successful build fingerprint" >&2
     exit 2
@@ -642,8 +722,113 @@ if [[ "$REUSE_BUILT_TESTS" == true ]]; then
     echo "current:  $build_fingerprint" >&2
     exit 2
   fi
+  preserved_source_fingerprint="$(
+    compute_build_fingerprint "$source_copy" "$source_copy/Package.swift"
+  )"
+  if [[ "$preserved_source_fingerprint" != "$recorded_fingerprint" ]]; then
+    echo "error: preserved source no longer matches its successful build" >&2
+    exit 2
+  fi
   reuse_compiled_tests=true
 fi
+
+if [[ "$reuse_compiled_tests" == false ]]; then
+  rm -f -- "$build_fingerprint_path"
+  rsync_arguments=(
+    -a
+    --checksum
+    --delete
+    --exclude '.git'
+    --exclude '.build'
+    --exclude '.swiftpm'
+    --exclude '/Benchmarks'
+    --exclude '.fdb-test'
+    --exclude '.test-results'
+    --exclude '*.xcresult'
+  )
+  if [[ -n "$REUSE_WORK_ROOT" && -f "$source_copy/Package.swift" ]]; then
+    if cmp -s "$normalized_package" "$source_copy/Package.swift"; then
+      # Keep the already-normalized manifest timestamp so an unchanged trait
+      # graph does not invalidate every SwiftPM target on each focused rerun.
+      rsync_arguments+=(--exclude '/Package.swift')
+    else
+      # SwiftPM/Xcode can retain dependency-trait activation from the previous
+      # normalized manifest. A different trait graph must never reuse those
+      # products because the dependent package may expose a different API.
+      rm -rf -- "$derived_data"
+      mkdir -p "$derived_data"
+    fi
+    if [[ -f "$ROOT_DIR/Package.resolved" \
+        && -f "$source_copy/Package.resolved" ]] \
+        && cmp -s "$ROOT_DIR/Package.resolved" "$source_copy/Package.resolved"; then
+      # Preserve the lock-file timestamp only after exact content comparison.
+      rsync_arguments+=(--exclude '/Package.resolved')
+    fi
+  fi
+  rsync "${rsync_arguments[@]}" "$ROOT_DIR/" "$source_copy/"
+  if ! cmp -s "$normalized_package" "$source_copy/Package.swift"; then
+    rsync -a "$normalized_package" "$source_copy/Package.swift"
+  fi
+
+  synchronized_build_fingerprint="$(
+    compute_build_fingerprint "$source_copy" "$source_copy/Package.swift"
+  )"
+  if [[ "$synchronized_build_fingerprint" != "$build_fingerprint" ]]; then
+    echo "error: synchronized source does not match the recorded build input" >&2
+    exit 1
+  fi
+
+  if [[ "$has_local_dependencies" == true ]]; then
+    database_kit_source="$ROOT_DIR/../database-kit"
+    database_kit_copy="$XCODE_HARNESS_WORK_ROOT/database-kit"
+    if [[ ! -f "$database_kit_source/Package.swift" ]]; then
+      echo "error: local database-kit source is unavailable" >&2
+      exit 2
+    fi
+    rsync -a --checksum --delete \
+      --exclude '.git' \
+      --exclude '.build' \
+      --exclude '.swiftpm' \
+      --exclude '*.xcresult' \
+      "$database_kit_source/" "$database_kit_copy/"
+  fi
+fi
+rm -f -- "$normalized_package"
+
+if [[ "$reuse_compiled_tests" == true ]]; then
+  if [[ ! -s "$resolved_pins" ]]; then
+    echo "error: preserved work root has no validated dependency pins" >&2
+    exit 2
+  fi
+  echo "Reusing the dependency graph validated by the matching build."
+else
+  if [[ -f "$ROOT_DIR/Package.resolved" ]]; then
+    write_normalized_pins "$ROOT_DIR/Package.resolved" "$locked_pins"
+  fi
+
+  if [[ -f "$ROOT_DIR/Package.resolved" ]]; then
+    echo "Using the repository's pinned SwiftPM dependency graph."
+  else
+    (
+      cd "$source_copy"
+      timeout_command "$RESOLVE_TIMEOUT_SECONDS" \
+        xcrun --toolchain "$TOOLCHAIN_IDENTIFIER" swift package resolve
+    )
+  fi
+  write_normalized_pins "$source_copy/Package.resolved" "$resolved_pins"
+  if [[ -f "$locked_pins" ]]; then
+    while IFS= read -r locked_pin; do
+      if ! grep -Fqx "$locked_pin" "$resolved_pins"; then
+        echo "error: trait resolution changed an existing dependency pin" >&2
+        diff -u "$locked_pins" "$resolved_pins" || true
+        exit 1
+      fi
+    done < "$locked_pins"
+  fi
+fi
+echo "Resolved dependency pins:"
+awk -F '\t' '{ selected = ($4 == "" ? $6 : $4); print "  " $1 " " selected " " $6 }' \
+  "$resolved_pins"
 
 run_identifier="$(date +%Y%m%d-%H%M%S)-$$"
 build_result="$RESULT_DIRECTORY/Build-$run_identifier.xcresult"
@@ -725,7 +910,16 @@ else
     echo "error: xcodebuild build-for-testing exited with status $build_status" >&2
     exit "$build_status"
   fi
-  printf '%s\n' "$build_fingerprint" > "$build_fingerprint_path"
+  built_source_fingerprint="$(
+    compute_build_fingerprint "$source_copy" "$source_copy/Package.swift"
+  )"
+  if [[ "$built_source_fingerprint" != "$build_fingerprint" ]]; then
+    echo "error: build source changed before provenance could be recorded" >&2
+    exit 1
+  fi
+  build_fingerprint_temporary_path="$build_fingerprint_path.tmp.$$"
+  printf '%s\n' "$build_fingerprint" > "$build_fingerprint_temporary_path"
+  mv -f -- "$build_fingerprint_temporary_path" "$build_fingerprint_path"
 fi
 
 xctestrun_paths="$(
