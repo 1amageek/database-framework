@@ -40,7 +40,7 @@ enum FullTextFieldValueExtractor {
         return try strings(from: value, entity: entity, field: field)
     }
 
-    private static func strings(
+    static func strings(
         from value: FieldValue,
         entity: String,
         field: FieldIdentity

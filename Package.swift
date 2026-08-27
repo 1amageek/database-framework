@@ -193,7 +193,12 @@ let package = Package(
                 .product(name: "DatabaseTypes", package: "database-types"),
                 .product(name: "StorageKit", package: "storage-kit"),
             ],
-            exclude: ["README.md"]
+            exclude: [
+                "README.md",
+                "DESIGN.md",
+                "Autocomplete/DESIGN.md",
+                "Facet/DESIGN.md",
+            ]
         ),
         .target(
             name: "FullTextIndexFoundation",

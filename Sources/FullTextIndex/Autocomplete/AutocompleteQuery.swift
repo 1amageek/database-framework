@@ -45,11 +45,19 @@ public struct AutocompleteQueryBuilder<Item: Persistable>: Sendable {
         guard fetchLimit >= 0 else {
             throw AutocompleteError.invalidLimit(fetchLimit)
         }
-        return try await queryContext.withReadableIndex(
-            named: resolved.descriptor.name,
-            indexType: resolved.descriptor.type,
-            for: Item.self
-        ) { readableIndex, transaction in
+        let workMeter = DatabaseWorkMeter(
+            budget: ExecutionBudget(),
+            monotonicClock: queryContext.context.container.monotonicClock
+        )
+        return try await queryContext.withTransaction(
+            workMeter: workMeter
+        ) { transaction in
+            let readableIndex = try await queryContext.readableIndex(
+                named: resolved.descriptor.name,
+                indexType: resolved.descriptor.type,
+                for: Item.self,
+                transaction: transaction
+            )
             guard let readableIndex else {
                 return []
             }
@@ -61,7 +69,8 @@ public struct AutocompleteQueryBuilder<Item: Persistable>: Sendable {
                 field: resolved.field.name,
                 prefix: searchPrefix,
                 limit: fetchLimit,
-                transaction: transaction.storageTransaction
+                transaction: transaction,
+                workMeter: workMeter
             )
         }
     }
@@ -71,11 +80,19 @@ public struct AutocompleteQueryBuilder<Item: Persistable>: Sendable {
         guard fetchLimit >= 0 else {
             throw AutocompleteError.invalidLimit(fetchLimit)
         }
-        return try await queryContext.withReadableIndex(
-            named: resolved.descriptor.name,
-            indexType: resolved.descriptor.type,
-            for: Item.self
-        ) { readableIndex, transaction in
+        let workMeter = DatabaseWorkMeter(
+            budget: ExecutionBudget(),
+            monotonicClock: queryContext.context.container.monotonicClock
+        )
+        return try await queryContext.withTransaction(
+            workMeter: workMeter
+        ) { transaction in
+            let readableIndex = try await queryContext.readableIndex(
+                named: resolved.descriptor.name,
+                indexType: resolved.descriptor.type,
+                for: Item.self,
+                transaction: transaction
+            )
             guard let readableIndex else {
                 return []
             }
@@ -86,7 +103,8 @@ public struct AutocompleteQueryBuilder<Item: Persistable>: Sendable {
             return try await reader.popularTerms(
                 field: resolved.field.name,
                 limit: fetchLimit,
-                transaction: transaction.storageTransaction
+                transaction: transaction,
+                workMeter: workMeter
             )
         }
     }

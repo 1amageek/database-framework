@@ -149,6 +149,30 @@ public struct IndexReadResult: Sendable {
         )
     }
 
+    /// Transfers a retained metadata owner onto an already completed row
+    /// result. The transfer is consuming so the row owner and metadata claim
+    /// remain coupled to the same request meter without rebuilding the rows.
+    package static func attachingMetadata(
+        to result: consuming IndexReadResult,
+        metadata: consuming DatabaseRetainedIndexMetadata
+    ) throws -> IndexReadResult {
+        precondition(
+            result.metadataReservation == nil,
+            "Index read result metadata can only be attached once"
+        )
+        guard let resultWorkMeter = result.workMeter,
+              resultWorkMeter === metadata.workMeter else {
+            throw DatabaseIntermediateReservationError.workMeterMismatch
+        }
+        let retained = metadata.moveToIndexResult()
+        return IndexReadResult(
+            rows: result.rows,
+            ordering: result.ordering,
+            metadata: retained.values,
+            metadataReservation: retained.reservation
+        )
+    }
+
     public static let empty = IndexReadResult(
         rows: nil,
         ordering: .orderedByIndex,
