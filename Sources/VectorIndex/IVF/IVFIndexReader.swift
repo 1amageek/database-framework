@@ -31,9 +31,10 @@ struct IVFIndexReader: Sendable {
     func search(
         queryVector: Vector,
         k: Int,
-        transaction: any TransactionAccess,
-        workMeter: DatabaseWorkMeter? = nil
-    ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
+        transaction: any TransactionReadAccess,
+        snapshot: Bool = true,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> VectorRetainedMatches {
         guard queryVector.count == dimensions else {
             throw VectorIndexError.dimensionMismatch(
                 expected: dimensions,
@@ -44,17 +45,32 @@ struct IVFIndexReader: Sendable {
             throw VectorIndexError.invalidArgument("k must be positive")
         }
 
-        let metadata = try await loadMetadata(transaction: transaction)
+        let metadata = try await loadMetadata(
+            transaction: transaction,
+            snapshot: snapshot,
+            workMeter: workMeter
+        )
         if metadata.vectorCount == 0 {
-            guard try await !hasStoredVector(transaction: transaction) else {
+            guard try await !hasStoredVector(
+                transaction: transaction,
+                snapshot: snapshot,
+                workMeter: workMeter
+            ) else {
                 throw VectorIndexError.invalidStructure(
                     "IVF metadata reports an empty index with persisted vectors"
                 )
             }
-            return []
+            return try VectorSearchAccumulator(
+                k: k,
+                workMeter: workMeter
+            ).finish()
         }
 
-        let centroids = try await loadCentroids(transaction: transaction)
+        let centroids = try await loadRetainedCentroids(
+            transaction: transaction,
+            snapshot: snapshot,
+            workMeter: workMeter
+        )
         if !metadata.trained {
             guard centroids.isEmpty else {
                 throw VectorIndexError.invalidStructure(
@@ -65,6 +81,7 @@ struct IVFIndexReader: Sendable {
                 queryVector: queryVector,
                 k: k,
                 transaction: transaction,
+                snapshot: snapshot,
                 workMeter: workMeter
             )
         }
@@ -72,10 +89,19 @@ struct IVFIndexReader: Sendable {
             throw VectorIndexError.invalidStructure("IVF index not trained")
         }
 
+        let centroidDistanceReservation = try workMeter.reserveIntermediate(
+            rows: UInt64(centroids.count),
+            bytes: DatabaseIntermediateCollectionMeter.arrayFootprint(
+                count: centroids.count,
+                element: (index: Int, distance: Double).self
+            ).bytes,
+            at: .indexScan
+        )
+        defer { centroidDistanceReservation.release() }
         var centroidDistances: [(index: Int, distance: Double)] = []
         centroidDistances.reserveCapacity(centroids.count)
         for (index, centroid) in centroids.enumerated() {
-            try workMeter?.consume(at: .indexScan)
+            try workMeter.consume(at: .indexScan)
             centroidDistances.append(
                 (
                     index: index,
@@ -88,17 +114,10 @@ struct IVFIndexReader: Sendable {
             )
         }
         centroidDistances.sort { $0.distance < $1.distance }
-        let nearestClusters = centroidDistances
-            .prefix(parameters.nprobe)
-            .map { $0.index }
+        var nearest = try VectorSearchAccumulator(k: k, workMeter: workMeter)
 
-        var nearest = MinHeap<(primaryKey: [any TupleElement], distance: Double)>(
-            maxSize: k,
-            heapType: .max,
-            comparator: { $0.distance > $1.distance }
-        )
-
-        for clusterID in nearestClusters {
+        for centroid in centroidDistances.prefix(parameters.nprobe) {
+            let clusterID = centroid.index
             let listSubspace = subspace
                 .subspace(IVFIndexStorageKey.lists.rawValue)
                 .subspace(clusterID)
@@ -108,16 +127,13 @@ struct IVFIndexReader: Sendable {
                 to: .firstGreaterOrEqual(end),
                 limit: 0,
                 reverse: false,
-                snapshot: true,
+                snapshot: snapshot,
                 streamingMode: .iterator
             )
 
             try await cursor.consume { key, value in
-                try workMeter?.consume(at: .indexScan)
-                let primaryKey: Tuple
-                do {
-                    primaryKey = try listSubspace.unpack(key)
-                } catch {
+                try workMeter.consume(at: .indexScan)
+                guard listSubspace.contains(key) else {
                     throw VectorIndexError.invalidStructure(
                         "Invalid IVF list primary key"
                     )
@@ -126,29 +142,34 @@ struct IVFIndexReader: Sendable {
                     value,
                     expectedCount: dimensions
                 )
-                nearest.insert(
-                    (
-                        primaryKey: try primaryKey.elements(),
-                        distance: try VectorConversion.distance(
-                            metric: metric,
-                            from: queryVector,
-                            to: vector
-                        )
+                try nearest.insert(
+                    packedPrimaryKey: key[
+                        listSubspace.prefix.count..<key.count
+                    ],
+                    distance: try VectorConversion.distance(
+                        metric: metric,
+                        from: queryVector,
+                        to: vector
                     )
                 )
             }
         }
 
-        return nearest.sorted()
+        return try nearest.finish()
     }
 
     private func loadMetadata(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess,
+        snapshot: Bool,
+        workMeter: DatabaseWorkMeter
     ) async throws -> IVFMetadata {
         let key = subspace.pack(Tuple([IVFIndexStorageKey.metadata.rawValue]))
-        guard let value = try await transaction.getValue(
+        try workMeter.consume(at: .indexScan)
+        guard let value = try await transaction.readPointValue(
             for: key,
-            snapshot: true
+            snapshot: snapshot,
+            workMeter: workMeter,
+            at: .indexScan
         ) else {
             throw VectorIndexError.invalidStructure("IVF metadata is missing")
         }
@@ -171,9 +192,10 @@ struct IVFIndexReader: Sendable {
     private func exactSearch(
         queryVector: Vector,
         k: Int,
-        transaction: any TransactionAccess,
-        workMeter: DatabaseWorkMeter? = nil
-    ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
+        transaction: any TransactionReadAccess,
+        snapshot: Bool,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> VectorRetainedMatches {
         let listsSubspace = subspace.subspace(IVFIndexStorageKey.lists.rawValue)
         let (begin, end) = listsSubspace.range()
         var cursor = transaction.rangeCursor(
@@ -181,16 +203,12 @@ struct IVFIndexReader: Sendable {
             to: .firstGreaterOrEqual(end),
             limit: 0,
             reverse: false,
-            snapshot: true,
+            snapshot: snapshot,
             streamingMode: .iterator
         )
-        var nearest = MinHeap<(primaryKey: [any TupleElement], distance: Double)>(
-            maxSize: k,
-            heapType: .max,
-            comparator: { $0.distance > $1.distance }
-        )
+        var nearest = try VectorSearchAccumulator(k: k, workMeter: workMeter)
         try await cursor.consume { key, value in
-            try workMeter?.consume(at: .indexScan)
+            try workMeter.consume(at: .indexScan)
             let tuple: Tuple
             do {
                 tuple = try listsSubspace.unpack(key)
@@ -208,27 +226,29 @@ struct IVFIndexReader: Sendable {
                     "Invalid IVF list cluster key"
                 )
             }
-            let elements = try tuple.elements()
             let vector = try VectorConversion.persistedVector(
                 value,
                 expectedCount: dimensions
             )
-            nearest.insert(
-                (
-                    primaryKey: Array(elements.dropFirst()),
-                    distance: try VectorConversion.distance(
-                        metric: metric,
-                        from: queryVector,
-                        to: vector
-                    )
+            try nearest.insert(
+                packedPrimaryKey: key[
+                    listsSubspace.prefix.count..<key.count
+                ],
+                droppingFirstElement: true,
+                distance: try VectorConversion.distance(
+                    metric: metric,
+                    from: queryVector,
+                    to: vector
                 )
             )
         }
-        return nearest.sorted()
+        return try nearest.finish()
     }
 
     private func hasStoredVector(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess,
+        snapshot: Bool,
+        workMeter: DatabaseWorkMeter
     ) async throws -> Bool {
         let range = subspace.subspace(IVFIndexStorageKey.lists.rawValue).range()
         var cursor = transaction.rangeCursor(
@@ -236,16 +256,98 @@ struct IVFIndexReader: Sendable {
             to: .firstGreaterOrEqual(range.end),
             limit: 1,
             reverse: false,
-            snapshot: true,
+            snapshot: snapshot,
             streamingMode: .iterator
         )
-        let row = try await cursor.next()
-        try await cursor.finish()
-        return row != nil
+        var found = false
+        try await cursor.consume { _, _ in
+            try workMeter.consume(at: .indexScan)
+            found = true
+        }
+        return found
+    }
+
+    private func loadRetainedCentroids(
+        transaction: any TransactionReadAccess,
+        snapshot: Bool,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> DatabaseSharedRetainedArray<PersistedVectorView> {
+        let centroidSubspace = subspace.subspace(
+            IVFIndexStorageKey.centroids.rawValue
+        )
+        let range = centroidSubspace.range()
+        var cursor = transaction.rangeCursor(
+            from: .firstGreaterOrEqual(range.begin),
+            to: .firstGreaterOrEqual(range.end),
+            limit: 0,
+            reverse: false,
+            snapshot: snapshot,
+            streamingMode: .iterator
+        )
+        var builder = try DatabaseRetainedArrayBuilder<PersistedVectorView>(
+            workMeter: workMeter,
+            stage: .indexScan,
+            layout: try DatabaseRetainedArrayLayout.forElement(
+                PersistedVectorView.self
+            ),
+            expectedCount: parameters.nlist
+        )
+        var expectedIndex = 0
+        try await cursor.consume { key, value in
+            try workMeter.consume(at: .indexScan)
+            let keyTuple: Tuple
+            do {
+                keyTuple = try centroidSubspace.unpack(key)
+            } catch {
+                throw VectorIndexError.invalidStructure(
+                    "Invalid IVF centroid key sequence"
+                )
+            }
+            guard keyTuple.count == 1,
+                  case .signedInteger(let encodedIndex) =
+                    try keyTuple.value(at: 0),
+                  Int(exactly: encodedIndex) == expectedIndex else {
+                throw VectorIndexError.invalidStructure(
+                    "Invalid IVF centroid key sequence"
+                )
+            }
+            let admission = try builder.prepareAppend(
+                footprint: DatabaseIntermediateFootprint(rows: 1),
+                at: .indexScan
+            )
+            let payloadReservation = try workMeter.reserveIntermediate(
+                bytes: UInt64(value.count),
+                at: .indexScan
+            )
+            do {
+                let retained = try DatabaseRetainedByteString.make(
+                    value,
+                    reservation: payloadReservation,
+                    at: .indexScan
+                )
+                let centroid = try VectorConversion.persistedVector(
+                    retained,
+                    expectedCount: dimensions
+                )
+                builder.append(centroid, using: admission)
+            } catch {
+                payloadReservation.release()
+                throw error
+            }
+            expectedIndex += 1
+        }
+        guard builder.count <= parameters.nlist else {
+            throw VectorIndexError.invalidStructure(
+                "IVF centroid count exceeds the configured cluster count"
+            )
+        }
+        return try builder.finish().moveToSharedOwnership(at: .indexScan)
     }
 
     func loadCentroids(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess,
+        snapshot: Bool = true,
+        workMeter: DatabaseWorkMeter? = nil
     ) async throws -> [PersistedVectorView] {
         let centroidSubspace = subspace.subspace(
             IVFIndexStorageKey.centroids.rawValue
@@ -256,10 +358,20 @@ struct IVFIndexReader: Sendable {
             to: .firstGreaterOrEqual(end),
             limit: 0,
             reverse: false,
-            snapshot: true,
+            snapshot: snapshot,
             streamingMode: .iterator
         )
 
+        let reservation = try workMeter.map { meter in
+            try meter.reserveIntermediate(
+                rows: UInt64(parameters.nlist),
+                bytes: DatabaseIntermediateCollectionMeter.arrayFootprint(
+                    count: parameters.nlist,
+                    element: PersistedVectorView.self
+                ).bytes,
+                at: .indexScan
+            )
+        }
         var centroids: [PersistedVectorView] = []
         var expectedIndex = 0
         try await cursor.consume { key, value in
@@ -279,9 +391,23 @@ struct IVFIndexReader: Sendable {
                     "Invalid IVF centroid key sequence"
                 )
             }
+            let retainedValue: ByteString
+            if let reservation {
+                try reservation.reserveAdditional(
+                    bytes: UInt64(value.count) + 32,
+                    at: .indexScan
+                )
+                retainedValue = try DatabaseRetainedByteString.make(
+                    value,
+                    reservation: reservation,
+                    at: .indexScan
+                )
+            } else {
+                retainedValue = value
+            }
             centroids.append(
                 try VectorConversion.persistedVector(
-                    value,
+                    retainedValue,
                     expectedCount: dimensions
                 )
             )
@@ -294,4 +420,21 @@ struct IVFIndexReader: Sendable {
         }
         return centroids
     }
+    /// Preserves the public maintainer result at its explicit output boundary.
+    func search(
+        queryVector: Vector,
+        k: Int,
+        transaction: any TransactionAccess
+    ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
+        let workMeter = VectorRetainedMatches.makeUnboundedWorkMeter()
+        let retained = try await search(
+            queryVector: queryVector,
+            k: k,
+            transaction: transaction,
+            snapshot: true,
+            workMeter: workMeter
+        )
+        return try retained.promotedOutput()
+    }
+
 }

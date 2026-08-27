@@ -172,8 +172,8 @@ struct VectorConversionTests {
         #expect(owner.borrowCount == 3)
     }
 
-    @Test("Unaligned persisted vectors match aligned distance results")
-    func unalignedPersistedVectorsMatchAlignedResults() throws {
+    @Test("Sliced persisted vectors match aligned distance results")
+    func slicedPersistedVectorsMatchAlignedResults() throws {
         let queryValues: [Float] = [1, 2, 3, 4, 5, 6, 7, 8, 9]
         let candidateValues: [Float] = [9, 8, 7, 6, 5, 4, 3, 2, 1]
         let payload = VectorConversion.floatArrayToBytes(candidateValues)
@@ -184,10 +184,15 @@ struct VectorConversionTests {
         )
         let query = try Vector(float32: queryValues)
 
-        let isUnaligned = try candidate.withUnsafeBytes {
-            UInt(bitPattern: $0.baseAddress) % UInt(MemoryLayout<Float>.alignment) != 0
+        let endpoints = try candidate.withElements {
+            (elements) throws(VectorIndexError) -> (Float, Float) in
+            (
+                try elements.element(at: 0),
+                try elements.element(at: elements.count - 1)
+            )
         }
-        #expect(isUnaligned)
+        #expect(endpoints.0 == candidateValues.first)
+        #expect(endpoints.1 == candidateValues.last)
 
         let expected: [(VectorMetric, Double)] = [
             (.cosine, VectorConversion.cosineDistance(queryValues, candidateValues)),
@@ -234,11 +239,32 @@ struct VectorConversionTests {
             ByteString(retaining: codebookOwner),
             expectedCount: 4
         )
+        let meter = DatabaseWorkMeter(
+            budget: ExecutionBudget(),
+            monotonicClock: TestProcessMonotonicClock()
+        )
+        var codebooksBuilder = try DatabaseRetainedArrayBuilder<
+            PersistedVectorView
+        >(
+            workMeter: meter,
+            stage: .indexScan,
+            layout: try DatabaseRetainedArrayLayout.forElement(
+                PersistedVectorView.self
+            ),
+            expectedCount: 1
+        )
+        let admission = try codebooksBuilder.prepareAppend(
+            footprint: DatabaseIntermediateFootprint(rows: 1),
+            at: .indexScan
+        )
+        codebooksBuilder.append(codebook, using: admission)
+        let codebooks = try codebooksBuilder.finish()
+            .moveToSharedOwnership(at: .indexScan)
         let quantizer = try PersistedProductQuantizer(
             dimensions: 2,
             subquantizerCount: 1,
             centroidCount: 2,
-            codebooks: [codebook]
+            codebooks: codebooks
         )
         let table = try quantizer.distanceTable(
             for: Vector(float32: [1, 0]),
@@ -451,40 +477,99 @@ struct VectorConversionTests {
             budget: ExecutionBudget(),
             monotonicClock: TestProcessMonotonicClock()
         )
-        let matching = try PersistedModel(
-            HNSWDocument(
-                id: "item",
-                title: "Matching",
-                embedding: Vector(float32: [1, 0])
-            )
+        let matchingReservation = try meter.reserveIntermediate(
+            bytes: 1_024,
+            at: .storageRow
+        )
+        let matching = DatabaseRetainedPersistedModels.Entry(
+            model: try PersistedModel(
+                HNSWDocument(
+                    id: "item",
+                    title: "Matching",
+                    embedding: Vector(float32: [1, 0])
+                )
+            ),
+            retainedModelFootprint: DatabaseIntermediateFootprint(
+                rows: 1,
+                bytes: 1_024
+            ),
+            queryRowFootprint: DatabaseIntermediateFootprint(rows: 1),
+            reservation: matchingReservation
+        )
+        let matchingModels = try retainedModels(
+            matching,
+            workMeter: meter
         )
         try await database.withTransaction { transaction in
-            try await validator.validate(
+            let isValid = try await validator.validate(
                 primaryKey: Tuple("item"),
-                model: matching,
+                entities: matchingModels,
+                position: 0,
                 transaction: transaction,
+                snapshot: false,
                 workMeter: meter
             )
+            #expect(isValid)
         }
 
-        let mismatching = try PersistedModel(
-            HNSWDocument(
-                id: "item",
-                title: "Mismatching",
-                embedding: Vector(float32: [0, 1])
-            )
+        let mismatchingReservation = try meter.reserveIntermediate(
+            bytes: 1_024,
+            at: .storageRow
+        )
+        let mismatching = DatabaseRetainedPersistedModels.Entry(
+            model: try PersistedModel(
+                HNSWDocument(
+                    id: "item",
+                    title: "Mismatching",
+                    embedding: Vector(float32: [0, 1])
+                )
+            ),
+            retainedModelFootprint: DatabaseIntermediateFootprint(
+                rows: 1,
+                bytes: 1_024
+            ),
+            queryRowFootprint: DatabaseIntermediateFootprint(rows: 1),
+            reservation: mismatchingReservation
+        )
+        let mismatchingModels = try retainedModels(
+            mismatching,
+            workMeter: meter
         )
         await #expect(throws: VectorIndexError.self) {
             try await database.withTransaction { transaction in
-                try await validator.validate(
+                _ = try await validator.validate(
                     primaryKey: Tuple("item"),
-                    model: mismatching,
+                    entities: mismatchingModels,
+                    position: 0,
                     transaction: transaction,
+                    snapshot: false,
                     workMeter: meter
                 )
             }
         }
         #expect(vectorOwner.borrowCount == 2)
+    }
+
+    private func retainedModels(
+        _ entry: DatabaseRetainedPersistedModels.Entry,
+        workMeter: DatabaseWorkMeter
+    ) throws -> DatabaseRetainedPersistedModels {
+        var builder = try DatabaseRetainedArrayBuilder<
+            DatabaseRetainedPersistedModels.Entry?
+        >(
+            workMeter: workMeter,
+            stage: .storageRow,
+            layout: try DatabaseRetainedArrayLayout.forElement(
+                DatabaseRetainedPersistedModels.Entry?.self
+            ),
+            expectedCount: 1
+        )
+        let admission = try builder.prepareAppend(
+            footprint: DatabaseIntermediateFootprint(rows: 1),
+            at: .storageRow
+        )
+        builder.append(entry, using: admission)
+        return try DatabaseRetainedPersistedModels(buffer: builder.finish())
     }
 }
 

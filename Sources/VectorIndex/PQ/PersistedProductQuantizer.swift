@@ -1,3 +1,4 @@
+import DatabaseEngine
 import DatabaseKit
 import DatabaseMath
 import DatabaseTypes
@@ -11,13 +12,13 @@ struct PersistedProductQuantizer: Sendable {
     let dimensionsPerSubquantizer: Int
     private let distanceTableEntryCount: Int
 
-    private let codebooks: [PersistedVectorView]
+    private let codebooks: DatabaseSharedRetainedArray<PersistedVectorView>
 
     init(
         dimensions: Int,
         subquantizerCount: Int,
         centroidCount: Int,
-        codebooks: [PersistedVectorView]
+        codebooks: DatabaseSharedRetainedArray<PersistedVectorView>
     ) throws(VectorIndexError) {
         guard dimensions > 0,
               subquantizerCount > 0,
@@ -169,13 +170,13 @@ struct PersistedProductQuantizer: Sendable {
             )
         }
 
-        return try vector.withUnsafeBytes {
-            (vectorBytes) throws(VectorIndexError) -> Bool in
+        return try vector.withElements {
+            (vectorElements) throws(VectorIndexError) -> Bool in
             for (subquantizerIndex, codebook) in codebooks.enumerated() {
                 let vectorOffset = subquantizerIndex
                     * dimensionsPerSubquantizer
-                let nearest = try codebook.withUnsafeBytes {
-                    (codebookBytes) throws(VectorIndexError) -> Int in
+                let nearest = try codebook.withElements {
+                    (codebookElements) throws(VectorIndexError) -> Int in
                     var bestIndex = 0
                     var bestDistance = Double.infinity
                     for centroidIndex in 0..<centroidCount {
@@ -184,15 +185,13 @@ struct PersistedProductQuantizer: Sendable {
                         var distance = 0.0
                         for componentIndex in 0..<dimensionsPerSubquantizer {
                             let source = Double(
-                                try PersistedVectorView.element(
-                                    at: vectorOffset + componentIndex,
-                                    in: vectorBytes
+                                try vectorElements.element(
+                                    at: vectorOffset + componentIndex
                                 )
                             )
                             let centroid = Double(
-                                try PersistedVectorView.element(
-                                    at: centroidOffset + componentIndex,
-                                    in: codebookBytes
+                                try codebookElements.element(
+                                    at: centroidOffset + componentIndex
                                 )
                             )
                             let difference = source - centroid
@@ -325,8 +324,8 @@ struct PersistedProductQuantizer: Sendable {
 
         for (subquantizerIndex, codebook) in codebooks.enumerated() {
             let queryOffset = subquantizerIndex * dimensionsPerSubquantizer
-            try codebook.withUnsafeBytes {
-                (codebookBytes) throws(VectorIndexError) -> Void in
+            try codebook.withElements {
+                (codebookElements) throws(VectorIndexError) -> Void in
                 for centroidIndex in 0..<centroidCount {
                     let centroidOffset = centroidIndex
                         * dimensionsPerSubquantizer
@@ -337,9 +336,8 @@ struct PersistedProductQuantizer: Sendable {
                             queryElements[queryOffset + componentIndex]
                         )
                         let centroidComponent = Double(
-                            try PersistedVectorView.element(
-                                at: centroidOffset + componentIndex,
-                                in: codebookBytes
+                            try codebookElements.element(
+                                at: centroidOffset + componentIndex
                             )
                         )
                         switch metric {
@@ -379,8 +377,8 @@ struct PersistedProductQuantizer: Sendable {
         result.reserveCapacity(subquantizerCount)
         for (subquantizerIndex, codebook) in codebooks.enumerated() {
             let vectorOffset = subquantizerIndex * dimensionsPerSubquantizer
-            let nearest = try codebook.withUnsafeBytes {
-                (codebookBytes) throws(VectorIndexError) -> Int in
+            let nearest = try codebook.withElements {
+                (codebookElements) throws(VectorIndexError) -> Int in
                 var bestIndex = 0
                 var bestDistance = Double.infinity
                 for centroidIndex in 0..<centroidCount {
@@ -391,9 +389,8 @@ struct PersistedProductQuantizer: Sendable {
                         let difference = Double(
                             elements[vectorOffset + componentIndex]
                         ) - Double(
-                            try PersistedVectorView.element(
-                                at: centroidOffset + componentIndex,
-                                in: codebookBytes
+                            try codebookElements.element(
+                                at: centroidOffset + componentIndex
                             )
                         )
                         distance += difference * difference

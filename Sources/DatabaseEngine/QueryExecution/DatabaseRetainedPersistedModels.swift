@@ -40,6 +40,33 @@ package final class DatabaseRetainedPersistedModels:
             try await body(model)
             withExtendedLifetime(reservation) {}
         }
+
+        /// Borrows one vector field without exposing the Copyable model or
+        /// vector across the retained-owner boundary.
+        package func withVectorField<Result>(
+            keyPath: String,
+            workMeter: DatabaseWorkMeter,
+            _ body: (borrowing DatabaseRetainedVectorFieldView) throws
+                -> Result
+        ) throws -> Result {
+            guard reservation.workMeter === workMeter else {
+                throw DatabaseIntermediateReservationError.workMeterMismatch
+            }
+            defer { withExtendedLifetime(reservation) {} }
+            let value = try DataAccess.extractFieldValue(
+                from: model,
+                keyPath: keyPath
+            )
+            guard case .vector(let vector) = value else {
+                throw SchemaDrivenEntityRuntimeError.invalidFieldValue(
+                    entity: model.entity,
+                    field: keyPath,
+                    expected: .vector
+                )
+            }
+            let view = DatabaseRetainedVectorFieldView(vector: vector)
+            return try body(view)
+        }
     }
 
     private let entries: [Entry?]
@@ -97,5 +124,64 @@ package final class DatabaseRetainedPersistedModels:
     ) async throws(Failure) {
         try await body(entries[index])
         withExtendedLifetime(arrayReservation) {}
+    }
+
+    /// Borrows one retained vector field without exposing an entry or model.
+    package func withVectorField<Result>(
+        at index: Int,
+        keyPath: String,
+        workMeter: DatabaseWorkMeter,
+        _ body: (borrowing DatabaseRetainedVectorFieldView) throws -> Result
+    ) throws -> Result? {
+        guard self.workMeter === workMeter else {
+            throw DatabaseIntermediateReservationError.workMeterMismatch
+        }
+        guard let entry = entries[index] else { return nil }
+        return try entry.withVectorField(
+            keyPath: keyPath,
+            workMeter: workMeter,
+            body
+        )
+    }
+
+    /// Appends one regular index row through the admitted destination owner.
+    @discardableResult
+    package func appendIndexRow(
+        at index: Int,
+        to rows: inout IndexReadResultBuilder,
+        additionalAnnotation: (name: String, value: FieldValue)? = nil
+    ) throws -> Bool {
+        guard rows.workMeter === workMeter else {
+            throw DatabaseIntermediateReservationError.workMeterMismatch
+        }
+        guard let entry = entries[index] else { return false }
+        try entry.withModel { model in
+            let footprint: DatabaseIntermediateFootprint
+            if let additionalAnnotation {
+                footprint = try CanonicalRelationalFootprintMeter.footprint(
+                    entry.queryRowFootprint,
+                    appendingAnnotationNamed: additionalAnnotation.name,
+                    value: additionalAnnotation.value,
+                    workMeter: workMeter
+                )
+            } else {
+                footprint = entry.queryRowFootprint
+            }
+            try rows.append(footprint: footprint) {
+                let annotations: [String: FieldValue]
+                if let additionalAnnotation {
+                    annotations = [
+                        additionalAnnotation.name: additionalAnnotation.value
+                    ]
+                } else {
+                    annotations = [:]
+                }
+                return try IndexReadRow.materializing(
+                    model,
+                    annotations: annotations
+                )
+            }
+        }
+        return true
     }
 }

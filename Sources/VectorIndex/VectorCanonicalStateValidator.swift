@@ -13,18 +13,93 @@ struct VectorCanonicalStateValidator: Sendable {
 
     func validate(
         primaryKey: Tuple,
-        model: PersistedModel,
-        transaction: any TransactionAccess,
+        entities: DatabaseRetainedPersistedModels,
+        position: Int,
+        transaction: any TransactionReadAccess,
+        snapshot: Bool,
         workMeter: DatabaseWorkMeter
-    ) async throws {
+    ) async throws -> Bool {
+        let persisted = try await persistedVector(
+            primaryKey: primaryKey,
+            transaction: transaction,
+            snapshot: snapshot,
+            workMeter: workMeter
+        )
+        guard let persisted else { return true }
+        try workMeter.consume(UInt64(dimensions), at: .indexScan)
+        let matches = try entities.withVectorField(
+            at: position,
+            keyPath: fieldName,
+            workMeter: workMeter
+        ) { field in
+            try VectorConversion.matchesPersistedVector(
+                persisted,
+                field: field
+            )
+        }
+        guard let matches else { return false }
+        guard matches else {
+            throw VectorIndexError.invalidStructure(
+                "Vector index scoring state disagrees with the canonical entity"
+            )
+        }
+        return true
+    }
+
+    func validate(
+        primaryKey: Tuple,
+        entities: borrowing DatabaseRetainedPolymorphicEntities,
+        position: Int,
+        transaction: any TransactionReadAccess,
+        snapshot: Bool,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> Bool {
+        guard let persisted = try await persistedVector(
+            primaryKey: primaryKey,
+            transaction: transaction,
+            snapshot: snapshot,
+            workMeter: workMeter
+        ) else {
+            return true
+        }
+        try workMeter.consume(UInt64(dimensions), at: .indexScan)
+        let matches = try entities.withVectorField(
+            at: position,
+            keyPath: fieldName,
+            workMeter: workMeter
+        ) { field in
+            try VectorConversion.matchesPersistedVector(
+                persisted,
+                field: field
+            )
+        }
+        guard let matches else {
+            return false
+        }
+        guard matches else {
+            throw VectorIndexError.invalidStructure(
+                "Vector index scoring state disagrees with the canonical entity"
+            )
+        }
+        return true
+    }
+
+    private func persistedVector(
+        primaryKey: Tuple,
+        transaction: any TransactionReadAccess,
+        snapshot: Bool,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> PersistedVectorView? {
         let persistedBytes: ByteString
         switch algorithm {
         case .hnsw:
             let labelsSubspace = indexSubspace.subspace("l")
             try workMeter.consume(at: .indexScan)
-            guard let packedLabel = try await transaction.getValue(
+            guard let packedLabel = try await transaction.readPointValue(
                 for: labelsSubspace.pack(primaryKey),
-                snapshot: true
+                snapshot: snapshot,
+                workMeter: workMeter,
+                at: .indexScan
             ) else {
                 throw VectorIndexError.invalidStructure(
                     "HNSW result has no primary-key label mapping"
@@ -33,9 +108,11 @@ struct VectorCanonicalStateValidator: Sendable {
             let label = try HNSWLabelCodec.decodePacked(packedLabel)
             let vectorsSubspace = indexSubspace.subspace("v")
             try workMeter.consume(at: .indexScan)
-            guard let value = try await transaction.getValue(
+            guard let value = try await transaction.readPointValue(
                 for: vectorsSubspace.pack(HNSWLabelCodec.tuple(label)),
-                snapshot: true
+                snapshot: snapshot,
+                workMeter: workMeter,
+                at: .indexScan
             ) else {
                 throw VectorIndexError.invalidStructure(
                     "HNSW result has no persisted canonical vector"
@@ -48,9 +125,11 @@ struct VectorCanonicalStateValidator: Sendable {
                 PQIndexStorageKey.vectors.rawValue
             )
             try workMeter.consume(at: .indexScan)
-            guard let value = try await transaction.getValue(
+            guard let value = try await transaction.readPointValue(
                 for: vectorsSubspace.pack(primaryKey),
-                snapshot: true
+                snapshot: snapshot,
+                workMeter: workMeter,
+                at: .indexScan
             ) else {
                 throw VectorIndexError.invalidStructure(
                     "PQ result has no persisted canonical vector"
@@ -59,25 +138,12 @@ struct VectorCanonicalStateValidator: Sendable {
             persistedBytes = value
 
         case .flat, .ivf:
-            return
+            return nil
         }
 
-        let persisted = try VectorConversion.persistedVector(
+        return try VectorConversion.persistedVector(
             persistedBytes,
             expectedCount: dimensions
         )
-        try workMeter.consume(UInt64(dimensions), at: .indexScan)
-        let fieldValue = try DataAccess.extractFieldValue(
-            from: model,
-            keyPath: fieldName
-        )
-        guard try VectorConversion.matchesPersistedVector(
-            persisted,
-            fieldValue: fieldValue
-        ) else {
-            throw VectorIndexError.invalidStructure(
-                "Vector index scoring state disagrees with the canonical entity"
-            )
-        }
     }
 }

@@ -21,9 +21,10 @@ struct FlatVectorIndexReader: Sendable {
     func search(
         queryVector: Vector,
         k: Int,
-        transaction: any TransactionAccess,
-        workMeter: DatabaseWorkMeter? = nil
-    ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
+        transaction: any TransactionReadAccess,
+        snapshot: Bool = true,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> VectorRetainedMatches {
         guard queryVector.count == dimensions else {
             throw VectorIndexError.dimensionMismatch(
                 expected: dimensions,
@@ -40,40 +41,54 @@ struct FlatVectorIndexReader: Sendable {
             to: .firstGreaterOrEqual(end),
             limit: 0,
             reverse: false,
-            snapshot: true,
+            snapshot: snapshot,
             streamingMode: .iterator
         )
 
-        var nearest = MinHeap<(primaryKey: [any TupleElement], distance: Double)>(
-            maxSize: k,
-            heapType: .max,
-            comparator: { $0.distance > $1.distance }
-        )
+        var nearest = try VectorSearchAccumulator(k: k, workMeter: workMeter)
 
         try await cursor.consume { key, value in
-            try workMeter?.consume(at: .indexScan)
-            let primaryKey: Tuple
-            do {
-                primaryKey = try subspace.unpack(key)
-            } catch {
-                throw VectorIndexError.invalidStructure("Invalid Flat vector primary key")
-            }
+            try workMeter.consume(at: .indexScan)
             let vector = try VectorConversion.persistedVector(
                 value,
                 expectedCount: dimensions
             )
-            nearest.insert(
-                (
-                    primaryKey: try primaryKey.elements(),
-                    distance: try VectorConversion.distance(
-                        metric: metric,
-                        from: queryVector,
-                        to: vector
-                    )
+            let distance = try VectorConversion.distance(
+                metric: metric,
+                from: queryVector,
+                to: vector
+            )
+            guard subspace.contains(key) else {
+                throw VectorIndexError.invalidStructure(
+                    "Invalid Flat vector primary key"
                 )
+            }
+            try nearest.insert(
+                packedPrimaryKey: key[
+                    subspace.prefix.count..<key.count
+                ],
+                distance: distance
             )
         }
 
-        return nearest.sorted()
+        return try nearest.finish()
     }
+    /// Preserves the public maintainer result while keeping canonical readers
+    /// on the retained-owner path.
+    func search(
+        queryVector: Vector,
+        k: Int,
+        transaction: any TransactionAccess
+    ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
+        let workMeter = VectorRetainedMatches.makeUnboundedWorkMeter()
+        let retained = try await search(
+            queryVector: queryVector,
+            k: k,
+            transaction: transaction,
+            snapshot: true,
+            workMeter: workMeter
+        )
+        return try retained.promotedOutput()
+    }
+
 }

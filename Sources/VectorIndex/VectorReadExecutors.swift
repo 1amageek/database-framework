@@ -10,7 +10,6 @@ enum VectorReadParameter {
     static let k = "k"
     static let metric = "metric"
 }
-
 public enum VectorReadExecutors {
     public static func polymorphicIndexExecutor(
         graphResourceLimits: HNSWGraphResourceLimits = .default,
@@ -41,7 +40,7 @@ private enum VectorReadError: Error, Sendable {
     case invalidParameter(String)
     case indexNotFound(String)
     case fetchedItemCountMismatch(expected: Int, actual: Int)
-    case missingFetchedEntity(ByteString)
+    case missingFetchedEntity(position: Int)
 }
 
 private struct VectorReadExecutor: IndexReadExecutor {
@@ -72,7 +71,7 @@ private struct VectorReadExecutor: IndexReadExecutor {
         options: ReadExecutionContext,
         partitions: FieldObject
     ) async throws -> IndexReadResult {
-        let transaction = session.transaction.storageTransaction
+        let transaction = session.transaction
         let fieldName = try requireString(VectorReadParameter.fieldName, from: indexScan.parameters)
         let dimensions = try requireInt(VectorReadParameter.dimensions, from: indexScan.parameters)
         let queryVector = try requireFloat32Vector(
@@ -81,6 +80,13 @@ private struct VectorReadExecutor: IndexReadExecutor {
         )
         let k = try requireInt(VectorReadParameter.k, from: indexScan.parameters)
         let metricRawValue = try requireString(VectorReadParameter.metric, from: indexScan.parameters)
+
+        try session.requireCanonicalIndexReadAuthorization(
+            entity: entity,
+            index: index,
+            selectQuery: selectQuery,
+            additionalFieldNames: []
+        )
 
         let specification = try VectorIndexSpecification(
             index.declaration.definition
@@ -100,12 +106,6 @@ private struct VectorReadExecutor: IndexReadExecutor {
             try options.workMeter.storageReadLimitWithSentinel()
         )
 
-        try session.requireCanonicalIndexReadAuthorization(
-            entity: entity,
-            index: index,
-            selectQuery: selectQuery,
-            additionalFieldNames: []
-        )
         let search = PolymorphicVectorReadExecutor(
             graphCache: graphCache,
             graphResourceLimits: graphResourceLimits
@@ -123,33 +123,21 @@ private struct VectorReadExecutor: IndexReadExecutor {
             return .empty
         }
         let matches = try await search.executeSearch(
-            specification: specification,
-            indexSubspace: readableIndex.subspace,
-            queryVector: queryVector,
-            k: boundedK,
-            transaction: transaction,
-            workMeter: options.workMeter,
-            algorithm: algorithm
-        )
-        let matchReservation = try reserveVectorMatches(
-            matches,
-            workMeter: options.workMeter
-        )
-        defer { matchReservation.release() }
-        let identifiers = matches.map { Tuple($0.primaryKey) }
-        let identifierReservation = try DatabaseIntermediateCollectionMeter
-            .reserveTuples(
-                identifiers,
+                specification: specification,
+                indexSubspace: readableIndex.subspace,
+                queryVector: queryVector,
+                k: boundedK,
+                transaction: transaction,
+                snapshot: options.consistency == .snapshot,
                 workMeter: options.workMeter,
-                stage: .indexScan
-            )
-        defer { identifierReservation.release() }
-        let fetched = try await session.fetchPersistedModelsPreservingOrder(
-            entity: entity,
-            primaryKeys: identifiers,
-            partitions: partitions,
-            snapshot: options.consistency == .snapshot,
-            workMeter: options.workMeter
+                algorithm: algorithm
+        )
+        let fetched = try await session
+            .fetchRetainedPersistedModelsPreservingOrder(
+                entity: entity,
+                primaryKeys: matches,
+                partitions: partitions,
+                snapshot: options.consistency == .snapshot
         )
         guard fetched.count == matches.count else {
             throw VectorReadError.fetchedItemCountMismatch(
@@ -163,49 +151,40 @@ private struct VectorReadExecutor: IndexReadExecutor {
             dimensions: specification.dimensions,
             algorithm: algorithm
         )
-        for index in matches.indices {
-            guard let retained = fetched[index] else {
-                throw VectorReadError.missingFetchedEntity(
-                    identifiers[index].pack()
-                )
-            }
-            try await retained.withModel { model in
-                try await validator.validate(
-                    primaryKey: identifiers[index],
-                    model: model,
+        for index in 0..<matches.count {
+            var isPresent = false
+            try await matches.withRetainedPrimaryKey(at: index) {
+                primaryKey in
+                isPresent = try await validator.validate(
+                    primaryKey: primaryKey,
+                    entities: fetched,
+                    position: index,
                     transaction: transaction,
+                    snapshot: options.consistency == .snapshot,
                     workMeter: options.workMeter
                 )
+            }
+            guard isPresent else {
+                throw VectorReadError.missingFetchedEntity(position: index)
             }
         }
         return try IndexReadResult.build(
             workMeter: options.workMeter,
             expectedCount: matches.count
         ) { rows in
-            for (match, retained) in zip(matches, fetched) {
-                guard let retained else {
-                    throw VectorReadError.missingFetchedEntity(
-                        Tuple(match.primaryKey).pack()
+            for index in 0..<matches.count {
+                let appended = try fetched.appendIndexRow(
+                    at: index,
+                    to: &rows,
+                    additionalAnnotation: (
+                        name: "distance",
+                        value: .float64(matches.distance(at: index))
                     )
-                }
-                try retained.withModel { model in
-                    let distance = FieldValue.float64(match.distance)
-                    let annotationName: StaticString = "distance"
-                    let footprint = try CanonicalRelationalFootprintMeter
-                        .footprint(
-                            retained.queryRowFootprint,
-                            appendingAnnotationNamed: annotationName,
-                            value: distance,
-                            workMeter: options.workMeter
-                        )
-                    try rows.append(footprint: footprint) {
-                        try IndexReadRow.materializing(
-                            model,
-                            annotations: [
-                                "distance": distance
-                            ]
-                        )
-                    }
+                )
+                guard appended else {
+                    throw VectorReadError.missingFetchedEntity(
+                        position: index
+                    )
                 }
             }
         }
@@ -282,20 +261,37 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         options: ReadExecutionContext,
         partitions: FieldObject
     ) async throws -> IndexReadResult {
-        let transaction = session.transaction.storageTransaction
-        let fieldName = try requireString(VectorReadParameter.fieldName, from: indexScan.parameters)
-        let dimensions = try requireInt(VectorReadParameter.dimensions, from: indexScan.parameters)
+        let transaction = session.transaction
+        let fieldName = try requireString(
+            VectorReadParameter.fieldName,
+            from: indexScan.parameters
+        )
+        let dimensions = try requireInt(
+            VectorReadParameter.dimensions,
+            from: indexScan.parameters
+        )
         let queryVector = try requireFloat32Vector(
             VectorReadParameter.queryVector,
             from: indexScan.parameters
         )
-        let k = try requireInt(VectorReadParameter.k, from: indexScan.parameters)
-        let metricRawValue = try requireString(VectorReadParameter.metric, from: indexScan.parameters)
-
+        let k = try requireInt(
+            VectorReadParameter.k,
+            from: indexScan.parameters
+        )
+        let metricRawValue = try requireString(
+            VectorReadParameter.metric,
+            from: indexScan.parameters
+        )
         guard VectorMetric(rawValue: metricRawValue) != nil, k > 0 else {
             throw VectorReadError.invalidParameter(VectorReadParameter.metric)
         }
 
+        try session.requireCanonicalPolymorphicIndexReadAuthorization(
+            index: index,
+            group: group,
+            selectQuery: selectQuery,
+            additionalFieldNames: []
+        )
         let concreteDescriptor = try resolveConcreteDescriptor(
             schema: session.schema,
             group: group,
@@ -316,81 +312,81 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
             indexName: index.name,
             session: session
         )
-
-        try session.requireCanonicalPolymorphicIndexReadAuthorization(
-            index: index,
-            group: group,
-            selectQuery: selectQuery,
-            additionalFieldNames: []
-        )
-
         guard let readableIndex = try await session.readablePolymorphicIndex(
             index,
             in: group
         ) else {
             return .empty
         }
-        let primaryKeysWithDistances = try await executeSearch(
+
+        let matches = try await executeSearch(
             specification: specification,
             indexSubspace: readableIndex.subspace,
             queryVector: queryVector,
             k: boundedK,
             transaction: transaction,
+            snapshot: options.consistency == .snapshot,
             workMeter: options.workMeter,
             algorithm: algorithm
         )
-        let matchReservation = try reserveVectorMatches(
-            primaryKeysWithDistances,
-            workMeter: options.workMeter
-        )
-        defer { matchReservation.release() }
-        let tuples = primaryKeysWithDistances.map {
-            Tuple($0.primaryKey)
+        let entities = try await session
+            .fetchRetainedPolymorphicItemsPreservingOrder(
+                group: group,
+                ids: matches,
+                snapshot: options.consistency == .snapshot
+            )
+        guard entities.count == matches.count else {
+            throw VectorReadError.fetchedItemCountMismatch(
+                expected: matches.count,
+                actual: entities.count
+            )
         }
-        let tupleReservation = try DatabaseIntermediateCollectionMeter
-            .reserveTuples(
-                tuples,
-                workMeter: options.workMeter,
-                stage: .indexScan
-            )
-        defer { tupleReservation.release() }
-        let entities = try await session.fetchPolymorphicItemsPreservingOrder(
-            group: group,
-            ids: tuples,
-            snapshot: options.consistency == .snapshot,
-            workMeter: options.workMeter
-        )
-        let entityReservation = try DatabaseIntermediateCollectionMeter
-            .reservePolymorphicEntities(
-                entities,
-                workMeter: options.workMeter,
-                stage: .indexScan
-            )
-        defer { entityReservation.release() }
+
         let validator = VectorCanonicalStateValidator(
             indexSubspace: readableIndex.subspace,
             fieldName: fieldName,
             dimensions: specification.dimensions,
             algorithm: algorithm
         )
-        for index in primaryKeysWithDistances.indices {
-            guard let entity = entities[index] else {
-                throw VectorReadError.missingFetchedEntity(
-                    tuples[index].pack()
+        for index in 0..<matches.count {
+            var isPresent = false
+            try await matches.withRetainedPrimaryKey(
+                at: index
+            ) { primaryKey in
+                isPresent = try await validator.validate(
+                    primaryKey: primaryKey,
+                    entities: entities,
+                    position: index,
+                    transaction: transaction,
+                    snapshot: options.consistency == .snapshot,
+                    workMeter: options.workMeter
                 )
             }
-            try await validator.validate(
-                primaryKey: tuples[index],
-                model: entity.item,
-                transaction: transaction,
-                workMeter: options.workMeter
-            )
+            guard isPresent else {
+                throw VectorReadError.missingFetchedEntity(position: index)
+            }
         }
-        return try makeResponse(
-            results: primaryKeysWithDistances,
-            entities: entities,
-            workMeter: options.workMeter
-        )
+
+        return try IndexReadResult.build(
+            workMeter: options.workMeter,
+            expectedCount: matches.count
+        ) { rows in
+            for index in 0..<matches.count {
+                let appended = try entities.appendIndexRow(
+                    at: index,
+                    to: &rows,
+                    additionalAnnotation: (
+                        name: "distance",
+                        value: .float64(matches.distance(at: index))
+                    )
+                )
+                guard appended else {
+                    throw VectorReadError.missingFetchedEntity(
+                        position: index
+                    )
+                }
+            }
+        }
     }
 
     fileprivate func executeSearch(
@@ -398,10 +394,11 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         indexSubspace: Subspace,
         queryVector: Vector,
         k: Int,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
+        snapshot: Bool,
         workMeter: DatabaseWorkMeter,
         algorithm: VectorAlgorithm
-    ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
+    ) async throws -> VectorRetainedMatches {
         switch algorithm {
         case .flat:
             return try await FlatVectorIndexReader(
@@ -412,6 +409,7 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
                 queryVector: queryVector,
                 k: k,
                 transaction: transaction,
+                snapshot: snapshot,
                 workMeter: workMeter
             )
 
@@ -437,6 +435,7 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
                     ef: max(k, hnswParams.efSearch)
                 ),
                 transaction: transaction,
+                snapshot: snapshot,
                 workMeter: workMeter
             )
             return results
@@ -455,6 +454,7 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
                 queryVector: queryVector,
                 k: k,
                 transaction: transaction,
+                snapshot: snapshot,
                 workMeter: workMeter
             )
 
@@ -472,6 +472,7 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
                 queryVector: queryVector,
                 k: k,
                 transaction: transaction,
+                snapshot: snapshot,
                 workMeter: workMeter
             )
         }
@@ -484,44 +485,6 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         let configurations = try session.indexConfigurations(named: indexName)
         return try VectorRuntimePolicy.resolve(in: configurations)?.algorithm
             ?? .flat
-    }
-
-    private func makeResponse(
-        results: [(primaryKey: [any TupleElement], distance: Double)],
-        entities: [PolymorphicEntity?],
-        workMeter: DatabaseWorkMeter
-    ) throws -> IndexReadResult {
-        guard results.count == entities.count else {
-            throw VectorReadError.fetchedItemCountMismatch(
-                expected: results.count,
-                actual: entities.count
-            )
-        }
-
-        return try IndexReadResult.build(
-            workMeter: workMeter,
-            expectedCount: results.count
-        ) { rows in
-            for (result, entity) in zip(results, entities) {
-                guard let entity else {
-                    throw VectorReadError.missingFetchedEntity(
-                        Tuple(result.primaryKey).pack()
-                    )
-                }
-                try rows.append(
-                    try IndexReadRow.materializing(
-                        entity.item,
-                        annotations: [
-                            PolymorphicRowAnnotation.typeName:
-                                .string(entity.typeName),
-                            PolymorphicRowAnnotation.typeCode:
-                                .int64(entity.typeCode),
-                            "distance": .float64(result.distance),
-                        ]
-                    )
-                )
-            }
-        }
     }
 
     private func resolveSpecification(
@@ -623,27 +586,4 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         }
         return result
     }
-}
-
-private func reserveVectorMatches(
-    _ matches: [(primaryKey: [any TupleElement], distance: Double)],
-    workMeter: DatabaseWorkMeter
-) throws -> DatabaseIntermediateReservation {
-    var footprint = try DatabaseIntermediateCollectionMeter.arrayFootprint(
-        count: matches.count,
-        element: (primaryKey: [any TupleElement], distance: Double).self
-    )
-    for match in matches {
-        footprint = try footprint.adding(
-            DatabaseIntermediateFootprint(
-                rows: 1,
-                bytes: UInt64(Tuple(match.primaryKey).pack().count)
-            )
-        )
-    }
-    return try workMeter.reserveIntermediate(
-        rows: footprint.rows,
-        bytes: footprint.bytes,
-        at: .indexScan
-    )
 }

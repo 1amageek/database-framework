@@ -150,19 +150,23 @@ struct HNSWIndexStorage: Sendable {
         _ hnswDistance: Float,
         label: UInt64,
         queryVector: Vector,
-        transaction: any TransactionAccess,
-        workMeter: DatabaseWorkMeter? = nil
+        transaction: any TransactionReadAccess,
+        snapshot: Bool = true,
+        workMeter: DatabaseWorkMeter
     ) async throws -> Double {
         let vectorKey = vectorsSubspace.pack(HNSWLabelCodec.tuple(label))
-        guard let vectorBytes = try await transaction.getValue(
+        try workMeter.consume(at: .indexScan)
+        guard let vectorBytes = try await transaction.readPointValue(
             for: vectorKey,
-            snapshot: true
+            snapshot: snapshot,
+            workMeter: workMeter,
+            at: .indexScan
         ) else {
             throw VectorIndexError.invalidStructure(
                 "HNSW search result has no persisted canonical vector"
             )
         }
-        try workMeter?.consume(UInt64(dimensions), at: .indexScan)
+        try workMeter.consume(UInt64(dimensions), at: .indexScan)
         let candidate = try VectorConversion.persistedVector(
             vectorBytes,
             expectedCount: dimensions
@@ -182,11 +186,44 @@ struct HNSWIndexStorage: Sendable {
         return actualDistance
     }
 
+    func validateSearchDistance(
+        _ hnswDistance: Float,
+        label: UInt64,
+        queryVector: Vector,
+        transaction: any TransactionAccess
+    ) async throws -> Double {
+        try await validateSearchDistance(
+            hnswDistance,
+            label: label,
+            queryVector: queryVector,
+            transaction: transaction,
+            snapshot: true,
+            workMeter: VectorRetainedMatches.makeUnboundedWorkMeter()
+        )
+    }
+
     /// Prepares values for SwiftHNSW's Float32 comparison arithmetic. Cosine
     /// inputs whose norm would overflow Float32 are normalized with Double
     /// intermediates. L2 and inner-product inputs cannot be rescaled without
     /// changing their metric, so an unsafe magnitude is rejected explicitly.
     func graphVector(from vector: Vector) throws -> Vector {
+        try retainedGraphVector(
+            from: vector,
+            workMeter: nil
+        ).unmeteredOutput()
+    }
+
+    func retainedGraphVector(
+        from vector: Vector,
+        workMeter: DatabaseWorkMeter?
+    ) throws -> HNSWRetainedGraphVector {
+        try makeGraphVector(from: vector, workMeter: workMeter)
+    }
+
+    private func makeGraphVector(
+        from vector: Vector,
+        workMeter: DatabaseWorkMeter?
+    ) throws -> HNSWRetainedGraphVector {
         guard vector.elementType == .float32 else {
             throw VectorIndexError.invalidArgument(
                 "HNSW graph vectors require Float32 elements"
@@ -226,7 +263,10 @@ struct HNSWIndexStorage: Sendable {
             Double(Float.greatestFiniteMagnitude) / comparisonScale
         )
         guard maximumMagnitude > safeMagnitude else {
-            return vector
+            return HNSWRetainedGraphVector(
+                vector: vector,
+                reservation: nil
+            )
         }
 
         guard metric == .cosine else {
@@ -235,26 +275,71 @@ struct HNSWIndexStorage: Sendable {
             )
         }
         guard maximumMagnitude > 0 else {
-            return vector
+            return HNSWRetainedGraphVector(
+                vector: vector,
+                reservation: nil
+            )
         }
 
         var scaledNormSquared = 0.0
-        var normalized: [Float] = []
-        normalized.reserveCapacity(dimensions)
         guard vector.withFloat32Elements({ elements in
             for element in elements {
                 let scaled = Double(element) / maximumMagnitude
                 scaledNormSquared += scaled * scaled
             }
-            let inverseNorm = 1.0 / DatabaseMath.squareRoot(
-                scaledNormSquared
+            return ()
+        }) != nil else {
+            throw VectorIndexError.invalidStructure(
+                "HNSW graph vector storage is inconsistent"
             )
-            for element in elements {
-                normalized.append(
-                    Float(
-                        (Double(element) / maximumMagnitude)
-                            * inverseNorm
+        }
+        let inverseNorm = 1.0 / DatabaseMath.squareRoot(
+            scaledNormSquared
+        )
+        guard let workMeter else {
+            var normalized: [Float] = []
+            normalized.reserveCapacity(dimensions)
+            guard vector.withFloat32Elements({ elements in
+                for element in elements {
+                    normalized.append(
+                        Float(
+                            (Double(element) / maximumMagnitude)
+                                * inverseNorm
+                        )
                     )
+                }
+                return ()
+            }) != nil else {
+                throw VectorIndexError.invalidStructure(
+                    "HNSW graph vector storage is inconsistent"
+                )
+            }
+            do {
+                return HNSWRetainedGraphVector(
+                    vector: try Vector(float32: normalized),
+                    reservation: nil
+                )
+            } catch {
+                throw VectorIndexError.invalidStructure(
+                    "HNSW cosine normalization produced an invalid vector"
+                )
+            }
+        }
+        var normalized = try DatabaseRetainedArrayBuilder<Float>(
+            workMeter: workMeter,
+            stage: .indexScan,
+            layout: try DatabaseRetainedArrayLayout.forElement(Float.self),
+            expectedCount: dimensions
+        )
+        guard try vector.withFloat32Elements({ elements in
+            for element in elements {
+                let value = Float(
+                    (Double(element) / maximumMagnitude) * inverseNorm
+                )
+                try normalized.append(
+                    footprint: DatabaseIntermediateFootprint(),
+                    at: .indexScan,
+                    make: { value }
                 )
             }
             return ()
@@ -263,9 +348,14 @@ struct HNSWIndexStorage: Sendable {
                 "HNSW graph vector storage is inconsistent"
             )
         }
+        let retained = normalized.finish().moveRetainingReservation()
         do {
-            return try Vector(float32: normalized)
+            return HNSWRetainedGraphVector(
+                vector: try Vector(float32: retained.elements),
+                reservation: retained.reservation
+            )
         } catch {
+            retained.reservation.release()
             throw VectorIndexError.invalidStructure(
                 "HNSW cosine normalization produced an invalid vector"
             )
@@ -273,10 +363,14 @@ struct HNSWIndexStorage: Sendable {
     }
 
     func loadOrCreateIndex(
-        transaction: any TransactionAccess,
-        additionalCapacity: Int = 0
+        transaction: any TransactionReadAccess,
+        additionalCapacity: Int = 0,
+        snapshot: Bool = true
     ) async throws -> HNSWIndexF32 {
-        if let graphData = try await loadGraphSnapshotData(transaction: transaction) {
+        if let graphData = try await loadGraphSnapshotData(
+            transaction: transaction,
+            snapshot: snapshot
+        ) {
             _ = try inspectAndValidateRestore(from: graphData)
             let index = try loadPersistedIndex(from: graphData)
             try ensureCapacity(index, additionalCount: additionalCapacity)
@@ -284,7 +378,10 @@ struct HNSWIndexStorage: Sendable {
         }
 
         let maxElements = max(
-            try await estimateMaxElements(transaction: transaction),
+            try await estimateMaxElements(
+                transaction: transaction,
+                snapshot: snapshot
+            ),
             additionalCapacity
         )
         do {
@@ -344,12 +441,16 @@ struct HNSWIndexStorage: Sendable {
     }
 
     func loadSearchSnapshot(
-        transaction: any TransactionAccess,
-        workMeter: DatabaseWorkMeter? = nil
-    ) async throws -> HNSWGraphCache.Snapshot {
-        if let metadataBytes = try await transaction.getValue(
+        transaction: any TransactionReadAccess,
+        snapshot: Bool = true,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> HNSWRetainedSearchSnapshot {
+        try workMeter.consume(at: .indexScan)
+        if let metadataBytes = try await transaction.readPointValue(
             for: graphMetadataKey,
-            snapshot: true
+            snapshot: snapshot,
+            workMeter: workMeter,
+            at: .indexScan
         ) {
             let metadata = try decodeGraphMetadata(metadataBytes)
             let cacheKey = HNSWGraphCache.Key(
@@ -366,15 +467,15 @@ struct HNSWIndexStorage: Sendable {
                 )
             )
             if let cached = graphCache.get(cacheKey) {
-                return cached
+                return HNSWRetainedSearchSnapshot(cached: cached)
             }
 
-            let primaryKeyReservation = try workMeter?.reserveIntermediate(
+            let primaryKeyReservation = try workMeter.reserveIntermediate(
                 at: .indexScan
             )
-            defer { primaryKeyReservation?.release() }
             let primaryKeys = try await loadPrimaryKeysByLabel(
                 transaction: transaction,
+                snapshot: snapshot,
                 workMeter: workMeter,
                 reservation: primaryKeyReservation
             )
@@ -382,20 +483,20 @@ struct HNSWIndexStorage: Sendable {
             let graphData = try await loadChunkedGraphSnapshot(
                 metadata: metadata,
                 transaction: transaction,
+                snapshot: snapshot,
                 workMeter: workMeter
             )
             let restoreProfile = try inspectAndValidateRestore(
                 from: graphData,
                 primaryKeys: primaryKeys
             )
-            let nativeRestoreReservation = try workMeter?.reserveIntermediate(
+            let nativeRestoreReservation = try workMeter.reserveIntermediate(
                 bytes: UInt64(restoreProfile.additionalRestoreByteCount),
                 at: .indexScan
             )
-            defer { nativeRestoreReservation?.release() }
             let index = try loadPersistedIndex(from: graphData)
             for label in primaryKeys.values.keys {
-                try workMeter?.consume(at: .indexScan)
+                try workMeter.consume(at: .indexScan)
                 guard index.contains(label: label) else {
                     throw VectorIndexError.invalidStructure(
                         "HNSW active graph labels and primary-key mappings disagree"
@@ -405,41 +506,67 @@ struct HNSWIndexStorage: Sendable {
             try await validateForwardMappings(
                 primaryKeys: primaryKeys.values,
                 transaction: transaction,
+                snapshot: snapshot,
                 workMeter: workMeter
             )
             let snapshot = HNSWGraphCache.Snapshot(
                 index: index,
                 primaryKeysByLabel: primaryKeys.values
             )
-            graphCache.set(
+            if graphCache.set(
                 snapshot,
                 for: cacheKey,
                 cost: restoreProfile.cacheCost
+            ) {
+                primaryKeyReservation.release()
+                nativeRestoreReservation.release()
+                return HNSWRetainedSearchSnapshot(cached: snapshot)
+            }
+            return HNSWRetainedSearchSnapshot(
+                requestOwned: snapshot,
+                graphData: graphData,
+                primaryKeyReservation: primaryKeyReservation,
+                restoreReservation: nativeRestoreReservation
             )
-            return snapshot
         }
 
-        let primaryKeyReservation = try workMeter?.reserveIntermediate(
+        let primaryKeyReservation = try workMeter.reserveIntermediate(
             at: .indexScan
         )
-        defer { primaryKeyReservation?.release() }
+        defer { primaryKeyReservation.release() }
         let primaryKeys = try await loadPrimaryKeysByLabel(
             transaction: transaction,
+            snapshot: snapshot,
             workMeter: workMeter,
             reservation: primaryKeyReservation
         )
 
         guard primaryKeys.values.isEmpty,
-              try await !hasPersistedVector(transaction: transaction),
-              try await !hasPersistedForwardMapping(transaction: transaction) else {
+              try await !hasPersistedVector(
+                transaction: transaction,
+                snapshot: snapshot,
+                workMeter: workMeter
+              ),
+              try await !hasPersistedForwardMapping(
+                transaction: transaction,
+                snapshot: snapshot,
+                workMeter: workMeter
+              ) else {
             throw VectorIndexError.invalidStructure(
                 "HNSW graph snapshot is missing for persisted index entries"
             )
         }
 
-        return HNSWGraphCache.Snapshot(
-            index: try await loadOrCreateIndex(transaction: transaction),
-            primaryKeysByLabel: [:]
+        return .empty
+    }
+
+    func loadSearchSnapshot(
+        transaction: any TransactionAccess
+    ) async throws -> HNSWRetainedSearchSnapshot {
+        try await loadSearchSnapshot(
+            transaction: transaction,
+            snapshot: true,
+            workMeter: VectorRetainedMatches.makeUnboundedWorkMeter()
         )
     }
 
@@ -449,7 +576,7 @@ struct HNSWIndexStorage: Sendable {
     func validateStoredEntry(
         label: UInt64,
         primaryKey: Tuple,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws {
         let mappingKey = primaryKeysSubspace.pack(HNSWLabelCodec.tuple(label))
         guard let mappingValue = try await transaction.getValue(
@@ -497,17 +624,19 @@ struct HNSWIndexStorage: Sendable {
     }
 
     private func loadGraphSnapshotData(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess,
+        snapshot: Bool = true
     ) async throws -> ByteString? {
         guard let metadataBytes = try await transaction.getValue(
             for: graphMetadataKey,
-            snapshot: true
+            snapshot: snapshot
         ) else {
             return nil
         }
         return try await loadChunkedGraphSnapshot(
             metadata: try decodeGraphMetadata(metadataBytes),
-            transaction: transaction
+            transaction: transaction,
+            snapshot: snapshot
         )
     }
 
@@ -600,7 +729,8 @@ struct HNSWIndexStorage: Sendable {
 
     private func loadChunkedGraphSnapshot(
         metadata decoded: HNSWGraphMetadata,
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
+        snapshot: Bool = true,
         workMeter: DatabaseWorkMeter? = nil
     ) async throws -> ByteString {
         guard resourceLimits.maximumSnapshotByteCount > 0 else {
@@ -648,18 +778,31 @@ struct HNSWIndexStorage: Sendable {
         var loadedByteCount = 0
         for chunkIndex in 0..<decoded.chunkCount {
             let chunkKey = graphChunksSubspace.pack(Tuple(Int64(chunkIndex)))
-            guard let chunk = try await transaction.getValue(
-                for: chunkKey,
-                snapshot: true
-            ) else {
-                throw VectorIndexError.invalidStructure(
-                    "Missing HNSW graph snapshot chunk \(chunkIndex)"
-                )
-            }
             let expectedChunkSize = min(
                 decoded.chunkSize,
                 decoded.byteCount - loadedByteCount
             )
+            let chunk: ByteString?
+            if let workMeter {
+                try workMeter.consume(at: .indexScan)
+                chunk = try await transaction.readPointValue(
+                    for: chunkKey,
+                    snapshot: snapshot,
+                    workMeter: workMeter,
+                    at: .indexScan
+                )
+            } else {
+                chunk = try await transaction.getValue(
+                    for: chunkKey,
+                    snapshot: snapshot,
+                    maximumByteCount: expectedChunkSize
+                )
+            }
+            guard let chunk else {
+                throw VectorIndexError.invalidStructure(
+                    "Missing HNSW graph snapshot chunk \(chunkIndex)"
+                )
+            }
             guard chunk.count == expectedChunkSize else {
                 throw VectorIndexError.invalidStructure(
                     "HNSW graph snapshot chunk \(chunkIndex) has an invalid size"
@@ -808,7 +951,8 @@ struct HNSWIndexStorage: Sendable {
     }
 
     private func loadPrimaryKeysByLabel(
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
+        snapshot: Bool = true,
         workMeter: DatabaseWorkMeter? = nil,
         reservation: DatabaseIntermediateReservation? = nil
     ) async throws -> HNSWPrimaryKeySnapshot {
@@ -824,7 +968,7 @@ struct HNSWIndexStorage: Sendable {
             to: .firstGreaterOrEqual(end),
             limit: 0,
             reverse: false,
-            snapshot: true,
+            snapshot: snapshot,
             streamingMode: .iterator
         )
 
@@ -1070,7 +1214,8 @@ struct HNSWIndexStorage: Sendable {
 
     private func validateForwardMappings(
         primaryKeys: [UInt64: ByteString],
-        transaction: any TransactionAccess,
+        transaction: any TransactionReadAccess,
+        snapshot: Bool = true,
         workMeter: DatabaseWorkMeter? = nil
     ) async throws {
         let (begin, end) = labelsSubspace.range()
@@ -1079,7 +1224,7 @@ struct HNSWIndexStorage: Sendable {
             to: .firstGreaterOrEqual(end),
             limit: 0,
             reverse: false,
-            snapshot: true,
+            snapshot: snapshot,
             streamingMode: .iterator
         )
         var observedCount = 0
@@ -1176,7 +1321,9 @@ struct HNSWIndexStorage: Sendable {
     }
 
     private func hasPersistedVector(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess,
+        snapshot: Bool = true,
+        workMeter: DatabaseWorkMeter
     ) async throws -> Bool {
         let (begin, end) = vectorsSubspace.range()
         var cursor = transaction.rangeCursor(
@@ -1184,16 +1331,21 @@ struct HNSWIndexStorage: Sendable {
             to: .firstGreaterOrEqual(end),
             limit: 1,
             reverse: false,
-            snapshot: true,
+            snapshot: snapshot,
             streamingMode: .iterator
         )
-        let value = try await cursor.next()
-        try await cursor.finish()
-        return value != nil
+        var found = false
+        try await cursor.consume { _, _ in
+            try workMeter.consume(at: .indexScan)
+            found = true
+        }
+        return found
     }
 
     private func hasPersistedForwardMapping(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess,
+        snapshot: Bool = true,
+        workMeter: DatabaseWorkMeter
     ) async throws -> Bool {
         let (begin, end) = labelsSubspace.range()
         var cursor = transaction.rangeCursor(
@@ -1201,12 +1353,15 @@ struct HNSWIndexStorage: Sendable {
             to: .firstGreaterOrEqual(end),
             limit: 1,
             reverse: false,
-            snapshot: true,
+            snapshot: snapshot,
             streamingMode: .iterator
         )
-        let value = try await cursor.next()
-        try await cursor.finish()
-        return value != nil
+        var found = false
+        try await cursor.consume { _, _ in
+            try workMeter.consume(at: .indexScan)
+            found = true
+        }
+        return found
     }
 
     private func checkedSum(
@@ -1234,7 +1389,8 @@ struct HNSWIndexStorage: Sendable {
     }
 
     private func estimateMaxElements(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess,
+        snapshot: Bool = true
     ) async throws -> Int {
         let (begin, end) = vectorsSubspace.range()
         var cursor = transaction.rangeCursor(
@@ -1242,7 +1398,7 @@ struct HNSWIndexStorage: Sendable {
             to: .firstGreaterOrEqual(end),
             limit: 100_001,
             reverse: false,
-            snapshot: true,
+            snapshot: snapshot,
             streamingMode: .iterator
         )
         var entryCount = 0

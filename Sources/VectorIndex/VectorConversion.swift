@@ -66,13 +66,13 @@ public struct VectorConversion: Sendable {
             return false
         }
 
-        return try persisted.withUnsafeBytes {
-            (persistedBytes) throws(VectorIndexError) -> Bool in
+        return try persisted.withElements {
+            (persistedElements) throws(VectorIndexError) -> Bool in
             switch vector.elementType {
             case .int8:
                 return try compareIntegerElements(
                     of: vector,
-                    persistedBytes: persistedBytes,
+                    persistedElements: persistedElements,
                     borrowing: { body in
                         vector.withInt8Elements(body)
                     }
@@ -80,7 +80,7 @@ public struct VectorConversion: Sendable {
             case .int16:
                 return try compareIntegerElements(
                     of: vector,
-                    persistedBytes: persistedBytes,
+                    persistedElements: persistedElements,
                     borrowing: { body in
                         vector.withInt16Elements(body)
                     }
@@ -88,7 +88,7 @@ public struct VectorConversion: Sendable {
             case .int32:
                 return try compareIntegerElements(
                     of: vector,
-                    persistedBytes: persistedBytes,
+                    persistedElements: persistedElements,
                     borrowing: { body in
                         vector.withInt32Elements(body)
                     }
@@ -96,7 +96,7 @@ public struct VectorConversion: Sendable {
             case .int64:
                 return try compareIntegerElements(
                     of: vector,
-                    persistedBytes: persistedBytes,
+                    persistedElements: persistedElements,
                     borrowing: { body in
                         vector.withInt64Elements(body)
                     }
@@ -104,7 +104,7 @@ public struct VectorConversion: Sendable {
             case .uint8:
                 return try compareIntegerElements(
                     of: vector,
-                    persistedBytes: persistedBytes,
+                    persistedElements: persistedElements,
                     borrowing: { body in
                         vector.withUInt8Elements(body)
                     }
@@ -112,7 +112,7 @@ public struct VectorConversion: Sendable {
             case .uint16:
                 return try compareIntegerElements(
                     of: vector,
-                    persistedBytes: persistedBytes,
+                    persistedElements: persistedElements,
                     borrowing: { body in
                         vector.withUInt16Elements(body)
                     }
@@ -120,7 +120,7 @@ public struct VectorConversion: Sendable {
             case .uint32:
                 return try compareIntegerElements(
                     of: vector,
-                    persistedBytes: persistedBytes,
+                    persistedElements: persistedElements,
                     borrowing: { body in
                         vector.withUInt32Elements(body)
                     }
@@ -128,7 +128,7 @@ public struct VectorConversion: Sendable {
             case .uint64:
                 return try compareIntegerElements(
                     of: vector,
-                    persistedBytes: persistedBytes,
+                    persistedElements: persistedElements,
                     borrowing: { body in
                         vector.withUInt64Elements(body)
                     }
@@ -136,7 +136,7 @@ public struct VectorConversion: Sendable {
             case .float32:
                 return try compareFloatingElements(
                     of: vector,
-                    persistedBytes: persistedBytes,
+                    persistedElements: persistedElements,
                     borrowing: { body in
                         vector.withFloat32Elements(body)
                     }
@@ -144,13 +144,179 @@ public struct VectorConversion: Sendable {
             case .float64:
                 return try compareFloatingElements(
                     of: vector,
-                    persistedBytes: persistedBytes,
+                    persistedElements: persistedElements,
                     borrowing: { body in
                         vector.withFloat64Elements(body)
                     }
                 )
             }
         }
+    }
+
+    /// Compares the VectorIndex Float32 projection while the retained model
+    /// field remains inside DatabaseEngine's noncopyable owner boundary.
+    static func matchesPersistedVector(
+        _ persisted: PersistedVectorView,
+        field: borrowing DatabaseRetainedVectorFieldView
+    ) throws(VectorIndexError) -> Bool {
+        guard field.count == persisted.count else { return false }
+        return try persisted.withElements {
+            (persistedElements) throws(VectorIndexError) -> Bool in
+            switch field.elementType {
+            case .int8:
+                return try retainedFieldComparison(
+                    field.withInt8Elements {
+                        elements in
+                        Result {
+                            () throws(VectorIndexError) -> Bool in
+                            try integerElementsMatch(
+                                elements,
+                                persistedElements: persistedElements
+                            )
+                        }
+                    },
+                    elementType: field.elementType
+                )
+            case .int16:
+                return try retainedFieldComparison(
+                    field.withInt16Elements {
+                        elements in
+                        Result {
+                            () throws(VectorIndexError) -> Bool in
+                            try integerElementsMatch(
+                                elements,
+                                persistedElements: persistedElements
+                            )
+                        }
+                    },
+                    elementType: field.elementType
+                )
+            case .int32:
+                return try retainedFieldComparison(
+                    field.withInt32Elements {
+                        elements in
+                        Result {
+                            () throws(VectorIndexError) -> Bool in
+                            try integerElementsMatch(
+                                elements,
+                                persistedElements: persistedElements
+                            )
+                        }
+                    },
+                    elementType: field.elementType
+                )
+            case .int64:
+                return try retainedFieldComparison(
+                    field.withInt64Elements {
+                        elements in
+                        Result {
+                            () throws(VectorIndexError) -> Bool in
+                            try integerElementsMatch(
+                                elements,
+                                persistedElements: persistedElements
+                            )
+                        }
+                    },
+                    elementType: field.elementType
+                )
+            case .uint8:
+                return try retainedFieldComparison(
+                    field.withUInt8Elements {
+                        elements in
+                        Result {
+                            () throws(VectorIndexError) -> Bool in
+                            try integerElementsMatch(
+                                elements,
+                                persistedElements: persistedElements
+                            )
+                        }
+                    },
+                    elementType: field.elementType
+                )
+            case .uint16:
+                return try retainedFieldComparison(
+                    field.withUInt16Elements {
+                        elements in
+                        Result {
+                            () throws(VectorIndexError) -> Bool in
+                            try integerElementsMatch(
+                                elements,
+                                persistedElements: persistedElements
+                            )
+                        }
+                    },
+                    elementType: field.elementType
+                )
+            case .uint32:
+                return try retainedFieldComparison(
+                    field.withUInt32Elements {
+                        elements in
+                        Result {
+                            () throws(VectorIndexError) -> Bool in
+                            try integerElementsMatch(
+                                elements,
+                                persistedElements: persistedElements
+                            )
+                        }
+                    },
+                    elementType: field.elementType
+                )
+            case .uint64:
+                return try retainedFieldComparison(
+                    field.withUInt64Elements {
+                        elements in
+                        Result {
+                            () throws(VectorIndexError) -> Bool in
+                            try integerElementsMatch(
+                                elements,
+                                persistedElements: persistedElements
+                            )
+                        }
+                    },
+                    elementType: field.elementType
+                )
+            case .float32:
+                return try retainedFieldComparison(
+                    field.withFloat32Elements {
+                        elements in
+                        Result {
+                            () throws(VectorIndexError) -> Bool in
+                            try floatingElementsMatch(
+                                elements,
+                                persistedElements: persistedElements
+                            )
+                        }
+                    },
+                    elementType: field.elementType
+                )
+            case .float64:
+                return try retainedFieldComparison(
+                    field.withFloat64Elements {
+                        elements in
+                        Result {
+                            () throws(VectorIndexError) -> Bool in
+                            try floatingElementsMatch(
+                                elements,
+                                persistedElements: persistedElements
+                            )
+                        }
+                    },
+                    elementType: field.elementType
+                )
+            }
+        }
+    }
+
+    private static func retainedFieldComparison(
+        _ result: Result<Bool, VectorIndexError>?,
+        elementType: VectorElementType
+    ) throws(VectorIndexError) -> Bool {
+        guard let result else {
+            throw .invalidStructure(
+                "Retained vector storage does not match its declared element type \(elementType)"
+            )
+        }
+        return try result.get()
     }
 
     private static func canonicalFieldValue(
@@ -179,7 +345,7 @@ public struct VectorConversion: Sendable {
 
     private static func compareIntegerElements<Element>(
         of vector: Vector,
-        persistedBytes: UnsafeRawBufferPointer,
+        persistedElements: borrowing PersistedVectorElements,
         borrowing: (((UnsafeBufferPointer<Element>) -> Void) -> Void?)
     ) throws(VectorIndexError) -> Bool where Element: BinaryInteger {
         var comparison: Result<Bool, VectorIndexError>?
@@ -188,7 +354,7 @@ public struct VectorConversion: Sendable {
                 () throws(VectorIndexError) -> Bool in
                 try integerElementsMatch(
                     elements,
-                    persistedBytes: persistedBytes
+                    persistedElements: persistedElements
                 )
             }
         }) != nil, let comparison else {
@@ -199,7 +365,7 @@ public struct VectorConversion: Sendable {
 
     private static func compareFloatingElements<Element>(
         of vector: Vector,
-        persistedBytes: UnsafeRawBufferPointer,
+        persistedElements: borrowing PersistedVectorElements,
         borrowing: (((UnsafeBufferPointer<Element>) -> Void) -> Void?)
     ) throws(VectorIndexError) -> Bool where Element: BinaryFloatingPoint {
         var comparison: Result<Bool, VectorIndexError>?
@@ -208,7 +374,7 @@ public struct VectorConversion: Sendable {
                 () throws(VectorIndexError) -> Bool in
                 try floatingElementsMatch(
                     elements,
-                    persistedBytes: persistedBytes
+                    persistedElements: persistedElements
                 )
             }
         }) != nil, let comparison else {
@@ -219,13 +385,10 @@ public struct VectorConversion: Sendable {
 
     private static func integerElementsMatch<Element>(
         _ elements: UnsafeBufferPointer<Element>,
-        persistedBytes: UnsafeRawBufferPointer
+        persistedElements: borrowing PersistedVectorElements
     ) throws(VectorIndexError) -> Bool where Element: BinaryInteger {
         for index in elements.indices {
-            let expected = try PersistedVectorView.element(
-                at: index,
-                in: persistedBytes
-            )
+            let expected = try persistedElements.element(at: index)
             guard Float(elements[index]).bitPattern == expected.bitPattern else {
                 return false
             }
@@ -235,7 +398,7 @@ public struct VectorConversion: Sendable {
 
     private static func floatingElementsMatch<Element>(
         _ elements: UnsafeBufferPointer<Element>,
-        persistedBytes: UnsafeRawBufferPointer
+        persistedElements: borrowing PersistedVectorElements
     ) throws(VectorIndexError) -> Bool where Element: BinaryFloatingPoint {
         for index in elements.indices {
             let converted = Float(elements[index])
@@ -244,10 +407,39 @@ public struct VectorConversion: Sendable {
                     "A vector element exceeds the finite Float32 range"
                 )
             }
-            let expected = try PersistedVectorView.element(
-                at: index,
-                in: persistedBytes
-            )
+            let expected = try persistedElements.element(at: index)
+            guard converted.bitPattern == expected.bitPattern else {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func integerElementsMatch<Element>(
+        _ elements: borrowing DatabaseRetainedVectorElements<Element>,
+        persistedElements: borrowing PersistedVectorElements
+    ) throws(VectorIndexError) -> Bool where Element: BinaryInteger {
+        for index in 0..<elements.count {
+            let expected = try persistedElements.element(at: index)
+            guard Float(elements[index]).bitPattern == expected.bitPattern else {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func floatingElementsMatch<Element>(
+        _ elements: borrowing DatabaseRetainedVectorElements<Element>,
+        persistedElements: borrowing PersistedVectorElements
+    ) throws(VectorIndexError) -> Bool where Element: BinaryFloatingPoint {
+        for index in 0..<elements.count {
+            let converted = Float(elements[index])
+            guard converted.isFinite else {
+                throw .invalidArgument(
+                    "A vector element exceeds the finite Float32 range"
+                )
+            }
+            let expected = try persistedElements.element(at: index)
             guard converted.bitPattern == expected.bitPattern else {
                 return false
             }
@@ -513,13 +705,13 @@ public struct VectorConversion: Sendable {
         expectedCount: Int
     ) throws(VectorIndexError) -> [Float] {
         let view = try persistedVector(bytes, expectedCount: expectedCount)
-        return try view.withUnsafeBytes {
+        return try view.withElements {
             (source) throws(VectorIndexError) -> [Float] in
             var values: [Float] = []
             values.reserveCapacity(view.count)
             for index in 0..<view.count {
                 values.append(
-                    try PersistedVectorView.element(at: index, in: source)
+                    try source.element(at: index)
                 )
             }
             return values
@@ -573,12 +765,12 @@ extension VectorConversion {
         guard query.withFloat32Elements({ queryElements in
             outcome = Result {
                 () throws(VectorIndexError) -> Double in
-                try candidate.withUnsafeBytes {
-                    (candidateBytes) throws(VectorIndexError) -> Double in
+                try candidate.withElements {
+                    (candidateElements) throws(VectorIndexError) -> Double in
                     try distance(
                         metric: metric,
                         query: queryElements,
-                        candidateBytes: candidateBytes
+                        candidateElements: candidateElements
                     )
                 }
             }
@@ -707,11 +899,11 @@ extension VectorConversion {
     private static func distance(
         metric: VectorMetric,
         query: UnsafeBufferPointer<Float>,
-        candidateBytes: UnsafeRawBufferPointer
+        candidateElements: borrowing PersistedVectorElements
     ) throws(VectorIndexError) -> Double {
         switch metric {
         case .cosine:
-            let values = try dotAndNorms(query, candidateBytes)
+            let values = try dotAndNorms(query, candidateElements)
             return cosineDistance(
                 dotProduct: values.dotProduct,
                 lhsNormSquared: values.lhsNormSquared,
@@ -719,10 +911,10 @@ extension VectorConversion {
             )
         case .euclidean:
             return DatabaseMath.squareRoot(
-                try squaredDistance(query, candidateBytes)
+                try squaredDistance(query, candidateElements)
             )
         case .dotProduct:
-            return -(try dot(query, candidateBytes))
+            return -(try dot(query, candidateElements))
         }
     }
 
@@ -772,12 +964,12 @@ extension VectorConversion {
     @inline(__always)
     private static func dot(
         _ lhs: UnsafeBufferPointer<Float>,
-        _ rhsBytes: UnsafeRawBufferPointer
+        _ rhs: borrowing PersistedVectorElements
     ) throws(VectorIndexError) -> Double {
         var result = 0.0
         for index in lhs.indices {
             result += Double(lhs[index]) * Double(
-                try PersistedVectorView.element(at: index, in: rhsBytes)
+                try rhs.element(at: index)
             )
         }
         return result
@@ -786,12 +978,12 @@ extension VectorConversion {
     @inline(__always)
     private static func squaredDistance(
         _ lhs: UnsafeBufferPointer<Float>,
-        _ rhsBytes: UnsafeRawBufferPointer
+        _ rhs: borrowing PersistedVectorElements
     ) throws(VectorIndexError) -> Double {
         var result = 0.0
         for index in lhs.indices {
             let difference = Double(lhs[index]) - Double(
-                try PersistedVectorView.element(at: index, in: rhsBytes)
+                try rhs.element(at: index)
             )
             result += difference * difference
         }
@@ -801,7 +993,7 @@ extension VectorConversion {
     @inline(__always)
     private static func dotAndNorms(
         _ lhs: UnsafeBufferPointer<Float>,
-        _ rhsBytes: UnsafeRawBufferPointer
+        _ rhs: borrowing PersistedVectorElements
     ) throws(VectorIndexError) -> (
         dotProduct: Double,
         lhsNormSquared: Double,
@@ -813,7 +1005,7 @@ extension VectorConversion {
         for index in lhs.indices {
             let left = Double(lhs[index])
             let right = Double(
-                try PersistedVectorView.element(at: index, in: rhsBytes)
+                try rhs.element(at: index)
             )
             dotProduct += left * right
             lhsNormSquared += left * left

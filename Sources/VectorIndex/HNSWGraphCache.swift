@@ -130,8 +130,12 @@ internal final class HNSWGraphCache: Sendable {
         }
     }
 
-    func set(_ snapshot: Snapshot, for key: Key, cost: Int) {
+    @discardableResult
+    func set(_ snapshot: Snapshot, for key: Key, cost: Int) -> Bool {
         state.withLock { state in
+            guard cost >= 0, cost <= maximumCost else {
+                return false
+            }
             if let existing = state.entries.removeValue(forKey: key) {
                 state.totalCost -= existing.cost
                 state.order.removeAll { $0 == key }
@@ -147,6 +151,7 @@ internal final class HNSWGraphCache: Sendable {
                     state.totalCost -= evicted.cost
                 }
             }
+            return state.entries[key] != nil
         }
     }
 

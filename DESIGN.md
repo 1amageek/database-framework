@@ -3,11 +3,12 @@
 ## Purpose and Scope
 
 System and Swift package design authority for `database-framework`. The
-current index covers the `DatabaseEngine` contract changed by DF-06F0; unchanged
-products add their module authority when their contract changes.
+current index covers the `DatabaseEngine` retained-read contract and the
+`VectorIndex` contract that composes it.
 
 - Parent: none.
-- Child: [DatabaseEngine](Sources/DatabaseEngine/DESIGN.md).
+- Children: [DatabaseEngine](Sources/DatabaseEngine/DESIGN.md),
+  [VectorIndex](Sources/VectorIndex/DESIGN.md).
 
 ## Responsibilities and Boundaries
 
@@ -22,6 +23,7 @@ backend-native storage, wire dispatch, transport, or server process lifecycle.
 | Design | Relationship | Contract Used | Cautions |
 |---|---|---|---|
 | [DatabaseEngine](Sources/DatabaseEngine/DESIGN.md) | child | In-process execution | Authorization, ownership, or budget changes require caller review. |
+| [VectorIndex](Sources/VectorIndex/DESIGN.md) | child | Vector maintenance and read execution | Retained-read contract changes require DatabaseEngine and vector caller review. |
 
 External dependencies have no local `DESIGN.md` in this graph. Their pinned
 public APIs remain authoritative and are not restated here.
@@ -31,7 +33,7 @@ public APIs remain authoritative and are not restated here.
 ```text
 DatabaseKit + DatabaseTypes + StorageKit
                   -> DatabaseEngine
-                      <- specialized index products
+                      <- VectorIndex and specialized index products
 ```
 
 ## Contracts and Invariants

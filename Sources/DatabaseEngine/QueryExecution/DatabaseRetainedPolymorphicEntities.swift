@@ -123,6 +123,31 @@ package struct DatabaseRetainedPolymorphicEntities: ~Copyable, Sendable {
     package var count: Int { storage.count }
     package var workMeter: DatabaseWorkMeter { storage.workMeter }
 
+    /// Borrows one vector field without exposing the Copyable model or vector
+    /// across the retained-owner boundary.
+    package borrowing func withVectorField<Result>(
+        at index: Int,
+        keyPath: String,
+        workMeter: DatabaseWorkMeter,
+        _ body: (borrowing DatabaseRetainedVectorFieldView) throws -> Result
+    ) throws -> Result? {
+        guard self.workMeter === workMeter else {
+            throw DatabaseIntermediateReservationError.workMeterMismatch
+        }
+        var result: Result?
+        try storage.withElement(at: index) { borrowedEntry in
+            let entry = copy borrowedEntry
+            guard let entry else { return }
+            result = try entry.model.withVectorField(
+                keyPath: keyPath,
+                workMeter: workMeter
+            ) { field in
+                try body(field)
+            }
+        }
+        return result
+    }
+
     /// Copies decoded models only at the public result boundary, then ends
     /// every request-intermediate ownership claim.
     package consuming func promoteModelsToPublicOutput() -> [PersistedModel] {

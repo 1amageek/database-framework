@@ -41,6 +41,7 @@ Builder
           -> noncopyable aggregate
               +-> append canonical source row
               +-> append index row with admitted annotations
+              +-> borrow a retained vector through a noncopyable field view
               +-> consuming public-output promotion
 
 retained primary-key source + Read admission
@@ -79,7 +80,9 @@ Fusion sealed projection + retained primary-key source
   materialized.
 - Package API does not expose general `withModel`, `withIdentifier`, entry,
   backing array, or reservation access. A borrowing closure around a copyable
-  value is not an ownership boundary because the closure can copy it.
+  value is not an ownership boundary because the closure can copy it. A
+  noncopyable field view may expose only synchronous element borrows; it cannot
+  expose the model, copyable vector, or owner.
 - Canonical and index conversion are purpose-specific operations whose
   destinations retain their own admitted representations.
 - Public output promotion consumes the aggregate and is allowed only at a
@@ -127,8 +130,9 @@ typed failures; no partial destination row is committed.
   collection-returning intermediate API.
 - Canonical-row tests prove direct retained-to-destination construction without
   an intermediate `QueryRow` array.
-- Specialized index migration tests own their annotation semantics; this
-  component owns only footprint-first append and same-meter rejection.
+- Specialized index migration tests own annotation and field-comparison
+  semantics; this component owns only noncopyable access, footprint-first
+  append, and same-meter rejection.
 - [RetainedRegularModelFetchContractTests](../../../Tests/DatabaseEngineTests/RetainedRegularModelFetchContractTests.swift)
   proves regular order, duplicates, missing slots, suspended source lifetime,
   authorization, failure, cancellation, and final release.

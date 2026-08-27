@@ -182,7 +182,12 @@ let package = Package(
                 .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "SwiftHNSW", package: "swift-hnsw"),
             ],
-            exclude: ["README.md"]
+            exclude: [
+                "README.md",
+                "DESIGN.md",
+                "IVF/DESIGN.md",
+                "PQ/DESIGN.md",
+            ]
         ),
         .target(
             name: "FullTextIndex",
