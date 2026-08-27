@@ -50,6 +50,55 @@ private func validatePercentile(_ value: Double) throws {
     }
 }
 
+private struct RankBottomScanPlan {
+    let limit: Int
+    let startRank: Int
+}
+
+private func makeBottomScanPlan(
+    requestedCount: Int,
+    totalCount: Int
+) throws -> RankBottomScanPlan {
+    guard totalCount >= 0 else {
+        throw RankScannerError.inconsistentCount(
+            totalCount: totalCount,
+            returnedCount: 0
+        )
+    }
+    guard totalCount > 0 else {
+        // Read one entry when the counter says empty so a non-empty index is
+        // reported as corruption instead of being silently hidden.
+        return RankBottomScanPlan(limit: 1, startRank: 0)
+    }
+
+    let startRank = try RankScanner.bottomStartPosition(
+        totalCount: totalCount,
+        returnedCount: 0
+    )
+    let limit: Int
+    if totalCount == Int.max {
+        limit = requestedCount
+    } else {
+        // When the requested page reaches the recorded tail, one extra bounded
+        // row detects an undercount at that boundary without scanning the
+        // unrequested remainder.
+        limit = min(requestedCount, totalCount + 1)
+    }
+    return RankBottomScanPlan(limit: limit, startRank: startRank)
+}
+
+private func validateBottomScanCount(
+    totalCount: Int,
+    returnedCount: Int
+) throws {
+    guard returnedCount <= totalCount else {
+        throw RankScannerError.inconsistentCount(
+            totalCount: totalCount,
+            returnedCount: returnedCount
+        )
+    }
+}
+
 private struct RankReadExecutor: IndexReadExecutor {
     let indexType: IndexType = .rank
 
@@ -68,7 +117,7 @@ private struct RankReadExecutor: IndexReadExecutor {
         options: ReadExecutionContext,
         partitions: FieldObject
     ) async throws -> IndexReadResult {
-        let transaction = session.transaction.storageTransaction
+        let transaction = session.transaction
         let parameters = IndexReadParameters(indexScan.parameters)
         let fieldName = try parameters.requireString(
             named: RankReadParameter.fieldName
@@ -92,65 +141,59 @@ private struct RankReadExecutor: IndexReadExecutor {
         ) else {
             return .empty
         }
-        let rankedKeys = try await scanRanked(
+        let rankedEntries = try await scanRanked(
             indexSubspace: readableIndex.subspace,
             transaction: transaction,
             parameters: parameters,
             workMeter: options.workMeter
         )
-        let rankedKeyReservation = try reserveRankedKeys(
-            rankedKeys,
-            workMeter: options.workMeter
-        )
-        defer { rankedKeyReservation.release() }
-        let primaryKeys = rankedKeys.map { $0.primaryKey }
-        let primaryKeyReservation = try DatabaseIntermediateCollectionMeter
-            .reserveTuples(
-                primaryKeys,
-                workMeter: options.workMeter,
-                stage: .indexScan
-            )
-        defer { primaryKeyReservation.release() }
-        let fetched = try await session.fetchPersistedModelsPreservingOrder(
+        let fetched = try await session.fetchRetainedPersistedModelsPreservingOrder(
             entity: entity,
-            primaryKeys: primaryKeys,
+            primaryKeys: rankedEntries,
             partitions: partitions,
-            snapshot: options.consistency == .snapshot,
-            workMeter: options.workMeter
+            snapshot: options.consistency == .snapshot
         )
-        guard fetched.count == rankedKeys.count else {
+        guard fetched.count == rankedEntries.count else {
             throw RankReadError.fetchedEntityCountMismatch(
-                expected: rankedKeys.count,
+                expected: rankedEntries.count,
                 actual: fetched.count
             )
         }
         return try IndexReadResult.build(
             workMeter: options.workMeter,
-            expectedCount: rankedKeys.count
+            expectedCount: rankedEntries.count
         ) { rows in
-            for (rankedKey, item) in zip(rankedKeys, fetched) {
-                guard let item else {
+            for index in 0..<rankedEntries.count {
+                guard let item = fetched[index] else {
+                    var missingPrimaryKey: ByteString?
+                    rankedEntries.withRetainedPrimaryKey(at: index) {
+                        missingPrimaryKey = $0.pack()
+                    }
+                    guard let missingPrimaryKey else {
+                        preconditionFailure(
+                            "A missing retained rank entry did not expose its key"
+                        )
+                    }
                     throw RankReadError.missingFetchedEntity(
-                        primaryKey: rankedKey.primaryKey.pack()
+                        primaryKey: missingPrimaryKey
                     )
                 }
-                try item.withModel { model in
-                    let rank = FieldValue.int64(Int64(rankedKey.rank))
-                    let annotationName: StaticString = "rank"
-                    let footprint = try CanonicalRelationalFootprintMeter
-                        .footprint(
-                            item.queryRowFootprint,
-                            appendingAnnotationNamed: annotationName,
-                            value: rank,
-                            workMeter: options.workMeter
-                        )
-                    try rows.append(footprint: footprint) {
-                        try IndexReadRow.materializing(
-                            model,
-                            annotations: [
-                                "rank": rank
-                            ]
-                        )
+                try rankedEntries.withAnnotation(at: index) { annotation in
+                    try item.withModel { model in
+                        let rank = FieldValue.int64(Int64(annotation.rank))
+                        let footprint = try CanonicalRelationalFootprintMeter
+                            .footprint(
+                                item.queryRowFootprint,
+                                appendingAnnotationNamed: "rank",
+                                value: rank,
+                                workMeter: options.workMeter
+                            )
+                        try rows.append(footprint: footprint) {
+                            try IndexReadRow.materializing(
+                                model,
+                                annotations: ["rank": rank]
+                            )
+                        }
                     }
                 }
             }
@@ -159,10 +202,10 @@ private struct RankReadExecutor: IndexReadExecutor {
 
     private func scanRanked(
         indexSubspace: Subspace,
-        transaction: any TransactionAccess,
+        transaction: DatabaseReadTransaction,
         parameters: IndexReadParameters,
         workMeter: DatabaseWorkMeter
-    ) async throws -> [(primaryKey: Tuple, rank: Int)] {
+    ) async throws -> RankScanResult {
         let scoresSubspace = indexSubspace.subspace("scores")
         let scanner = RankScanner(
             scoresSubspace: scoresSubspace,
@@ -176,28 +219,31 @@ private struct RankReadExecutor: IndexReadExecutor {
                 named: RankReadParameter.count
             )
             try validateRankCount(count)
-            return try await scanner.top(k: count).enumerated().map {
-                (primaryKey: $0.element.primaryKey, rank: $0.offset)
-            }
+            return try await scanner.top(k: count)
         case RankReadParameter.bottomMode:
             let count = try parameters.requireInteger(
                 named: RankReadParameter.count
             )
             try validateRankCount(count)
-            let entries = try await scanner.bottom(k: count)
             let countKey = indexSubspace.pack(Tuple("_count"))
-            let countBytes = try await transaction.getValue(
-                for: countKey,
-                snapshot: true
+            let totalCount = try await readRankCount(
+                key: countKey,
+                transaction: transaction,
+                workMeter: workMeter
             )
-            let totalCount = try countBytes.map(RankCounterCodec.decodeInt) ?? 0
-            let startRank = try RankScanner.bottomStartPosition(
+            let plan = try makeBottomScanPlan(
+                requestedCount: count,
+                totalCount: totalCount
+            )
+            let rankedEntries = try await scanner.bottom(
+                k: plan.limit,
+                startRank: plan.startRank
+            )
+            try validateBottomScanCount(
                 totalCount: totalCount,
-                returnedCount: entries.count
+                returnedCount: rankedEntries.count
             )
-            return entries.enumerated().map {
-                (primaryKey: $0.element.primaryKey, rank: startRank - $0.offset)
-            }
+            return rankedEntries
         case RankReadParameter.rangeMode:
             let from = try parameters.requireInteger(
                 named: RankReadParameter.from
@@ -209,31 +255,44 @@ private struct RankReadExecutor: IndexReadExecutor {
             return try await scanner.rangeDescending(
                 from: from,
                 to: to
-            ).enumerated().map {
-                (primaryKey: $0.element.primaryKey, rank: from + $0.offset)
-            }
+            )
         case RankReadParameter.percentileMode:
             let percentile = try parameters.requireFloatingPoint(
                 named: RankReadParameter.percentile
             )
             try validatePercentile(percentile)
             let countKey = indexSubspace.pack(Tuple("_count"))
-            let countBytes = try await transaction.getValue(
-                for: countKey,
-                snapshot: true
+            let totalCount = try await readRankCount(
+                key: countKey,
+                transaction: transaction,
+                workMeter: workMeter
             )
-            let totalCount = try countBytes.map(RankCounterCodec.decodeInt) ?? 0
-            guard totalCount > 0 else { return [] }
+            guard totalCount > 0 else { return try await scanner.top(k: 0) }
             let targetRank = Int(Double(totalCount) * (1.0 - percentile))
             let safeRank = max(0, min(targetRank, totalCount - 1))
-            guard let entry = try await scanner.nthFromTop(safeRank) else {
+            let entries = try await scanner.nthFromTop(safeRank)
+            guard entries.count == 1 else {
                 throw RankReadError.missingRankEntry(rank: safeRank)
             }
-            return [(primaryKey: entry.primaryKey, rank: safeRank)]
+            return entries
         default:
             throw RankReadError.invalidParameter(RankReadParameter.mode)
         }
     }
+}
+
+private func readRankCount(
+    key: ByteString,
+    transaction: DatabaseReadTransaction,
+    workMeter: DatabaseWorkMeter
+) async throws -> Int {
+    let bytes = try await transaction.readPointValue(
+        for: key,
+        snapshot: true,
+        workMeter: workMeter,
+        at: .indexScan
+    )
+    return try bytes.map(RankCounterCodec.decodeInt) ?? 0
 }
 
 private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
@@ -254,7 +313,7 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
         options: ReadExecutionContext,
         partitions: FieldObject
     ) async throws -> IndexReadResult {
-        let transaction = session.transaction.storageTransaction
+        let transaction = session.transaction
         let parameters = IndexReadParameters(indexScan.parameters)
         let fieldName = try parameters.requireString(
             named: RankReadParameter.fieldName
@@ -278,76 +337,64 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
         ) else {
             return .empty
         }
-        let rankedKeys = try await scanRanked(
+        let rankedEntries = try await scanRanked(
             indexSubspace: readableIndex.subspace,
             transaction: transaction,
             parameters: parameters,
             workMeter: options.workMeter
         )
-        let rankedKeyReservation = try reserveRankedKeys(
-            rankedKeys,
-            workMeter: options.workMeter
-        )
-        defer { rankedKeyReservation.release() }
-        let primaryKeys = rankedKeys.map { $0.primaryKey }
-        let primaryKeyReservation = try DatabaseIntermediateCollectionMeter
-            .reserveTuples(
-                primaryKeys,
-                workMeter: options.workMeter,
-                stage: .indexScan
-            )
-        defer { primaryKeyReservation.release() }
-        let entities = try await session.fetchPolymorphicItemsPreservingOrder(
+        let entities = try await session.fetchRetainedPolymorphicItemsPreservingOrder(
             group: group,
-            ids: primaryKeys,
-            snapshot: options.consistency == .snapshot,
-            workMeter: options.workMeter
+            ids: rankedEntries,
+            snapshot: options.consistency == .snapshot
         )
-        let entityReservation = try DatabaseIntermediateCollectionMeter
-            .reservePolymorphicEntities(
-                entities,
-                workMeter: options.workMeter,
-                stage: .indexScan
-            )
-        defer { entityReservation.release() }
-        guard rankedKeys.count == entities.count else {
+        guard rankedEntries.count == entities.count else {
             throw RankReadError.fetchedEntityCountMismatch(
-                expected: rankedKeys.count,
+                expected: rankedEntries.count,
                 actual: entities.count
             )
         }
         return try IndexReadResult.build(
             workMeter: options.workMeter,
-            expectedCount: rankedKeys.count
+            expectedCount: rankedEntries.count
         ) { rows in
-            for (rankedKey, entity) in zip(rankedKeys, entities) {
-                guard let entity else {
-                    throw RankReadError.missingFetchedEntity(
-                        primaryKey: rankedKey.primaryKey.pack()
+            for index in 0..<rankedEntries.count {
+                var isPresent = false
+                var missingPrimaryKey: ByteString?
+                try rankedEntries.withAnnotation(at: index) { annotation in
+                    isPresent = try entities.appendIndexRow(
+                        at: index,
+                        to: &rows,
+                        additionalAnnotation: (
+                            name: "rank",
+                            value: .int64(Int64(annotation.rank))
+                        )
                     )
                 }
-                try rows.append(
-                    try IndexReadRow.materializing(
-                        entity.item,
-                        annotations: [
-                            PolymorphicRowAnnotation.typeName:
-                                .string(entity.typeName),
-                            PolymorphicRowAnnotation.typeCode:
-                                .int64(entity.typeCode),
-                            "rank": .int64(Int64(rankedKey.rank)),
-                        ]
+                if !isPresent {
+                    rankedEntries.withRetainedPrimaryKey(at: index) {
+                        missingPrimaryKey = $0.pack()
+                    }
+                }
+                if !isPresent {
+                    guard let missingPrimaryKey else {
+                        preconditionFailure(
+                            "A missing retained rank entry did not expose its key"
+                        )
+                    }
+                    throw RankReadError.missingFetchedEntity(
+                        primaryKey: missingPrimaryKey
                     )
-                )
+                }
             }
         }
-    }
-
+}
     private func scanRanked(
         indexSubspace: Subspace,
-        transaction: any TransactionAccess,
+        transaction: DatabaseReadTransaction,
         parameters: IndexReadParameters,
         workMeter: DatabaseWorkMeter
-    ) async throws -> [(primaryKey: Tuple, rank: Int)] {
+    ) async throws -> RankScanResult {
         let scoresSubspace = indexSubspace.subspace("scores")
         let scanner = RankScanner(
             scoresSubspace: scoresSubspace,
@@ -362,25 +409,32 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
                 named: RankReadParameter.count
             )
             try validateRankCount(count)
-            let entries = try await scanner.top(k: count)
-            return entries.enumerated().map { (primaryKey: $0.element.primaryKey, rank: $0.offset) }
+            return try await scanner.top(k: count)
 
         case RankReadParameter.bottomMode:
             let count = try parameters.requireInteger(
                 named: RankReadParameter.count
             )
             try validateRankCount(count)
-            let entries = try await scanner.bottom(k: count)
             let countKey = indexSubspace.pack(Tuple("_count"))
-            let countBytes = try await transaction.getValue(for: countKey, snapshot: true)
-            let totalCount = try countBytes.map(RankCounterCodec.decodeInt) ?? 0
-            let startRank = try RankScanner.bottomStartPosition(
-                totalCount: totalCount,
-                returnedCount: entries.count
+            let totalCount = try await readRankCount(
+                key: countKey,
+                transaction: transaction,
+                workMeter: workMeter
             )
-            return entries.enumerated().map {
-                (primaryKey: $0.element.primaryKey, rank: startRank - $0.offset)
-            }
+            let plan = try makeBottomScanPlan(
+                requestedCount: count,
+                totalCount: totalCount
+            )
+            let rankedEntries = try await scanner.bottom(
+                k: plan.limit,
+                startRank: plan.startRank
+            )
+            try validateBottomScanCount(
+                totalCount: totalCount,
+                returnedCount: rankedEntries.count
+            )
+            return rankedEntries
 
         case RankReadParameter.rangeMode:
             let from = try parameters.requireInteger(
@@ -390,8 +444,7 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
                 named: RankReadParameter.to
             )
             try validateRankRange(from: from, to: to)
-            let entries = try await scanner.rangeDescending(from: from, to: to)
-            return entries.enumerated().map { (primaryKey: $0.element.primaryKey, rank: from + $0.offset) }
+            return try await scanner.rangeDescending(from: from, to: to)
 
         case RankReadParameter.percentileMode:
             let percentile = try parameters.requireFloatingPoint(
@@ -399,47 +452,23 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
             )
             try validatePercentile(percentile)
             let countKey = indexSubspace.pack(Tuple("_count"))
-            let countBytes = try await transaction.getValue(for: countKey, snapshot: true)
-            let totalCount: Int
-            if let countBytes {
-                totalCount = try RankCounterCodec.decodeInt(countBytes)
-            } else {
-                totalCount = 0
-            }
-            guard totalCount > 0 else { return [] }
+            let totalCount = try await readRankCount(
+                key: countKey,
+                transaction: transaction,
+                workMeter: workMeter
+            )
+            guard totalCount > 0 else { return try await scanner.top(k: 0) }
             let targetRank = Int(Double(totalCount) * (1.0 - percentile))
             let safeRank = max(0, min(targetRank, totalCount - 1))
-            guard let entry = try await scanner.nthFromTop(safeRank) else {
+            let entries = try await scanner.nthFromTop(safeRank)
+            guard entries.count == 1 else {
                 throw RankReadError.missingRankEntry(rank: safeRank)
             }
-            return [(primaryKey: entry.primaryKey, rank: safeRank)]
+            return entries
 
         default:
             throw RankReadError.invalidParameter(RankReadParameter.mode)
         }
     }
 
-}
-
-private func reserveRankedKeys(
-    _ rankedKeys: [(primaryKey: Tuple, rank: Int)],
-    workMeter: DatabaseWorkMeter
-) throws -> DatabaseIntermediateReservation {
-    var footprint = try DatabaseIntermediateCollectionMeter.arrayFootprint(
-        count: rankedKeys.count,
-        element: (primaryKey: Tuple, rank: Int).self
-    )
-    for rankedKey in rankedKeys {
-        footprint = try footprint.adding(
-            DatabaseIntermediateFootprint(
-                rows: 1,
-                bytes: UInt64(rankedKey.primaryKey.pack().count)
-            )
-        )
-    }
-    return try workMeter.reserveIntermediate(
-        rows: footprint.rows,
-        bytes: footprint.bytes,
-        at: .indexScan
-    )
 }

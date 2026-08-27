@@ -1,4 +1,7 @@
+import DatabaseEngine
+import DatabaseKit
 import StorageKit
+import TestSupport
 import Testing
 @testable import RankIndex
 
@@ -11,11 +14,14 @@ struct RankScannerEntryDecodingTests {
 
         let entry = try RankScanner.decodeEntry(
             key: key,
-            scoresSubspace: subspace
+            scoresSubspace: subspace,
+            workMeter: makeMeter()
         )
 
         #expect(entry.scoreElement as? Int64 == 10)
-        #expect(entry.primaryKey == Tuple("tenant", "entity"))
+        var primaryKey: Tuple?
+        entry.primaryKey.withValue { primaryKey = $0 }
+        #expect(primaryKey == Tuple("tenant", "entity"))
     }
 
     @Test("Entries without a primary key fail explicitly")
@@ -24,7 +30,11 @@ struct RankScannerEntryDecodingTests {
         let key = subspace.pack(Tuple(Int64(10)))
 
         #expect(throws: RankScannerError.malformedEntry(elementCount: 1)) {
-            try RankScanner.decodeEntry(key: key, scoresSubspace: subspace)
+            try RankScanner.decodeEntry(
+                key: key,
+                scoresSubspace: subspace,
+                workMeter: makeMeter()
+            )
         }
     }
 
@@ -35,7 +45,11 @@ struct RankScannerEntryDecodingTests {
             .pack(Tuple(Int64(10), "entity"))
 
         #expect(throws: RankScannerError.keyOutsideScoresSubspace) {
-            try RankScanner.decodeEntry(key: outside, scoresSubspace: subspace)
+            try RankScanner.decodeEntry(
+                key: outside,
+                scoresSubspace: subspace,
+                workMeter: makeMeter()
+            )
         }
     }
 
@@ -64,5 +78,12 @@ struct RankScannerEntryDecodingTests {
                 returnedCount: 2
             )
         }
+    }
+
+    private func makeMeter() -> DatabaseWorkMeter {
+        DatabaseWorkMeter(
+            budget: ExecutionBudget(),
+            monotonicClock: TestProcessMonotonicClock()
+        )
     }
 }

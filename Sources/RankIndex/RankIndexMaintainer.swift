@@ -7,6 +7,7 @@ import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
+import StorageKitSystemClock
 
 /// Maintainer for RANK indexes with compile-time type safety
 ///
@@ -133,17 +134,39 @@ public struct RankIndexMaintainer<
     /// - Returns: Array of (score, primaryKey) tuples, sorted by score descending
     public func getTopK(
         k: Int,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> [(score: Score, primaryKey: [any TupleElement])] {
-        let scanner = RankScanner(scoresSubspace: scoresSubspace, transaction: transaction)
+        let workMeter = DatabaseWorkMeter(
+            budget: ExecutionBudget(),
+            monotonicClock: SystemStorageClock()
+        )
+        let scanner = RankScanner(
+            scoresSubspace: scoresSubspace,
+            transaction: transaction,
+            workMeter: workMeter
+        )
         let entries = try await scanner.top(k: k)
 
         var results: [(score: Score, primaryKey: [any TupleElement])] = []
         results.reserveCapacity(entries.count)
-        for entry in entries {
-            let score = try TupleDecoder.decode(entry.scoreElement, as: Score.self)
-            let primaryKey = try entry.primaryKey.elements()
-            results.append((score: score, primaryKey: primaryKey))
+        for index in 0..<entries.count {
+            var score: Score?
+            try entries.withAnnotation(at: index) { annotation in
+                score = try TupleDecoder.decode(
+                    annotation.scoreElement,
+                    as: Score.self
+                )
+            }
+            try entries.withRetainedPrimaryKey(at: index) { primaryKey in
+                guard let score else {
+                    preconditionFailure(
+                        "Rank annotation did not produce a score"
+                    )
+                }
+                results.append(
+                    (score: score, primaryKey: try primaryKey.elements())
+                )
+            }
         }
         return results
     }
@@ -166,7 +189,7 @@ public struct RankIndexMaintainer<
     /// - Returns: Rank (0-based, 0 = highest)
     public func getRank(
         score: Score,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Int64 {
         // Count entries with score strictly greater than target.
         // Key structure: [scoresSubspace][score][pk]
@@ -185,7 +208,8 @@ public struct RankIndexMaintainer<
             scoresSubspace.pack(Tuple(scoreElement))
         )
 
-        let sequence = try await TransactionRangeCollection.collect(using: transaction,
+        var count: Int64 = 0
+        var cursor = transaction.rangeCursor(
             from: .firstGreaterOrEqual(scorePrefixEnd),
             to: .firstGreaterOrEqual(rangeEnd),
             limit: 0,
@@ -193,11 +217,11 @@ public struct RankIndexMaintainer<
             snapshot: true,
             streamingMode: .wantAll
         )
-
-        var count: Int64 = 0
-        for (key, _) in sequence {
-            guard scoresSubspace.contains(key) else { break }
-            count += 1
+        try await cursor.consume { key, _ in
+            guard scoresSubspace.contains(key) else { return }
+            let (next, overflow) = count.addingReportingOverflow(1)
+            guard !overflow else { throw RankScannerError.rankOverflow }
+            count = next
         }
 
         return count
@@ -212,9 +236,18 @@ public struct RankIndexMaintainer<
     /// - Parameter transaction: Storage transaction
     /// - Returns: Total number of entries
     public func getCount(
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Int64 {
-        guard let bytes = try await transaction.getValue(for: countKey, snapshot: true) else {
+        let workMeter = DatabaseWorkMeter(
+            budget: ExecutionBudget(),
+            monotonicClock: SystemStorageClock()
+        )
+        guard let bytes = try await transaction.readPointValue(
+            for: countKey,
+            snapshot: true,
+            workMeter: workMeter,
+            at: .indexScan
+        ) else {
             return 0
         }
         return try RankCounterCodec.decode(bytes)
@@ -233,7 +266,7 @@ public struct RankIndexMaintainer<
     /// - Returns: Score at the given percentile, or nil if empty
     public func getPercentile(
         _ percentile: Double,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> Score? {
         guard percentile >= 0.0 && percentile <= 1.0 else {
             throw RankIndexMaintenanceError.invalidPercentile(percentile)

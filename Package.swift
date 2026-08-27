@@ -318,8 +318,9 @@ let package = Package(
                 .product(name: "DatabaseKit", package: "database-kit"),
                 .product(name: "DatabaseTypes", package: "database-types"),
                 .product(name: "StorageKit", package: "storage-kit"),
+                .product(name: "StorageKitSystemClock", package: "storage-kit"),
             ],
-            exclude: ["README.md"]
+            exclude: ["README.md", "DESIGN.md"]
         ),
         .target(
             name: "GraphIndex",
