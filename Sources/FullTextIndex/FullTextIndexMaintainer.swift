@@ -1,5 +1,5 @@
 // FullTextIndexMaintainer.swift
-// FullTextIndexLayer - Full-text index maintainer
+// FullTextIndex - Full-text index maintainer
 //
 // Maintains full-text indexes using inverted index structure.
 
@@ -7,21 +7,6 @@ import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
-
-private struct FullTextPositionResult: Sendable {
-    let termIndex: Int
-    let positions: [Int]
-}
-
-private enum FullTextPositionOutcome: Sendable {
-    case success(FullTextPositionResult)
-    case failure(any Error)
-}
-
-private enum FullTextPositionBatchOutcome: Sendable {
-    case success([FullTextPositionResult])
-    case failure(any Error)
-}
 
 // MARK: - FullText Constants
 
@@ -34,7 +19,7 @@ public let fullTextMaxTermBytes: Int = 8000
 /// **Functionality**:
 /// - Tokenize text fields
 /// - Build and maintain inverted index
-/// - Support term and phrase queries
+/// - Persist postings and BM25 corpus statistics
 ///
 /// **Index Structure**:
 /// ```
@@ -62,13 +47,18 @@ public let fullTextMaxTermBytes: Int = 8000
 /// **Usage**:
 /// ```swift
 /// let maintainer = FullTextIndexMaintainer<Article>(
-///     index: titleIndex,
-///     definition: .text(
-///         fields: [content],
-///         mode: .fullText(tokenizer: .simple, storePositions: true)
-///     ),
-///     subspace: fullTextSubspace,
+///     index: resolvedIndex,
+///     tokenizer: .simple,
+///     storePositions: true,
+///     ngramSize: 3,
+///     minTermLength: 2,
+///     subspace: indexSubspace,
 ///     idExpression: FieldKeyExpression(fieldName: "id")
+/// )
+/// try await maintainer.updateIndex(
+///     oldItem: nil,
+///     newItem: article,
+///     transaction: transaction
 /// )
 /// ```
 public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintainer {
@@ -84,7 +74,6 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
     // Subspaces
     private let termsSubspace: Subspace
     private let docsSubspace: Subspace
-    private let statsSubspace: Subspace
     private let dfSubspace: Subspace
 
     // BM25 statistics keys
@@ -117,7 +106,6 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
         self.minTermLength = minTermLength
         self.termsSubspace = FullTextStorageLayout.terms(in: subspace)
         self.docsSubspace = FullTextStorageLayout.documents(in: subspace)
-        self.statsSubspace = FullTextStorageLayout.statistics(in: subspace)
         self.dfSubspace = FullTextStorageLayout.documentFrequencies(
             in: subspace
         )
@@ -298,220 +286,6 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
         return keys
     }
 
-    // MARK: - Search Methods
-
-    /// Search for documents containing a term
-    ///
-    /// - Parameters:
-    ///   - term: Search term
-    ///   - transaction: FDB transaction
-    /// - Returns: Array of primary keys
-    public func searchTerm(
-        _ term: String,
-        transaction: any TransactionAccess
-    ) async throws -> [[any TupleElement]] {
-        let normalizedTerms = normalizeQueryTerms([term])
-        return try materializedElements(
-            from: try await searchNormalizedTermsAND(
-                normalizedTerms,
-                transaction: transaction
-            )
-        )
-    }
-
-    /// Search for documents containing all terms (AND query)
-    ///
-    /// **Optimization**: Uses incremental intersection with early termination.
-    /// If the intersection becomes empty during processing, we stop immediately
-    /// without loading results for remaining terms.
-    ///
-    /// - Parameters:
-    ///   - terms: Search terms
-    ///   - transaction: FDB transaction
-    /// - Returns: Array of primary keys that contain all terms
-    public func searchTermsAND(
-        _ terms: [String],
-        transaction: any TransactionAccess
-    ) async throws -> [[any TupleElement]] {
-        let normalizedTerms = normalizeQueryTerms(terms)
-        return try materializedElements(
-            from: try await searchNormalizedTermsAND(
-                normalizedTerms,
-                transaction: transaction
-            )
-        )
-    }
-
-    /// Search for already-normalized terms using AND semantics.
-    private func searchNormalizedTermsAND(
-        _ terms: [String],
-        transaction: any TransactionAccess
-    ) async throws -> [FullTextPostingCandidate] {
-        guard !terms.isEmpty else { return [] }
-
-        var intersection: [FullTextPostingCandidate]?
-
-        for term in terms {
-            let results = try await searchNormalizedTerm(term, transaction: transaction)
-            if let existing = intersection {
-                let reduced = try FullTextPostingListAlgebra.intersection(
-                    existing,
-                    results
-                )
-                if reduced.isEmpty {
-                    return []
-                }
-                intersection = reduced
-            } else {
-                intersection = results
-            }
-        }
-
-        return intersection ?? []
-    }
-
-    /// Search for documents containing any term (OR query)
-    ///
-    /// - Parameters:
-    ///   - terms: Search terms
-    ///   - transaction: FDB transaction
-    /// - Returns: Array of primary keys that contain any of the terms
-    public func searchTermsOR(
-        _ terms: [String],
-        transaction: any TransactionAccess
-    ) async throws -> [[any TupleElement]] {
-        let termGroups = normalizeQueryTermGroups(terms)
-        guard !termGroups.isEmpty else { return [] }
-
-        var union: [FullTextPostingCandidate] = []
-
-        for normalizedTerms in termGroups {
-            let results = try await searchNormalizedTermsAND(normalizedTerms, transaction: transaction)
-            union = try FullTextPostingListAlgebra.union(union, results)
-        }
-
-        return try materializedElements(from: union)
-    }
-
-    /// Search for a phrase (exact sequence of terms)
-    ///
-    /// **Optimization**: Uses concurrent fetching to reduce O(t) sequential reads
-    /// to O(1) parallel batch. All term positions for a document are fetched
-    /// concurrently using TaskGroup.
-    ///
-    /// - Parameters:
-    ///   - phrase: Search phrase
-    ///   - transaction: FDB transaction
-    /// - Returns: Array of primary keys that contain the phrase
-    public func searchPhrase(
-        _ phrase: String,
-        transaction: any TransactionAccess
-    ) async throws -> [[any TupleElement]] {
-        return try materializedElements(
-            from: try await searchPhraseCandidates(
-                phrase,
-                transaction: transaction
-            )
-        )
-    }
-
-    private func searchPhraseCandidates(
-        _ phrase: String,
-        transaction: any TransactionAccess
-    ) async throws -> [FullTextPostingCandidate] {
-        guard storePositions else {
-            throw FullTextIndexError.invalidQuery("Phrase search requires storePositions=true")
-        }
-
-        let phraseTokens = tokenize(phrase)
-        guard !phraseTokens.isEmpty else { return [] }
-
-        let terms = phraseTokens.map { truncateTerm($0.term) }
-
-        // First find documents containing all terms
-        let candidateDocs = try await searchNormalizedTermsAND(
-            terms,
-            transaction: transaction
-        )
-
-        var results: [FullTextPostingCandidate] = []
-
-        // For each candidate, verify the phrase exists
-        for candidate in candidateDocs {
-            let docId = candidate.identifier
-
-            // Build all term keys upfront using same subspace structure as indexing
-            let termKeys: [(index: Int, key: ByteString)] = terms.enumerated().map { (index, term) in
-                (index, termsSubspace.subspace(term).pack(docId))
-            }
-
-            // Fetch all term positions concurrently using TaskGroup
-            let batchOutcome = await withTaskGroup(
-                of: FullTextPositionOutcome.self
-            ) { group in
-                for (index, key) in termKeys {
-                    group.addTask {
-                        do {
-                            if let value = try await transaction.getValue(
-                                for: key,
-                                snapshot: true
-                            ) {
-                                let posting = try FullTextStorageDecoder.posting(
-                                    from: value,
-                                    positionsStored: true,
-                                    term: terms[index]
-                                )
-                                return .success(FullTextPositionResult(
-                                    termIndex: index,
-                                    positions: posting.positions
-                                ))
-                            }
-                            return .success(FullTextPositionResult(
-                                termIndex: index,
-                                positions: []
-                            ))
-                        } catch {
-                            return .failure(error)
-                        }
-                    }
-                }
-
-                // Collect results and sort by original index
-                var collected: [FullTextPositionResult] = []
-                for await outcome in group {
-                    switch outcome {
-                    case .success(let result):
-                        collected.append(result)
-                    case .failure(let error):
-                        group.cancelAll()
-                        return FullTextPositionBatchOutcome.failure(error)
-                    }
-                }
-                return .success(collected.sorted {
-                    $0.termIndex < $1.termIndex
-                })
-            }
-
-            let positionResults: [FullTextPositionResult]
-            switch batchOutcome {
-            case .success(let results):
-                positionResults = results
-            case .failure(let error):
-                throw error
-            }
-
-            // Extract position arrays in order
-            let termPositionArrays = positionResults.map { $0.positions }
-
-            // Check if positions form a consecutive sequence
-            if verifyPhrasePositions(termPositionArrays) {
-                results.append(candidate)
-            }
-        }
-
-        return results
-    }
-
     // MARK: - Private Methods
 
     /// Extract text from item by evaluating the index expression
@@ -537,98 +311,6 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
     /// Tokenize text into terms with positions
     private func tokenize(_ text: String) -> [(term: String, position: Int)] {
         termNormalizer.tokenize(text)
-    }
-
-    /// Search for an exact already-normalized term.
-    private func searchNormalizedTerm(
-        _ term: String,
-        transaction: any TransactionAccess
-    ) async throws -> [FullTextPostingCandidate] {
-        let termSubspace = termsSubspace.subspace(term)
-        let (begin, end) = termSubspace.range()
-
-        var results: [FullTextPostingCandidate] = []
-
-        let sequence = try await TransactionRangeCollection.collect(using: transaction,
-            from: .firstGreaterOrEqual(begin),
-            to: .firstGreaterOrEqual(end),
-            limit: 0,
-            reverse: false,
-            snapshot: true,
-            streamingMode: .wantAll
-        )
-
-        for (key, _) in sequence {
-            guard termSubspace.contains(key) else { break }
-
-            let suffix = key[
-                (key.startIndex + termSubspace.prefix.count)..<key.endIndex
-            ].detached()
-            results.append(
-                try FullTextPostingCandidate(
-                    packedSuffix: suffix,
-                    admitting: { _ in }
-                )
-            )
-        }
-
-        return results
-    }
-
-    private func materializedElements(
-        from candidates: [FullTextPostingCandidate]
-    ) throws -> [[any TupleElement]] {
-        try candidates.map { try $0.identifier.elements() }
-    }
-
-    private func normalizeQueryTerms(_ terms: [String]) -> [String] {
-        uniqueTerms(termGroups: normalizeQueryTermGroups(terms).flatMap { $0 })
-    }
-
-    private func normalizeQueryTermGroups(_ terms: [String]) -> [[String]] {
-        terms.map { term in
-            uniqueTerms(termGroups: termNormalizer.normalizedTerms(from: term))
-        }
-        .filter { !$0.isEmpty }
-    }
-
-    private func uniqueTerms(termGroups terms: [String]) -> [String] {
-        var seen: Set<String> = []
-        var result: [String] = []
-        result.reserveCapacity(terms.count)
-
-        for term in terms where !seen.contains(term) {
-            seen.insert(term)
-            result.append(term)
-        }
-
-        return result
-    }
-
-    /// Verify that term positions form a consecutive phrase
-    private func verifyPhrasePositions(_ positionArrays: [[Int]]) -> Bool {
-        guard !positionArrays.isEmpty else { return false }
-        guard let firstPositions = positionArrays.first, !firstPositions.isEmpty else { return false }
-
-        // For each starting position of the first term
-        for startPos in firstPositions {
-            var found = true
-
-            // Check if subsequent terms appear at consecutive positions
-            for (i, positions) in positionArrays.enumerated() {
-                let expectedPos = startPos + i
-                if !positions.contains(expectedPos) {
-                    found = false
-                    break
-                }
-            }
-
-            if found {
-                return true
-            }
-        }
-
-        return false
     }
 
     // MARK: - Key Size Validation
@@ -667,202 +349,4 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
         return Tuple(elements).pack()
     }
 
-    // MARK: - BM25 Statistics
-
-    /// Get BM25 corpus statistics
-    ///
-    /// - Parameter transaction: FDB transaction
-    /// - Returns: BM25 statistics (N, totalLength, avgDL)
-    public func getBM25Statistics(
-        transaction: any TransactionAccess
-    ) async throws -> BM25Statistics {
-        // Read N (total document count)
-        let nValue = try await transaction.getValue(for: statsNKey, snapshot: true)
-        let n: Int64
-        if let nValue {
-            n = try ByteConversion.bytesToInt64(nValue)
-        } else {
-            n = 0
-        }
-
-        // Read totalLength
-        let lengthValue = try await transaction.getValue(for: statsTotalLengthKey, snapshot: true)
-        let totalLength: Int64
-        if let lengthValue {
-            totalLength = try ByteConversion.bytesToInt64(lengthValue)
-        } else {
-            totalLength = 0
-        }
-
-        return BM25Statistics(totalDocuments: n, totalLength: totalLength)
-    }
-
-    /// Get document frequency for a term
-    ///
-    /// Uses the same tokenization pipeline as indexing to ensure consistency.
-    /// For example, if stemming is enabled, "running" will be stemmed to "run"
-    /// before looking up the document frequency.
-    ///
-    /// - Parameters:
-    ///   - term: The term (raw, will be tokenized)
-    ///   - transaction: FDB transaction
-    /// - Returns: Number of documents containing the term
-    public func getDocumentFrequency(
-        term: String,
-        transaction: any TransactionAccess
-    ) async throws -> Int64 {
-        // Tokenize the term using the same pipeline as indexing
-        let tokens = tokenize(term)
-        guard let firstToken = tokens.first else { return 0 }
-        let safeTerm = truncateTerm(firstToken.term)
-        return try await getDocumentFrequencyForNormalizedTerm(safeTerm, transaction: transaction)
-    }
-
-    /// Get document frequency for an already-normalized term
-    ///
-    /// Internal helper used when terms have already been processed through the tokenization pipeline.
-    ///
-    /// - Parameters:
-    ///   - normalizedTerm: The normalized/tokenized term
-    ///   - transaction: FDB transaction
-    /// - Returns: Number of documents containing the term
-    private func getDocumentFrequencyForNormalizedTerm(
-        _ normalizedTerm: String,
-        transaction: any TransactionAccess
-    ) async throws -> Int64 {
-        let dfKey = dfSubspace.pack(Tuple(normalizedTerm))
-        let value = try await transaction.getValue(for: dfKey, snapshot: true)
-        guard let value else { return 0 }
-        return try ByteConversion.bytesToInt64(value)
-    }
-
-    /// Get document metadata (term count and document length)
-    ///
-    /// - Parameters:
-    ///   - id: Document ID
-    ///   - transaction: FDB transaction
-    /// - Returns: Tuple of (uniqueTermCount, docLength), or nil if not found
-    public func getDocumentMetadata(
-        id: Tuple,
-        transaction: any TransactionAccess
-    ) async throws -> (uniqueTermCount: Int64, docLength: Int64)? {
-        let docKey = docsSubspace.pack(id)
-        guard let value = try await transaction.getValue(for: docKey, snapshot: true) else {
-            return nil
-        }
-        return try FullTextStorageDecoder.documentMetadata(from: value)
-    }
-
-    // MARK: - BM25 Scored Search
-
-    /// Search for documents with BM25 scores
-    ///
-    /// Internal method used by FullTextQueryBuilder.executeWithScores().
-    /// External callers should use the query builder API instead.
-    ///
-    /// - Parameters:
-    ///   - terms: Search terms
-    ///   - matchMode: AND or OR mode
-    ///   - bm25Params: BM25 parameters
-    ///   - transaction: FDB transaction
-    ///   - limit: Maximum results (nil for unlimited)
-    /// - Returns: Array of (id, score) sorted by score descending
-    internal func searchWithScores(
-        terms: [String],
-        matchMode: TextMatchMode = .all,
-        bm25Params: BM25Parameters = .default,
-        transaction: any TransactionAccess,
-        limit: Int? = nil
-    ) async throws -> [(id: Tuple, score: Double)] {
-        guard !terms.isEmpty else { return [] }
-
-        // Normalize search terms using the same tokenization pipeline as indexing
-        // This ensures stemming, n-gram, or other transformations are applied consistently
-        let normalizedTerms = normalizeQueryTerms(terms)
-
-        // Get document frequencies for all terms (already normalized, use internal helper)
-        var documentFrequencies: [String: Int64] = [:]
-        for term in normalizedTerms {
-            documentFrequencies[term] = try await getDocumentFrequencyForNormalizedTerm(term, transaction: transaction)
-        }
-
-        // Find matching documents
-        let matchingDocs: [FullTextPostingCandidate]
-        switch matchMode {
-        case .all:
-            matchingDocs = try await searchNormalizedTermsAND(normalizedTerms, transaction: transaction)
-        case .any:
-            let groups = normalizeQueryTermGroups(terms)
-            var union: [FullTextPostingCandidate] = []
-            for group in groups {
-                let matches = try await searchNormalizedTermsAND(group, transaction: transaction)
-                union = try FullTextPostingListAlgebra.union(union, matches)
-            }
-            matchingDocs = union
-        case .phrase:
-            matchingDocs = try await searchPhraseCandidates(
-                terms.joined(separator: " "),
-                transaction: transaction
-            )
-        }
-
-        guard !matchingDocs.isEmpty else {
-            return []
-        }
-
-        // Postings without their corpus counters are persisted corruption, not
-        // an empty search result.
-        let stats = try await getBM25Statistics(transaction: transaction)
-        guard stats.totalDocuments > 0, stats.totalLength > 0 else {
-            throw FullTextStorageError.corruptedCorpusStatistics
-        }
-        let scorer = BM25Scorer(params: bm25Params, statistics: stats)
-
-        // Calculate BM25 scores for each document
-        var scoredResults: [(id: Tuple, score: Double)] = []
-        scoredResults.reserveCapacity(matchingDocs.count)
-
-        for candidate in matchingDocs {
-            let docId = candidate.identifier
-
-            // Get document metadata
-            guard let metadata = try await getDocumentMetadata(id: docId, transaction: transaction) else {
-                throw FullTextStorageError.missingDocumentMetadata
-            }
-
-            // Get term frequencies in this document
-            var termFrequencies: [String: Int] = [:]
-            for term in normalizedTerms {
-                let termSubspace = termsSubspace.subspace(term)
-                let termKey = termSubspace.pack(docId)
-                if let value = try await transaction.getValue(for: termKey, snapshot: true) {
-                    let posting = try FullTextStorageDecoder.posting(
-                        from: value,
-                        positionsStored: storePositions,
-                        term: term
-                    )
-                    termFrequencies[term] = posting.termFrequency
-                }
-            }
-
-            // Calculate BM25 score
-            let score = scorer.score(
-                termFrequencies: termFrequencies,
-                documentFrequencies: documentFrequencies,
-                docLength: Int(metadata.docLength)
-            )
-
-            scoredResults.append((id: docId, score: score))
-        }
-
-        // Sort by score descending
-        scoredResults.sort { $0.score > $1.score }
-
-        // Apply limit
-        if let limit = limit {
-            return Array(scoredResults.prefix(limit))
-        }
-
-        return scoredResults
-    }
 }

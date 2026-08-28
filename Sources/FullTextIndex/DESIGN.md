@@ -48,14 +48,9 @@ The module never replaces a sealed authorization result with ambient state.
 
 The following are outside the supported product and have no execution
 contract in this module: general analyzer/filter pipelines, fuzzy or
-phonetic matching, wildcard and prefix query planning, highlighting,
-Boolean query DAG/NOT/range/boost semantics, compatibility bridges, and the
-unused `FullTextIndexFoundation` adapter product. They are retired surfaces,
-not partially supported capabilities.
-
-Until the source-cleanup sprint removes them, the old direct-read helpers and
-the adapter product declaration are treated as retiring implementation
-surface. No caller, test, or benchmark may add a dependency on them.
+phonetic matching, wildcard and prefix query planning, highlighting, and
+Boolean query DAG/NOT/range/boost semantics. No source, product, or public
+entry point advertises these capabilities.
 
 ## Related Designs
 
@@ -84,12 +79,6 @@ consumes that session and cannot create a second transaction or perform a new
 policy decision. `FullTextIndexMaintainer` has no supported raw-transaction
 read facade. Its persisted statistics are an index-maintenance concern and
 are read only by the canonical executor through the authorized session.
-
-The old `executeDirect`, direct faceted/scored variants, maintainer
-`search*`/statistics methods, and their duplicate materialization helpers
-are explicitly retiring surface. The source-cleanup sprint removes them
-after consumer evidence is migrated; they are not an alternate public read
-path.
 
 ## Architecture
 
@@ -301,16 +290,15 @@ history:
 
 | Evidence | Active contract | Retiring or removed contract |
 |---|---|---|
-| `Package.swift` | `FullTextIndex`, `FullTextIndexes`, and `DatabaseRuntime` registration | `FullTextIndexFoundation` target/product and its root product-table entry; removal is part of the source-cleanup boundary |
+| `Package.swift` | `FullTextIndex`, `FullTextIndexes`, and `DatabaseRuntime` registration | The removed `FullTextIndexFoundation` target/product and root product-table entry |
 | Production callers | `FullTextQuery`, `FullTextReadExecutors`, `Fusion/Search`, `FullTextFusionIndexReadExecutor`, autocomplete, and `FullTextIndexMaintainer` write methods | `executeDirect` variants, maintainer raw-read/statistics methods, and duplicate materialization helpers |
 | Workspace callers | Typed query/Fusion paths and the canonical SQLite benchmark | No external caller of `FullTextSearchQuery`, fuzzy matchers, highlighters, general analyzers, or `ASCIIFoldingFilter` was found |
-| Tests | Canonical read, scoring, decoder, normalizer, lifecycle, and writer/layout tests | Direct maintainer search tests are migrated to canonical behavior or test-owned persisted-state inspection before removal |
+| Tests | Canonical read, scoring, decoder, normalizer, lifecycle, and writer/layout tests | Former direct maintainer search tests were migrated to canonical behavior or test-owned persisted-state inspection |
 | Benchmarks | SQLite public-query benchmark for posting algebra; retained maintainer write metrics | FoundationDB raw-transaction search, phrase, scoring, and scalability cases |
 | History | `e0eb78b9` canonical query execution and later bounded/session work | `961317ad` speculative advanced utilities, `19814213` reverted oversized execution paths, and `a387258c` retained unused typed-runtime surfaces |
 
-This classification is deliberate: the retiring declarations remain only
-until their consumers are migrated in the dependent cleanup sprint. No
-public API, owner, lifetime, failure, or performance decision is left to a
-consumer-specific interpretation. Retiring a declaration does not require a
-compatibility alias or a placeholder TODO; an actually required absent API
-must instead be added as a separately designed work item.
+This classification is deliberate: removed declarations are not compatibility
+aliases or placeholder TODOs. No public API, owner, lifetime, failure, or
+performance decision is left to a consumer-specific interpretation. An
+actually required absent API must instead be added as a separately designed
+work item.

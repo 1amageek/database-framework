@@ -47,10 +47,6 @@ let package = Package(
         .library(name: "ScalarIndex", targets: ["ScalarIndex"]),
         .library(name: "VectorIndex", targets: ["VectorIndex"]),
         .library(name: "FullTextIndex", targets: ["FullTextIndex"]),
-        .library(
-            name: "FullTextIndexFoundation",
-            targets: ["FullTextIndexFoundation"]
-        ),
         .library(name: "SpatialIndex", targets: ["SpatialIndex"]),
         .library(name: "RankIndex", targets: ["RankIndex"]),
         .library(name: "GraphIndex", targets: ["GraphIndex"]),
@@ -205,10 +201,6 @@ let package = Package(
                 "Autocomplete/DESIGN.md",
                 "Facet/DESIGN.md",
             ]
-        ),
-        .target(
-            name: "FullTextIndexFoundation",
-            dependencies: ["FullTextIndex"]
         ),
         .target(
             name: "DatabaseRuntime",

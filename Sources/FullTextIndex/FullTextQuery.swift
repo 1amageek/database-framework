@@ -4,7 +4,6 @@
 @_spi(PolymorphicRuntime) import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
-import StorageKit
 
 // MARK: - Full-Text Query Builder
 
@@ -16,14 +15,14 @@ import StorageKit
 ///
 /// // Basic search (no ranking)
 /// let articles = try await context.search(Article.self)
-///     .fullText(\.content)
+///     .fullText(Article.fields.content)
 ///     .terms(["swift", "concurrency"], mode: .all)
 ///     .limit(20)
 ///     .execute()
 ///
 /// // BM25 ranked search
 /// let ranked = try await context.search(Article.self)
-///     .fullText(\.content)
+///     .fullText(Article.fields.content)
 ///     .terms(["swift", "concurrency"])
 ///     .bm25(k1: 1.5, b: 0.8)
 ///     .executeWithScores()
@@ -31,7 +30,6 @@ import StorageKit
 public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     private let queryContext: IndexQueryContext
     private let field: FieldIdentity
-    private let selectedIndexName: String?
     private var searchTerms: [String] = []
     private var matchMode: TextMatchMode = .all
     private var fetchLimit: Int?
@@ -41,12 +39,10 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
 
     internal init(
         queryContext: IndexQueryContext,
-        field: FieldIdentity,
-        selectedIndexName: String? = nil
+        field: FieldIdentity
     ) {
         self.queryContext = queryContext
         self.field = field
-        self.selectedIndexName = selectedIndexName
     }
 
     /// Set search terms and match mode
@@ -86,21 +82,22 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
 
     /// Add faceted search for specified fields
     ///
-    /// Facets provide aggregated counts for each unique value in the specified fields,
-    /// allowing users to filter search results by category, brand, etc.
+    /// Facets provide aggregated counts for each unique value in the specified
+    /// fields, allowing callers to filter results by category, brand, and more.
     ///
     /// **Usage**:
     /// ```swift
     /// let results = try await context.search(Product.self)
-    ///     .fullText(\.description)
+    ///     .fullText(Product.fields.description)
     ///     .terms(["laptop"])
-    ///     .facets(["category", "brand"], limit: 10)
+    ///     .facet(Product.fields.category, limit: 10)
+    ///     .facet(Product.fields.brand, limit: 10)
     ///     .executeWithFacets()
     /// // results.facets["category"] = [("electronics", 42), ("computers", 35)]
     /// ```
     ///
     /// - Parameters:
-    ///   - fields: Field names to compute facets for
+    ///   - field: A declared String or [String] field to count
     ///   - limit: Maximum number of values per field (default: 10)
     /// - Returns: Updated query builder
     public func facet(
@@ -143,16 +140,6 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         return copy
     }
 
-    internal func facets(
-        _ fields: [FieldIdentity],
-        limit: Int
-    ) -> Self {
-        var copy = self
-        copy.facetFields = fields
-        copy.facetLimit = limit
-        return copy
-    }
-
     /// Execute the full-text search
     ///
     /// - Returns: Array of matching items
@@ -173,68 +160,18 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         }
     }
 
-    internal func executeDirect(
-        configuration: TransactionConfiguration = .default
-    ) async throws -> [T] {
-        guard !searchTerms.isEmpty else {
-            return []
-        }
-
-        let indexName = try buildIndexName()
-        let (_, indexConfiguration) = try resolveFullTextIndex(
-            named: indexName
-        )
-
-        return try await queryContext.withReadableIndex(
-            named: indexName,
-            indexType: .text(.fullText),
-            for: T.self,
-            configuration: configuration
-        ) { readableIndex, transaction in
-            guard let readableIndex else {
-                return []
-            }
-            let matchingIds: [Tuple]
-            if self.matchMode == .phrase {
-                // Phrase search requires position-verified matching via maintainer
-                matchingIds = try await self.searchPhrase(
-                    indexName: indexName,
-                    indexSubspace: readableIndex.subspace,
-                    transaction: transaction.storageTransaction
-                )
-            } else {
-                matchingIds = try await self.searchFullText(
-                    terms: self.searchTerms,
-                    matchMode: self.matchMode,
-                    configuration: indexConfiguration,
-                    indexSubspace: readableIndex.subspace,
-                    transaction: transaction.storageTransaction
-                )
-            }
-            var items = try await self.fetchIndexedItems(
-                ids: matchingIds,
-                indexName: indexName,
-                transaction: transaction
-            )
-            if let limit = self.fetchLimit, items.count > limit {
-                items = Array(items.prefix(limit))
-            }
-            return items
-        }
-    }
-
     /// Execute the full-text search with faceted results
     ///
     /// Returns matching items along with facet counts for specified fields.
-    /// Facet counts are computed directly from matching items, allowing flexible
-    /// faceting without requiring pre-indexed facet data.
+    /// Facet counts and total count are returned as canonical response metadata.
     ///
     /// **Usage**:
     /// ```swift
     /// let results = try await context.search(Product.self)
-    ///     .fullText(\.description)
+    ///     .fullText(Product.fields.description)
     ///     .terms(["laptop"])
-    ///     .facets(["category", "brand"], limit: 10)
+    ///     .facet(Product.fields.category, limit: 10)
+    ///     .facet(Product.fields.brand, limit: 10)
     ///     .executeWithFacets()
     ///
     /// print("Found \(results.items.count) items")
@@ -278,296 +215,6 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         )
     }
 
-    internal func executeFacetedDirect(
-        configuration: TransactionConfiguration = .default
-    ) async throws -> FacetedSearchResult<T> {
-        guard !searchTerms.isEmpty else {
-            return FacetedSearchResult(items: [], facets: [:], totalCount: 0)
-        }
-
-        let indexName = try buildIndexName()
-        let (_, indexConfiguration) = try resolveFullTextIndex(
-            named: indexName
-        )
-
-        return try await queryContext.withReadableIndex(
-            named: indexName,
-            indexType: .text(.fullText),
-            for: T.self,
-            configuration: configuration
-        ) { readableIndex, transaction in
-            guard let readableIndex else {
-                return FacetedSearchResult(
-                    items: [],
-                    facets: [:],
-                    totalCount: 0
-                )
-            }
-            let matchingIds: [Tuple]
-            if self.matchMode == .phrase {
-                matchingIds = try await self.searchPhrase(
-                    indexName: indexName,
-                    indexSubspace: readableIndex.subspace,
-                    transaction: transaction.storageTransaction
-                )
-            } else {
-                matchingIds = try await self.searchFullText(
-                    terms: self.searchTerms,
-                    matchMode: self.matchMode,
-                    configuration: indexConfiguration,
-                    indexSubspace: readableIndex.subspace,
-                    transaction: transaction.storageTransaction
-                )
-            }
-            let allItems = try await self.fetchIndexedItems(
-                ids: matchingIds,
-                indexName: indexName,
-                transaction: transaction
-            )
-            let totalCount = allItems.count
-            let facetCounts: [String: [(value: String, count: Int64)]]
-            if self.facetFields.isEmpty {
-                facetCounts = [:]
-            } else {
-                facetCounts = try self.computeFacetsFromItems(
-                    allItems,
-                    fields: self.facetFields,
-                    limit: self.facetLimit
-                )
-            }
-            let items: [T]
-            if let limit = self.fetchLimit, allItems.count > limit {
-                items = Array(allItems.prefix(limit))
-            } else {
-                items = allItems
-            }
-            return FacetedSearchResult(
-                items: items,
-                facets: facetCounts,
-                totalCount: totalCount
-            )
-        }
-    }
-
-    /// Compute facet counts directly from items
-    ///
-    /// This allows faceting without requiring pre-indexed facet data.
-    ///
-    /// - Parameters:
-    ///   - items: Items to compute facets for
-    ///   - fields: Field names to compute facets for
-    ///   - limit: Maximum number of values per field
-    /// - Returns: Dictionary of field -> [(value, count)] sorted by count descending
-    private func computeFacetsFromItems(
-        _ items: [T],
-        fields: [FieldIdentity],
-        limit: Int
-    ) throws -> [String: [(value: String, count: Int64)]] {
-        var fieldCounts: [String: [String: Int64]] = [:]
-
-        // Initialize counts for each field
-        for field in fields {
-            fieldCounts[field.name] = [:]
-        }
-
-        // Count values for each field
-        for item in items {
-            for field in fields {
-                let values = try FullTextFieldValueExtractor.strings(
-                    from: item,
-                    field: field
-                )
-                for value in values {
-                    fieldCounts[field.name]![value, default: 0] += 1
-                }
-            }
-        }
-
-        // Sort and limit results
-        var result: [String: [(value: String, count: Int64)]] = [:]
-        for (field, counts) in fieldCounts {
-            let sorted = counts.sorted { $0.value > $1.value }
-            result[field] = Array(sorted.prefix(limit).map { (value: $0.key, count: $0.value) })
-        }
-
-        return result
-    }
-
-    /// Search for an exact phrase using position-verified matching
-    ///
-    /// Creates a FullTextIndexMaintainer to call `searchPhrase()` which verifies
-    /// term positions form a consecutive sequence. Requires `storePositions=true`
-    /// on the index — throws `FullTextIndexError.invalidQuery` otherwise.
-    private func searchPhrase(
-        indexName: String,
-        indexSubspace: Subspace,
-        transaction: any TransactionAccess
-    ) async throws -> [Tuple] {
-        let (indexDescriptor, configuration) = try resolveFullTextIndex(
-            named: indexName
-        )
-
-        let index = ResolvedIndex(
-            descriptor: indexDescriptor,
-            rootExpression: KeyExpressionFactory.from(keyPaths: indexDescriptor.fieldNames)
-        )
-
-        let maintainer = FullTextIndexMaintainer<T>(
-            index: index,
-            tokenizer: configuration.tokenizer,
-            storePositions: configuration.storePositions,
-            ngramSize: configuration.ngramSize,
-            minTermLength: configuration.minTermLength,
-            subspace: indexSubspace,
-            idExpression: FieldKeyExpression(fieldName: "id")
-        )
-
-        let phraseString = searchTerms.joined(separator: " ")
-        let results = try await maintainer.searchPhrase(phraseString, transaction: transaction)
-        return results.map { Tuple($0) }
-    }
-
-    /// Search full-text index and return matching IDs
-    private func searchFullText(
-        terms: [String],
-        matchMode: TextMatchMode,
-        configuration: FullTextIndexConfiguration,
-        indexSubspace: Subspace,
-        transaction: any TransactionAccess
-    ) async throws -> [Tuple] {
-        let termsSubspace = FullTextStorageLayout.terms(in: indexSubspace)
-
-        let termGroups = normalizeQueryTermGroups(
-            terms,
-            configuration: configuration
-        )
-        let normalizedTerms = uniqueTerms(termGroups.flatMap { $0 })
-
-        // Get matching document IDs based on match mode
-        let matchingIds: [FullTextPostingCandidate]
-        switch matchMode {
-        case .all:
-            matchingIds = try await searchTermsAND(
-                normalizedTerms,
-                termsSubspace: termsSubspace,
-                transaction: transaction
-            )
-        case .any:
-            var union: [FullTextPostingCandidate] = []
-            for group in termGroups {
-                let matches = try await searchTermsAND(
-                    group,
-                    termsSubspace: termsSubspace,
-                    transaction: transaction
-                )
-                union = try FullTextPostingListAlgebra.union(union, matches)
-            }
-            matchingIds = union
-        case .phrase:
-            throw FullTextQueryError.invalidExecutionPath(
-                "Phrase matching must use the position-aware search path"
-            )
-        }
-
-        return matchingIds.map(\.identifier)
-    }
-
-    /// Search for documents containing all terms (AND query)
-    private func searchTermsAND(
-        _ terms: [String],
-        termsSubspace: Subspace,
-        transaction: any TransactionAccess
-    ) async throws -> [FullTextPostingCandidate] {
-        guard !terms.isEmpty else { return [] }
-
-        var intersection: [FullTextPostingCandidate]?
-
-        for term in terms {
-            let results = try await searchTerm(
-                term,
-                termsSubspace: termsSubspace,
-                transaction: transaction
-            )
-            if let existing = intersection {
-                let reduced = try FullTextPostingListAlgebra.intersection(
-                    existing,
-                    results
-                )
-                if reduced.isEmpty {
-                    return []
-                }
-                intersection = reduced
-            } else {
-                intersection = results
-            }
-        }
-
-        return intersection ?? []
-    }
-
-    /// Search for documents containing a term
-    private func searchTerm(
-        _ term: String,
-        termsSubspace: Subspace,
-        transaction: any TransactionAccess
-    ) async throws -> [FullTextPostingCandidate] {
-        let termSubspace = termsSubspace.subspace(term)
-        let (begin, end) = termSubspace.range()
-
-        var results: [FullTextPostingCandidate] = []
-
-        let sequence = try await TransactionRangeCollection.collect(using: transaction,
-            from: .firstGreaterOrEqual(begin),
-            to: .firstGreaterOrEqual(end),
-            limit: 0,
-            reverse: false,
-            snapshot: true,
-            streamingMode: .wantAll
-        )
-
-        for (key, _) in sequence {
-            guard termSubspace.contains(key) else { break }
-
-            let suffix = key[
-                (key.startIndex + termSubspace.prefix.count)..<key.endIndex
-            ].detached()
-            results.append(
-                try FullTextPostingCandidate(
-                    packedSuffix: suffix,
-                    admitting: { _ in }
-                )
-            )
-        }
-
-        return results
-    }
-
-    private func normalizeQueryTermGroups(
-        _ terms: [String],
-        configuration: FullTextIndexConfiguration
-    ) -> [[String]] {
-        let normalizer = FullTextTermNormalizer(
-            tokenizer: configuration.tokenizer,
-            ngramSize: configuration.ngramSize,
-            minTermLength: configuration.minTermLength
-        )
-        return terms.map { term in
-            uniqueTerms(normalizer.normalizedTerms(from: term))
-        }
-        .filter { !$0.isEmpty }
-    }
-
-    private func uniqueTerms(_ terms: [String]) -> [String] {
-        var seen: Set<String> = []
-        var result: [String] = []
-        result.reserveCapacity(terms.count)
-        for term in terms where !seen.contains(term) {
-            seen.insert(term)
-            result.append(term)
-        }
-        return result
-    }
-
     /// Execute the full-text search with BM25 scores
     ///
     /// Returns results ranked by BM25 score (higher is better match).
@@ -575,7 +222,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     /// **Usage**:
     /// ```swift
     /// let ranked = try await context.search(Article.self)
-    ///     .fullText(\.content)
+    ///     .fullText(Article.fields.content)
     ///     .terms(["swift", "concurrency"])
     ///     .bm25(k1: 1.5, b: 0.8)
     ///     .executeWithScores()
@@ -605,92 +252,6 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
             }
             return (item: item, score: score)
         }
-    }
-
-    internal func executeScoredDirect(
-        configuration: TransactionConfiguration = .default
-    ) async throws -> [(item: T, score: Double)] {
-        guard !searchTerms.isEmpty else {
-            return []
-        }
-
-        let indexName = try buildIndexName()
-
-        let (indexDescriptor, indexConfiguration) = try resolveFullTextIndex(
-            named: indexName
-        )
-
-        return try await queryContext.withReadableIndex(
-            named: indexName,
-            indexType: .text(.fullText),
-            for: T.self,
-            configuration: configuration
-        ) { readableIndex, transaction in
-            guard let readableIndex else {
-                return []
-            }
-            // Create maintainer using makeIndexMaintainer
-            let index = ResolvedIndex(
-                descriptor: indexDescriptor,
-                rootExpression: KeyExpressionFactory.from(keyPaths: indexDescriptor.fieldNames)
-            )
-
-            let maintainer = FullTextIndexMaintainer<T>(
-                index: index,
-                tokenizer: indexConfiguration.tokenizer,
-                storePositions: indexConfiguration.storePositions,
-                ngramSize: indexConfiguration.ngramSize,
-                minTermLength: indexConfiguration.minTermLength,
-                subspace: readableIndex.subspace,
-                idExpression: FieldKeyExpression(fieldName: "id")
-            )
-
-            // Search with BM25 scores
-            let scoredResults = try await maintainer.searchWithScores(
-                terms: self.searchTerms,
-                matchMode: self.matchMode,
-                bm25Params: self.bm25Params,
-                transaction: transaction.storageTransaction,
-                limit: self.fetchLimit
-            )
-
-            let ids = scoredResults.map { $0.id }
-            let items = try await self.fetchIndexedItems(
-                ids: ids,
-                indexName: indexName,
-                transaction: transaction
-            )
-            var results: [(item: T, score: Double)] = []
-            results.reserveCapacity(scoredResults.count)
-            for (item, scoredResult) in zip(items, scoredResults) {
-                results.append((item: item, score: scoredResult.score))
-            }
-            return results
-        }
-    }
-
-    private func fetchIndexedItems(
-        ids: [Tuple],
-        indexName: String,
-        transaction: DatabaseReadTransaction
-    ) async throws -> [T] {
-        let fetched = try await queryContext.fetchItemsPreservingOrder(
-            ids: ids,
-            type: T.self,
-            transaction: transaction
-        )
-        var items: [T] = []
-        items.reserveCapacity(fetched.count)
-        for (id, item) in zip(ids, fetched) {
-            guard let item else {
-                throw FullTextQueryError.indexedItemMissing(
-                    index: indexName,
-                    primaryKey: id.pack()
-                )
-            }
-            items.append(item)
-        }
-        return items
     }
 
     internal func toSelectQuery(
@@ -750,38 +311,11 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         }
     }
 
-    private func resolveFullTextIndex(
-        named indexName: String
-    ) throws -> (IndexDescriptor, FullTextIndexConfiguration) {
-        guard let descriptor = queryContext.indexDescriptors(
-            for: T.self
-        ).first(where: { $0.name == indexName }) else {
-            throw FullTextQueryError.indexNotFound(indexName)
-        }
-        guard descriptor.type == .text(.fullText),
-            descriptor.fieldIdentities.contains(field)
-        else {
-            throw FullTextQueryError.indexFieldMismatch(indexName)
-        }
-        return (
-            descriptor,
-            try FullTextIndexConfiguration(definition: descriptor.declaration.definition)
-        )
-    }
-
     /// Build the index name based on type and field
     ///
     /// Uses IndexDescriptor lookup for reliable index name resolution.
     private func buildIndexName() throws -> String {
         let matches = try matchingIndexDescriptors()
-        if let selectedIndexName {
-            guard matches.contains(where: {
-                $0.name == selectedIndexName
-            }) else {
-                throw FullTextQueryError.indexNotFound(selectedIndexName)
-            }
-            return selectedIndexName
-        }
         guard let descriptor = matches.first else {
             throw FullTextQueryError.indexNotFound(
                 "\(T.persistableType).\(field.name)"
@@ -1029,7 +563,7 @@ public struct FullTextEntryPoint<T: Persistable>: Sendable {
 
     /// Specify the text field to search
     ///
-    /// - Parameter keyPath: KeyPath to the String field
+    /// - Parameter field: Declared String field to search
     /// - Returns: Full-text query builder
     public func fullText(
         _ field: Field<T, String>
@@ -1042,7 +576,7 @@ public struct FullTextEntryPoint<T: Persistable>: Sendable {
 
     /// Specify the optional text field to search
     ///
-    /// - Parameter keyPath: KeyPath to the optional String field
+    /// - Parameter field: Declared optional String field to search
     /// - Returns: Full-text query builder
     public func fullText(
         _ field: Field<T, String?>
@@ -1067,7 +601,7 @@ extension DatabaseContext {
     /// import FullTextIndex
     ///
     /// let articles = try await context.search(Article.self)
-    ///     .fullText(\.content)
+    ///     .fullText(Article.fields.content)
     ///     .terms(["swift", "concurrency"], mode: .all)
     ///     .limit(20)
     ///     .execute()
@@ -1084,14 +618,8 @@ extension DatabaseContext {
 
 /// Errors for full-text query operations
 public enum FullTextQueryError: Error, CustomStringConvertible {
-    /// No search terms provided
-    case noSearchTerms
-
     /// Index not found
     case indexNotFound(String)
-
-    /// The named index does not include the requested field.
-    case indexFieldMismatch(String)
 
     case ambiguousIndex(entity: String, field: String)
     case invalidLimit(Int)
@@ -1099,30 +627,16 @@ public enum FullTextQueryError: Error, CustomStringConvertible {
     /// The canonical query endpoint returned malformed metadata.
     case invalidResponse(String)
 
-    /// Internal dispatch selected a search path with incompatible semantics.
-    case invalidExecutionPath(String)
-
-    /// An index entry references an entity that is not present in storage.
-    case indexedItemMissing(index: String, primaryKey: ByteString)
-
     public var description: String {
         switch self {
-        case .noSearchTerms:
-            return "No search terms provided for full-text search"
         case .indexNotFound(let name):
             return "Full-text index not found: \(name)"
-        case .indexFieldMismatch(let name):
-            return "Full-text index '\(name)' does not include the requested field"
         case .ambiguousIndex(let entity, let field):
             return "Multiple full-text indexes match '\(entity).\(field)'"
         case .invalidLimit(let limit):
             return "Full-text query limit must be nonnegative: \(limit)"
         case .invalidResponse(let reason):
             return "Invalid full-text query response: \(reason)"
-        case .invalidExecutionPath(let reason):
-            return "Invalid full-text execution path: \(reason)"
-        case .indexedItemMissing(let index, let primaryKey):
-            return "Full-text index '\(index)' references missing item \(primaryKey)"
         }
     }
 }

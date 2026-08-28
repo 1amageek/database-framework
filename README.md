@@ -382,7 +382,6 @@ core engine dependency.
 | `ScalarIndex`, `VectorIndex`, `FullTextIndex`, `SpatialIndex` | Individual index implementations |
 | `RankIndex`, `AggregationIndex`, `VersionIndex` | Individual index implementations |
 | `BitmapIndex`, `LeaderboardIndex`, `GraphIndex`, `OntologyIndex`, `RelationshipIndex` | Individual index implementations |
-| `FullTextIndexFoundation` | Foundation-specific full-text adaptation |
 | `SwiftLogDatabaseLogging` | Swift Log adapter |
 | `SwiftMetricsDatabaseMetrics` | Swift Metrics adapter |
 
