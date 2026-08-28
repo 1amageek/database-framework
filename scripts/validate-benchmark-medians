@@ -2,12 +2,12 @@
 set -euo pipefail
 
 if (( $# != 3 )); then
-  echo "usage: validate-benchmark-medians <bitmap|fulltext> <reference.tsv> <benchmark.log>" >&2
+  echo "usage: validate-benchmark-medians <bitmap|fulltext> <maximums.tsv> <benchmark.log>" >&2
   exit 2
 fi
 
 suite="$1"
-reference_path="$2"
+maximums_path="$2"
 measurement_log="$3"
 
 case "$suite" in
@@ -23,7 +23,7 @@ case "$suite" in
     ;;
 esac
 
-for path in "$reference_path" "$measurement_log"; do
+for path in "$maximums_path" "$measurement_log"; do
   if [[ ! -f "$path" ]]; then
     echo "error: benchmark validation input is unavailable: $path" >&2
     exit 1
@@ -36,11 +36,70 @@ awk -v selected_suite="$suite" -v expected_names="$expected_names" '
     invalid = 1
   }
 
-  function is_positive_decimal(value, numeric_value) {
-    numeric_value = value + 0
-    return value ~ /^[0-9]+([.][0-9]+)?$/ \
-      && numeric_value > 0 \
-      && numeric_value < 1e308
+  function is_positive_decimal(value, parts, integer, fraction, digits) {
+    if (value !~ /^[0-9]+([.][0-9]+)?$/) {
+      return 0
+    }
+
+    split(value, parts, ".")
+    integer = parts[1]
+    fraction = (length(parts) > 1 ? parts[2] : "")
+    sub(/^0+/, "", integer)
+    if (integer == "") {
+      integer = "0"
+    }
+    sub(/0+$/, "", fraction)
+
+    digits = integer
+    if (integer == "0") {
+      digits = ""
+    }
+    digits = digits fraction
+    sub(/^0+/, "", digits)
+
+    return digits != "" && (integer == "0" || length(integer) <= 308)
+  }
+
+  function compare_decimals(lhs, rhs, left_parts, right_parts, left_integer, right_integer, left_fraction, right_fraction, position, maximum_fraction_length, left_digit, right_digit) {
+    split(lhs, left_parts, ".")
+    split(rhs, right_parts, ".")
+    left_integer = left_parts[1]
+    right_integer = right_parts[1]
+    left_fraction = (length(left_parts) > 1 ? left_parts[2] : "")
+    right_fraction = (length(right_parts) > 1 ? right_parts[2] : "")
+
+    sub(/^0+/, "", left_integer)
+    sub(/^0+/, "", right_integer)
+    if (left_integer == "") {
+      left_integer = "0"
+    }
+    if (right_integer == "") {
+      right_integer = "0"
+    }
+
+    if (length(left_integer) != length(right_integer)) {
+      return length(left_integer) < length(right_integer) ? -1 : 1
+    }
+    for (position = 1; position <= length(left_integer); position += 1) {
+      left_digit = substr(left_integer, position, 1)
+      right_digit = substr(right_integer, position, 1)
+      if (left_digit != right_digit) {
+        return left_digit < right_digit ? -1 : 1
+      }
+    }
+
+    maximum_fraction_length = length(left_fraction)
+    if (length(right_fraction) > maximum_fraction_length) {
+      maximum_fraction_length = length(right_fraction)
+    }
+    for (position = 1; position <= maximum_fraction_length; position += 1) {
+      left_digit = (position <= length(left_fraction) ? substr(left_fraction, position, 1) : "0")
+      right_digit = (position <= length(right_fraction) ? substr(right_fraction, position, 1) : "0")
+      if (left_digit != right_digit) {
+        return left_digit < right_digit ? -1 : 1
+      }
+    }
+    return 0
   }
 
   BEGIN {
@@ -54,32 +113,28 @@ awk -v selected_suite="$suite" -v expected_names="$expected_names" '
     if ($0 ~ /^[[:space:]]*#/ || $0 ~ /^[[:space:]]*$/) {
       next
     }
-    if (NF != 4) {
-      reject("malformed benchmark reference row at line " FNR)
+    if (NF != 3) {
+      reject("malformed benchmark maximum row at line " FNR)
       next
     }
 
-    reference_key = $1 SUBSEP $2
-    if (++all_reference_occurrences[reference_key] != 1) {
-      reject("duplicate benchmark reference for " $1 "/" $2)
+    maximum_key = $1 SUBSEP $2
+    if (++all_maximum_occurrences[maximum_key] != 1) {
+      reject("duplicate benchmark maximum for " $1 "/" $2)
     }
     if (!is_positive_decimal($3)) {
-      reject("reference median must be a finite positive decimal for " $1 "/" $2)
-    }
-    if (!is_positive_decimal($4)) {
-      reject("maximum multiplier must be a finite positive decimal for " $1 "/" $2)
+      reject("maximum median must be a finite positive decimal for " $1 "/" $2)
     }
 
     if ($1 != selected_suite) {
       next
     }
     if (!($2 in expected)) {
-      reject("unexpected benchmark reference for " selected_suite "/" $2)
+      reject("unexpected benchmark maximum for " selected_suite "/" $2)
       next
     }
-    reference_occurrences[$2] += 1
-    reference_median[$2] = $3
-    maximum_multiplier[$2] = $4
+    maximum_occurrences[$2] += 1
+    maximum_median[$2] = $3
     next
   }
 
@@ -115,8 +170,8 @@ awk -v selected_suite="$suite" -v expected_names="$expected_names" '
   END {
     for (expected_index = 1; expected_index <= expected_count; expected_index += 1) {
       name = expected_order[expected_index]
-      if (reference_occurrences[name] != 1) {
-        reject("expected exactly one benchmark reference for " selected_suite "/" name)
+      if (maximum_occurrences[name] != 1) {
+        reject("expected exactly one benchmark maximum for " selected_suite "/" name)
       }
       if (measurement_occurrences[name] != 1) {
         reject("expected exactly one benchmark measurement for " selected_suite "/" name)
@@ -129,15 +184,14 @@ awk -v selected_suite="$suite" -v expected_names="$expected_names" '
 
     for (expected_index = 1; expected_index <= expected_count; expected_index += 1) {
       name = expected_order[expected_index]
-      limit = reference_median[name] * maximum_multiplier[name]
-      if ((observed_median[name] + 0) > (limit + 0)) {
+      limit = maximum_median[name]
+      if (compare_decimals(observed_median[name], limit) > 0) {
         reject("median regression exceeded the reviewed bound for " name \
           " (observed=" observed_median[name] \
-          ", reference=" reference_median[name] \
-          ", multiplier=" maximum_multiplier[name] ")")
+          ", maximum=" maximum_median[name] ")")
       }
     }
 
     exit invalid ? 1 : 0
   }
-' "$reference_path" "$measurement_log"
+' "$maximums_path" "$measurement_log"

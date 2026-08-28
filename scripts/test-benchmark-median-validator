@@ -16,27 +16,39 @@ cleanup() {
 
 trap cleanup EXIT
 
-reference_path="$TEMPORARY_ROOT/reference.tsv"
+maximums_path="$TEMPORARY_ROOT/maximums.tsv"
 valid_log="$TEMPORARY_ROOT/valid.log"
 
-write_reference() {
+write_maximums() {
   printf '%s\n' \
-    '# suite metric reference_median_us maximum_multiplier' \
-    'bitmap roaring.sparse.construct-ascending 427.625 2.0' \
-    'bitmap roaring.sparse.contains-missing 35.834 2.0' \
-    'bitmap roaring.sparse.intersection 328.083 2.0' \
-    'bitmap roaring.sparse.union 968.541 2.0' \
-    'bitmap roaring.sparse.difference 703.292 2.0' \
-    'fulltext fulltext.canonical.intersection 8577.000 2.0' \
-    'fulltext fulltext.canonical.union 5340.917 2.0' \
-    > "$reference_path"
+    '# suite metric maximum_median_us' \
+    'bitmap roaring.sparse.construct-ascending 1282.875' \
+    'bitmap roaring.sparse.contains-missing 107.502' \
+    'bitmap roaring.sparse.intersection 984.249' \
+    'bitmap roaring.sparse.union 2905.623' \
+    'bitmap roaring.sparse.difference 2109.876' \
+    'fulltext fulltext.canonical.intersection 12068.689' \
+    'fulltext fulltext.canonical.union 6698.496' \
+    > "$maximums_path"
 }
 
 write_valid_log() {
   printf '%s\n' \
-    'BENCHMARK fulltext.canonical.intersection unit=us samples=15 median=8577.0' \
-    'BENCHMARK fulltext.canonical.union unit=us samples=15 median=5340.917' \
+    'BENCHMARK fulltext.canonical.intersection unit=us samples=15 median=12068.689' \
+    'BENCHMARK fulltext.canonical.union unit=us samples=15 median=6698.496' \
     > "$valid_log"
+}
+
+write_bitmap_boundary_log() {
+  local bitmap_log="$TEMPORARY_ROOT/bitmap-boundaries.log"
+  printf '%s\n' \
+    'BENCHMARK roaring.sparse.construct-ascending unit=us samples=15 median=1282.875' \
+    'BENCHMARK roaring.sparse.contains-missing unit=us samples=15 median=107.502' \
+    'BENCHMARK roaring.sparse.intersection unit=us samples=15 median=984.249' \
+    'BENCHMARK roaring.sparse.union unit=us samples=15 median=2905.623' \
+    'BENCHMARK roaring.sparse.difference unit=us samples=15 median=2109.876' \
+    > "$bitmap_log"
+  "$VALIDATOR" bitmap "$maximums_path" "$bitmap_log"
 }
 
 expect_failure() {
@@ -49,56 +61,82 @@ expect_failure() {
   fi
 }
 
-write_reference
+write_maximums
 write_valid_log
-"$VALIDATOR" fulltext "$reference_path" "$valid_log"
+"$VALIDATOR" fulltext "$maximums_path" "$valid_log"
+write_bitmap_boundary_log
+
+for over_boundary in 12068.690 6698.497; do
+  over_boundary_log="$TEMPORARY_ROOT/over-boundary-$over_boundary.log"
+  if [[ "$over_boundary" == 12068.690 ]]; then
+    printf '%s\n' \
+      "BENCHMARK fulltext.canonical.intersection unit=us samples=15 median=$over_boundary" \
+      'BENCHMARK fulltext.canonical.union unit=us samples=15 median=6698.496' \
+      > "$over_boundary_log"
+  else
+    printf '%s\n' \
+      'BENCHMARK fulltext.canonical.intersection unit=us samples=15 median=12068.689' \
+      "BENCHMARK fulltext.canonical.union unit=us samples=15 median=$over_boundary" \
+      > "$over_boundary_log"
+  fi
+  expect_failure "over-boundary-$over_boundary" \
+    "$VALIDATOR" fulltext "$maximums_path" "$over_boundary_log"
+done
 
 duplicate_log="$TEMPORARY_ROOT/duplicate.log"
 printf '%s\n' \
-  'BENCHMARK fulltext.canonical.intersection unit=us samples=15 median=8577.0' \
-  'BENCHMARK fulltext.canonical.intersection unit=us samples=15 median=8577.0' \
+  'BENCHMARK fulltext.canonical.intersection unit=us samples=15 median=12068.689' \
+  'BENCHMARK fulltext.canonical.intersection unit=us samples=15 median=12068.689' \
   > "$duplicate_log"
 expect_failure duplicate-measurement \
-  "$VALIDATOR" fulltext "$reference_path" "$duplicate_log"
+  "$VALIDATOR" fulltext "$maximums_path" "$duplicate_log"
 
 for invalid_median in nan 0 -1; do
   invalid_log="$TEMPORARY_ROOT/invalid-$invalid_median.log"
   printf '%s\n' \
     "BENCHMARK fulltext.canonical.intersection unit=us samples=15 median=$invalid_median" \
-    'BENCHMARK fulltext.canonical.union unit=us samples=15 median=5340.917' \
+    'BENCHMARK fulltext.canonical.union unit=us samples=15 median=6698.496' \
     > "$invalid_log"
   expect_failure "invalid-$invalid_median" \
-    "$VALIDATOR" fulltext "$reference_path" "$invalid_log"
+    "$VALIDATOR" fulltext "$maximums_path" "$invalid_log"
 done
 
 overflow_log="$TEMPORARY_ROOT/overflow.log"
 overflowing_median="$(printf '9%.0s' {1..400})"
 printf '%s\n' \
   "BENCHMARK fulltext.canonical.intersection unit=us samples=15 median=$overflowing_median" \
-  'BENCHMARK fulltext.canonical.union unit=us samples=15 median=5340.917' \
+  'BENCHMARK fulltext.canonical.union unit=us samples=15 median=6698.496' \
   > "$overflow_log"
 expect_failure overflow \
-  "$VALIDATOR" fulltext "$reference_path" "$overflow_log"
+  "$VALIDATOR" fulltext "$maximums_path" "$overflow_log"
 
 missing_log="$TEMPORARY_ROOT/missing.log"
 printf '%s\n' \
-  'BENCHMARK fulltext.canonical.intersection unit=us samples=15 median=8577.0' \
+  'BENCHMARK fulltext.canonical.intersection unit=us samples=15 median=12068.689' \
   > "$missing_log"
 expect_failure missing-measurement \
-  "$VALIDATOR" fulltext "$reference_path" "$missing_log"
+  "$VALIDATOR" fulltext "$maximums_path" "$missing_log"
 
-duplicate_reference="$TEMPORARY_ROOT/duplicate-reference.tsv"
-cp "$reference_path" "$duplicate_reference"
+duplicate_maximums="$TEMPORARY_ROOT/duplicate-maximums.tsv"
+cp "$maximums_path" "$duplicate_maximums"
 printf '%s\n' \
-  'fulltext fulltext.canonical.union 5340.917 2.0' \
-  >> "$duplicate_reference"
-expect_failure duplicate-reference \
-  "$VALIDATOR" fulltext "$duplicate_reference" "$valid_log"
+  'fulltext fulltext.canonical.union 6698.496' \
+  >> "$duplicate_maximums"
+expect_failure duplicate-maximum \
+  "$VALIDATOR" fulltext "$duplicate_maximums" "$valid_log"
 
-invalid_reference="$TEMPORARY_ROOT/invalid-reference.tsv"
-sed 's/fulltext\.canonical\.union 5340\.917/fulltext.canonical.union nan/' \
-  "$reference_path" > "$invalid_reference"
-expect_failure invalid-reference \
-  "$VALIDATOR" fulltext "$invalid_reference" "$valid_log"
+legacy_maximums="$TEMPORARY_ROOT/legacy-maximums.tsv"
+printf '%s\n' \
+  'fulltext fulltext.canonical.intersection 12068.689 1.0' \
+  'fulltext fulltext.canonical.union 6698.496 1.0' \
+  > "$legacy_maximums"
+expect_failure legacy-maximum-format \
+  "$VALIDATOR" fulltext "$legacy_maximums" "$valid_log"
+
+invalid_maximums="$TEMPORARY_ROOT/invalid-maximums.tsv"
+sed 's/fulltext\.canonical\.union 6698\.496/fulltext.canonical.union nan/' \
+  "$maximums_path" > "$invalid_maximums"
+expect_failure invalid-maximum \
+  "$VALIDATOR" fulltext "$invalid_maximums" "$valid_log"
 
 echo "benchmark median validator tests passed"

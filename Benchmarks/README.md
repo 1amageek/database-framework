@@ -63,7 +63,7 @@ to prove that the optimized path remains inside the default work budget.
 scripts/xcode-benchmark-harness fulltext
 ```
 
-## 2026-08-22 optimization record
+## 2026-08-22 bitmap optimization record
 
 The optimization applies the ordered-list traversal principle from
 [arXiv:2601.18747](https://arxiv.org/pdf/2601.18747) only where the framework
@@ -72,18 +72,19 @@ Boolean DAG or NOT API. Roaring array containers and full-text posting lists
 now use ordered linear merges instead of rebuilding hash sets and maps at
 every operation.
 
-All values below are medians of 15 release samples measured before and after
-the implementation change on the same Apple M4 Max (14 cores, 36 GB) running
-macOS 27.0 and Swift snapshot 2026-08-14. Absolute timings are machine-specific;
-the paired ratios are the regression reference.
+The bitmap values below are medians of 15 release samples measured before and
+after the implementation change on the same Apple M4 Max (14 cores, 36 GB)
+running macOS 27.0 and Swift snapshot 2026-08-14. Absolute timings are
+machine-specific; the paired ratios are historical context only.
 
-`reference-medians.tsv` applies a 3x median ceiling to the sub-millisecond
-bitmap workloads and a 2x ceiling to the full-text workloads. The bitmap
-ceiling accounts for virtualization and scheduler variance while still
-requiring every operation to remain at least 3.7x faster than its paired
-pre-optimization baseline. The harness also requires the exact reviewed
-metric-name set, one finite positive median per metric, and zero compiler,
-analyzer, and runtime warnings.
+`maximum-medians.tsv` stores absolute maximum medians for each reviewed
+metric. The bitmap maxima preserve the previously reviewed 3x ceilings. The
+current FullText maxima are owned by the
+[FullTextIndex design contract](../Sources/FullTextIndex/DESIGN.md) and are
+enforced by the same executable validator; the historical FullText samples
+are not a release gate. The harness requires the exact reviewed metric-name
+set, one finite positive median per metric, and zero compiler, analyzer, and
+runtime warnings.
 
 | Benchmark | Baseline (us) | Optimized (us) | Speedup |
 |---|---:|---:|---:|
@@ -92,5 +93,3 @@ analyzer, and runtime warnings.
 | Roaring sparse intersection | 8,458.250 | 328.083 | 25.8x |
 | Roaring sparse union | 42,105.833 | 968.541 | 43.5x |
 | Roaring sparse difference | 7,834.542 | 703.292 | 11.1x |
-| Full-text canonical intersection | 10,584.584 | 8,577.000 | 1.23x |
-| Full-text canonical union | 19,298.667 | 5,340.917 | 3.61x |

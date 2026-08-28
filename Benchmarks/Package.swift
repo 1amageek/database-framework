@@ -12,15 +12,15 @@ let package = Package(
         .package(path: "../../database-framework-benchmark"),
         .package(
             url: "https://github.com/1amageek/database-kit.git",
-            from: "26.0819.0"
+            revision: "cca9c9da970c7cbf2d41e8f7471632df0aa92ff2"
         ),
         .package(
             url: "https://github.com/1amageek/database-types.git",
-            from: "26.0730.0"
+            revision: "d075edcb37f8a7be845c5be4d6a7a226d899505b"
         ),
         .package(
             url: "https://github.com/1amageek/storage-kit.git",
-            revision: "00d4c48e824f1055e02f51ebdffe5b8dc42645d3"
+            revision: "53e615faee772d2ee7c1a59311beaf8e8f0cf7c1"
         ),
         .package(
             url: "https://github.com/1amageek/swift-testing-heartbeat.git",

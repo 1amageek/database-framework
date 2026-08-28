@@ -209,14 +209,14 @@ source_remote="$(git -C "$ROOT_DIR" remote get-url origin)"
 git -C "$ROOT_DIR" archive --format=tar "$source_revision" \
   | tar -xf - -C "$isolated_source"
 package_directory="$isolated_source/$relative_package_directory"
-reference_path="$isolated_source/Benchmarks/reference-medians.tsv"
+maximums_path="$isolated_source/Benchmarks/maximum-medians.tsv"
 
 if [[ ! -f "$package_directory/Package.resolved" ]]; then
   echo "error: committed dependency pins are required: $package_directory/Package.resolved" >&2
   exit 1
 fi
-if [[ ! -f "$reference_path" ]]; then
-  echo "error: benchmark median references are unavailable: $reference_path" >&2
+if [[ ! -f "$maximums_path" ]]; then
+  echo "error: benchmark maxima are unavailable: $maximums_path" >&2
   exit 1
 fi
 
@@ -361,7 +361,7 @@ if [[ "$measurement_count" != "$expected_measurement_count" ]]; then
 fi
 
 "$isolated_source/scripts/validate-benchmark-medians" \
-  "$benchmark" "$reference_path" "$test_log"
+  "$benchmark" "$maximums_path" "$test_log"
 
 grep '^BENCHMARK ' "$test_log"
 echo "Passed: $passed_count"

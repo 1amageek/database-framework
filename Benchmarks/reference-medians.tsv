@@ -1,8 +1,0 @@
-# suite metric reference_median_us maximum_multiplier
-bitmap roaring.sparse.construct-ascending 427.625 3.0
-bitmap roaring.sparse.contains-missing 35.834 3.0
-bitmap roaring.sparse.intersection 328.083 3.0
-bitmap roaring.sparse.union 968.541 3.0
-bitmap roaring.sparse.difference 703.292 3.0
-fulltext fulltext.canonical.intersection 8577.000 2.0
-fulltext fulltext.canonical.union 5340.917 2.0
