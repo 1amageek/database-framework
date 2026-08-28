@@ -37,15 +37,20 @@ struct FullTextPostingCandidate: Sendable, Equatable {
             }
         )
 
-        let canonicalByteCount = identifier.packedByteCount
-        let nextFootprint = try admittedFootprint.adding(
-            DatabaseIntermediateFootprint(bytes: UInt64(canonicalByteCount))
+        let canonicalKey = try identifier.pack(
+            admitting: { allocation in
+                let bytes = UInt64(allocation)
+                let nextFootprint = try admittedFootprint.adding(
+                    DatabaseIntermediateFootprint(bytes: bytes)
+                )
+                try admit(allocation)
+                admittedFootprint = nextFootprint
+            }
         )
-        try admit(canonicalByteCount)
 
         self.identifier = identifier
-        self.canonicalKey = identifier.pack()
-        self.retainedFootprint = nextFootprint
+        self.canonicalKey = canonicalKey
+        self.retainedFootprint = admittedFootprint
     }
 
     static func == (

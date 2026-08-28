@@ -38,6 +38,7 @@ The module never replaces a sealed authorization result with ambient state.
 |---|---|---|---|---|
 | [`database-framework`](../../DESIGN.md) | parent | session, authorization, row, and work-meter contracts | Provides the admitted read boundary and canonical output type. | Re-check callers when session or row ownership changes. |
 | [`DatabaseEngine Read`](../DatabaseEngine/Read/DESIGN.md) | depends on | `DatabaseReadSession`, `IndexReadResult`, bounded read capability | Owns authorization, snapshot, transaction, and result admission. | FullText must not create a nested transaction or perform policy decisions. |
+| [`StorageKit Tuple`](https://github.com/1amageek/storage-kit/blob/9df21225765dabf18b91044803d759684d817c5e/Sources/StorageKit/Tuple/DESIGN.md) | depends on | canonical Tuple decoding and admission-aware packing | Measures the exact canonical byte count, admits it before allocation, and encodes once. | FullText must not estimate the canonical allocation from source bytes or encode the key independently. |
 | [`Autocomplete`](Autocomplete/DESIGN.md) | child | retained suggestion owner and cursor cleanup | Defines autocomplete-specific output ownership. | Limit is applied before public promotion. |
 | [`Facet`](Facet/DESIGN.md) | child | row-field aggregation and retained metadata | Defines facet-specific aggregation ownership. | Facets must not inspect raw model objects. |
 
@@ -57,7 +58,8 @@ DatabaseReadSession + DatabaseWorkMeter
     borrow and admit the source suffix owner
     detach suffix; validate/decode Tuple once
     record exact decoder allocation increments
-    admit and pack one canonical comparison key
+    measure and admit one canonical comparison key
+    allocate and encode it once
               |
               v
   FullTextCandidateBatch (one collection reservation)
@@ -87,13 +89,14 @@ independent resource owner.
   before detachment. Tuple decode allocations are admitted before creation
   through the `Tuple(packed:admitting:)` callback; validation and decoding
   happen exactly once before algebraic filtering.
-- A decoder-accepted suffix is canonicalized exactly once at the scan boundary:
-  `Tuple.packedByteCount` admits the exact comparison-key payload before the
-  sole `Tuple.pack()` call creates it. Decoder-accepted non-canonical encodings
-  are not rejected merely for their byte form; their canonical comparison key
-  preserves the previous algebra's logical equality, ordering, and duplicate
-  removal. Structurally malformed suffixes still fail as a typed error before
-  algebraic filtering.
+- A decoder-accepted suffix is canonicalized exactly once at the scan boundary.
+  `Tuple.pack(admitting:)` measures the exact comparison-key payload once,
+  passes that count to FullText admission before allocation, then allocates and
+  encodes the key once. Decoder-accepted non-canonical encodings are not
+  rejected merely for their byte form; their canonical comparison key preserves
+  the previous algebra's logical equality, ordering, and duplicate removal.
+  Structurally malformed suffixes still fail as a typed error before algebraic
+  filtering.
 - A candidate contains exactly one decoded `Tuple`, its canonical packed
   comparison key, and the exact `DatabaseIntermediateFootprint` admitted for
   that candidate. The footprint is the actual metered row and byte claim built
@@ -134,15 +137,17 @@ For a canonical search, the executor decodes parameters, validates the sealed
 session admission, resolves the readable index, and opens the bounded posting
 cursor. The scan/admission boundary admits destination bookkeeping and the
 exact source owner copy, detaches it, admits each decode allocation before it
-is created, and decodes the `Tuple` once. It then admits the measured canonical
-key payload and packs the tuple once. The resulting candidate records the exact
-claim made while constructing it. Only then is the candidate appended to the
-batch and passed to ordered algebra. Intersection and union compare canonical
-keys and reuse the surviving candidates' recorded footprints without tuple
-conversion or footprint estimation; decode or cursor failure releases the
-whole batch after cursor cleanup. The retained-key builder reuses the winning
-tuples and canonical byte counts before retained models or polymorphic entries
-are fetched through the session and canonical rows are appended.
+is created, and decodes the `Tuple` once. It then calls the Tuple-owned
+admission-aware pack contract, which measures the canonical key once, admits
+that exact count before allocation, and encodes once. The resulting candidate
+records the exact claim made while constructing it. Only then is the candidate
+appended to the batch and passed to ordered algebra. Intersection and union
+compare canonical keys and reuse the surviving candidates' recorded footprints
+without tuple conversion or footprint estimation; decode or cursor failure
+releases the whole batch after cursor cleanup. The retained-key builder reuses
+the winning tuples and canonical byte counts before retained models or
+polymorphic entries are fetched through the session and canonical rows are
+appended.
 
 Plain, scored, and polymorphic posting reads share this candidate path.
 Scoring is complete before row append. Faceted execution completes retained
@@ -179,10 +184,12 @@ canonical-key admission, or candidate-append failure never leaves a partially
 admitted collection. Suffix detachment is bounded by the scanned key and has
 no pointer escape or unbounded materialization fallback.
 
-This contract does not change public FullText APIs, `StorageKit` APIs,
-transaction behavior, persisted index layout, key encoding, tokenization,
-scoring, facets, phrase semantics, query semantics, or limit pushdown. It does
-not add a second decoded-algebra representation or a compatibility bridge.
+The dependency contract adds only StorageKit's admission-aware Tuple packing
+entry point; it does not change existing Tuple packing behavior or canonical
+encoding. This contract does not change public FullText APIs, transaction
+behavior, persisted index layout, key encoding, tokenization, scoring, facets,
+phrase semantics, query semantics, or limit pushdown. It does not add a second
+decoded-algebra representation or a compatibility bridge.
 
 ## Verification and Change Impact
 
