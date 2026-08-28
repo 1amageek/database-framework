@@ -88,18 +88,19 @@ private struct BM25ScoringContext {
         }
     }
 
-    func getBM25Statistics() async throws -> BM25Statistics {
+    func readPersistedBM25Statistics() async throws -> BM25Statistics {
         try await database.withTransaction { transaction in
-            try await maintainer.getBM25Statistics(transaction: transaction)
-        }
-    }
-
-    func searchWithScores(terms: [String], params: BM25Parameters = .default) async throws -> [(id: Tuple, score: Double)] {
-        try await database.withTransaction { transaction in
-            try await maintainer.searchWithScores(
-                terms: terms,
-                bm25Params: params,
-                transaction: transaction
+            let documentCount = try await transaction.getValue(
+                for: FullTextStorageLayout.documentCountKey(in: indexSubspace),
+                snapshot: true
+            )
+            let totalLength = try await transaction.getValue(
+                for: FullTextStorageLayout.totalDocumentLengthKey(in: indexSubspace),
+                snapshot: true
+            )
+            return BM25Statistics(
+                totalDocuments: try documentCount.map(ByteConversion.bytesToInt64) ?? 0,
+                totalLength: try totalLength.map(ByteConversion.bytesToInt64) ?? 0
             )
         }
     }
@@ -221,7 +222,7 @@ struct BM25IntegrationTests {
         try await ctx.indexArticles(articles)
 
         // Check statistics
-        let stats = try await ctx.getBM25Statistics()
+        let stats = try await ctx.readPersistedBM25Statistics()
 
         #expect(stats.totalDocuments == 3, "Should have 3 documents")
         #expect(stats.averageDocumentLength > 0, "Average doc length should be positive")
@@ -237,7 +238,7 @@ struct BM25IntegrationTests {
         let article = BM25Article(id: "a1", title: "Test", content: "Swift programming language")
         try await ctx.indexArticle(article)
 
-        let statsBefore = try await ctx.getBM25Statistics()
+        let statsBefore = try await ctx.readPersistedBM25Statistics()
         #expect(statsBefore.totalDocuments == 1)
 
         // Delete the article
@@ -249,177 +250,11 @@ struct BM25IntegrationTests {
             )
         }
 
-        let statsAfter = try await ctx.getBM25Statistics()
+        let statsAfter = try await ctx.readPersistedBM25Statistics()
         #expect(statsAfter.totalDocuments == 0, "Should have 0 documents after delete")
 
         try await ctx.cleanup()
     }
 
-    @Test("BM25 scored search returns ranked results")
-    func testBM25ScoredSearchReturnsRankedResults() async throws {
-        try await FoundationDBScenarioCoordinator.shared.initialize()
-        let ctx = try await BM25ScoringContext()
-
-        // Create articles with varying relevance to "swift programming"
-        // Note: BM25 IDF is positive only when df < N/2
-        // So we need enough non-matching documents to make query terms "rare"
-        let articles = [
-            // Most relevant: has both terms multiple times
-            BM25Article(id: "a1", title: "Swift Guide", content: "Swift programming Swift programming Swift"),
-            // Somewhat relevant: has both terms once
-            BM25Article(id: "a2", title: "Languages", content: "Swift programming and other languages"),
-            // Less relevant: only has one term
-            BM25Article(id: "a3", title: "Python", content: "Python development is fun"),
-            // Non-matching documents to make query terms rarer (positive IDF)
-            BM25Article(id: "a4", title: "Other", content: "Something completely different"),
-            BM25Article(id: "a5", title: "Database", content: "Database systems and storage engines"),
-            BM25Article(id: "a6", title: "Networks", content: "Network protocols and communication"),
-            BM25Article(id: "a7", title: "Security", content: "Encryption and authentication methods"),
-            BM25Article(id: "a8", title: "Cloud", content: "Cloud computing and infrastructure"),
-        ]
-
-        try await ctx.indexArticles(articles)
-
-        // Search for "swift programming"
-        let results = try await ctx.searchWithScores(terms: ["swift", "programming"])
-
-        // Should only match a1, a2 (both terms)
-        #expect(results.count == 2, "Should match documents with both terms")
-
-        // Results should be sorted by score (descending)
-        if results.count >= 2 {
-            for i in 0..<(results.count - 1) {
-                #expect(results[i].score >= results[i + 1].score, "Results should be sorted by score descending")
-            }
-        }
-
-        // a1 should be ranked higher than a2 (more term occurrences)
-        if results.count >= 2 {
-            let firstId = results[0].id[0] as? String
-            #expect(firstId == "a1", "Document with most term occurrences should rank first")
-        }
-
-        try await ctx.cleanup()
-    }
-
-    @Test("BM25 length normalization affects ranking")
-    func testBM25LengthNormalizationAffectsRanking() async throws {
-        try await FoundationDBScenarioCoordinator.shared.initialize()
-        let ctx = try await BM25ScoringContext()
-
-        // Two documents with same TF but different lengths
-        // Plus non-matching documents to ensure positive IDF for "swift"
-        // (BM25 IDF is negative when term appears in majority of docs)
-        let articles = [
-            // Short document with "swift"
-            BM25Article(id: "short", title: "Short", content: "Swift is fast"),
-            // Long document with "swift" (same TF=1, but much longer)
-            BM25Article(
-                id: "long",
-                title: "Long",
-                content: "Swift is a wonderful language that was created by Apple and is used for iOS development and macOS development and many other things in the software industry"
-            ),
-            // Non-matching documents to make "swift" rare (positive IDF)
-            BM25Article(id: "d1", title: "Python", content: "Python is great for data science"),
-            BM25Article(id: "d2", title: "Java", content: "Java runs on billions of devices"),
-            BM25Article(id: "d3", title: "Rust", content: "Rust provides memory safety guarantees"),
-            BM25Article(id: "d4", title: "Go", content: "Go excels at concurrent programming"),
-        ]
-
-        try await ctx.indexArticles(articles)
-
-        let results = try await ctx.searchWithScores(terms: ["swift"])
-
-        #expect(results.count == 2, "Both swift documents should match")
-
-        // Short document should rank higher due to length normalization
-        if results.count == 2 {
-            let firstId = results[0].id[0] as? String
-            #expect(firstId == "short", "Shorter document should rank higher with same TF")
-        }
-
-        try await ctx.cleanup()
-    }
-
-    @Test("BM25 custom parameters work")
-    func testBM25CustomParametersWork() async throws {
-        try await FoundationDBScenarioCoordinator.shared.initialize()
-        let ctx = try await BM25ScoringContext()
-
-        let articles = [
-            BM25Article(id: "short", title: "Short", content: "Swift is great"),
-            BM25Article(
-                id: "long",
-                title: "Long",
-                content: "Swift is a wonderful language with many features and capabilities for modern development"
-            ),
-        ]
-
-        try await ctx.indexArticles(articles)
-
-        // With no length normalization (b=0), long document shouldn't be penalized
-        let resultsNoNorm = try await ctx.searchWithScores(
-            terms: ["swift"],
-            params: BM25Parameters.noLengthNorm
-        )
-
-        // With strong normalization (b=1), short document should win more decisively
-        let resultsStrongNorm = try await ctx.searchWithScores(
-            terms: ["swift"],
-            params: BM25Parameters.strongLengthNorm
-        )
-
-        #expect(resultsNoNorm.count == 2)
-        #expect(resultsStrongNorm.count == 2)
-
-        // The score difference should be larger with strong normalization
-        if resultsStrongNorm.count == 2 && resultsNoNorm.count == 2 {
-            let diffStrong = resultsStrongNorm[0].score - resultsStrongNorm[1].score
-            let diffNoNorm = resultsNoNorm[0].score - resultsNoNorm[1].score
-
-            // With b=0, scores should be more similar
-            // With b=1, short doc should have much higher relative score
-            #expect(diffStrong.magnitude >= diffNoNorm.magnitude,
-                    "Strong normalization should create larger score difference")
-        }
-
-        try await ctx.cleanup()
-    }
-
-    @Test("BM25 rare terms score higher than common terms")
-    func testBM25RareTermsScoreHigher() async throws {
-        try await FoundationDBScenarioCoordinator.shared.initialize()
-        let ctx = try await BM25ScoringContext()
-
-        // Create corpus where "programming" is common but "swift" is rare
-        let articles = [
-            BM25Article(id: "a1", title: "Swift", content: "Swift programming"),
-            BM25Article(id: "a2", title: "Python", content: "Python programming"),
-            BM25Article(id: "a3", title: "Java", content: "Java programming"),
-            BM25Article(id: "a4", title: "Rust", content: "Rust programming"),
-            BM25Article(id: "a5", title: "Go", content: "Go programming"),
-        ]
-
-        try await ctx.indexArticles(articles)
-
-        // Search for "swift" (rare - in 1/5 docs)
-        let swiftResults = try await ctx.searchWithScores(terms: ["swift"])
-
-        // Search for "programming" (common - in 5/5 docs)
-        let programmingResults = try await ctx.searchWithScores(terms: ["programming"])
-
-        // Swift search should give higher score to matching doc
-        // because it's a rarer term (higher IDF)
-        #expect(swiftResults.count == 1)
-        #expect(programmingResults.count == 5)
-
-        if !swiftResults.isEmpty && !programmingResults.isEmpty {
-            // The rare term "swift" should have higher score than common term "programming"
-            #expect(swiftResults[0].score > programmingResults[0].score,
-                    "Rare term should produce higher score")
-        }
-
-        try await ctx.cleanup()
-    }
 }
 #endif

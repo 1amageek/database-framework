@@ -78,24 +78,6 @@ private struct FullTextIndexContext {
         }
     }
 
-    func searchTerm(_ term: String) async throws -> [[any TupleElement]] {
-        try await database.withTransaction { transaction in
-            try await maintainer.searchTerm(term, transaction: transaction)
-        }
-    }
-
-    func searchTermsAND(_ terms: [String]) async throws -> [[any TupleElement]] {
-        try await database.withTransaction { transaction in
-            try await maintainer.searchTermsAND(terms, transaction: transaction)
-        }
-    }
-
-    func searchTermsOR(_ terms: [String]) async throws -> [[any TupleElement]] {
-        try await database.withTransaction { transaction in
-            try await maintainer.searchTermsOR(terms, transaction: transaction)
-        }
-    }
-
     func posting(term: String, id: String) async throws -> ByteString? {
         try await database.withTransaction { transaction in
             let key = indexSubspace
@@ -272,104 +254,11 @@ struct FullTextIndexBehaviorTests {
             )
         }
 
-        // Search for old terms
-        let helloResults = try await ctx.searchTerm("hello")
-        #expect(helloResults.isEmpty, "Should not find 'hello' after update")
+        let oldPosting = try await ctx.posting(term: "hello", id: "a1")
+        #expect(oldPosting == nil, "The old term should be removed after update")
 
-        // Search for new terms
-        let goodbyeResults = try await ctx.searchTerm("goodbye")
-        #expect(goodbyeResults.count == 1, "Should find 'goodbye' after update")
-
-        try await ctx.cleanup()
-    }
-
-    // MARK: - Search Tests
-
-    @Test("Simple term search")
-    func testSimpleTermSearch() async throws {
-        let ctx = try await FullTextIndexContext()
-
-        let articles = [
-            SearchableArticle(id: "a1", title: "Swift", content: "Swift is a modern programming language"),
-            SearchableArticle(id: "a2", title: "Python", content: "Python is also a programming language"),
-            SearchableArticle(id: "a3", title: "Rust", content: "Rust is a systems language"),
-        ]
-
-        try await ctx.database.withTransaction { transaction in
-            for article in articles {
-                try await ctx.maintainer.updateIndex(
-                    oldItem: nil,
-                    newItem: article,
-                    transaction: transaction
-                )
-            }
-        }
-
-        // Search for "swift"
-        let swiftResults = try await ctx.searchTerm("swift")
-        #expect(swiftResults.count == 1, "Should find 1 document with 'swift'")
-
-        // Search for "programming" (in 2 documents)
-        let programmingResults = try await ctx.searchTerm("programming")
-        #expect(programmingResults.count == 2, "Should find 2 documents with 'programming'")
-
-        // Search for "language" (in all 3)
-        let languageResults = try await ctx.searchTerm("language")
-        #expect(languageResults.count == 3, "Should find 3 documents with 'language'")
-
-        try await ctx.cleanup()
-    }
-
-    @Test("Boolean AND query")
-    func testBooleanANDQuery() async throws {
-        let ctx = try await FullTextIndexContext()
-
-        let articles = [
-            SearchableArticle(id: "a1", title: "Swift", content: "Swift is modern and fast"),
-            SearchableArticle(id: "a2", title: "Python", content: "Python is modern but slow"),
-            SearchableArticle(id: "a3", title: "Rust", content: "Rust is fast and safe"),
-        ]
-
-        try await ctx.database.withTransaction { transaction in
-            for article in articles {
-                try await ctx.maintainer.updateIndex(
-                    oldItem: nil,
-                    newItem: article,
-                    transaction: transaction
-                )
-            }
-        }
-
-        // Search for "modern" AND "fast" (only Swift)
-        let results = try await ctx.searchTermsAND(["modern", "fast"])
-        #expect(results.count == 1, "Should find 1 document with both 'modern' and 'fast'")
-
-        try await ctx.cleanup()
-    }
-
-    @Test("Boolean OR query")
-    func testBooleanORQuery() async throws {
-        let ctx = try await FullTextIndexContext()
-
-        let articles = [
-            SearchableArticle(id: "a1", title: "Swift", content: "Swift is fast"),
-            SearchableArticle(id: "a2", title: "Python", content: "Python is slow"),
-            SearchableArticle(id: "a3", title: "Rust", content: "Rust is safe"),
-        ]
-
-        try await ctx.database.withTransaction { transaction in
-            for article in articles {
-                try await ctx.maintainer.updateIndex(
-                    oldItem: nil,
-                    newItem: article,
-                    transaction: transaction
-                )
-            }
-        }
-
-        // Search for "fast" OR "slow" (Swift and Python)
-        let results = try await ctx.searchTermsOR(["fast", "slow"])
-        #expect(results.count == 2, "Should find 2 documents with 'fast' or 'slow'")
+        let newPosting = try await ctx.posting(term: "goodbye", id: "a1")
+        #expect(newPosting != nil, "The new term should be indexed after update")
 
         try await ctx.cleanup()
     }
@@ -390,9 +279,9 @@ struct FullTextIndexBehaviorTests {
             )
         }
 
-        // All forms should match "run" after stemming
-        let results = try await ctx.searchTerm("run")
-        #expect(results.count >= 1, "Stemmed search should find the document")
+        // All forms should produce the normalized "run" posting.
+        let posting = try await ctx.posting(term: "run", id: "a1")
+        #expect(posting != nil, "Stemming should write the normalized posting")
 
         try await ctx.cleanup()
     }
@@ -418,34 +307,10 @@ struct FullTextIndexBehaviorTests {
             }
         }
 
-        let results = try await ctx.searchTerm("article")
-        #expect(results.count == 2, "Should find both articles with 'article'")
-
-        try await ctx.cleanup()
-    }
-
-    // MARK: - Edge Cases
-
-    @Test("Case insensitive search")
-    func testCaseInsensitiveSearch() async throws {
-        let ctx = try await FullTextIndexContext()
-
-        let article = SearchableArticle(id: "a1", title: "Test", content: "Hello WORLD")
-
-        try await ctx.database.withTransaction { transaction in
-            try await ctx.maintainer.updateIndex(
-                oldItem: nil,
-                newItem: article,
-                transaction: transaction
-            )
-        }
-
-        // Search with different cases
-        let lowerResults = try await ctx.searchTerm("world")
-        let upperResults = try await ctx.searchTerm("WORLD")
-
-        #expect(lowerResults.count == 1, "Should find with lowercase")
-        #expect(upperResults.count == 1, "Should find with uppercase")
+        let firstPosting = try await ctx.posting(term: "article", id: "a1")
+        let secondPosting = try await ctx.posting(term: "article", id: "a2")
+        #expect(firstPosting != nil)
+        #expect(secondPosting != nil)
 
         try await ctx.cleanup()
     }

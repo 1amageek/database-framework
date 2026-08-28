@@ -13,7 +13,7 @@ private struct FullTextReadResourceArticle {
         .text(
             name: "FullTextReadResourceArticle_body",
             fields: [\FullTextReadResourceArticle.body],
-            mode: .fullText(tokenizer: .simple)
+            mode: .fullText(tokenizer: .simple, storePositions: true)
         )
     )
 
@@ -24,6 +24,202 @@ private struct FullTextReadResourceArticle {
 
 @Suite("Full-text read resource lifecycle", .serialized)
 struct FullTextReadResourceLifecycleTests {
+    @Test("Public regular queries normalize all and any terms")
+    func publicRegularQueriesNormalizeAllAndAnyTerms() async throws {
+        let container = try await makeFullTextReadResourceContainer(
+            identifier: "fulltext-public-normalization-tests"
+        )
+        defer { await container.shutdown() }
+
+        let context = container.testBaseContext()
+        try await saveFullTextReadResourceArticles(
+            [
+                FullTextReadResourceArticle(
+                    id: "both",
+                    body: "Swift database",
+                    payload: "news"
+                ),
+                FullTextReadResourceArticle(
+                    id: "swift",
+                    body: "swift engine",
+                    payload: "guide"
+                ),
+                FullTextReadResourceArticle(
+                    id: "database",
+                    body: "database engine",
+                    payload: "reference"
+                ),
+            ],
+            in: context
+        )
+
+        let all = try await context.search(FullTextReadResourceArticle.self)
+            .fullText(FullTextReadResourceArticle.fields.body)
+            .terms(["SWIFT", "swift", "DATABASE"], mode: .all)
+            .execute()
+        #expect(Set(all.map(\.id)) == Set(["both"]))
+
+        let any = try await context.search(FullTextReadResourceArticle.self)
+            .fullText(FullTextReadResourceArticle.fields.body)
+            .terms(["SWIFT", "DATABASE"], mode: .any)
+            .execute()
+        #expect(Set(any.map(\.id)) == Set(["both", "swift", "database"]))
+    }
+
+    @Test("Public phrase queries require adjacent positions")
+    func publicPhraseQueriesRequireAdjacentPositions() async throws {
+        let container = try await makeFullTextReadResourceContainer(
+            identifier: "fulltext-public-phrase-tests"
+        )
+        defer { await container.shutdown() }
+
+        let context = container.testBaseContext()
+        try await saveFullTextReadResourceArticles(
+            [
+                FullTextReadResourceArticle(
+                    id: "phrase",
+                    body: "machine learning systems",
+                    payload: "news"
+                ),
+                FullTextReadResourceArticle(
+                    id: "separated",
+                    body: "machine systems learning",
+                    payload: "guide"
+                ),
+            ],
+            in: context
+        )
+
+        let results = try await context.search(FullTextReadResourceArticle.self)
+            .fullText(FullTextReadResourceArticle.fields.body)
+            .terms(["MACHINE", "LEARNING"], mode: .phrase)
+            .execute()
+        #expect(results.map(\.id) == ["phrase"])
+    }
+
+    @Test("Public BM25 queries rank and apply parameters")
+    func publicBM25QueriesRankAndApplyParameters() async throws {
+        let container = try await makeFullTextReadResourceContainer(
+            identifier: "fulltext-public-bm25-tests"
+        )
+        defer { await container.shutdown() }
+
+        let context = container.testBaseContext()
+        try await saveFullTextReadResourceArticles(
+            [
+                FullTextReadResourceArticle(
+                    id: "high",
+                    body: "swift swift swift",
+                    payload: "news"
+                ),
+                FullTextReadResourceArticle(
+                    id: "low",
+                    body: "swift",
+                    payload: "guide"
+                ),
+                FullTextReadResourceArticle(
+                    id: "outside-one",
+                    body: "database",
+                    payload: "reference"
+                ),
+                FullTextReadResourceArticle(
+                    id: "outside-two",
+                    body: "storage",
+                    payload: "reference"
+                ),
+                FullTextReadResourceArticle(
+                    id: "outside-three",
+                    body: "engine",
+                    payload: "reference"
+                ),
+            ],
+            in: context
+        )
+
+        let defaultResults = try await context.search(
+            FullTextReadResourceArticle.self
+        )
+        .fullText(FullTextReadResourceArticle.fields.body)
+        .terms(["swift"])
+        .bm25(k1: 1.2, b: 0.75)
+        .executeWithScores()
+        let noNormalizationResults = try await context.search(
+            FullTextReadResourceArticle.self
+        )
+        .fullText(FullTextReadResourceArticle.fields.body)
+        .terms(["swift"])
+        .bm25(k1: 1.2, b: 0.0)
+        .executeWithScores()
+
+        #expect(defaultResults.map(\.item.id) == ["high", "low"])
+        #expect(noNormalizationResults.map(\.item.id) == ["high", "low"])
+        let defaultScores = Dictionary(
+            uniqueKeysWithValues: defaultResults.map { ($0.item.id, $0.score) }
+        )
+        let noNormalizationScores = Dictionary(
+            uniqueKeysWithValues: noNormalizationResults.map {
+                ($0.item.id, $0.score)
+            }
+        )
+        let defaultHighScore = try #require(defaultScores["high"])
+        let noNormalizationHighScore = try #require(
+            noNormalizationScores["high"]
+        )
+        let scoreDifference = abs(defaultHighScore - noNormalizationHighScore)
+        #expect(scoreDifference > 0.0001)
+    }
+
+    @Test("Public faceted queries preserve total count and limit")
+    func publicFacetedQueriesPreserveTotalCountAndLimit() async throws {
+        let container = try await makeFullTextReadResourceContainer(
+            identifier: "fulltext-public-facets-tests"
+        )
+        defer { await container.shutdown() }
+
+        let context = container.testBaseContext()
+        try await saveFullTextReadResourceArticles(
+            [
+                FullTextReadResourceArticle(
+                    id: "first",
+                    body: "swift alpha",
+                    payload: "news"
+                ),
+                FullTextReadResourceArticle(
+                    id: "second",
+                    body: "swift beta",
+                    payload: "news"
+                ),
+                FullTextReadResourceArticle(
+                    id: "third",
+                    body: "swift gamma",
+                    payload: "guide"
+                ),
+                FullTextReadResourceArticle(
+                    id: "outside",
+                    body: "database",
+                    payload: "reference"
+                ),
+            ],
+            in: context
+        )
+
+        let result = try await context.search(FullTextReadResourceArticle.self)
+            .fullText(FullTextReadResourceArticle.fields.body)
+            .terms(["swift"])
+            .limit(2)
+            .facet(FullTextReadResourceArticle.fields.payload, limit: 10)
+            .executeWithFacets()
+
+        #expect(result.items.count == 2)
+        #expect(result.totalCount == 3)
+        let buckets = try #require(result.facets["payload"])
+        #expect(buckets.count == 2)
+        #expect(buckets[0].value == "news")
+        #expect(buckets[0].count == 2)
+        #expect(buckets[1].value == "guide")
+        #expect(buckets[1].count == 1)
+    }
+
     @Test("Oversized persisted payload is rejected before decode retention")
     func oversizedPersistedPayloadIsRejectedAndReleasesReservation() async throws {
         let schema = try Schema(
