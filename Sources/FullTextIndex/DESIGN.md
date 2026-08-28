@@ -271,13 +271,12 @@ canonical-row contracts requires rechecking this module and the parent
 
 The release benchmark contract is owned by this design and defines one test,
 two metrics, and 15 samples per metric through the real SQLite public query
-path. Its exact maxima are intersection `12,068.689` microseconds and union
-`6,698.496` microseconds. The executable validator at
-`Benchmarks/FullTextQuery/Tests/FullTextQueryPerformanceBenchmarks/` is the
-enforcement point and must read and enforce those exact maxima without
-reinterpretation. A median above either maximum is a failure; a
-reference-plus-multiplier gate is not equivalent. The current multiplier
-validator is a retiring consumer and must be replaced before release.
+path. The executable limit source is `Benchmarks/maximum-medians.tsv`; it
+defines the exact maxima for intersection `12,068.689` microseconds and union
+`6,698.496` microseconds. `scripts/validate-benchmark-medians` enforces both
+measurements without reinterpretation: a median above either maximum fails,
+and no reference-plus-multiplier path exists. The benchmark entry point is
+`Benchmarks/FullTextQuery/Tests/FullTextQueryPerformanceBenchmarks/`.
 Benchmark evidence does not replace focused behavioral proof, and
 package-level verification runs only after the feature boundary has
 converged.
