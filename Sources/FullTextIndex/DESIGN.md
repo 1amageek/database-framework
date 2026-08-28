@@ -3,22 +3,27 @@
 ## Purpose and Scope
 
 `FullTextIndex` is the feature module for full-text index maintenance and
-read-side query execution in `database-framework`. Its read contract covers
-plain, scored, faceted, polymorphic, and autocomplete results. The parent
+read-side query execution in `database-framework`. Its supported read
+contract consists of typed regular and polymorphic queries, Fusion inputs,
+and autocomplete suggestions. Regular queries cover plain, scored, and
+faceted results; polymorphic queries cover plain and scored pages. The parent
 design is [`database-framework`](../../DESIGN.md); the child designs are
 [`Autocomplete`](Autocomplete/DESIGN.md) and [`Facet`](Facet/DESIGN.md).
 
-This design covers read execution, posting-candidate representation, and
-intermediate ownership. A posting candidate is the single FullText-owned
-combination of one decoded `Tuple`, one canonical packed comparison key, and
-the exact footprint admitted for that candidate. Index layout, writes, token
-analysis, BM25 formula definition, Fusion orchestration, and application
-schemas remain outside this module.
+This design covers the supported read surface, write-maintainer boundary,
+posting-candidate representation, BM25 scoring, and intermediate ownership.
+A posting candidate is the single FullText-owned combination of one decoded
+`Tuple`, one canonical packed comparison key, and the exact footprint
+admitted for that candidate. Schema declarations and index configuration are
+owned by `DatabaseKit`; application schemas and Fusion orchestration remain
+outside this module.
 
 ## Responsibilities and Boundaries
 
 FullTextIndex owns:
 
+- maintaining persisted full-text postings, document metadata, and BM25
+  corpus statistics through `FullTextIndexMaintainer`;
 - decoding and combining full-text posting and document metadata;
 - validating and admitting scanned posting identifiers into one candidate;
 - preserving full-text match ordering and score annotations;
@@ -26,11 +31,31 @@ FullTextIndex owns:
 - facet counting from completed retained rows;
 - autocomplete cursor traversal and suggestion ordering.
 
-It does not own authorization, transaction creation, schema leases, or work
-meter identity. `DatabaseEngine` supplies one authorized
+`FullTextTermNormalizer` is an internal implementation contract. It derives
+its tokenizer, n-gram, and minimum-term-length configuration solely from the
+schema-declared full-text index definition and is used symmetrically by the
+write and canonical read paths. It is not a general text-analysis API.
+
+`BM25Parameters`, `BM25Statistics`, and `BM25Scorer` are active FullText
+contracts. The maintainer persists corpus statistics; the canonical read
+executors consume those statistics inside the authorized session.
+
+FullTextIndex does not own authorization, transaction creation, schema
+leases, or work-meter identity. `DatabaseEngine` supplies one authorized
 `DatabaseReadSession`, its transaction, and its `DatabaseWorkMeter`. Storage
 access is performed through bounded point reads or the session-owned cursor.
 The module never replaces a sealed authorization result with ambient state.
+
+The following are outside the supported product and have no execution
+contract in this module: general analyzer/filter pipelines, fuzzy or
+phonetic matching, wildcard and prefix query planning, highlighting,
+Boolean query DAG/NOT/range/boost semantics, compatibility bridges, and the
+unused `FullTextIndexFoundation` adapter product. They are retired surfaces,
+not partially supported capabilities.
+
+Until the source-cleanup sprint removes them, the old direct-read helpers and
+the adapter product declaration are treated as retiring implementation
+surface. No caller, test, or benchmark may add a dependency on them.
 
 ## Related Designs
 
@@ -42,42 +67,64 @@ The module never replaces a sealed authorization result with ambient state.
 | [`Autocomplete`](Autocomplete/DESIGN.md) | child | retained suggestion owner and cursor cleanup | Defines autocomplete-specific output ownership. | Limit is applied before public promotion. |
 | [`Facet`](Facet/DESIGN.md) | child | row-field aggregation and retained metadata | Defines facet-specific aggregation ownership. | Facets must not inspect raw model objects. |
 
+## Supported Surfaces
+
+| Surface | Entry point | Owner | Contract |
+|---|---|---|---|
+| Regular full-text read | `DatabaseContext.search(...).fullText(...).execute()` | `FullTextQueryBuilder` and `FullTextReadExecutors` | Typed session read for `all`, `any`, and position-aware `phrase`; plain, scored, or faceted output. |
+| Polymorphic full-text read | `PolymorphicQuery.fullText(...).executePage()` | `PolymorphicFullTextQueryBuilder` and `FullTextReadExecutors` | One schema-bound session read across the declared group; optional BM25 annotations. |
+| Fusion full-text input | `Search<T>.fusionInput` | `FullTextFusionIndexReadExecutor` | Fusion admission and execution use the caller's authorized read capability. |
+| Autocomplete | `DatabaseContext.autocomplete(...).execute()` | `AutocompleteQuery` and `AutocompleteIndexReader` | Session-owned cursor, bounded suggestions, and deterministic ordering. |
+| Index maintenance | `FullTextIndexMaintainer.updateIndex` / `scanItem` | `FullTextIndexMaintainer` | Writable transaction updates postings, document metadata, and BM25 corpus statistics. |
+| Relevance calculation | `BM25Parameters` / `BM25Scorer` | FullTextIndex | Pure parameter and scoring contracts; no transaction or backend ownership. |
+
+The public read surface always enters through a typed query or Fusion input.
+The query runtime creates and authorizes the session; the FullText executor
+consumes that session and cannot create a second transaction or perform a new
+policy decision. `FullTextIndexMaintainer` has no supported raw-transaction
+read facade. Its persisted statistics are an index-maintenance concern and
+are read only by the canonical executor through the authorized session.
+
+The old `executeDirect`, direct faceted/scored variants, maintainer
+`search*`/statistics methods, and their duplicate materialization helpers
+are explicitly retiring surface. The source-cleanup sprint removes them
+after consumer evidence is migrated; they are not an alternate public read
+path.
+
 ## Architecture
 
 ```text
-DatabaseReadSession + DatabaseWorkMeter
-              |
-              v
-      FullText read executor
-              |
-              v
-       bounded posting cursor
-              |
-              v
-  scan/admission boundary (once)
-    borrow and admit the source suffix owner
-    detach suffix; validate/decode Tuple once
-    record exact decoder allocation increments
-    measure and admit one canonical comparison key
-    allocate and encode it once
-              |
-              v
-  FullTextCandidateBatch (one collection reservation)
-      Candidate { Tuple, canonicalKey, retainedFootprint }
-              |
-              v
-    ordered posting algebra
-    compare canonicalKey; reuse retainedFootprint
-              |
-              +--> retained append reuses Tuple
-              +--> canonical IndexReadResult rows
-              +--> facet metadata from completed rows
+Typed query / Fusion input                         Writable transaction
+          |                                                |
+          v                                                v
+ DatabaseEngine authorization + session       FullTextIndexMaintainer
+          |                                                |
+          v                                                +--> postings
+ FullText read executor                                   +--> document metadata
+          |                                                +--> BM25 statistics
+          v
+ session-owned bounded cursor / point reads
+          |
+          v
+ scan/admission boundary (once)
+   decode Tuple + canonicalize key + exact footprint
+          |
+          v
+ FullTextCandidateBatch (one collection reservation)
+   Candidate { Tuple, canonicalKey, retainedFootprint }
+          |
+          v
+ ordered posting algebra
+          |
+          +--> retained keys -> canonical IndexReadResult rows
+          +--> completed rows -> facet metadata
 ```
 
 The dependency direction is from the feature executor to the `DatabaseEngine`
 contracts. The candidate is an internal FullText value; it does not change the
 public query or result API, reach into a backend implementation, or create an
-independent resource owner.
+independent resource owner. The maintainer's writable transaction is a
+separate mutation boundary; it is never used as a read-side query facade.
 
 ## Contracts and Invariants
 
@@ -89,14 +136,15 @@ independent resource owner.
   before detachment. Tuple decode allocations are admitted before creation
   through the `Tuple(packed:admitting:)` callback; validation and decoding
   happen exactly once before algebraic filtering.
-- A decoder-accepted suffix is canonicalized exactly once at the scan boundary.
-  `Tuple.pack(admitting:)` measures the exact comparison-key payload once,
-  passes that count to FullText admission before allocation, then allocates and
-  encodes the key once. Decoder-accepted non-canonical encodings are not
-  rejected merely for their byte form; their canonical comparison key preserves
-  the previous algebra's logical equality, ordering, and duplicate removal.
-  Structurally malformed suffixes still fail as a typed error before algebraic
-  filtering.
+- A regular posting candidate decodes a suffix and canonicalizes it exactly
+  once at the scan boundary. `Tuple.pack(admitting:)` measures the exact
+  comparison-key payload once, passes that count to FullText admission before
+  allocation, then allocates and encodes the key once. Alternate encodings
+  accepted by the regular Tuple decoder compare by their canonical key, which
+  preserves logical equality, ordering, and duplicate removal. Structurally
+  malformed suffixes still fail as a typed error before algebraic filtering.
+  Fusion has a stricter physical posting contract: its cursor rejects a
+  decoded identifier whose canonical bytes differ from the stored suffix.
 - A candidate contains exactly one decoded `Tuple`, its canonical packed
   comparison key, and the exact `DatabaseIntermediateFootprint` admitted for
   that candidate. The footprint is the actual metered row and byte claim built
@@ -199,34 +247,70 @@ no pointer escape or unbounded materialization fallback.
 
 The dependency contract adds only StorageKit's admission-aware Tuple packing
 entry point; it does not change existing Tuple packing behavior or canonical
-encoding. This contract does not change public FullText APIs, transaction
-behavior, persisted index layout, key encoding, tokenization, scoring, facets,
-phrase semantics, query semantics, or limit pushdown. It does not add a second
-decoded-algebra representation or a compatibility bridge.
+encoding. The candidate and session work do not change the supported FullText
+query API, transaction behavior, persisted index layout, key encoding,
+schema-declared normalization, scoring, facets, phrase semantics, query
+semantics, or limit pushdown. Retiring the obsolete read facades and
+unconnected utility surfaces is an API-surface correction, not a compatibility
+bridge. The design does not add a second decoded-algebra representation.
 
 ## Verification and Change Impact
 
-The owning tests are in `Tests/FullTextIndexTests`. Focused behavioral tests and
-the implementation-path review together must prove one decode and one
-canonical pack per scanned candidate, decoder-accepted non-canonical and
-canonical encodings compare as the same logical identifier, malformed suffix
-failure occurs before algebraic exclusion, and nested or long-payload
-candidates reuse their exact recorded footprint during merge. They also prove
-admission before preservation, order and uniqueness, single-batch reservation
-transfer and cleanup, unchanged plain/score/facet/polymorphic/limit behavior,
-denial-before-read, cancellation after partial scan with cursor finish, and
-zero retained rows or bytes after success, failure, and cancellation. Plain
-limit tests additionally prove that regular and polymorphic AND/OR output is
-the ordered prefix of the unbounded result, source cursors still consume and
-reject corruption after the prefix, only retained prefixes are admitted, and
-nil limits remain unbounded; scored, faceted, phrase, and Fusion tests prove
-their complete-result paths are unchanged. A change to session,
-retained-fetch, or canonical-row contracts requires rechecking this module
-and the parent `DatabaseEngine Read` design.
+The owning tests are in `Tests/FullTextIndexTests`. The retained behavior map
+is:
 
-The Release macOS arm64 FullText benchmark uses one test, two metrics, and 15
-samples per metric through the real SQLite public query path. Post-change
-medians must be no greater than 12,068.689 microseconds for intersection and
-6,698.496 microseconds for union. Benchmark evidence does not replace focused
-behavioral proof, and package-level verification runs only after the feature
-boundary has converged.
+| Behavior | Canonical evidence owner |
+|---|---|
+| Plain term, `all`, `any`, phrase, and result order | `FullTextReadContractTests`, `FullTextReadResourceLifecycleTests` |
+| BM25 ranking and custom parameters | `BM25ScoringTests` and the canonical scored-read tests |
+| Facets, total count, and result limit | `FullTextReadResourceLifecycleTests` and the canonical faceted-read tests |
+| Schema-declared normalization symmetry | `FullTextTermNormalizerTests` plus writer/read behavior tests |
+| Malformed data, denial-before-read, and typed failure | `FullTextReadContractTests`, `FullTextStorageDecoderTests`, `SearchFusionInputTests` |
+| Cancellation, cursor finish, and resource release | `FullTextReadContractTests` and `FullTextReadResourceLifecycleTests` |
+| Posting decode, canonical identity, order, uniqueness, and exact footprint | `FullTextPostingListAlgebraTests` and the posting executor path |
+
+The source-cleanup boundary may remove an old surface only after every
+observable behavior in this map has a canonical proof. The proof must cover
+one decode and one canonical pack per scanned candidate, malformed suffix
+failure before algebraic exclusion, exact nested or long-payload footprint
+reuse, admission before preservation, single-batch transfer and cleanup,
+plain-limit prefix semantics, score/facet semantics, denial-before-read,
+cancellation after partial scan, and zero retained rows or bytes on success,
+failure, and cancellation. A change to session, retained-fetch, or
+canonical-row contracts requires rechecking this module and the parent
+`DatabaseEngine Read` design.
+
+The release benchmark contract is owned by this design and defines one test,
+two metrics, and 15 samples per metric through the real SQLite public query
+path. Its exact maxima are intersection `12,068.689` microseconds and union
+`6,698.496` microseconds. The executable validator at
+`Benchmarks/FullTextQuery/Tests/FullTextQueryPerformanceBenchmarks/` is the
+enforcement point and must read and enforce those exact maxima without
+reinterpretation. A median above either maximum is a failure; a
+reference-plus-multiplier gate is not equivalent. The current multiplier
+validator is a retiring consumer and must be replaced before release.
+Benchmark evidence does not replace focused behavioral proof, and
+package-level verification runs only after the feature boundary has
+converged.
+
+## Design Review Record
+
+The following review fixes the active-versus-retiring classification against
+the package manifest, source callers, tests, benchmark entry points, and
+history:
+
+| Evidence | Active contract | Retiring or removed contract |
+|---|---|---|
+| `Package.swift` | `FullTextIndex`, `FullTextIndexes`, and `DatabaseRuntime` registration | `FullTextIndexFoundation` target/product and its root product-table entry; removal is part of the source-cleanup boundary |
+| Production callers | `FullTextQuery`, `FullTextReadExecutors`, `Fusion/Search`, `FullTextFusionIndexReadExecutor`, autocomplete, and `FullTextIndexMaintainer` write methods | `executeDirect` variants, maintainer raw-read/statistics methods, and duplicate materialization helpers |
+| Workspace callers | Typed query/Fusion paths and the canonical SQLite benchmark | No external caller of `FullTextSearchQuery`, fuzzy matchers, highlighters, general analyzers, or `ASCIIFoldingFilter` was found |
+| Tests | Canonical read, scoring, decoder, normalizer, lifecycle, and writer/layout tests | Direct maintainer search tests are migrated to canonical behavior or test-owned persisted-state inspection before removal |
+| Benchmarks | SQLite public-query benchmark for posting algebra; retained maintainer write metrics | FoundationDB raw-transaction search, phrase, scoring, and scalability cases |
+| History | `e0eb78b9` canonical query execution and later bounded/session work | `961317ad` speculative advanced utilities, `19814213` reverted oversized execution paths, and `a387258c` retained unused typed-runtime surfaces |
+
+This classification is deliberate: the retiring declarations remain only
+until their consumers are migrated in the dependent cleanup sprint. No
+public API, owner, lifetime, failure, or performance decision is left to a
+consumer-specific interpretation. Retiring a declaration does not require a
+compatibility alias or a placeholder TODO; an actually required absent API
+must instead be added as a separately designed work item.
