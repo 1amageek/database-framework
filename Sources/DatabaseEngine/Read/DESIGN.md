@@ -19,6 +19,7 @@ authority.
 
 | Design | Relationship | Contract Used | Cautions |
 |---|---|---|---|
+| [StorageKit cursor contract](https://github.com/1amageek/storage-kit/blob/53e615faee772d2ee7c1a59311beaf8e8f0cf7c1/Sources/StorageKit/Storage/DESIGN.md) | depends on | State-owned `KeyValueCursor.validatingScope` | The pinned URL revision must provide post-validation before cursor readiness and finish-boundary resolution. |
 | [Core](../Core/DESIGN.md) | used by | Session transaction and admission | Core cannot widen authority. |
 | [QueryExecution](../QueryExecution/DESIGN.md) | coordinates with | Session meter | Identity, not equal budgets. |
 
@@ -46,6 +47,8 @@ ReadPolicy -> sealed authorization -> ReadSession closure
   widen authority or weaken the complete-model entry point.
 - Per-entity authorization after decode supplements, not replaces,
   pre-storage list/field admission.
+- A scoped range cursor uses the StorageKit state-owned validation contract;
+  Read supplies the scope lease and does not wrap a second cursor state.
 
 ## Runtime Flows
 

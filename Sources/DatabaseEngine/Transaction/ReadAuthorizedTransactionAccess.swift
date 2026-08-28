@@ -322,19 +322,14 @@ final class ReadAuthorizedTransactionAccess:
         }
         return registerScopeCursor(
             { cursorOperation in
-                KeyValueCursor(
-                    consuming: ReadScopeValidatedRangeResult(
-                        base: transaction.rangeCursor(
-                            from: begin,
-                            to: end,
-                            limit: limit,
-                            reverse: reverse,
-                            snapshot: snapshot,
-                            streamingMode: streamingMode
-                        ),
-                        operation: cursorOperation
-                    )
-                ).validatingBeforeAdvance {
+                transaction.rangeCursor(
+                    from: begin,
+                    to: end,
+                    limit: limit,
+                    reverse: reverse,
+                    snapshot: snapshot,
+                    streamingMode: streamingMode
+                ).validatingScope {
                     try cursorOperation.validate()
                 }
             },
@@ -435,39 +430,6 @@ final class ReadAuthorizedTransactionAccess:
 
     func requestVersionstamp() -> any PendingTransactionVersionstamp {
         RejectedReadVersionstamp()
-    }
-}
-
-/// Keeps read-scope validation inside the cursor lifetime boundary.
-///
-/// `KeyValueCursor` releases retained owners after its native cursor reaches a
-/// terminal state. Performing the post-advance validation in this native
-/// cursor ensures that an admitted advance completes before that release can
-/// end its read-scope operation. Key and value buffers pass through unchanged.
-private struct ReadScopeValidatedRangeResult: TransactionRangeResult {
-    let base: KeyValueCursor
-    let operation: DatabaseReadScopeOperationLease
-
-    func makeCursor() -> Cursor {
-        Cursor(base: base, operation: operation)
-    }
-
-    struct Cursor: TransactionRangeCursor {
-        var base: KeyValueCursor
-        let operation: DatabaseReadScopeOperationLease
-
-        mutating func next() async throws -> (ByteString, ByteString)? {
-            try operation.validate()
-            let element = try await base.next()
-            try operation.validate()
-            return element
-        }
-
-        mutating func finish(
-            isolation actor: isolated (any Actor)?
-        ) async throws {
-            try await base.finish()
-        }
     }
 }
 
