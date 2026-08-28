@@ -322,6 +322,70 @@ struct FullTextReadContractTests {
         #expect(meter.retainedIntermediateBytes == 0)
     }
 
+    @Test("Full-text posting cancellation finishes its cursor and releases ownership")
+    func cancelledPostingScanFinishesCursorAndReleasesOwnership() async throws {
+        let storage = ControlledStorageEngine(base: InMemoryEngine())
+        let container = try await makeRegularContainer(storage: storage)
+        defer { await container.shutdown() }
+
+        let context = container.testBaseContext()
+        for index in 0..<3 {
+            try context.insert(
+                FullTextRetainedRegularArticle(
+                    id: "posting-cancel-\(index)",
+                    body: "swift"
+                )
+            )
+        }
+        try await context.save()
+
+        let query = try context.search(FullTextRetainedRegularArticle.self)
+            .fullText(FullTextRetainedRegularArticle.fields.body)
+            .terms(["swift"])
+            .toSelectQuery()
+        let execution = ReadExecutionContext(
+            monotonicClock: container.monotonicClock
+        )
+        let finishedBefore = storage.control.finishedRangeCursorCount
+        let continuation = storage.control.suspendNextRangeContinuation()
+        let operation: Task<QueryResponse, any Error> = Task {
+            try await context.executeCanonicalQuery(
+                query,
+                execution: execution
+            )
+        }
+
+        let firstMonitor: Task<Void, Never>
+        do {
+            firstMonitor = try await continuation.waitUntilEntered(
+                beforeCompletionOf: operation
+            )
+        } catch {
+            continuation.release()
+            operation.cancel()
+            _ = await operation.result
+            throw error
+        }
+        #expect(execution.workMeter.retainedIntermediateRows > 0)
+        #expect(execution.workMeter.retainedIntermediateBytes > 0)
+
+        operation.cancel()
+        continuation.release()
+        let result = await operation.result
+        await firstMonitor.value
+
+        guard case .failure(let error) = result else {
+            Issue.record("Cancelled full-text posting scan unexpectedly succeeded")
+            return
+        }
+        #expect(error is CancellationError)
+        #expect(
+            storage.control.finishedRangeCursorCount == finishedBefore + 1
+        )
+        #expect(execution.workMeter.retainedIntermediateRows == 0)
+        #expect(execution.workMeter.retainedIntermediateBytes == 0)
+    }
+
     @Test("Authorization denial occurs before full-text storage reads")
     func deniedCanonicalSearchPerformsNoStorageRead() async throws {
         let storage = ControlledStorageEngine(base: InMemoryEngine())

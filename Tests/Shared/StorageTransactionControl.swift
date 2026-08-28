@@ -25,6 +25,7 @@ public final class StorageTransactionControl: Sendable {
         var valueReadBarriers: [PendingValueReadBarrier] = []
         var boundedValueReadBarriers: [PendingValueReadBarrier] = []
         var rangeAdvanceBarriers: [StorageOperationBarrier] = []
+        var rangeContinuationBarriers: [StorageOperationBarrier] = []
         var interceptedMutationKeys: [ByteString] = []
         var suspendedValueReadCount = 0
         var maximumSuspendedValueReadCount = 0
@@ -113,6 +114,18 @@ public final class StorageTransactionControl: Sendable {
         let barrier = StorageOperationBarrier()
         state.withLock { state in
             state.rangeAdvanceBarriers.append(barrier)
+        }
+        return barrier
+    }
+
+    /// Suspends the next advance after a controlled cursor has returned at
+    /// least one element. Existing range-advance barriers intentionally keep
+    /// their first-advance semantics.
+    @discardableResult
+    public func suspendNextRangeContinuation() -> StorageOperationBarrier {
+        let barrier = StorageOperationBarrier()
+        state.withLock { state in
+            state.rangeContinuationBarriers.append(barrier)
         }
         return barrier
     }
@@ -245,6 +258,16 @@ public final class StorageTransactionControl: Sendable {
             precondition(state.suspendedRangeAdvanceCount > 0)
             state.suspendedRangeAdvanceCount -= 1
         }
+    }
+
+    func suspendRangeContinuationIfRequested() async {
+        let barrier = state.withLock { state -> StorageOperationBarrier? in
+            guard !state.rangeContinuationBarriers.isEmpty else {
+                return nil
+            }
+            return state.rangeContinuationBarriers.removeFirst()
+        }
+        await barrier?.enterAndWait()
     }
 
     func suspendValueReadIfRequested(for key: ByteString) async {

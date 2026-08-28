@@ -37,23 +37,15 @@ struct FullTextRetainedKeys: DatabaseRetainedPrimaryKeyCollection, Sendable {
             self.stage = stage
         }
 
-        /// The tuple's element Array is already owned by the candidate batch.
-        /// Tuple construction therefore retains that storage without making a
-        /// second identifier collection. The retained output admission is
-        /// performed before the tuple enters the destination buffer.
         mutating func append(
-            elements: [any TupleElement]
+            _ identifier: consuming Tuple,
+            packedByteCount: Int
         ) throws {
-            try append(Tuple(elements))
-        }
-
-        mutating func append(
-            _ identifier: consuming Tuple
-        ) throws {
+            precondition(packedByteCount >= 0)
             let admission = try storage.prepareAppend(
                 footprint: DatabaseIntermediateFootprint(
                     rows: 1,
-                    bytes: UInt64(identifier.packedByteCount)
+                    bytes: UInt64(packedByteCount)
                 ),
                 at: stage
             )

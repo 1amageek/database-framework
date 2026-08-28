@@ -39,17 +39,6 @@ private enum FullTextReadError: Error, Sendable {
     case missingFetchedEntity(ByteString)
 }
 
-/// A posting-list result whose backing collection remains charged until the
-/// next retained owner is constructed. The Array is intentionally private to
-/// this search implementation; no raw candidate collection crosses the
-/// feature-to-engine boundary.
-private struct FullTextCandidateBatch: Sendable {
-    let values: [[any TupleElement]]
-    let reservation: DatabaseIntermediateReservation
-
-    var count: Int { values.count }
-}
-
 private func retainedFullTextFacetMetadata(
     totalCount: Int,
     _ facets: [String: [(value: String, count: Int64)]],
@@ -112,21 +101,13 @@ private func retainedFullTextFacetMetadata(
     }
 }
 
-private func reserveFullTextMapEntry(
-    key: ByteString,
-    elements: [any TupleElement],
+private func reserveFullTextCandidate(
+    _ candidate: FullTextPostingCandidate,
     in reservation: DatabaseIntermediateReservation
 ) throws {
-    let elementBytes = try DatabaseIntermediateFootprint(
-        bytes: UInt64(max(1, MemoryLayout<any TupleElement>.stride + 16))
-    ).multiplied(by: UInt64(elements.count)).bytes
     try reservation.reserveAdditional(
-        rows: 1,
-        bytes: try DatabaseIntermediateFootprint(
-            bytes: UInt64(key.count) + 96
-        ).adding(
-            DatabaseIntermediateFootprint(bytes: elementBytes)
-        ).bytes,
+        rows: candidate.retainedFootprint.rows,
+        bytes: candidate.retainedFootprint.bytes,
         at: .indexScan
     )
 }
@@ -1240,13 +1221,14 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             workMeter: workMeter,
             snapshot: snapshot
         )
+        defer { candidates.release() }
         var retainedMatches = try FullTextRetainedKeys.Builder(
             workMeter: workMeter,
             expectedCount: candidates.count
         )
-        for elements in candidates.values {
+        for candidate in candidates.values {
             try workMeter.consume(at: .indexScan)
-            let identifier = Tuple(elements)
+            let identifier = candidate.identifier
             var positionsByTerm: [[Int]] = []
             positionsByTerm.reserveCapacity(normalizedTerms.count)
             let positionReservation = try workMeter.reserveIntermediate(
@@ -1299,7 +1281,10 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 positionsByTerm,
                 workMeter: workMeter
             ) {
-                try retainedMatches.append(identifier)
+                try retainedMatches.append(
+                    identifier,
+                    packedByteCount: candidate.canonicalKey.count
+                )
             }
         }
         return try retainedMatches.finish()
@@ -1601,7 +1586,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 snapshot: snapshot
             )
         case .any:
-            var union: [[any TupleElement]] = []
+            var union: [FullTextPostingCandidate] = []
             var unionReservation: DatabaseIntermediateReservation?
             defer { unionReservation?.release() }
             for group in termGroups {
@@ -1614,19 +1599,27 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 )
                 let matches = batch.values
                 let matchReservation = batch.reservation
+                var matchReleased = false
+                defer {
+                    if !matchReleased {
+                        matchReservation.release()
+                    }
+                }
                 guard !matches.isEmpty else {
                     matchReservation.release()
+                    matchReleased = true
                     continue
                 }
                 guard !union.isEmpty else {
                     union = matches
                     unionReservation = matchReservation
+                    matchReleased = true
                     continue
                 }
 
                 let mergedReservation = try workMeter.reserveIntermediate(
                     bytes: UInt64(
-                        MemoryLayout<[[any TupleElement]]>.stride
+                        MemoryLayout<[FullTextPostingCandidate]>.stride
                     ),
                     at: .indexScan
                 )
@@ -1635,15 +1628,15 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                         union,
                         matches,
                         reservingCapacity: false
-                    ) { elements, key in
-                        try reserveFullTextMapEntry(
-                            key: key,
-                            elements: elements,
+                    ) { candidate in
+                        try reserveFullTextCandidate(
+                            candidate,
                             in: mergedReservation
                         )
                     }
                     unionReservation?.release()
                     matchReservation.release()
+                    matchReleased = true
                     union = merged
                     unionReservation = mergedReservation
                 } catch {
@@ -1670,12 +1663,16 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             )
         }
 
+        defer { matchingBatch.release() }
         var retainedKeys = try FullTextRetainedKeys.Builder(
             workMeter: workMeter,
             expectedCount: matchingBatch.count
         )
-        for elements in matchingBatch.values {
-            try retainedKeys.append(elements: elements)
+        for candidate in matchingBatch.values {
+            try retainedKeys.append(
+                candidate.identifier,
+                packedByteCount: candidate.canonicalKey.count
+            )
         }
         return try retainedKeys.finish()
     }
@@ -1706,6 +1703,14 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         return result
     }
 
+    /// Scored results do not retain the posting candidate's packed suffix.
+    /// Their deterministic tie ordering therefore encodes the final Tuple at
+    /// this separate scoring boundary; posting merges compare candidates
+    /// directly and never call this helper.
+    private func stableKey(_ tuple: Tuple) -> ByteString {
+        tuple.pack()
+    }
+
     private func searchTermsAND(
         _ terms: [String],
         termsSubspace: Subspace,
@@ -1722,7 +1727,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             )
         }
 
-        var intersection: [[any TupleElement]]?
+        var intersection: [FullTextPostingCandidate]?
         var intersectionReservation: DatabaseIntermediateReservation?
         defer { intersectionReservation?.release() }
 
@@ -1736,10 +1741,16 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             )
             let resultReservation = results.reservation
             let resultValues = results.values
+            var resultTransferred = false
+            defer {
+                if !resultTransferred {
+                    resultReservation.release()
+                }
+            }
             if let existing = intersection {
                 let reducedReservation = try workMeter.reserveIntermediate(
                     bytes: UInt64(
-                        MemoryLayout<[[any TupleElement]]>.stride
+                        MemoryLayout<[FullTextPostingCandidate]>.stride
                     ),
                     at: .indexScan
                 )
@@ -1753,16 +1764,15 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                     existing,
                     resultValues,
                     reservingCapacity: false
-                ) { elements, key in
-                    try reserveFullTextMapEntry(
-                        key: key,
-                        elements: elements,
+                ) { candidate in
+                    try reserveFullTextCandidate(
+                        candidate,
                         in: reducedReservation
                     )
                 }
                 intersectionReservation?.release()
+                intersectionReservation = nil
                 if reduced.isEmpty {
-                    resultReservation.release()
                     return FullTextCandidateBatch(
                         values: [],
                         reservation: try workMeter.reserveIntermediate(
@@ -1772,11 +1782,11 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 }
                 intersection = reduced
                 intersectionReservation = reducedReservation
-                resultReservation.release()
                 transferredReducedReservation = true
             } else {
                 intersection = resultValues
                 intersectionReservation = resultReservation
+                resultTransferred = true
             }
         }
 
@@ -1822,41 +1832,43 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             streamingMode: .wantAll
         )
 
-        var results: [[any TupleElement]] = []
-        let resultReservation = try workMeter.reserveIntermediate(
-            bytes: UInt64(MemoryLayout<[[any TupleElement]]>.stride),
-            at: .indexScan
-        )
+        var results = try FullTextCandidateBatch(workMeter: workMeter)
         do {
             while let (key, _) = try await cursor.next() {
                 guard termSubspace.contains(key) else { break }
                 try workMeter.consume(at: .indexScan)
-                let keyTuple = try termSubspace.unpack(key)
-                let elements = try keyTuple.elements()
-                try reserveFullTextMapEntry(
-                    key: stableKey(keyTuple),
-                    elements: elements,
-                    in: resultReservation
-                )
-                results.append(elements)
+                let suffix = key[
+                    (key.startIndex + termSubspace.prefix.count)..<key.endIndex
+                ]
+                try results.append(scannedSuffix: suffix)
             }
+        } catch let cleanupError as StorageRangeCleanupError {
+            results.release()
+            throw cleanupError
+        } catch let terminalCleanupError as StorageRangeTerminalCleanupError {
+            results.release()
+            throw terminalCleanupError
         } catch {
             let iterationError = error
             do {
                 try await cursor.finish()
             } catch {
+                results.release()
                 throw StorageRangeCleanupError(
                     iterationError: iterationError,
                     cleanupError: error
                 )
             }
+            results.release()
             throw iterationError
         }
-        try await cursor.finish()
-        return FullTextCandidateBatch(
-            values: results,
-            reservation: resultReservation
-        )
+        do {
+            try await cursor.finish()
+        } catch {
+            results.release()
+            throw error
+        }
+        return results
     }
 
     private func optionalInteger(
@@ -1871,10 +1883,6 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             throw FullTextReadError.invalidParameter(name)
         }
         return result
-    }
-
-    private func stableKey(_ tuple: Tuple) -> ByteString {
-        tuple.pack()
     }
 
     private func decodeMatchMode(

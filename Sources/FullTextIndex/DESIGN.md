@@ -10,10 +10,10 @@ design is [`database-framework`](../../DESIGN.md); the child designs are
 
 This design covers read execution, posting-candidate representation, and
 intermediate ownership. A posting candidate is the single FullText-owned
-combination of one decoded `Tuple` and its exact, self-contained packed
-identifier suffix. Index layout, writes, token analysis, BM25 formula
-definition, Fusion orchestration, and application schemas remain outside this
-module.
+combination of one decoded `Tuple`, one canonical packed comparison key, and
+the exact footprint admitted for that candidate. Index layout, writes, token
+analysis, BM25 formula definition, Fusion orchestration, and application
+schemas remain outside this module.
 
 ## Responsibilities and Boundaries
 
@@ -54,18 +54,18 @@ DatabaseReadSession + DatabaseWorkMeter
               |
               v
   scan/admission boundary (once)
-    borrow suffix view
-    admit slot and exact suffix owner copy
-    detach suffix; admit decode allocations
-    validate/decode Tuple from suffix once
+    borrow and admit the source suffix owner
+    detach suffix; validate/decode Tuple once
+    record exact decoder allocation increments
+    admit and pack one canonical comparison key
               |
               v
   FullTextCandidateBatch (one collection reservation)
-      Candidate { Tuple, packedSuffix: ByteString }
+      Candidate { Tuple, canonicalKey, retainedFootprint }
               |
               v
     ordered posting algebra
-    compare packedSuffix and transfer batch ownership
+    compare canonicalKey; reuse retainedFootprint
               |
               +--> retained append reuses Tuple
               +--> canonical IndexReadResult rows
@@ -83,22 +83,39 @@ independent resource owner.
 - Every posting and document-metadata point read uses the request's bounded
   point-read path and the same session work meter.
 - Each scanned suffix is first borrowed as a view, then its destination slot
-  and exact self-contained `ByteString` owner copy are admitted to the batch
-  reservation before detachment. Tuple decode allocations are admitted before
-  creation through the `Tuple(packed:admitting:)` callback; validation and
-  decoding happen exactly once before algebraic filtering.
-- A candidate contains exactly one decoded `Tuple` and its exact packed suffix.
-  It has no separate reservation and never stores the cursor's borrowed key.
+  and exact self-contained source owner are admitted to the batch reservation
+  before detachment. Tuple decode allocations are admitted before creation
+  through the `Tuple(packed:admitting:)` callback; validation and decoding
+  happen exactly once before algebraic filtering.
+- A decoder-accepted suffix is canonicalized exactly once at the scan boundary:
+  `Tuple.packedByteCount` admits the exact comparison-key payload before the
+  sole `Tuple.pack()` call creates it. Decoder-accepted non-canonical encodings
+  are not rejected merely for their byte form; their canonical comparison key
+  preserves the previous algebra's logical equality, ordering, and duplicate
+  removal. Structurally malformed suffixes still fail as a typed error before
+  algebraic filtering.
+- A candidate contains exactly one decoded `Tuple`, its canonical packed
+  comparison key, and the exact `DatabaseIntermediateFootprint` admitted for
+  that candidate. The footprint is the actual metered row and byte claim built
+  from the admitted candidate storage, source owner, canonical key, and every
+  decoder callback increment; it is not reconstructed from tuple element count
+  or packed-key length. The candidate has no separate reservation and never
+  stores the cursor's borrowed key.
 - `FullTextCandidateBatch` owns one collection reservation. Complete candidate
   storage is charged to that reservation before preservation; an admission
   failure never appends a candidate.
-- Ordered posting algebra compares candidates by their already-owned packed
-  suffix and transfers or releases the batch reservation. It does not decode a
-  suffix, materialize an existential element array, call `Tuple.pack()`, or
-  reconstruct a second identifier representation. Thus malformed data fails
-  even if intersection or union would otherwise exclude it.
+- Ordered posting algebra compares candidates by their canonical keys. When a
+  surviving candidate is admitted into a successor batch, its recorded
+  footprint is reused verbatim before append; merge code never estimates
+  retained bytes from `identifier.count` or `canonicalKey.count`. Input batch
+  reservations are released only after successor ownership is established.
+  The algebra does not decode a suffix, materialize an existential element
+  array, call `Tuple.pack()`, or reconstruct a second identifier
+  representation. Thus malformed data fails even if intersection or union
+  would otherwise exclude it.
 - Final retained-key append reuses the candidate's already-decoded `Tuple`; it
-  does not decode the suffix or repack the tuple.
+  uses the canonical key's known byte count for admission and does not decode
+  the suffix or repack the tuple.
 - Intermediate match keys, scores, and suggestions remain owned and charged
   until their consumer has completed; no raw collection is returned as a
   resource owner.
@@ -116,14 +133,16 @@ independent resource owner.
 For a canonical search, the executor decodes parameters, validates the sealed
 session admission, resolves the readable index, and opens the bounded posting
 cursor. The scan/admission boundary admits destination bookkeeping and the
-exact suffix owner copy, detaches it, admits each decode allocation before it
-is created, and decodes the `Tuple` once. Only then is the candidate appended
-to the batch and passed to ordered algebra. Intersection and union compare
-packed suffixes and transfer surviving candidates without tuple conversion;
-decode or cursor failure releases the whole batch after cursor cleanup. The
-retained-key builder reuses the winning tuples before retained models or
-polymorphic entries are fetched through the session and canonical rows are
-appended.
+exact source owner copy, detaches it, admits each decode allocation before it
+is created, and decodes the `Tuple` once. It then admits the measured canonical
+key payload and packs the tuple once. The resulting candidate records the exact
+claim made while constructing it. Only then is the candidate appended to the
+batch and passed to ordered algebra. Intersection and union compare canonical
+keys and reuse the surviving candidates' recorded footprints without tuple
+conversion or footprint estimation; decode or cursor failure releases the
+whole batch after cursor cleanup. The retained-key builder reuses the winning
+tuples and canonical byte counts before retained models or polymorphic entries
+are fetched through the session and canonical rows are appended.
 
 Plain, scored, and polymorphic posting reads share this candidate path.
 Scoring is complete before row append. Faceted execution completes retained
@@ -135,13 +154,14 @@ prefix, and finishes the cursor before returning.
 
 ## State, Ownership, and Lifecycle
 
-The session owns transaction and meter identity. FullTextCandidateBatch owns
-the single collection reservation and all candidate tuples and detached packed
-suffixes until the batch is transferred or consumed by the retained-key
-builder. Candidates contain only their tuple and packed suffix. Every batch
-transfer has one successor owner; every exclusion, failure, cancellation, and
-completed path releases the batch reservation exactly once. No pointer or
-borrowed model view escapes its synchronous borrow.
+The session owns transaction and meter identity. `FullTextCandidateBatch` owns
+the single collection reservation and all candidate tuples and canonical keys
+until the batch is transferred or consumed by the retained-key builder. A
+candidate's tuple retains any detached source owner needed by byte-backed tuple
+elements; its footprint sidecar is accounting metadata, not another resource
+owner. Every batch transfer has one successor owner; every exclusion, failure,
+cancellation, and completed path releases the batch reservation exactly once.
+No pointer or borrowed model view escapes its synchronous borrow.
 
 A retained polymorphic or persisted-model fetch remains alive through row
 materialization; rows then own their retained backing. Autocomplete owns its
@@ -151,10 +171,11 @@ retained suggestion buffer until promotion.
 
 Read helpers are async because storage and cursors suspend. They use the
 session's read capability and do not hold a mutex across `await`. Every bounded
-read checks cancellation and meter admission before touching storage. Decode,
-missing-value, authorization, work-limit, and cursor failures propagate as
-failures. A failed or cancelled operation finishes the cursor and releases the
-batch/intermediate reservations; a decode failure never leaves a partially
+read and posting-scan iteration checks cancellation and meter admission before
+retaining work. Decode, missing-value, authorization, work-limit, and cursor
+failures propagate as failures. A failed or cancelled operation finishes the
+cursor and releases the batch/intermediate reservations; a decode,
+canonical-key admission, or candidate-append failure never leaves a partially
 admitted collection. Suffix detachment is bounded by the scanned key and has
 no pointer escape or unbounded materialization fallback.
 
@@ -165,14 +186,18 @@ not add a second decoded-algebra representation or a compatibility bridge.
 
 ## Verification and Change Impact
 
-The owning tests are in `Tests/FullTextIndexTests`. Focused behavioral tests
-must prove one decode and one exact suffix owner, malformed suffix failure
-before algebraic exclusion, admission before preservation, order and
-uniqueness, single-batch reservation transfer and cleanup, unchanged
-plain/score/facet/polymorphic/limit behavior, denial-before-read,
-cancellation, and cursor finish. A change to session, retained-fetch, or
-canonical-row contracts requires rechecking this module and the parent
-`DatabaseEngine Read` design.
+The owning tests are in `Tests/FullTextIndexTests`. Focused behavioral tests and
+the implementation-path review together must prove one decode and one
+canonical pack per scanned candidate, decoder-accepted non-canonical and
+canonical encodings compare as the same logical identifier, malformed suffix
+failure occurs before algebraic exclusion, and nested or long-payload
+candidates reuse their exact recorded footprint during merge. They also prove
+admission before preservation, order and uniqueness, single-batch reservation
+transfer and cleanup, unchanged plain/score/facet/polymorphic/limit behavior,
+denial-before-read, cancellation after partial scan with cursor finish, and
+zero retained rows or bytes after success, failure, and cancellation. A change
+to session, retained-fetch, or canonical-row contracts requires rechecking
+this module and the parent `DatabaseEngine Read` design.
 
 The Release macOS arm64 FullText benchmark uses one test, two metrics, and 15
 samples per metric through the real SQLite public query path. Post-change

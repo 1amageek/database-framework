@@ -311,7 +311,12 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
         transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
         let normalizedTerms = normalizeQueryTerms([term])
-        return try await searchNormalizedTermsAND(normalizedTerms, transaction: transaction)
+        return try materializedElements(
+            from: try await searchNormalizedTermsAND(
+                normalizedTerms,
+                transaction: transaction
+            )
+        )
     }
 
     /// Search for documents containing all terms (AND query)
@@ -329,17 +334,22 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
         transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
         let normalizedTerms = normalizeQueryTerms(terms)
-        return try await searchNormalizedTermsAND(normalizedTerms, transaction: transaction)
+        return try materializedElements(
+            from: try await searchNormalizedTermsAND(
+                normalizedTerms,
+                transaction: transaction
+            )
+        )
     }
 
     /// Search for already-normalized terms using AND semantics.
     private func searchNormalizedTermsAND(
         _ terms: [String],
         transaction: any TransactionAccess
-    ) async throws -> [[any TupleElement]] {
+    ) async throws -> [FullTextPostingCandidate] {
         guard !terms.isEmpty else { return [] }
 
-        var intersection: [[any TupleElement]]?
+        var intersection: [FullTextPostingCandidate]?
 
         for term in terms {
             let results = try await searchNormalizedTerm(term, transaction: transaction)
@@ -373,14 +383,14 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
         let termGroups = normalizeQueryTermGroups(terms)
         guard !termGroups.isEmpty else { return [] }
 
-        var union: [[any TupleElement]] = []
+        var union: [FullTextPostingCandidate] = []
 
         for normalizedTerms in termGroups {
             let results = try await searchNormalizedTermsAND(normalizedTerms, transaction: transaction)
             union = try FullTextPostingListAlgebra.union(union, results)
         }
 
-        return union
+        return try materializedElements(from: union)
     }
 
     /// Search for a phrase (exact sequence of terms)
@@ -397,6 +407,18 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
         _ phrase: String,
         transaction: any TransactionAccess
     ) async throws -> [[any TupleElement]] {
+        return try materializedElements(
+            from: try await searchPhraseCandidates(
+                phrase,
+                transaction: transaction
+            )
+        )
+    }
+
+    private func searchPhraseCandidates(
+        _ phrase: String,
+        transaction: any TransactionAccess
+    ) async throws -> [FullTextPostingCandidate] {
         guard storePositions else {
             throw FullTextIndexError.invalidQuery("Phrase search requires storePositions=true")
         }
@@ -407,13 +429,16 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
         let terms = phraseTokens.map { truncateTerm($0.term) }
 
         // First find documents containing all terms
-        let candidateDocs = try await searchNormalizedTermsAND(terms, transaction: transaction)
+        let candidateDocs = try await searchNormalizedTermsAND(
+            terms,
+            transaction: transaction
+        )
 
-        var results: [[any TupleElement]] = []
+        var results: [FullTextPostingCandidate] = []
 
         // For each candidate, verify the phrase exists
-        for docElements in candidateDocs {
-            let docId = Tuple(docElements)
+        for candidate in candidateDocs {
+            let docId = candidate.identifier
 
             // Build all term keys upfront using same subspace structure as indexing
             let termKeys: [(index: Int, key: ByteString)] = terms.enumerated().map { (index, term) in
@@ -480,7 +505,7 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
 
             // Check if positions form a consecutive sequence
             if verifyPhrasePositions(termPositionArrays) {
-                results.append(docElements)
+                results.append(candidate)
             }
         }
 
@@ -518,11 +543,11 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
     private func searchNormalizedTerm(
         _ term: String,
         transaction: any TransactionAccess
-    ) async throws -> [[any TupleElement]] {
+    ) async throws -> [FullTextPostingCandidate] {
         let termSubspace = termsSubspace.subspace(term)
         let (begin, end) = termSubspace.range()
 
-        var results: [[any TupleElement]] = []
+        var results: [FullTextPostingCandidate] = []
 
         let sequence = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(begin),
@@ -536,12 +561,24 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
         for (key, _) in sequence {
             guard termSubspace.contains(key) else { break }
 
-            let keyTuple = try termSubspace.unpack(key)
-            let elements = try keyTuple.elements()
-            results.append(elements)
+            let suffix = key[
+                (key.startIndex + termSubspace.prefix.count)..<key.endIndex
+            ].detached()
+            results.append(
+                try FullTextPostingCandidate(
+                    packedSuffix: suffix,
+                    admitting: { _ in }
+                )
+            )
         }
 
         return results
+    }
+
+    private func materializedElements(
+        from candidates: [FullTextPostingCandidate]
+    ) throws -> [[any TupleElement]] {
+        try candidates.map { try $0.identifier.elements() }
     }
 
     private func normalizeQueryTerms(_ terms: [String]) -> [String] {
@@ -750,20 +787,23 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
         }
 
         // Find matching documents
-        let matchingDocs: [[any TupleElement]]
+        let matchingDocs: [FullTextPostingCandidate]
         switch matchMode {
         case .all:
             matchingDocs = try await searchNormalizedTermsAND(normalizedTerms, transaction: transaction)
         case .any:
             let groups = normalizeQueryTermGroups(terms)
-            var union: [[any TupleElement]] = []
+            var union: [FullTextPostingCandidate] = []
             for group in groups {
                 let matches = try await searchNormalizedTermsAND(group, transaction: transaction)
                 union = try FullTextPostingListAlgebra.union(union, matches)
             }
             matchingDocs = union
         case .phrase:
-            matchingDocs = try await searchPhrase(terms.joined(separator: " "), transaction: transaction)
+            matchingDocs = try await searchPhraseCandidates(
+                terms.joined(separator: " "),
+                transaction: transaction
+            )
         }
 
         guard !matchingDocs.isEmpty else {
@@ -782,8 +822,8 @@ public struct FullTextIndexMaintainer<Item: PersistedEntityValue>: IndexMaintain
         var scoredResults: [(id: Tuple, score: Double)] = []
         scoredResults.reserveCapacity(matchingDocs.count)
 
-        for docElements in matchingDocs {
-            let docId = Tuple(docElements)
+        for candidate in matchingDocs {
+            let docId = candidate.identifier
 
             // Get document metadata
             guard let metadata = try await getDocumentMetadata(id: docId, transaction: transaction) else {

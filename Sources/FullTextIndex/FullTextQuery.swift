@@ -444,7 +444,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         let normalizedTerms = uniqueTerms(termGroups.flatMap { $0 })
 
         // Get matching document IDs based on match mode
-        let matchingIds: [[any TupleElement]]
+        let matchingIds: [FullTextPostingCandidate]
         switch matchMode {
         case .all:
             matchingIds = try await searchTermsAND(
@@ -453,7 +453,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
                 transaction: transaction
             )
         case .any:
-            var union: [[any TupleElement]] = []
+            var union: [FullTextPostingCandidate] = []
             for group in termGroups {
                 let matches = try await searchTermsAND(
                     group,
@@ -469,7 +469,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
             )
         }
 
-        return matchingIds.map { Tuple($0) }
+        return matchingIds.map(\.identifier)
     }
 
     /// Search for documents containing all terms (AND query)
@@ -477,10 +477,10 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         _ terms: [String],
         termsSubspace: Subspace,
         transaction: any TransactionAccess
-    ) async throws -> [[any TupleElement]] {
+    ) async throws -> [FullTextPostingCandidate] {
         guard !terms.isEmpty else { return [] }
 
-        var intersection: [[any TupleElement]]?
+        var intersection: [FullTextPostingCandidate]?
 
         for term in terms {
             let results = try await searchTerm(
@@ -510,11 +510,11 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         _ term: String,
         termsSubspace: Subspace,
         transaction: any TransactionAccess
-    ) async throws -> [[any TupleElement]] {
+    ) async throws -> [FullTextPostingCandidate] {
         let termSubspace = termsSubspace.subspace(term)
         let (begin, end) = termSubspace.range()
 
-        var results: [[any TupleElement]] = []
+        var results: [FullTextPostingCandidate] = []
 
         let sequence = try await TransactionRangeCollection.collect(using: transaction,
             from: .firstGreaterOrEqual(begin),
@@ -528,9 +528,15 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         for (key, _) in sequence {
             guard termSubspace.contains(key) else { break }
 
-            let keyTuple = try termSubspace.unpack(key)
-            let elements = try keyTuple.elements()
-            results.append(elements)
+            let suffix = key[
+                (key.startIndex + termSubspace.prefix.count)..<key.endIndex
+            ].detached()
+            results.append(
+                try FullTextPostingCandidate(
+                    packedSuffix: suffix,
+                    admitting: { _ in }
+                )
+            )
         }
 
         return results

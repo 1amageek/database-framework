@@ -1,16 +1,18 @@
 import DatabaseTypes
-import StorageKit
 
-/// Linear merge algebra for the ordered, unique identifier suffixes returned
-/// by full-text posting-list range scans.
+/// Linear merge algebra for ordered, unique full-text posting candidates.
+///
+/// Candidates carry one canonical packed key from the scan boundary, so a
+/// merge compares the existing ordering bytes and never decodes, materializes
+/// tuple elements, or re-encodes an identifier.
 enum FullTextPostingListAlgebra {
-    typealias Identifier = [any TupleElement]
+    typealias Identifier = FullTextPostingCandidate
 
     static func intersection(
         _ lhs: [Identifier],
         _ rhs: [Identifier],
         reservingCapacity: Bool = true,
-        admitting: (Identifier, ByteString) throws -> Void = { _, _ in }
+        admitting: (Identifier) throws -> Void = { _ in }
     ) rethrows -> [Identifier] {
         guard !lhs.isEmpty, !rhs.isEmpty else { return [] }
 
@@ -20,31 +22,21 @@ enum FullTextPostingListAlgebra {
         }
         var lhsIndex = 0
         var rhsIndex = 0
-        var lhsKey = stableKey(lhs[lhsIndex])
-        var rhsKey = stableKey(rhs[rhsIndex])
 
         while lhsIndex < lhs.count, rhsIndex < rhs.count {
-            if lhsKey == rhsKey {
-                try admitting(lhs[lhsIndex], lhsKey)
-                result.append(lhs[lhsIndex])
+            let lhsCandidate = lhs[lhsIndex]
+            let rhsCandidate = rhs[rhsIndex]
+            if lhsCandidate.canonicalKey == rhsCandidate.canonicalKey {
+                try admitting(lhsCandidate)
+                result.append(lhsCandidate)
                 lhsIndex += 1
                 rhsIndex += 1
-                if lhsIndex < lhs.count {
-                    lhsKey = stableKey(lhs[lhsIndex])
-                }
-                if rhsIndex < rhs.count {
-                    rhsKey = stableKey(rhs[rhsIndex])
-                }
-            } else if lhsKey.lexicographicallyPrecedes(rhsKey) {
+            } else if lhsCandidate.canonicalKey.lexicographicallyPrecedes(
+                rhsCandidate.canonicalKey
+            ) {
                 lhsIndex += 1
-                if lhsIndex < lhs.count {
-                    lhsKey = stableKey(lhs[lhsIndex])
-                }
             } else {
                 rhsIndex += 1
-                if rhsIndex < rhs.count {
-                    rhsKey = stableKey(rhs[rhsIndex])
-                }
             }
         }
 
@@ -55,7 +47,7 @@ enum FullTextPostingListAlgebra {
         _ lhs: [Identifier],
         _ rhs: [Identifier],
         reservingCapacity: Bool = true,
-        admitting: (Identifier, ByteString) throws -> Void = { _, _ in }
+        admitting: (Identifier) throws -> Void = { _ in }
     ) rethrows -> [Identifier] {
         guard !lhs.isEmpty else {
             return try admittedCopy(
@@ -81,52 +73,38 @@ enum FullTextPostingListAlgebra {
         }
         var lhsIndex = 0
         var rhsIndex = 0
-        var lhsKey = stableKey(lhs[lhsIndex])
-        var rhsKey = stableKey(rhs[rhsIndex])
 
         while lhsIndex < lhs.count, rhsIndex < rhs.count {
-            let identifier: Identifier
-            let key: ByteString
-            if lhsKey == rhsKey {
-                identifier = lhs[lhsIndex]
-                key = lhsKey
+            let candidate: Identifier
+            let lhsCandidate = lhs[lhsIndex]
+            let rhsCandidate = rhs[rhsIndex]
+            if lhsCandidate.canonicalKey == rhsCandidate.canonicalKey {
+                candidate = lhsCandidate
                 lhsIndex += 1
                 rhsIndex += 1
-                if lhsIndex < lhs.count {
-                    lhsKey = stableKey(lhs[lhsIndex])
-                }
-                if rhsIndex < rhs.count {
-                    rhsKey = stableKey(rhs[rhsIndex])
-                }
-            } else if lhsKey.lexicographicallyPrecedes(rhsKey) {
-                identifier = lhs[lhsIndex]
-                key = lhsKey
+            } else if lhsCandidate.canonicalKey.lexicographicallyPrecedes(
+                rhsCandidate.canonicalKey
+            ) {
+                candidate = lhsCandidate
                 lhsIndex += 1
-                if lhsIndex < lhs.count {
-                    lhsKey = stableKey(lhs[lhsIndex])
-                }
             } else {
-                identifier = rhs[rhsIndex]
-                key = rhsKey
+                candidate = rhsCandidate
                 rhsIndex += 1
-                if rhsIndex < rhs.count {
-                    rhsKey = stableKey(rhs[rhsIndex])
-                }
             }
-            try admitting(identifier, key)
-            result.append(identifier)
+            try admitting(candidate)
+            result.append(candidate)
         }
 
         while lhsIndex < lhs.count {
-            let identifier = lhs[lhsIndex]
-            try admitting(identifier, stableKey(identifier))
-            result.append(identifier)
+            let candidate = lhs[lhsIndex]
+            try admitting(candidate)
+            result.append(candidate)
             lhsIndex += 1
         }
         while rhsIndex < rhs.count {
-            let identifier = rhs[rhsIndex]
-            try admitting(identifier, stableKey(identifier))
-            result.append(identifier)
+            let candidate = rhs[rhsIndex]
+            try admitting(candidate)
+            result.append(candidate)
             rhsIndex += 1
         }
 
@@ -136,21 +114,16 @@ enum FullTextPostingListAlgebra {
     private static func admittedCopy(
         of source: [Identifier],
         reservingCapacity: Bool,
-        admitting: (Identifier, ByteString) throws -> Void
+        admitting: (Identifier) throws -> Void
     ) rethrows -> [Identifier] {
         var result: [Identifier] = []
         if reservingCapacity {
             result.reserveCapacity(source.count)
         }
-        for identifier in source {
-            try admitting(identifier, stableKey(identifier))
-            result.append(identifier)
+        for candidate in source {
+            try admitting(candidate)
+            result.append(candidate)
         }
         return result
-    }
-
-    @inline(__always)
-    private static func stableKey(_ identifier: Identifier) -> ByteString {
-        Tuple(identifier).pack()
     }
 }

@@ -415,6 +415,7 @@ public final class ControlledStorageEngine<Base: StorageEngine>:
             var base: KeyValueCursor
             let control: StorageTransactionControl
             var isAdmitted = false
+            var returnedElementCount = 0
             var isFinished = false
 
             mutating func next() async throws -> Element? {
@@ -422,7 +423,14 @@ public final class ControlledStorageEngine<Base: StorageEngine>:
                     isAdmitted = true
                     await control.suspendRangeAdvanceIfRequested()
                 }
-                return try await base.next()
+                if returnedElementCount > 0 {
+                    await control.suspendRangeContinuationIfRequested()
+                }
+                let element = try await base.next()
+                if element != nil {
+                    returnedElementCount += 1
+                }
+                return element
             }
 
             mutating func finish(
