@@ -125,6 +125,16 @@ independent resource owner.
 - Plain results preserve posting order and matched identifiers. Scored results
   preserve BM25 ordering and deterministic identifier ties. Facets are counted
   from completed retained result-row fields.
+- For regular and polymorphic plain AND/OR reads, a requested result limit is
+  a post-validation ordered-output bound. Every source posting cursor still
+  consumes its complete range and performs the existing decode,
+  canonicalization, admission, tail-corruption, cancellation, and cleanup
+  checks. Only the final AND result, each monotonic OR union result, and the
+  final retained-key promotion keep the requested prefix. A missing limit
+  keeps the complete result; the storage cursor limit remains the meter's
+  sentinel and is never replaced by the requested result limit. Scored,
+  faceted, phrase, and Fusion paths retain their complete intermediate result
+  behavior.
 - Missing and corrupt index values fail with typed errors; they are never
   converted to empty success.
 - A foreign work meter is rejected. Success, failure, cancellation, and limit
@@ -144,10 +154,13 @@ records the exact claim made while constructing it. Only then is the candidate
 appended to the batch and passed to ordered algebra. Intersection and union
 compare canonical keys and reuse the surviving candidates' recorded footprints
 without tuple conversion or footprint estimation; decode or cursor failure
-releases the whole batch after cursor cleanup. The retained-key builder reuses
-the winning tuples and canonical byte counts before retained models or
-polymorphic entries are fetched through the session and canonical rows are
-appended.
+releases the whole batch after cursor cleanup. For a plain regular or
+polymorphic read, the requested limit is applied only after those source
+validations: the final AND reduction and each monotonic OR union retain their
+ordered prefix, while all source cursors have already reached their terminal
+boundary. The retained-key builder then promotes only that prefix, reuses the
+winning tuples and canonical byte counts, and fetches retained models or
+polymorphic entries through the session before canonical rows are appended.
 
 Plain, scored, and polymorphic posting reads share this candidate path.
 Scoring is complete before row append. Faceted execution completes retained
@@ -202,9 +215,14 @@ candidates reuse their exact recorded footprint during merge. They also prove
 admission before preservation, order and uniqueness, single-batch reservation
 transfer and cleanup, unchanged plain/score/facet/polymorphic/limit behavior,
 denial-before-read, cancellation after partial scan with cursor finish, and
-zero retained rows or bytes after success, failure, and cancellation. A change
-to session, retained-fetch, or canonical-row contracts requires rechecking
-this module and the parent `DatabaseEngine Read` design.
+zero retained rows or bytes after success, failure, and cancellation. Plain
+limit tests additionally prove that regular and polymorphic AND/OR output is
+the ordered prefix of the unbounded result, source cursors still consume and
+reject corruption after the prefix, only retained prefixes are admitted, and
+nil limits remain unbounded; scored, faceted, phrase, and Fusion tests prove
+their complete-result paths are unchanged. A change to session,
+retained-fetch, or canonical-row contracts requires rechecking this module
+and the parent `DatabaseEngine Read` design.
 
 The Release macOS arm64 FullText benchmark uses one test, two metrics, and 15
 samples per metric through the real SQLite public query path. Post-change

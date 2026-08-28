@@ -160,6 +160,7 @@ private struct FullTextReadExecutor: IndexReadExecutor {
         }
         let budgetLimit = try options.workMeter.storageReadLimitWithSentinel()
         let limit = min(requestedLimit ?? budgetLimit, budgetLimit)
+        let plainResultLimit = requestedLimit.map { min($0, budgetLimit) }
         let includeFacets = indexScan.parameters[FullTextReadParameter.includeFacets]?.boolValue ?? false
         let returnScores = indexScan.parameters[FullTextReadParameter.returnScores]?.boolValue ?? false
 
@@ -241,7 +242,8 @@ private struct FullTextReadExecutor: IndexReadExecutor {
             configuration: configuration,
             terms: terms,
             matchMode: matchMode,
-            limit: limit,
+            fetchLimit: limit,
+            resultLimit: plainResultLimit,
             index: index,
             partitions: partitions,
             execution: execution,
@@ -255,7 +257,8 @@ private struct FullTextReadExecutor: IndexReadExecutor {
         configuration: FullTextIndexConfiguration,
         terms: [String],
         matchMode: TextMatchMode,
-        limit: Int?,
+        fetchLimit: Int,
+        resultLimit: Int?,
         index: IndexDescriptor,
         partitions: FieldObject,
         execution: CanonicalReadExecution,
@@ -290,10 +293,11 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                     indexSubspace: readableIndex.subspace,
                     transaction: transaction,
                     workMeter: workMeter,
+                    resultLimit: resultLimit,
                     snapshot: execution.consistency == .snapshot
                 )
             }
-            let limited = identifiers.prefix(limit: limit)
+            let limited = identifiers.prefix(limit: fetchLimit)
             let fetched = try await session.fetchRetainedPersistedModelsPreservingOrder(
                 entity: entity,
                 primaryKeys: limited,
@@ -777,6 +781,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         }
         let budgetLimit = try options.workMeter.storageReadLimitWithSentinel()
         let limit = min(requestedLimit ?? budgetLimit, budgetLimit)
+        let plainResultLimit = requestedLimit.map { min($0, budgetLimit) }
         let includeFacets = indexScan.parameters[FullTextReadParameter.includeFacets]?.boolValue ?? false
         let returnScores = indexScan.parameters[FullTextReadParameter.returnScores]?.boolValue ?? false
 
@@ -853,7 +858,8 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             configuration: configuration,
             terms: terms,
             matchMode: matchMode,
-            limit: limit,
+            fetchLimit: limit,
+            resultLimit: plainResultLimit,
             index: index,
             execution: execution,
             workMeter: options.workMeter
@@ -866,7 +872,8 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         configuration: FullTextIndexConfiguration,
         terms: [String],
         matchMode: TextMatchMode,
-        limit: Int?,
+        fetchLimit: Int,
+        resultLimit: Int?,
         index: IndexDeclaration<String>,
         execution: CanonicalReadExecution,
         workMeter: DatabaseWorkMeter
@@ -896,10 +903,11 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 indexSubspace: readableIndex.subspace,
                 transaction: transaction,
                 workMeter: workMeter,
+                resultLimit: resultLimit,
                 snapshot: execution.consistency == .snapshot
             )
         }
-        let limited = identifiers.prefix(limit: limit)
+        let limited = identifiers.prefix(limit: fetchLimit)
         let fetched = try await session.fetchRetainedPolymorphicItemsPreservingOrder(
             group: group,
             ids: limited,
@@ -1566,6 +1574,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         indexSubspace: Subspace,
         transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter,
+        resultLimit: Int? = nil,
         snapshot: Bool = true
     ) async throws -> FullTextRetainedKeys {
         let termsSubspace = FullTextStorageLayout.terms(in: indexSubspace)
@@ -1583,7 +1592,8 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 termsSubspace: termsSubspace,
                 transaction: transaction,
                 workMeter: workMeter,
-                snapshot: snapshot
+                snapshot: snapshot,
+                resultLimit: resultLimit
             )
         case .any:
             var union: [FullTextPostingCandidate] = []
@@ -1595,7 +1605,8 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                     termsSubspace: termsSubspace,
                     transaction: transaction,
                     workMeter: workMeter,
-                    snapshot: snapshot
+                    snapshot: snapshot,
+                    resultLimit: resultLimit
                 )
                 let matches = batch.values
                 let matchReservation = batch.reservation
@@ -1627,7 +1638,8 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                     let merged = try FullTextPostingListAlgebra.union(
                         union,
                         matches,
-                        reservingCapacity: false
+                        reservingCapacity: false,
+                        limit: resultLimit
                     ) { candidate in
                         try reserveFullTextCandidate(
                             candidate,
@@ -1666,9 +1678,14 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         defer { matchingBatch.release() }
         var retainedKeys = try FullTextRetainedKeys.Builder(
             workMeter: workMeter,
-            expectedCount: matchingBatch.count
+            expectedCount: resultLimit.map {
+                min(max($0, 0), matchingBatch.count)
+            } ?? matchingBatch.count
         )
-        for candidate in matchingBatch.values {
+        let retainedCount = resultLimit.map {
+            min(max($0, 0), matchingBatch.count)
+        } ?? matchingBatch.count
+        for candidate in matchingBatch.values.prefix(retainedCount) {
             try retainedKeys.append(
                 candidate.identifier,
                 packedByteCount: candidate.canonicalKey.count
@@ -1716,7 +1733,8 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         termsSubspace: Subspace,
         transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter,
-        snapshot: Bool
+        snapshot: Bool,
+        resultLimit: Int? = nil
     ) async throws -> FullTextCandidateBatch {
         guard !terms.isEmpty else {
             return FullTextCandidateBatch(
@@ -1731,7 +1749,8 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         var intersectionReservation: DatabaseIntermediateReservation?
         defer { intersectionReservation?.release() }
 
-        for term in terms {
+        for (termIndex, term) in terms.enumerated() {
+            let isFinalTerm = termIndex == terms.count - 1
             let results = try await searchTerm(
                 term,
                 termsSubspace: termsSubspace,
@@ -1763,7 +1782,8 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 let reduced = try FullTextPostingListAlgebra.intersection(
                     existing,
                     resultValues,
-                    reservingCapacity: false
+                    reservingCapacity: false,
+                    limit: isFinalTerm ? resultLimit : nil
                 ) { candidate in
                     try reserveFullTextCandidate(
                         candidate,
@@ -1784,9 +1804,39 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 intersectionReservation = reducedReservation
                 transferredReducedReservation = true
             } else {
-                intersection = resultValues
-                intersectionReservation = resultReservation
-                resultTransferred = true
+                if isFinalTerm,
+                    let resultLimit,
+                    max(resultLimit, 0) < resultValues.count {
+                    let boundedReservation = try workMeter.reserveIntermediate(
+                        bytes: UInt64(
+                            MemoryLayout<[FullTextPostingCandidate]>.stride
+                        ),
+                        at: .indexScan
+                    )
+                    do {
+                        let bounded = try FullTextPostingListAlgebra.prefix(
+                            resultValues,
+                            limit: resultLimit,
+                            reservingCapacity: false
+                        ) { candidate in
+                            try reserveFullTextCandidate(
+                                candidate,
+                                in: boundedReservation
+                            )
+                        }
+                        resultReservation.release()
+                        resultTransferred = true
+                        intersection = bounded
+                        intersectionReservation = boundedReservation
+                    } catch {
+                        boundedReservation.release()
+                        throw error
+                    }
+                } else {
+                    intersection = resultValues
+                    intersectionReservation = resultReservation
+                    resultTransferred = true
+                }
             }
         }
 

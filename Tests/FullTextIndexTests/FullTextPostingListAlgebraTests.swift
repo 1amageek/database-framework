@@ -45,6 +45,54 @@ struct FullTextPostingListAlgebraTests {
         #expect(values(result) == [0, 1, 2, 3, 5, 7, 8])
     }
 
+    @Test("Bounded algebra retains only the ordered prefix")
+    func boundedAlgebraPreservesOrderAndAdmission() throws {
+        let lhs = try identifiers([1, 3, 5, 7])
+        let rhs = try identifiers([0, 1, 2, 5, 8])
+        var admittedIntersection: [Int64] = []
+        var admittedUnion: [Int64] = []
+
+        let intersection = try FullTextPostingListAlgebra.intersection(
+            lhs,
+            rhs,
+            limit: 1
+        ) { candidate in
+            admittedIntersection.append(
+                try #require(candidate.identifier[0] as? Int64)
+            )
+        }
+        let union = try FullTextPostingListAlgebra.union(
+            lhs,
+            rhs,
+            limit: 3
+        ) { candidate in
+            admittedUnion.append(
+                try #require(candidate.identifier[0] as? Int64)
+            )
+        }
+
+        #expect(values(intersection) == [1])
+        #expect(admittedIntersection == [1])
+        #expect(values(union) == [0, 1, 2])
+        #expect(admittedUnion == [0, 1, 2])
+    }
+
+    @Test("Bounded algebra admits no candidate for a zero limit")
+    func boundedAlgebraZeroLimitDoesNotAdmitCandidates() throws {
+        let source = try identifiers([1, 2, 3])
+        var admissions = 0
+
+        let result = FullTextPostingListAlgebra.prefix(
+            source,
+            limit: 0
+        ) { _ in
+            admissions += 1
+        }
+
+        #expect(result.isEmpty)
+        #expect(admissions == 0)
+    }
+
     @Test("Admission occurs before an identifier is retained")
     func admissionFailureStopsBeforeAppend() throws {
         enum AdmissionError: Error {

@@ -186,6 +186,175 @@ struct FullTextReadContractTests {
         }
     }
 
+    @Test("Regular plain limit preserves the ordered prefix and scans its tail")
+    func regularPlainLimitPreservesPrefixAndScansTail() async throws {
+        let storage = ControlledStorageEngine(base: InMemoryEngine())
+        let container = try await makeRegularContainer(storage: storage)
+        defer { await container.shutdown() }
+
+        let context = container.testBaseContext()
+        for id in ["article-c", "article-a", "article-b"] {
+            try context.insert(
+                FullTextRetainedRegularArticle(
+                    id: id,
+                    body: "swift database"
+                )
+            )
+        }
+        try await context.save()
+
+        let modes: [TextMatchMode] = [.all, .any]
+        let terms = ["swift", "database"]
+        for mode in modes {
+            let unboundedQuery = try context.search(
+                FullTextRetainedRegularArticle.self
+            )
+            .fullText(FullTextRetainedRegularArticle.fields.body)
+            .terms(terms, mode: mode)
+            .toSelectQuery()
+            let unboundedExecution = ReadExecutionContext(
+                monotonicClock: container.monotonicClock
+            )
+            let unboundedResponse = try await context.executeCanonicalQuery(
+                unboundedQuery,
+                execution: unboundedExecution
+            )
+            #expect(unboundedResponse.rows.count > 1)
+            guard let expectedID = unboundedResponse.rows.first?
+                .fields["id"]?.stringValue else {
+                Issue.record("The unbounded regular search returned no rows")
+                continue
+            }
+
+            let query = try context.search(FullTextRetainedRegularArticle.self)
+                .fullText(FullTextRetainedRegularArticle.fields.body)
+                .terms(terms, mode: mode)
+                .limit(1)
+                .toSelectQuery()
+            let execution = ReadExecutionContext(
+                monotonicClock: container.monotonicClock
+            )
+            let cursorCountBefore = storage.control.openedRangeCursorCount
+            let response = try await context.executeCanonicalQuery(
+                query,
+                execution: execution
+            )
+
+            #expect(response.rows.count == 1)
+            #expect(
+                response.rows.first?.fields["id"]?.stringValue == expectedID
+            )
+            #expect(
+                storage.control.openedRangeCursorCount > cursorCountBefore
+            )
+            #expect(
+                storage.control.rangeCursorLimits.dropFirst(cursorCountBefore)
+                    .contains { $0 > 1 }
+            )
+            #expect(execution.workMeter.retainedIntermediateRows == 0)
+            #expect(execution.workMeter.retainedIntermediateBytes == 0)
+        }
+
+        let dataRoot = try await container.resolveDirectory(
+            for: FullTextRetainedRegularArticle.self
+        )
+        let indexRoot = try IndexLifecycleStore(
+            container: container,
+            subspace: dataRoot
+        ).indexSubspace(
+            for: "FullTextRetainedRegularArticle_body_fulltext"
+        )
+        let termSubspace = FullTextStorageLayout.terms(in: indexRoot)
+            .subspace("swift")
+        try await container.engine.withTransaction { transaction in
+            try transaction.setValue(
+                ByteString(),
+                for: termSubspace.prefix.appending(0xFF)
+            )
+        }
+
+        for mode in modes {
+            let query = try context.search(FullTextRetainedRegularArticle.self)
+                .fullText(FullTextRetainedRegularArticle.fields.body)
+                .terms(terms, mode: mode)
+                .limit(1)
+                .toSelectQuery()
+            let corruptedExecution = ReadExecutionContext(
+                monotonicClock: container.monotonicClock
+            )
+            await #expect(throws: TupleError.self) {
+                _ = try await context.executeCanonicalQuery(
+                    query,
+                    execution: corruptedExecution
+                )
+            }
+            #expect(
+                corruptedExecution.workMeter.retainedIntermediateRows == 0
+            )
+            #expect(
+                corruptedExecution.workMeter.retainedIntermediateBytes == 0
+            )
+        }
+    }
+
+    @Test("Polymorphic plain limit preserves the ordered prefix")
+    func polymorphicPlainLimitPreservesPrefix() async throws {
+        let storage = ControlledStorageEngine(base: InMemoryEngine())
+        let container = try await makePolymorphicContainer(storage: storage)
+        defer { await container.shutdown() }
+
+        let context = container.testBaseContext()
+        try context.insert(
+            FullTextRetainedArticle(id: "article-c", body: "swift database")
+        )
+        try context.insert(
+            FullTextRetainedArticle(id: "article-a", body: "swift database")
+        )
+        try context.insert(
+            FullTextRetainedReport(id: "report-a", body: "swift database")
+        )
+        try await context.save()
+
+        let modes: [TextMatchMode] = [.all, .any]
+        let terms = ["swift", "database"]
+        for mode in modes {
+            let unbounded = try await context.findPolymorphic(
+                FullTextRetainedArticle.self
+            )
+            .fullText(FullTextRetainedArticle.fields.body)
+            .terms(terms, mode: mode)
+            .executePage()
+            #expect(unbounded.results.count > 1)
+            guard let first = unbounded.results.first else {
+                Issue.record("The unbounded polymorphic search returned no rows")
+                continue
+            }
+
+            let cursorCountBefore = storage.control.openedRangeCursorCount
+            let limited = try await context.findPolymorphic(
+                FullTextRetainedArticle.self
+            )
+            .fullText(FullTextRetainedArticle.fields.body)
+            .terms(terms, mode: mode)
+            .limit(1)
+            .executePage()
+
+            #expect(limited.results.count == 1)
+            #expect(limited.results.first?.typeName == first.typeName)
+            #expect(
+                limited.results.first?.fields["id"]?.stringValue
+                    == first.fields["id"]?.stringValue
+            )
+            #expect(
+                storage.control.openedRangeCursorCount > cursorCountBefore
+            )
+            #expect(
+                storage.control.rangeCursorLimits.dropFirst(cursorCountBefore)
+                    .contains { $0 > 1 }
+            )
+        }
+    }
+
     @Test("Autocomplete promotes only the requested sorted prefix")
     func autocompleteLimitIsAppliedAfterOrdering() async throws {
         let storage = ControlledStorageEngine(base: InMemoryEngine())
@@ -483,7 +652,9 @@ private func makeRegularContainer(
     )
 }
 
-private func makePolymorphicContainer() async throws -> DBContainer {
+private func makePolymorphicContainer(
+    storage: any StorageEngine = InMemoryEngine()
+) async throws -> DBContainer {
     let provider = FullTextIndexMaintainerProvider()
     var articleRuntime = try EntityRuntimeDefinition(
         FullTextRetainedArticle.self
@@ -502,7 +673,7 @@ private func makePolymorphicContainer() async throws -> DBContainer {
                 try FullTextRetainedReport.schemaEntity,
             ]
         ),
-        configuration: .testing(storageEngine: InMemoryEngine()),
+        configuration: .testing(storageEngine: storage),
         runtimeConfiguration: try DatabaseRuntimeConfiguration(
             executionIdentity: DatabaseExecutionRuntimeIdentity(
                 identifier: "fulltext-retained-polymorphic-contract-tests",

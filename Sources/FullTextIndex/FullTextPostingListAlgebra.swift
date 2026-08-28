@@ -12,13 +12,20 @@ enum FullTextPostingListAlgebra {
         _ lhs: [Identifier],
         _ rhs: [Identifier],
         reservingCapacity: Bool = true,
+        limit: Int? = nil,
         admitting: (Identifier) throws -> Void = { _ in }
     ) rethrows -> [Identifier] {
-        guard !lhs.isEmpty, !rhs.isEmpty else { return [] }
+        let outputLimit = limit.map { max($0, 0) }
+        guard outputLimit != 0, !lhs.isEmpty, !rhs.isEmpty else {
+            return []
+        }
 
         var result: [Identifier] = []
         if reservingCapacity {
-            result.reserveCapacity(Swift.min(lhs.count, rhs.count))
+            let maximumCount = Swift.min(lhs.count, rhs.count)
+            result.reserveCapacity(
+                Swift.min(outputLimit ?? maximumCount, maximumCount)
+            )
         }
         var lhsIndex = 0
         var rhsIndex = 0
@@ -27,6 +34,9 @@ enum FullTextPostingListAlgebra {
             let lhsCandidate = lhs[lhsIndex]
             let rhsCandidate = rhs[rhsIndex]
             if lhsCandidate.canonicalKey == rhsCandidate.canonicalKey {
+                if let outputLimit, result.count >= outputLimit {
+                    return result
+                }
                 try admitting(lhsCandidate)
                 result.append(lhsCandidate)
                 lhsIndex += 1
@@ -47,12 +57,16 @@ enum FullTextPostingListAlgebra {
         _ lhs: [Identifier],
         _ rhs: [Identifier],
         reservingCapacity: Bool = true,
+        limit: Int? = nil,
         admitting: (Identifier) throws -> Void = { _ in }
     ) rethrows -> [Identifier] {
+        let outputLimit = limit.map { max($0, 0) }
+        guard outputLimit != 0 else { return [] }
         guard !lhs.isEmpty else {
             return try admittedCopy(
                 of: rhs,
                 reservingCapacity: reservingCapacity,
+                limit: outputLimit,
                 admitting: admitting
             )
         }
@@ -60,6 +74,7 @@ enum FullTextPostingListAlgebra {
             return try admittedCopy(
                 of: lhs,
                 reservingCapacity: reservingCapacity,
+                limit: outputLimit,
                 admitting: admitting
             )
         }
@@ -69,7 +84,9 @@ enum FullTextPostingListAlgebra {
             rhs.count
         )
         if reservingCapacity, !overflow {
-            result.reserveCapacity(maximumCount)
+            result.reserveCapacity(
+                Swift.min(outputLimit ?? maximumCount, maximumCount)
+            )
         }
         var lhsIndex = 0
         var rhsIndex = 0
@@ -91,18 +108,27 @@ enum FullTextPostingListAlgebra {
                 candidate = rhsCandidate
                 rhsIndex += 1
             }
+            if let outputLimit, result.count >= outputLimit {
+                return result
+            }
             try admitting(candidate)
             result.append(candidate)
         }
 
         while lhsIndex < lhs.count {
             let candidate = lhs[lhsIndex]
+            if let outputLimit, result.count >= outputLimit {
+                return result
+            }
             try admitting(candidate)
             result.append(candidate)
             lhsIndex += 1
         }
         while rhsIndex < rhs.count {
             let candidate = rhs[rhsIndex]
+            if let outputLimit, result.count >= outputLimit {
+                return result
+            }
             try admitting(candidate)
             result.append(candidate)
             rhsIndex += 1
@@ -114,16 +140,37 @@ enum FullTextPostingListAlgebra {
     private static func admittedCopy(
         of source: [Identifier],
         reservingCapacity: Bool,
+        limit: Int?,
         admitting: (Identifier) throws -> Void
     ) rethrows -> [Identifier] {
+        guard limit != 0 else { return [] }
         var result: [Identifier] = []
         if reservingCapacity {
-            result.reserveCapacity(source.count)
+            result.reserveCapacity(
+                Swift.min(limit ?? source.count, source.count)
+            )
         }
         for candidate in source {
+            if let limit, result.count >= limit {
+                break
+            }
             try admitting(candidate)
             result.append(candidate)
         }
         return result
+    }
+
+    static func prefix(
+        _ source: [Identifier],
+        limit: Int?,
+        reservingCapacity: Bool = true,
+        admitting: (Identifier) throws -> Void = { _ in }
+    ) rethrows -> [Identifier] {
+        try admittedCopy(
+            of: source,
+            reservingCapacity: reservingCapacity,
+            limit: limit.map { max($0, 0) },
+            admitting: admitting
+        )
     }
 }
