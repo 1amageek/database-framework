@@ -34,7 +34,7 @@ flowchart LR
 | Application | Concrete models, schema, policy, runtime composition, and lifecycle |
 | `database-kit` | `@Persistable`, schema metadata, query and mutation contracts, identity, graph and ontology declarations |
 | `database-framework` | Registration, validation, transactions, persistence, query execution, indexes, relationships, security, graph, ontology, migrations, and maintenance |
-| `storage-kit` | Storage transactions, key ranges, selectors, namespaces, and concrete backend adapters |
+| `storage-kit` | Storage transactions, key ranges, selectors, the Directory catalog, and concrete backend adapters |
 
 This repository does not own application-specific schemas, transport or
 protocol dispatch, remote jobs, server listeners, process lifecycle,

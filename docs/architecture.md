@@ -25,7 +25,7 @@ database-framework
         v
 storage-kit
   StorageEngine, transaction and range contracts, Tuple, Subspace,
-  namespace resolution/catalog capabilities, concrete storage adapters
+  Directory catalog and resolution, concrete storage adapters
 ~~~
 
 database-types owns only portable primitive database values. It does not own
@@ -271,13 +271,13 @@ fall back to scans or no-op maintenance.
   Every present lifecycle value must be exactly one known state byte; malformed
   or unknown values fail without being overwritten.
 - Read admission is stricter than lifecycle administration. An unregistered
-  dynamic partition is an empty dataset, but an existing namespace with a
+  dynamic partition is an empty dataset, but an existing Directory with a
   missing lifecycle key is corrupt metadata and fails with
   `IndexStateError.missingPersistedState`. Only `readable` may reach a physical
   index reader; `disabled`, `writeOnly`, malformed, and unknown states fail.
-- Namespace lookup, lifecycle admission, and the physical index read use the
-  same caller-owned transaction and read version. A read never creates a
-  namespace or initializes lifecycle metadata.
+- Directory resolution, lifecycle admission, and the physical index read use
+  the same caller-owned transaction and read version. A read never creates a
+  Directory or initializes lifecycle metadata.
 - An online build validates its configuration before changing lifecycle state.
 - An index becomes readable only after its build, uniqueness checks, and progress
   finalization succeed.

@@ -28,8 +28,8 @@ flowchart TB
     Multiple["MultiBase graph<br/>target-bound Wire v5"] --> Prepare["Operation preparation<br/>decode + requirement"]
     Prepare --> Bind["Execution coordinator<br/>leases + persisted Grant"]
     Bind --> Handler["Target-bound handler"]
-    Handler --> Namespace["Authorized Base root<br/>+ relative directory"]
-    Namespace --> MultipleTransaction["Storage transaction"]
+    Handler --> Root["Authorized Base Partition<br/>+ relative Directory"]
+    Root --> MultipleTransaction["Storage transaction"]
 ```
 
 The critical optional-feature property is structural: the standard graph pays
@@ -46,12 +46,12 @@ Base through a target-bound executor.
 | With `MultiBase`, `DatabaseOperationContext` contains a narrow executor and never exposes a raw container. | `database-server/Sources/DatabaseServerRuntime/DatabaseOperationContext.swift`; `DatabaseOperationExecutor.swift` | Data handlers cannot select a second Base. |
 | With `MultiBase`, `DBContainer` claims a control domain and every data domain exactly once. | `Sources/DatabaseEngine/Topology`; `Sources/DatabaseEngine/Core/DBContainer.swift` | Catalog and Base storage lifecycles have one owner and one shutdown path. |
 | Local operations use a database-bound context, or `DatabaseSession` with a Base or Composition selector when `MultiBase` is enabled. | `Sources/DatabaseEngine/Core/DBContainer.swift`; `Sources/DatabaseEngine/Base/DatabaseSession.swift` | A public unscoped context does not exist. |
-| Base, Composition, placement, Grant, and layout records are persisted catalogs with immutable generations and leases. | `Sources/DatabaseEngine/Base`; `Sources/DatabaseEngine/Security` | Existence and lifecycle come from catalogs rather than backend namespace probes. |
+| Base, Composition, placement, Grant, and layout records are persisted catalogs with immutable generations and leases. | `Sources/DatabaseEngine/Base`; `Sources/DatabaseEngine/Security` | Existence and lifecycle come from catalogs rather than backend Directory probes. |
 | Direct and role Grants are unioned in the Base transaction; role-name administration bypasses are absent. | `DatabaseGrantStore.swift`; `DataStoreSecurityDelegate.swift` | Authentication claims alone never grant data access. |
 | Composition reads hold one transaction per physical domain, authorize all members, and retain origin. | `CompositionDataSource.swift`; `CompositionQueryPlanner.swift` | Partial authorization and silent member omission are impossible. |
 | RDF/SPARQL Composition semantics compile in `GraphIndex`, while relational semantics compile in `DatabaseEngine`. | `CompositionSPARQLQueryPlanner.swift`; `CompositionSPARQLPlanValidator.swift`; `CompositionRDFQueryPlanner.swift`; `CompositionRDFIdentity.swift`; `CompositionQueryPlanner.swift` | Optional graph semantics do not enter the core relational target. |
 | Cross-domain remote continuation is a bounded durable snapshot spool owned by the server adapter. | `database-server/Sources/DatabaseServerRuntime/DatabaseQuerySnapshotStore.swift` | Client pages do not retain transactions or carry trusted continuation state; the framework does not own Wire paging. |
-| Removed layouts and populated unformatted roots fail before data execution. | `Sources/DatabaseEngine/Format/DatabaseFormatCatalog.swift`; `DatabaseFormatDescriptor.swift` | No namespace probing, compatibility alias, or migration path is retained. |
+| Removed layouts and populated unformatted roots fail before data execution. | `Sources/DatabaseEngine/Serialization/DatabaseFormatCatalog.swift`; `DatabaseFormatDescriptor.swift` | No Directory probing, compatibility alias, or migration path is retained. |
 
 ## 3. `MultiBase` Invariants
 
@@ -69,7 +69,7 @@ The following invariants apply only to the graph compiled with
 7. Roles are authenticated claims, not implicit permissions.
 8. Authorization is checked inside the transaction that accesses Base data.
 9. The Base Catalog is authoritative for existence and lifecycle. Backend
-   namespace existence is only a physical fact.
+   Directory existence is only a physical fact.
 10. A request uses one immutable Schema generation and one immutable Base or
     Composition generation for its complete lifetime.
 11. Storage adapters do not import or interpret Base, Composition, Grant, or
@@ -238,7 +238,7 @@ flowchart TB
     Cloudflare["database-framework-cloudflare<br/>application session"] --> Engine
     Graph["GraphIndex<br/>RDF/SPARQL Composition semantics"] --> Engine
     Engine --> Kit
-    Engine --> Storage["storage-kit<br/>transactions and namespaces"]
+    Engine --> Storage["storage-kit<br/>transactions and the Directory catalog"]
 ```
 
 | Declaration or behavior | Owner | Reason to change |
@@ -250,7 +250,7 @@ flowchart TB
 | Session, data-source interfaces, catalogs, generation leases, placement, relational planner, decision transaction | `database-framework / DatabaseEngine` | In-process relational execution and lifecycle behavior changes. |
 | RDF blank-node qualification and SPARQL/ASK/CONSTRUCT/DESCRIBE Composition planner | `database-framework / GraphIndex` | RDF or SPARQL execution semantics change. |
 | Operation requirement resolution and target-bound handler context | `database-server / DatabaseServerRuntime` | Canonical operation dispatch changes. |
-| Namespace resolution and backend transaction behavior | `storage-kit` | Storage semantics or backend behavior changes. |
+| Directory resolution and backend transaction behavior | `storage-kit` | Storage semantics or backend behavior changes. |
 | Credentials, TLS, database routing, process lifecycle | `database-server` | Native hosting changes. |
 | Typed target facade and transport | `database-client` | Client invocation behavior changes. |
 | `--base`, `--composition`, administration commands, output | `database-cli` | User interaction changes. |
@@ -477,20 +477,20 @@ operation:
 ```swift
 package struct DatabaseExecutionLease: Sendable {
     let schema: DatabaseSchemaLease
-    let target: ResolvedDatabaseTarget
+    let executor: DatabaseOperationExecutor
     let authorization: AuthorizationContext
 }
 
-package enum ResolvedDatabaseTarget: Sendable {
-    case database(DatabaseControlLease)
-    case base(ResolvedBaseLease)
-    case composition(ResolvedCompositionLease)
+package enum DatabaseOperationExecutor: Sendable {
+    case control(DatabaseControlExecutor)
+    case base(BaseOperationExecutor)
+    case composition(CompositionReadExecutor)
 }
 ```
 
-`ResolvedBaseLease` retains the logical Base identity, catalog revision,
-placement generation, storage-domain handle, owned root `Subspace`, and
-lifecycle state. `DatabaseCompositionLease` retains a
+`DatabaseBaseLease` retains the logical Base identity, catalog revision,
+placement generation, storage-domain handle, system root `Subspace`, resolved
+data root, and lifecycle state. `DatabaseCompositionLease` retains a
 `CompositionResolution` and its ordered `DatabaseBaseLease` values. A named
 resolution retains its catalog generation; a derived resolution has no catalog
 identity. Old named leases remain valid until their in-flight operation ends.
@@ -526,58 +526,61 @@ context path.
 The control-domain metadata contains:
 
 ```text
-metadata/
-|-- schema/<generation>
-|-- bases/by-id/<Base.ID> -> BaseCatalogRecord
-|-- bases/by-ordinal/<UInt64> -> Base.ID
-|-- placements/<Base.ID>/<generation> -> BasePlacementRecord
-|-- compositions/<Composition.ID>/<generation> -> CompositionRecord
-|-- grants/database/<subject> -> access bits
+<control system root>/
+|-- metadata/schema/<generation>
+|-- catalog/bases/records/<Base.ID> -> DatabaseBaseRecord
+|-- catalog/compositions/records/<Composition.ID> -> DatabaseCompositionRecord
+|-- security/grants/{principals,roles}/<subject> -> access bits
 `-- jobs/...
 ```
 
-Each Base root contains Base-local authority and data:
+`DatabaseBaseRecord` carries the placement identity, storage-domain identity,
+and placement generation inline, so no separate placement record exists.
+
+Each Base Partition separates framework authority from application data:
 
 ```text
-base-root/
-|-- metadata/grants/<subject> -> access bits
-|-- metadata/partitions/...
-|-- metadata/index-state/...
-|-- entities/<relative-directory>/...
-|-- indexes/<relative-directory>/...
-|-- relationships/...
-|-- graph-rdf/...
-|-- ontology/...
-`-- shacl/...
+bases/<Base.ID>/
+|-- system/database-framework/
+|   |-- security/grants/{principals,roles}/<subject> -> access bits
+|   `-- _metadata/<component>
+`-- data/
+    `-- <#Directory relative path>/
+        `-- entity, index, relationship, RDF, ontology, and SHACL branches
 ```
 
-`BaseCatalogRecord` stores stable ID, compact ordinal, revision, lifecycle, and
-placement reference. `BasePlacementRecord` stores an internal storage-domain
-identity, logical namespace path, and generation. It does not store a client-
-visible raw prefix as canonical state.
+`data` is the only Directory a `#Directory` declaration binds below. The
+reserved topology is owned by
+[Directory](../Sources/DatabaseEngine/Directory/DESIGN.md).
 
-The runtime-derived `ResolvedBaseLease` owns the currently resolved `Subspace`
-prefix. The Base Catalog, not `NamespaceResolver.namespaceExists`, determines
-whether a logical Base exists.
+`DatabaseBaseRecord` stores stable ID, placement ID, storage-domain identity,
+placement generation, revision, and lifecycle. It stores no path and no
+client-visible raw prefix as canonical state; the Base Partition address is
+derived from `Base.ID`.
 
-### 8.2 Namespace construction
+The runtime-derived `DatabaseBaseLease` owns the currently resolved system root
+`Subspace` and data root. The Base Catalog, not backend Directory existence,
+determines whether a logical Base exists.
 
-The only backend namespace lookup on the steady-state data path is Base
+### 8.2 Base Partition construction
+
+The only backend Directory lookup on the steady-state data path is Base
 placement restoration or a placement-generation cache miss:
 
 ```text
 Base Catalog
-    -> logical placement path
-        -> NamespaceResolver.resolveExisting(...)
-            -> retained Base root Subspace
+    -> storage domain + Base.ID
+        -> DirectoryAccess.open(bases/<Base.ID>)
+            -> retained Base Partition Directory
                 -> synchronous subspace(relative directory)
                     -> synchronous entity/index branch
 ```
 
-Base creation calls `resolveOrCreate` in the lifecycle transaction. FDB uses
-Directory Layer there and retains its short allocated prefix. SQLite,
-PostgreSQL, and deterministic backends derive a prefix through their existing
-resolver. Entity and index hot paths only append tuple components to the
+Base creation opens or initializes the Partition in the lifecycle transaction.
+Every backend realizes the same StorageKit Directory contract: FDB maps it onto
+the native Directory Layer, while the SQLite, PostgreSQL, and deterministic
+adapters realize it in the adapter. The framework computes no prefix of its
+own. Entity and index hot paths only append tuple components to the
 retained root.
 
 The schema property is renamed to `relativeDirectoryPathComponents` in the
@@ -621,13 +624,13 @@ Grant evaluation order for a Base operation is:
 2. Open the Base's storage transaction.
 3. Read Base-local direct and role Grants in that transaction.
 4. Require the operation's exact access bits.
-5. Construct the data namespace from the already authorized Base root.
+5. Construct the data Directory from the already authorized Base Partition.
 6. Execute entity policy and field policy before returning or mutating data.
 7. Commit or cancel the same transaction.
 
 This order avoids a circular dependency: placement is public control state,
-while permission state is inside the resolved Base root and is read before any
-entity data namespace is exposed.
+while permission state is inside the resolved Base Partition and is read before
+any entity data Directory is exposed.
 
 For Composition reads, the coordinator opens the required read transaction or
 transactions, verifies every member before invoking the planner, and emits no
@@ -647,7 +650,7 @@ idempotency key against another Base cannot replay the first Base's response.
 - Initial Base creation must establish one explicit Base administrator before
   the Base becomes active.
 
-In a single storage domain, namespace allocation, initial Grant, and active
+In a single storage domain, Partition creation, initial Grant, and active
 catalog publication commit in one transaction. In multiple domains, the Base
 is first persisted as `provisioning`, the data-domain root and initial Grant
 are created, and only then is an active control record published. Recovery is
@@ -802,8 +805,8 @@ ownership violations are internal failures, not missing-resource results.
 |---|---|---|---|---|---|
 | `Base` / Composition semantic value | App, CLI, Wire decoder | Caller value | Value lifetime | Immutable | Validation error |
 | Base catalog record | Base lifecycle coordinator | Control-domain storage | Until explicit deletion | Storage transaction | Typed catalog failure |
-| Placement record | Placement lifecycle coordinator | Control-domain storage | Placement generation | Storage transaction | Base not activated |
-| Base root prefix | Namespace resolver | `ResolvedBaseLease` | Lease/generation | Immutable owned bytes | Resolution failure |
+| Placement move descriptor | Placement move coordinator | Control-domain storage | Until the move completes | Storage transaction | Base not activated |
+| Base Partition prefix | StorageKit `DirectoryAccess` | `DatabaseBaseLease` | Lease/generation | Immutable owned bytes | Typed Directory failure |
 | Base Grant | Grant operation | Base-domain storage | Until revoke/delete | Same transaction domain as data | Authorization denial |
 | Composition definition | Composition coordinator | Control-domain storage | Generation | Storage transaction | Typed conflict |
 | Schema lease | Schema generation store | Request | Complete operation | `Mutex` publication, immutable lease | Stale continuation/conflict |
@@ -846,16 +849,17 @@ ownership violations are internal failures, not missing-resource results.
   Composition planning to the optional `GraphIndex` target.
 - Expose semantic execution events for adapters; do not add DatabaseWire
   dispatch, opaque continuation storage, remote jobs, or host lifecycle.
-- Reject removed global namespaces and descriptor versions explicitly. No
+- Reject removed global layouts and descriptor versions explicitly. No
   migration job, reinterpretation, probe, or alias remains in the runtime.
 
 ### `storage-kit`
 
-- Preserve existing namespace and transaction abstractions.
-- Add only backend capabilities needed to prove namespace lifecycle or retained
+- Preserve the existing Directory and transaction abstractions.
+- Add only backend capabilities needed to prove Directory lifecycle or retained
   prefix ownership; do not add Base types.
-- Verify Directory Layer allocation and root resolution in the caller's
-  lifecycle transaction.
+- Verify Directory allocation and root resolution in the caller's lifecycle
+  transaction. The normative Directory contract is in
+  [Directory](../Sources/DatabaseEngine/Directory/DESIGN.md).
 
 ### `database-client` with `MultiBase`
 

@@ -114,7 +114,7 @@ isolation primitive are compiled for every target.
 | HNSW non-thread-safe graph search | `Mutex<Void>` | `Mutex<Void>` | `Mutex<Void>` | The same serialized search entry point is used on every target |
 | Context pending mutations and save state | `Mutex<ContextState>` | `Mutex<ContextState>` | `Mutex<ContextState>` | Staging and save transitions use the same mutation entry points; no lock crosses `await` |
 | Storage lifecycle phase, operation count, waiters | `Mutex<State>` | `Mutex<State>` | `Mutex<State>` | Admission and shutdown transitions are identical; backend shutdown starts outside the lock |
-| Operation lease exactly-once completion | `Mutex<Bool>` | `Mutex<Bool>` | `Mutex<Bool>` | Namespace borrows retain the concrete lease across `await`; release is idempotent and owner-scoped |
+| Operation lease exactly-once completion | `Mutex<Bool>` | `Mutex<Bool>` | `Mutex<Bool>` | `ContainerDirectoryTransactionBorrow` retains the concrete lease across `await`; release is idempotent and owner-scoped |
 
 ## Current Validation Evidence
 

@@ -1,8 +1,8 @@
 # Base and Composition
 
 Status: implemented behind the non-default `MultiBase` SwiftPM trait.
-The P0/P1 responsibility-boundary changes described here have not yet received
-the separately authorized build and behavioral verification pass.
+Verification state is owned by
+[Base and Composition Implementation Design](base-composition-implementation-design.md).
 
 The package ownership, runtime state, Wire contract, transaction boundaries,
 implementation order, and verification gates are defined in
@@ -62,7 +62,7 @@ a View.
 | `CompositionSelection` | Named ID or request-scoped canonical Base set selected by a caller |
 | `CompositionResolution` | Immutable named generation or derived Base set fixed for one execution |
 | `Security.Resource.base` | Security resource representing one Base |
-| `BasePlacement` | Internal mapping from a Base to a storage namespace |
+| `DatabaseStoragePlacement` | Internal mapping from a Base to a storage domain; it carries no path component |
 | `EntityAddress` | Base-qualified address of one persisted entity |
 
 `Base` does not contain imports. Composition is owned only by
@@ -204,24 +204,33 @@ struct Person {
 }
 ~~~
 
-The physical namespace is resolved as:
+The physical address is resolved as:
 
 ~~~text
-Base placement root
+Base Partition Directory        (bases/<Base.ID>, opened through DirectoryAccess)
+    + data Directory
     + #Directory relative path
-    + dynamic directory partitions
+    + dynamic directory components
     + entity storage kind
     + entity identifier
 ~~~
 
 ```mermaid
 flowchart LR
-    BaseID["Base.ID"] --> Catalog["Base Catalog"]
-    Catalog --> Placement["BasePlacement"]
-    Placement --> Root["Retained namespace prefix"]
-    Directory["#Directory relative path"] --> EntityNamespace["Entity namespace"]
-    Root --> EntityNamespace
+    BaseID["Base.ID"] --> Lease["DatabaseBaseLease"]
+    Lease --> Placement["DatabaseStoragePlacement<br/>selects storage domain"]
+    Lease --> Partition["Base Partition Directory<br/>bases/&lt;Base.ID&gt;"]
+    Partition --> Data["data Directory"]
+    Directory["#Directory relative path"] --> Entity["Entity Directory"]
+    Data --> Entity
 ```
+
+The framework computes no key prefix of its own. Every prefix above is a
+`Directory` returned by StorageKit's `DirectoryAccess`, and a placement selects
+only the storage domain that resolves it. The reserved topology, the canonical
+dynamic component grammar, and the typed Directory failures are defined once in
+[Directory](../Sources/DatabaseEngine/Directory/DESIGN.md); this document does
+not restate them.
 
 The generated schema property should express this relative meaning. The target
 naming is `relativeDirectoryPathComponents` rather than an apparently absolute
@@ -395,7 +404,7 @@ all Bases. Base identity is not added to `Principal`, `AuthorizationContext`,
 model fields, or policy signatures.
 
 Database-backed Grant evaluation occurs inside the operation transaction and
-before the data namespace is opened. State-independent operation admission may
+before the data Directory is opened. State-independent operation admission may
 reject an operation family, but it is not the authority for a persisted Base
 Grant.
 
@@ -437,34 +446,42 @@ Database
 ~~~
 
 An application model does not gain a `baseID` field. Base selection is an
-operation input and a physical namespace prefix, so the planner never relies
+operation input and a resolved Directory prefix, so the planner never relies
 on a late `baseID` row filter for isolation.
 
-The Base Catalog stores stable identity, compact internal ordinal, revision,
-lifecycle state, and a placement reference. The Composition Catalog stores its
-identity, immutable generation, and canonical Base set. Placement records map
-stable Base identity to a backend namespace generation without exposing the
-physical prefix to clients.
+The Base Catalog stores stable identity, placement identity, storage-domain
+identity, placement generation, revision, and lifecycle state in one
+`DatabaseBaseRecord`. The Composition Catalog stores its identity, immutable
+generation, and canonical Base set. No record stores a path or a physical
+prefix, so no prefix is ever exposed to clients.
 
-## FoundationDB Placement
+## Base Partition Resolution
 
-FoundationDB Directory Layer resolves a Base placement during Base creation,
-movement, or runtime restoration. It is not called on every query. The runtime
-retains the resolved Subspace prefix for the placement generation.
+A Base Partition is opened through StorageKit's `DirectoryAccess` during Base
+creation, movement, or runtime restoration. It is not resolved on every query;
+`DatabaseBaseLease` retains the resolved `Directory` for the placement
+generation.
 
-Conceptually, the path is:
+The reserved path is:
 
 ~~~text
-/databases/<database-id>/partitions/<partition-id>/bases/<base-id>
+bases/<Base.ID>
+    |-- system/database-framework
+    `-- data
 ~~~
+
+Every backend realizes the same Directory contract: FoundationDB maps it onto
+the native Directory Layer, and the SQLite, PostgreSQL, and Cloudflare adapters
+realize it in the adapter. The normative topology, component grammar, and typed
+failures are in
+[Directory](../Sources/DatabaseEngine/Directory/DESIGN.md).
 
 Entity data and every derived index remain below that Base root. A Base-local
 query therefore reads one bounded prefix rather than scanning unrelated Bases
 and filtering them afterward.
 
-StorageKit receives resolved namespaces and transactions. It does not own or
-interpret `Base`, `Base.Composition`, Security Grants, or Composition query
-semantics.
+StorageKit owns Directory resolution and transactions. It does not interpret
+`Base`, `Base.Composition`, Security Grants, or Composition query semantics.
 
 ## Composition Execution and Performance
 
@@ -473,13 +490,15 @@ an immutable catalog generation; derived selections retain their canonical
 Base set directly:
 
 ~~~text
-CompositionResolution
-|-- named identity and generation, or derived kind
-|-- canonical Base identities
-|-- Schema generation
-|-- resolved Base ordinals
-|-- retained namespace prefixes
-`-- resolved index roots
+DatabaseCompositionLease
+|-- CompositionSelection
+|-- CompositionResolution
+|   |-- named identity and generation, or derived kind
+|   `-- canonical Base identities
+|-- named catalog record, when the selection is named
+`-- ordered DatabaseBaseLease members
+    |-- retained Base Partition Directory
+    `-- placement generation
 ~~~
 
 The query-plan cache key includes the Composition generation, Schema
@@ -521,7 +540,7 @@ must not silently present a federated read as transactionally atomic.
 | `database-kit` | Base, Composition, Security resource/Grant semantics, operation and Wire contracts |
 | `database-framework` | Catalogs, generation leases, authorization execution, placement resolution, relational planning, and in-process Composition execution |
 | `database-framework / GraphIndex` | RDF blank-node identity, SPARQL/ASK/CONSTRUCT/DESCRIBE Composition semantics when `GraphIndexes` is selected |
-| `storage-kit` | Resolved namespaces, transactions, and backend adapters |
+| `storage-kit` | The Directory catalog, transactions, and backend adapters |
 | `database-server` | DatabaseWire dispatch, remote page/spool/job lifecycle, error mapping, credential authentication, and native host lifecycle; no Composition query semantics |
 | `database-client` | Typed Base and Composition operation invocation |
 | `database-cli` | `--base` and `--composition` selection and administration UX |
@@ -539,10 +558,9 @@ must not silently present a federated read as transactionally atomic.
 - Security uses one Grant model with independent Access bits.
 - A Composition grants no access and requires read access to every Base.
 - Grant evaluation and Base data access share a transaction domain.
-- Query planning begins with authorized Base namespaces; Base authorization is
+- Query planning begins with authorized Base Partitions; Base authorization is
   not implemented as post-query filtering.
-- Storage adapters receive resolved namespaces and do not interpret Base
-  semantics.
+- Storage adapters resolve Directories and do not interpret Base semantics.
 - Unsupported consistency or materialization capabilities fail explicitly.
 
 ## Implemented Capability Boundary
