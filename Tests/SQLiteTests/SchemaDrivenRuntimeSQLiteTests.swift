@@ -648,26 +648,28 @@ struct SchemaDrivenRuntimeSQLiteTests {
         indexName: String
     ) async throws -> [RelativeIndexEntry] {
         try await container.withTestBaseOperation {
-        let entitySubspace = try await container.resolveDirectory(
-            for: SchemaDrivenIndexParityEntity.self
-        )
-        let indexSubspace = try IndexLifecycleStore(
+            let entitySubspace = try await container.resolveDirectory(
+                for: SchemaDrivenIndexParityEntity.self
+            )
+            let indexSubspace = try IndexLifecycleStore(
                 container: container,
                 subspace: entitySubspace
             ).indexSubspace(for: indexName)
-        let range = indexSubspace.range()
-        return try await container.engine.withTransaction { transaction in
-            try await transaction.collectRange(
-                begin: range.begin,
-                end: range.end,
-                snapshot: true
-            ).map { key, value in
-                RelativeIndexEntry(
-                    key: key[(key.startIndex + indexSubspace.prefix.count)..<key.endIndex],
-                    value: value
-                )
+            let range = indexSubspace.range()
+            return try await container.engine.withTransaction { transaction in
+                try await transaction.collectRange(
+                    begin: range.begin,
+                    end: range.end,
+                    snapshot: true
+                ).map { key, value in
+                    RelativeIndexEntry(
+                        key: key[
+                            (key.startIndex + indexSubspace.prefix.count)..<key.endIndex
+                        ],
+                        value: value
+                    )
+                }
             }
-        }
         }
     }
 

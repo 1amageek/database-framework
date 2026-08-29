@@ -11,8 +11,8 @@ public enum DatabaseStorageTopologyError: Error, Sendable, Equatable {
         second: DatabaseStorageDomain.ID
     )
     case missingControlDomain(DatabaseStorageDomain.ID)
-    case emptyDomainNamespace(domainID: DatabaseStorageDomain.ID)
-    case emptyNamespaceComponent(domainID: DatabaseStorageDomain.ID)
+    case emptyDomainRootPath(domainID: DatabaseStorageDomain.ID)
+    case emptyDomainRootPathComponent(domainID: DatabaseStorageDomain.ID)
     case noPlacements
     case duplicatePlacementID(Base.Placement.ID)
     case duplicatePlacementDestination(
@@ -24,8 +24,6 @@ public enum DatabaseStorageTopologyError: Error, Sendable, Equatable {
         domainID: DatabaseStorageDomain.ID
     )
     case missingDefaultPlacement(Base.Placement.ID)
-    case emptyPlacementPath(placementID: Base.Placement.ID)
-    case emptyPlacementPathComponent(placementID: Base.Placement.ID)
     case configurationAlreadyClaimed
 }
 #endif

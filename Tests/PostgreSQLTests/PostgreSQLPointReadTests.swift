@@ -203,7 +203,7 @@ struct PostgreSQLPointReadTests {
             try await context.save()
 
             let (fetched, missing) = try await context.withDataOperation {
-                var path = DirectoryPath<TenantOrder>()
+                var path = DatabaseEngine.DirectoryPath<TenantOrder>()
                 path.set(TenantOrder.fields.tenantID, to: tenantID)
                 let store = try await container.store(
                     for: TenantOrder.self,
@@ -214,7 +214,7 @@ struct PostgreSQLPointReadTests {
                     id: orderID
                 )
 
-                var wrongPath = DirectoryPath<TenantOrder>()
+                var wrongPath = DatabaseEngine.DirectoryPath<TenantOrder>()
                 wrongPath.set(
                     TenantOrder.fields.tenantID,
                     to: uniqueID("other")

@@ -91,7 +91,7 @@ struct SchemaRuntimeGenerationTests {
             runtimeConfiguration: targetRuntime
         )
         let targetGeneration = oldGeneration + 1
-        container.publishSchemaGeneration(
+        try container.publishSchemaGeneration(
             schema,
             fingerprint: try SchemaManifest(schema: schema).fingerprint(),
             indexPhysicalFingerprint: prepared.indexPhysicalFingerprint,
@@ -157,7 +157,7 @@ struct SchemaRuntimeGenerationTests {
             runtimeConfiguration: targetRuntime
         )
         let targetGeneration = oldGeneration + 1
-        container.publishSchemaGeneration(
+        try container.publishSchemaGeneration(
             schema,
             fingerprint: try SchemaManifest(schema: schema).fingerprint(),
             indexPhysicalFingerprint: prepared.indexPhysicalFingerprint,
@@ -225,7 +225,7 @@ struct SchemaRuntimeGenerationTests {
             runtimeConfiguration: targetRuntime
         )
         let targetGeneration = oldGeneration + 1
-        container.publishSchemaGeneration(
+        try container.publishSchemaGeneration(
             schema,
             fingerprint: try SchemaManifest(schema: schema).fingerprint(),
             indexPhysicalFingerprint: prepared.indexPhysicalFingerprint,
@@ -557,12 +557,12 @@ private final class RetainedSchemaRuntimeEngine: StorageEngine, Sendable {
         self.shared = InMemoryEngine()
     }
 
-    var namespaceResolver: any NamespaceResolver {
-        shared.namespaceResolver
+    var transactionDomain: StorageTransactionDomain {
+        shared.transactionDomain
     }
 
-    var namespaceCatalog: (any NamespaceCatalog)? {
-        shared.namespaceCatalog
+    var directoryAccess: any DirectoryAccess {
+        shared.directoryAccess
     }
 
     func createTransaction() throws -> InMemoryTransaction {

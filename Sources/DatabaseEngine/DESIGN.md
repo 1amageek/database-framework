@@ -5,16 +5,19 @@
 Module authority for platform-neutral in-process execution. DF-06F0 and
 DF-06R compose retained polymorphic and regular-model paths from [Read](Read/DESIGN.md),
 [Core](Core/DESIGN.md), [Serialization](Serialization/DESIGN.md), and
-[QueryExecution](QueryExecution/DESIGN.md).
+[QueryExecution](QueryExecution/DESIGN.md), over keyspaces bound by
+[Directory](Directory/DESIGN.md).
 
 - Parent: [database-framework](../../DESIGN.md).
-- Children: the four linked component designs above.
+- Children: the five linked component designs above.
 
 ## Responsibilities and Boundaries
 
 The module owns schema-bound sessions, persistence decoding, query execution,
 and request accounting. It exposes purpose-neutral contracts to index modules;
-scoring, ranking, bitmap, full-text, and vector policy remain outside it.
+scoring, ranking, bitmap, full-text, and vector policy remain outside it. It
+owns no key layout: every keyspace it reads or writes is resolved from a
+StorageKit Directory node through [Directory](Directory/DESIGN.md).
 
 ## Related Designs
 
@@ -24,6 +27,7 @@ scoring, ranking, bitmap, full-text, and vector policy remain outside it.
 | [Core](Core/DESIGN.md) | child | Polymorphic orchestration | Does not decide query authority. |
 | [Serialization](Serialization/DESIGN.md) | child | Retained bounded item read | Envelope and chunks are bounded. |
 | [QueryExecution](QueryExecution/DESIGN.md) | child | Retained aggregate/destinations | Copyable raw values do not escape. |
+| [Directory](Directory/DESIGN.md) | child | Declaration-to-node binding | A resolved node is valid only in its resolving transaction. |
 
 ## Architecture
 
@@ -33,6 +37,9 @@ sealed authority + snapshot + exact request meter
                           -> Core -> Serialization
                               -> QueryExecution retained owner
                                   -> canonical/index/public destination
+
+Directory binds every declaration to a StorageKit node, so Core and
+QueryExecution receive a resolved Subspace rather than a computed prefix.
 ```
 
 ## Contracts and Invariants
@@ -79,6 +86,7 @@ Read closure/admission -> QueryExecution retained primary-key borrow
 | Stored bytes | Serialization byte owner | Decode/returned payload |
 | Identifier/model/slot | QueryExecution aggregate | Destination/promotion |
 | Canonical/index row | Destination owner | Query pipeline |
+| Resolved Directory/Subspace | Directory, per transaction | Resolving transaction |
 
 ## Failure, Concurrency, and Constraints
 
@@ -97,6 +105,7 @@ raw entity arrays exist only at the consuming public-output boundary.
 | Failure/cancellation/release | Later-failure and suspended-read tests end at zero retained resources. |
 | No raw escape | Source audit rejects general borrows, raw returns, and unmarked bridges. |
 | Bounded item path | Envelope and every chunk are observed as bounded reads. |
+| Directory binding | [Directory](Directory/DESIGN.md) owns the canonical component, tag derivation, and layout-rejection evidence. |
 
 Owners: [polymorphic retained tests](../../Tests/DatabaseEngineTests/PolymorphicRetainedResourceContractTests.swift),
 [item storage tests](../../Tests/DatabaseEngineTests/ItemStorageResourceTests.swift),

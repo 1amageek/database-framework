@@ -36,7 +36,12 @@ struct Sale {
     )
 }
 
-@Suite("AggregationIndex: MIN/MAX Batch Benchmark", .serialized, .heartbeat)
+@Suite(
+    "AggregationIndex: MIN/MAX Batch Benchmark",
+    .foundationDBBenchmark,
+    .serialized,
+    .heartbeat
+)
 struct MinMaxBatchBenchmark {
     private let database: any StorageEngine
 
@@ -45,12 +50,6 @@ struct MinMaxBatchBenchmark {
     }
 
     private func makeContext() async throws -> DatabaseContext {
-        do {
-            try await database.removeNamespace(path: ["benchmarks", "sales"])
-        } catch {
-            // Ignore missing benchmark directories so each benchmark starts clean.
-        }
-
         let schema = try Schema(
             entities: [try Sale.schemaEntity],
             version: Schema.Version(1, 0, 0)

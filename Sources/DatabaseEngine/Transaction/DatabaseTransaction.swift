@@ -1350,15 +1350,15 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         operationID: UInt64
     ) throws -> PersistableMutationContext {
         #if DATABASE_MULTI_BASE
-        let dataRoot = try container.requireActiveDataRoot().root
+        let dataRoot = try container.requireActiveDataRoot().dataDirectory.root
         #else
-        let dataRoot = container.databaseRoot
+        let dataRoot = container.defaultTenant.data.root
         #endif
         return PersistableMutationContext(
             schema: container.schema,
             transaction: self,
             operationID: operationID,
-            baseRoot: dataRoot,
+            dataRoot: dataRoot,
             storageAccess: storageAccess
         )
     }
@@ -1415,15 +1415,18 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         if let cached = subspaceCache.value(for: cacheKey) {
             return cached
         }
-        // Base-local model directories are deterministic subspaces below the
-        // leased Base root. They are not entries in the backend namespace
-        // catalog, so probing NamespaceResolver here would make every new Base
-        // appear empty and would break read-your-writes on FoundationDB.
-        let root = try await container.openDirectory(
+        // Every caller of this walk reads or deletes, so it opens without
+        // creating: a directory no write ever reached is an absent keyspace,
+        // and reporting it as such is what keeps a read from publishing a
+        // directory. The absent result is deliberately not cached, because the
+        // next write in this same transaction may create it.
+        guard let root = try await container.openDirectory(
             for: entity,
             path: path,
             transaction: storageAccess
-        )
+        ) else {
+            return nil
+        }
         let resolved = ResolvedSubspaces(
             items: root.subspace(SubspaceKey.items),
             blobs: root.subspace(SubspaceKey.blobs),

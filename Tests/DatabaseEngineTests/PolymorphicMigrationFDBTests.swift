@@ -527,26 +527,7 @@ struct PolymorphicMigrationFDBTests {
     }
 
     private static func clearState(in database: any StorageEngine) async throws {
-        for path in [
-            ["polymorphic_migration_fdb_articles"],
-            ["polymorphic_migration_fdb_reports"],
-            ["polymorphic_migration_fdb_shared"],
-            ["_metadata"],
-        ] {
-            do {
-                try await database.removeNamespace(path: path)
-            } catch {
-            }
-        }
-
-        try await database.withTransaction { transaction in
-            for typeName in [
-                FDBPolymorphicMigrationArticleV1.persistableType,
-                FDBPolymorphicMigrationReportV1.persistableType,
-            ] {
-                try transaction.clear(key: Tuple(["_schema", typeName]).pack())
-            }
-        }
+        try await ensureTestingDatabaseCleared(from: database)
     }
 
     private static func resultID(_ result: PolymorphicQueryResult) throws -> String? {

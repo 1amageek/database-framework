@@ -456,11 +456,14 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         }
     }
 
-    /// Gets statistics inside the selected database data root.
+    /// Query statistics of the Tenant Partition bound to this operation.
+    ///
+    /// Statistics describe the database rather than belonging to it, so they
+    /// are Framework metadata and live below `system/database-framework`.
+    /// Deriving them from the `data` root instead would put Framework state in
+    /// the keyspace an application `#Directory` addresses.
     private func getStatisticsSubspace() async throws -> Subspace {
-        try context.container.operationDataSubspace(
-            relativePath: ["statistics"]
-        )
+        try context.container.operationSystemRoot().subspace("statistics")
     }
 
     // MARK: - FDB-Specific Features

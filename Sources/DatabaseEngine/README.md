@@ -27,7 +27,7 @@ Application-level resource manager. Does NOT create transactions.
 // Inject exactly one engine for the lightweight default composition.
 let configuration = DBConfiguration(
     storageEngine: storageEngine,
-    namespacePath: ["database", "application"],
+    databaseRootPath: ["database", "application"],
     monotonicClock: applicationMonotonicClock,
     wallClock: applicationWallClock
 )
@@ -45,11 +45,12 @@ DatabaseEngine does not import, select, or construct a concrete backend. The
 package that creates `storageEngine` owns the adapter choice. Creating
 `DBConfiguration(storageEngine:)` transfers its lifecycle to the
 configuration/container owner; the caller must not reuse it or shut it down
-independently. The standard configuration retains its injected `databaseRoot`;
-model, index, and metadata paths are derived from it without namespace
-resolution. Dedicated backends use the engine root. A host sharing a physical
-backend must resolve the application-selected root before constructing the
-configuration. `MultiBase` adds a separate
+independently. The standard configuration owns the database root Directory the
+injected `databaseRootPath` addresses. Model, index, and metadata keyspaces are
+opened through the storage domain's Directory catalog below that root, so no
+prefix is derived arithmetically. Dedicated backends use the engine root. A host
+sharing a physical backend must resolve the application-selected root before
+constructing the configuration. `MultiBase` adds a separate
 `DBConfiguration(storageTopology:)` initializer and transfers every domain.
 
 Opening failure, explicit `container.shutdown()`, and container deinitialization

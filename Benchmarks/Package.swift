@@ -20,7 +20,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/storage-kit.git",
-            revision: "53e615faee772d2ee7c1a59311beaf8e8f0cf7c1"
+            revision: "5408f55259f3ae883c2f6ba31b2fbd230856019d"
         ),
         .package(
             url: "https://github.com/1amageek/swift-testing-heartbeat.git",

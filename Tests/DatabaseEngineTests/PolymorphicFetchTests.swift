@@ -295,7 +295,7 @@ struct PolymorphicFetchTests {
                 nextSchema,
                 runtimeConfiguration: nextRuntime
             )
-            container.publishSchemaGeneration(
+            try container.publishSchemaGeneration(
                 nextSchema,
                 fingerprint: try SchemaManifest(
                     schema: nextSchema
@@ -326,14 +326,12 @@ struct PolymorphicFetchTests {
         }
     }
 
-    @Test("Empty polymorphic reads do not create a projection namespace")
-    func emptyReadsDoNotCreateProjectionNamespace() async throws {
+    @Test("Empty polymorphic reads do not create a projection Directory")
+    func emptyReadsDoNotCreateProjectionDirectory() async throws {
         let container = try await setupContainer()
         let path = ["polymorphic_fetch_tests_shared"]
-        if try await container.engine.namespaceExists(path: path) {
-            try await container.engine.removeNamespace(path: path)
-        }
-        #expect(try await container.engine.namespaceExists(path: path) == false)
+        try await ensureDirectoryRemoved(from: container.engine, path: path)
+        #expect(try await applicationDirectoryExists(in: container.engine, path: path) == false)
 
         let context = container.testBaseContext()
         let scanned = try await context.fetchPolymorphic(
@@ -346,7 +344,7 @@ struct PolymorphicFetchTests {
 
         #expect(scanned.isEmpty)
         #expect(fetched == nil)
-        #expect(try await container.engine.namespaceExists(path: path) == false)
+        #expect(try await applicationDirectoryExists(in: container.engine, path: path) == false)
     }
 
     @Test("Polymorphic reads preserve the caller-owned transaction")

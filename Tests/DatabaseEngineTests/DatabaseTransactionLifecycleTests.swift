@@ -49,7 +49,7 @@ struct DatabaseTransactionLifecycleTests {
             transaction in
             let page = try await transaction.scan(
                 TransactionLifecycleParent.self,
-                in: DirectoryPath<TransactionLifecycleParent>(),
+                in: DatabaseEngine.DirectoryPath<TransactionLifecycleParent>(),
                 after: nil,
                 limit: 2,
                 consistency: .serializable
@@ -69,7 +69,7 @@ struct DatabaseTransactionLifecycleTests {
         try await context.withTransaction { transaction in
             let page = try await transaction.scan(
                 TransactionLifecycleParent.self,
-                in: DirectoryPath<TransactionLifecycleParent>(),
+                in: DatabaseEngine.DirectoryPath<TransactionLifecycleParent>(),
                 after: nestedContinuation,
                 limit: 2,
                 consistency: .serializable

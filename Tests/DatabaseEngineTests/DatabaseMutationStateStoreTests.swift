@@ -300,16 +300,15 @@ struct DatabaseMutationStateStoreTests {
             maximumOutcomeBytes: 4 * 1_024 * 1_024,
             maximumChunkCount: 100_000
         )
-        let root = container.controlStorage().root
-            .subspace("_metadata")
-            .subspace("operation-state")
+        // Operation state is Framework metadata, so `controlBinding` roots it
+        // below the control Partition's `system/database-framework` Directory.
         return StoreContext(
             storage: container.controlStorage(),
             store: store,
             binding: binding,
             limits: limits,
             key: key,
-            entry: root.subspace("idempotency").subspace(key)
+            entry: binding.root.subspace("idempotency").subspace(key)
         )
     }
 

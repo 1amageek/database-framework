@@ -453,36 +453,36 @@ struct PolymorphicVectorMigrationSQLiteTests {
 
     private static func countEntityVectorIndexEntries(container: DBContainer) async throws -> Int {
         try await container.withTestBaseOperation {
-        let indexSubspace = try await entityVectorIndexSubspace(container: container)
+            let indexSubspace = try await entityVectorIndexSubspace(container: container)
 
-        return try await container.engine.withTransaction { transaction -> Int in
-            let (begin, end) = indexSubspace.range()
-            return try await transaction.collectRange(
-                begin: begin,
-                end: end,
-                snapshot: true
-            ).count
-        }
+            return try await container.engine.withTransaction { transaction -> Int in
+                let (begin, end) = indexSubspace.range()
+                return try await transaction.collectRange(
+                    begin: begin,
+                    end: end,
+                    snapshot: true
+                ).count
+            }
         }
     }
 
     private static func clearEntityVectorIndexEntries(container: DBContainer) async throws {
         try await container.withTestBaseOperation {
-        let indexSubspace = try await entityVectorIndexSubspace(container: container)
-        let range = indexSubspace.range()
+            let indexSubspace = try await entityVectorIndexSubspace(container: container)
+            let range = indexSubspace.range()
 
-        try await container.engine.withTransaction { transaction in
-            try transaction.clearRange(beginKey: range.begin, endKey: range.end)
-        }
+            try await container.engine.withTransaction { transaction in
+                try transaction.clearRange(beginKey: range.begin, endKey: range.end)
+            }
         }
     }
 
     private static func entityVectorIndexState(container: DBContainer) async throws -> IndexState {
         try await container.withTestBaseOperation {
-        let group = try container.polymorphicGroup(identifier: SQLitePolymorphicVectorPersonV2.polymorphableType)
-        let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
-        let lifecycleStore = IndexLifecycleStore(container: container, subspace: groupSubspace)
-        return try await lifecycleStore.state(of: "Entity_vector_embedding")
+            let group = try container.polymorphicGroup(identifier: SQLitePolymorphicVectorPersonV2.polymorphableType)
+            let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
+            let lifecycleStore = IndexLifecycleStore(container: container, subspace: groupSubspace)
+            return try await lifecycleStore.state(of: "Entity_vector_embedding")
         }
     }
 

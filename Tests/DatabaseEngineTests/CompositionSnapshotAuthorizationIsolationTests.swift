@@ -328,15 +328,14 @@ struct CompositionSnapshotAuthorizationIsolationTests {
             domains: [
                 try DatabaseStorageDomain(
                     id: domainID,
-                    namespacePath: ["tests", "composition-authorization"],
+                    rootPath: ["tests", "composition-authorization"],
                     storageEngine: storageEngine
                 )
             ],
             placements: [
-                try DatabaseStoragePlacement(
+                DatabaseStoragePlacement(
                     id: placementID,
-                    domainID: domainID,
-                    path: ["bases"]
+                    domainID: domainID
                 )
             ],
             defaultPlacementID: placementID

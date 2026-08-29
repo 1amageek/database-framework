@@ -29,14 +29,14 @@ private struct CRUDBenchmarkContext: Sendable {
     let engine: any StorageEngine
     let container: DBContainer
     let runID: String
-    let path: DirectoryPath<CRUDBenchmarkEntity>
+    let path: DatabaseEngine.DirectoryPath<CRUDBenchmarkEntity>
     let rawSubspace: Subspace
 
     init(runID: String = "crud-\(UUID().uuidString.prefix(8))") async throws {
         self.engine = try await FoundationDBBenchmarkEnvironment.shared.makeEngine()
         self.runID = runID
 
-        var path = DirectoryPath<CRUDBenchmarkEntity>()
+        var path = DatabaseEngine.DirectoryPath<CRUDBenchmarkEntity>()
         path.set(CRUDBenchmarkEntity.fields.runID, to: runID)
         self.path = path
         self.rawSubspace = Subspace(prefix: Tuple(["test", "performance", "raw-crud", runID]).pack())
@@ -60,11 +60,16 @@ private struct CRUDBenchmarkContext: Sendable {
     }
 
     func cleanup() async throws {
-        do {
-            try await engine.removeNamespace(path: ["test", "performance", runID, "crud-entities",
-            ])
-        } catch {
-            // Ignore missing directory for empty/failed runs.
+        // Clearing the resolved Directory contents keeps the Directory node and
+        // its allocated prefix in place, which is what the framework-layout
+        // comparison needs: the same layout is measured across runs.
+        let subspace = try await container.resolveDirectory(
+            for: CRUDBenchmarkEntity.self,
+            path: path
+        )
+        try await engine.withTransaction { transaction in
+            let (begin, end) = subspace.range()
+            try transaction.clearRange(beginKey: begin, endKey: end)
         }
         try await engine.withTransaction { transaction in
             let (begin, end) = rawSubspace.range()

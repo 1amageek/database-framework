@@ -2,12 +2,17 @@
 import DatabaseKit
 
 /// Durable control-domain description of one Base placement and lifecycle.
+///
+/// The record does not store a Directory path. Section 14 fixes the address of
+/// a Base Partition at `bases/<Base.ID>` below the database root of the domain
+/// named by ``domainID``, so the path is derived from the record rather than
+/// persisted beside it. Storing it would create a second binding record for a
+/// value the storage layout already determines.
 @_spi(DatabaseExecution)
 public struct DatabaseBaseRecord: Sendable, Hashable, StorageFrameValue {
     public let id: Base.ID
     public let placementID: Base.Placement.ID
     public let domainID: DatabaseStorageDomain.ID
-    public let namespacePath: [String]
     public let placementGeneration: UInt64
     public let revision: UInt64
     public let lifecycle: DatabaseBaseLifecycleState
@@ -16,7 +21,6 @@ public struct DatabaseBaseRecord: Sendable, Hashable, StorageFrameValue {
         id: Base.ID,
         placementID: Base.Placement.ID,
         domainID: DatabaseStorageDomain.ID,
-        namespacePath: [String],
         placementGeneration: UInt64,
         revision: UInt64,
         lifecycle: DatabaseBaseLifecycleState
@@ -24,7 +28,6 @@ public struct DatabaseBaseRecord: Sendable, Hashable, StorageFrameValue {
         self.id = id
         self.placementID = placementID
         self.domainID = domainID
-        self.namespacePath = namespacePath
         self.placementGeneration = placementGeneration
         self.revision = revision
         self.lifecycle = lifecycle
@@ -36,10 +39,6 @@ public struct DatabaseBaseRecord: Sendable, Hashable, StorageFrameValue {
         try encoder.writeString(id.value)
         try encoder.writeString(placementID.value)
         try encoder.writeString(domainID.value)
-        try encoder.writeCount(namespacePath.count)
-        for component in namespacePath {
-            try encoder.writeString(component)
-        }
         encoder.writeUInt64(placementGeneration)
         encoder.writeUInt64(revision)
         encoder.writeUInt8(lifecycle.rawValue)
@@ -55,20 +54,6 @@ public struct DatabaseBaseRecord: Sendable, Hashable, StorageFrameValue {
         } catch {
             throw .invalidValue
         }
-        let componentCount = try decoder.readCount()
-        guard componentCount > 0 else {
-            throw .invalidValue
-        }
-        var namespacePath: [String] = []
-        namespacePath.reserveCapacity(componentCount)
-        for _ in 0..<componentCount {
-            let component = try decoder.readString()
-            guard !component.isEmpty else {
-                throw .invalidValue
-            }
-            namespacePath.append(component)
-        }
-        self.namespacePath = namespacePath
         self.placementGeneration = try decoder.readUInt64()
         self.revision = try decoder.readUInt64()
         let rawLifecycle = try decoder.readUInt8()

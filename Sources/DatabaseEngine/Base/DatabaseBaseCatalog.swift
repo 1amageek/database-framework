@@ -17,7 +17,7 @@ package struct DatabaseBaseCatalog: Sendable {
     ) {
         self.transactionExecutor = controlDomain.transactionExecutor
         self.clock = clock
-        let root = controlDomain.root
+        let root = controlDomain.systemRoot
             .subspace("catalog")
             .subspace("bases")
         self.records = root.subspace("records")
@@ -84,14 +84,10 @@ package struct DatabaseBaseCatalog: Sendable {
             throw DatabaseBaseCatalogError.baseAlreadyExists(id)
         }
         let resultingRevision: UInt64 = 1
-        let namespacePath = domain.namespacePath
-            + placement.path
-            + [id.value]
         let record = DatabaseBaseRecord(
             id: id,
             placementID: placement.id,
             domainID: domain.id,
-            namespacePath: namespacePath,
             placementGeneration: 1,
             revision: resultingRevision,
             lifecycle: .provisioning

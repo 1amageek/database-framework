@@ -7,7 +7,23 @@ import StorageKit
 /// retains the admitted storage access internally so model materialization can
 /// reuse the same snapshot without exposing mutation or lifecycle authority to
 /// feature executors.
-public struct DatabaseReadTransaction: TransactionReadAccess, Sendable {
+public struct DatabaseReadTransaction: TransactionReadAccess,
+    ContainerAdmittedTransaction, Sendable
+{
+    /// A read transaction lends its snapshot to Directory reads and refuses
+    /// every Directory mutation.
+    var admitsDirectoryMutation: Bool { false }
+
+    /// Directory resolution borrows the admitted storage access this read
+    /// transaction attenuates, so a read reaching the Directory catalog keeps
+    /// the same container operation and read scope alive as every other read
+    /// on this snapshot.
+    func directoryTransactionBorrow(
+        for lifecycle: DatabaseStorageLifecycle
+    ) throws -> ContainerDirectoryTransactionBorrow {
+        try storageAccess.directoryTransactionBorrow(for: lifecycle)
+    }
+
     let storageAccess: ReadAuthorizedTransactionAccess
     let authorization: DatabaseReadAuthorization?
 

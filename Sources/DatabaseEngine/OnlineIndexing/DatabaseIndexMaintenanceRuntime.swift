@@ -424,11 +424,17 @@ public struct DatabaseIndexMaintenanceRuntime: Sendable {
                 transaction: transaction
             )
         case .open(let transaction):
-            subspace = try await container.openDirectory(
+            guard let opened = try await container.openDirectory(
                 for: definition.entity,
                 path: definition.binding,
                 transaction: transaction
-            )
+            ) else {
+                throw DatabaseIndexRebuildError.directoryNotFound(
+                    entity: entityName,
+                    index: indexName
+                )
+            }
+            subspace = opened
         }
         let target = Target(
             entity: entityName,

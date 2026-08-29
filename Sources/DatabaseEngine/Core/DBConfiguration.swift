@@ -31,13 +31,13 @@ public struct DBConfiguration: Sendable {
     /// Single-use lifecycle that owns the injected storage engine.
     private let storageLifecycle: DatabaseStorageLifecycle
 
-    /// Host-selected root containing the one ordinary database.
+    /// Directory path of the database root inside the storage domain.
     ///
-    /// DatabaseEngine never resolves backend namespaces in the standard
-    /// runtime. A host that shares one physical backend, such as a
-    /// FoundationDB deployment, resolves its Directory before constructing
-    /// this configuration. Dedicated backends use the engine root.
-    public let databaseRoot: Subspace
+    /// The container opens or creates this path through StorageKit's Directory
+    /// contract and owns the fixed layout below it. An empty path places the
+    /// database root at the store root Directory, which a dedicated backend
+    /// uses; a shared backend names the Directory that isolates this database.
+    public let databaseRootPath: [String]
     #endif
 
     /// Canonical physical entity format for this database.
@@ -145,18 +145,22 @@ public struct DBConfiguration: Sendable {
     public init(
         name: String? = nil,
         storageEngine: any StorageEngine,
-        databaseRoot: Subspace = Subspace(),
+        databaseRootPath: [String] = [],
         monotonicClock: any StorageMonotonicClock,
         wallClock: any WallClock,
         itemStorage: ItemStorageConfiguration = .v1,
         logging: DatabaseLoggingConfiguration = .disabled,
         metrics: DatabaseMetricsConfiguration = .disabled
-    ) {
+    ) throws(DatabaseDirectoryLayoutError) {
+        for (index, component) in databaseRootPath.enumerated()
+        where component.isEmpty {
+            throw .emptyRootPathComponent(index: index)
+        }
         self.name = name
         self.storageLifecycle = DatabaseStorageLifecycle(
             storageEngine: storageEngine
         )
-        self.databaseRoot = databaseRoot
+        self.databaseRootPath = databaseRootPath
         self.itemStorage = itemStorage
         self.logging = logging
         self.metrics = metrics

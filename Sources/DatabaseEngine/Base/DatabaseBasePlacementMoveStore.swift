@@ -8,7 +8,7 @@ package struct DatabaseBasePlacementMoveStore: Sendable {
     private let records: Subspace
 
     package init(controlDomain: DatabaseStorageDomainRuntime) {
-        self.records = controlDomain.root
+        self.records = controlDomain.systemRoot
             .subspace("catalog")
             .subspace("base-placement-moves")
             .subspace("records")
@@ -98,21 +98,25 @@ package struct DatabaseBasePlacementMoveStore: Sendable {
         records.pack(Tuple(id.value))
     }
 
+    /// Section 14 fixes a Base Partition at `bases/<Base.ID>` below the database
+    /// root of its domain, so the domain and placement identity fully determine
+    /// the address and no separate path component participates in the intent.
     private static func sameIntent(
         _ lhs: DatabaseBasePlacementMoveDescriptor,
         _ rhs: DatabaseBasePlacementMoveDescriptor
     ) -> Bool {
-        return lhs.baseID == rhs.baseID
-            && lhs.sourcePlacementID == rhs.sourcePlacementID
+        let sourceMatches: Bool = lhs.sourcePlacementID == rhs.sourcePlacementID
             && lhs.sourceDomainID == rhs.sourceDomainID
-            && lhs.sourceNamespacePath == rhs.sourceNamespacePath
             && lhs.sourcePlacementGeneration == rhs.sourcePlacementGeneration
-            && lhs.movingRevision == rhs.movingRevision
-            && lhs.destinationPlacementID == rhs.destinationPlacementID
+        let destinationMatches: Bool =
+            lhs.destinationPlacementID == rhs.destinationPlacementID
             && lhs.destinationDomainID == rhs.destinationDomainID
-            && lhs.destinationNamespacePath == rhs.destinationNamespacePath
             && lhs.destinationPlacementGeneration
                 == rhs.destinationPlacementGeneration
+        return lhs.baseID == rhs.baseID
+            && lhs.movingRevision == rhs.movingRevision
+            && sourceMatches
+            && destinationMatches
     }
 }
 

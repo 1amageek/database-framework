@@ -96,15 +96,14 @@ struct OntologyBaseWriteAuthorizationTests {
             domains: [
                 try DatabaseStorageDomain(
                     id: domainID,
-                    namespacePath: ["tests", "ontology-write-authorization"],
+                    rootPath: ["tests", "ontology-write-authorization"],
                     storageEngine: engine
                 )
             ],
             placements: [
-                try DatabaseStoragePlacement(
+                DatabaseStoragePlacement(
                     id: placementID,
-                    domainID: domainID,
-                    path: ["bases"]
+                    domainID: domainID
                 )
             ],
             defaultPlacementID: placementID

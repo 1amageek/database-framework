@@ -22,7 +22,7 @@ extension DBContainer {
         ) { storageAccess in
             try await DatabaseGrantStore(
                 resource: .base(lease.baseID),
-                root: lease.root
+                root: lease.systemRoot
             ).require(
                 requiredAccess,
                 authorization: authorization,

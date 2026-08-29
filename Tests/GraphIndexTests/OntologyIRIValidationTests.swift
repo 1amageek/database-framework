@@ -176,10 +176,11 @@ struct OntologyIRIValidationTests {
         context: DatabaseContext
     ) async throws -> OntologyStore {
         try await context.withDataOperation {
-            let root = try context.operationDataRoot()
-                .subspace("data")
-                .subspace("database-framework")
-                .subspace("ontology-index")
+            // Mirrors `OntologyContextAPI.withStore`: ontology axioms are
+            // framework metadata, so they live below the Partition's
+            // `system/database-framework` Directory, never below `data`.
+            let root = try context.operationSystemRoot()
+                .subspace("ontology")
             return OntologyStore(
                 subspace: OntologySubspace(base: root)
             )

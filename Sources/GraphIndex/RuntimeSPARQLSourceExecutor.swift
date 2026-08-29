@@ -147,7 +147,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
             scanner: CanonicalRDFDatasetScanner(
                 authoritativeStore: CanonicalRDFGraphStore(
                     rootSubspace: CanonicalRDFGraphStore.rootSubspace(
-                        forBaseRoot: session.operationDataRoot
+                        forDataRoot: session.operationDataRoot
                     )
                 ),
                 projectedSources: projectedSources

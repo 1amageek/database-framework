@@ -97,7 +97,7 @@ public struct InverseRelationshipResolver: Sendable {
                 descriptor: descriptor,
                 continuation: continuation,
                 limit: limit,
-                baseRoot: dataRoot,
+                dataRoot: dataRoot,
                 transaction: transaction.storageAccess
             )
             var entities: [Owner] = []

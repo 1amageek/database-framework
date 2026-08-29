@@ -692,12 +692,12 @@ private final class FlakyCreateTransactionEngine: StorageEngine, Sendable {
         }
     }
 
-    var namespaceResolver: any NamespaceResolver {
-        engine.namespaceResolver
+    var transactionDomain: StorageTransactionDomain {
+        engine.transactionDomain
     }
 
-    var namespaceCatalog: (any NamespaceCatalog)? {
-        engine.namespaceCatalog
+    var directoryAccess: any DirectoryAccess {
+        engine.directoryAccess
     }
 
     func requestShutdown() {
@@ -802,12 +802,12 @@ private final class RecordingTransactionEngine: StorageEngine, Sendable {
         )
     }
 
-    var namespaceResolver: any NamespaceResolver {
-        underlying.namespaceResolver
+    var transactionDomain: StorageTransactionDomain {
+        underlying.transactionDomain
     }
 
-    var namespaceCatalog: (any NamespaceCatalog)? {
-        underlying.namespaceCatalog
+    var directoryAccess: any DirectoryAccess {
+        underlying.directoryAccess
     }
 
     func requestShutdown() {

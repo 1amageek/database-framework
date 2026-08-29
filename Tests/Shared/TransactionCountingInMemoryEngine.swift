@@ -19,12 +19,12 @@ public final class TransactionCountingInMemoryEngine: StorageEngine, Sendable {
         transactionCounter.withLock { $0 }
     }
 
-    public var namespaceResolver: any NamespaceResolver {
-        underlying.namespaceResolver
+    public var transactionDomain: StorageTransactionDomain {
+        underlying.transactionDomain
     }
 
-    public var namespaceCatalog: (any NamespaceCatalog)? {
-        underlying.namespaceCatalog
+    public var directoryAccess: any DirectoryAccess {
+        underlying.directoryAccess
     }
 
     public func createTransaction() throws -> InMemoryTransaction {

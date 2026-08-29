@@ -15,7 +15,7 @@ final class DatabaseStorageTopologyLifecycle: Sendable {
 
     private struct DomainLifecycle: Sendable {
         let id: DatabaseStorageDomain.ID
-        let namespacePath: [String]
+        let rootPath: [String]
         let lifecycle: DatabaseStorageLifecycle
     }
 
@@ -28,7 +28,7 @@ final class DatabaseStorageTopologyLifecycle: Sendable {
         self.domains = topology.domains.map { domain in
             DomainLifecycle(
                 id: domain.id,
-                namespacePath: domain.namespacePath,
+                rootPath: domain.rootPath,
                 lifecycle: DatabaseStorageLifecycle(
                     storageEngine: domain.storageEngine
                 )
@@ -52,7 +52,7 @@ final class DatabaseStorageTopologyLifecycle: Sendable {
             for domain in domains {
                 claimed[domain.id] = ClaimedDatabaseStorageTopology.Domain(
                     id: domain.id,
-                    namespacePath: domain.namespacePath,
+                    rootPath: domain.rootPath,
                     engine: try domain.lifecycle.claimStorageEngine()
                 )
             }

@@ -76,7 +76,7 @@ public struct DirectoryPath<T: Persistable>: Sendable {
                 guard let value = partitions[name] else {
                     throw DirectoryPathError.missingFields([name])
                 }
-                path.append(try CanonicalDirectoryPartitionCodec.encode(value))
+                path.append(try DirectoryComponentCodec.encode(value))
             }
         }
         return path
@@ -294,7 +294,7 @@ public struct AnyDirectoryPath: Sendable {
                 guard let value = partitions[name] else {
                     throw DirectoryPathError.missingFields([name])
                 }
-                resolved.append(try CanonicalDirectoryPartitionCodec.encode(value))
+                resolved.append(try DirectoryComponentCodec.encode(value))
             }
         }
         self.components = resolved

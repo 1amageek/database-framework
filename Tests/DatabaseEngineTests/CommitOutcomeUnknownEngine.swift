@@ -226,12 +226,12 @@ final class CommitOutcomeUnknownEngine: StorageEngine, Sendable {
         )
     }
 
-    var namespaceResolver: any NamespaceResolver {
-        underlying.namespaceResolver
+    var transactionDomain: StorageTransactionDomain {
+        underlying.transactionDomain
     }
 
-    var namespaceCatalog: (any NamespaceCatalog)? {
-        underlying.namespaceCatalog
+    var directoryAccess: any DirectoryAccess {
+        underlying.directoryAccess
     }
 
     func requestShutdown() {

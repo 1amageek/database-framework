@@ -6,23 +6,22 @@ import StorageKit
 public struct CanonicalPropertyGraphDefinitionCatalog:
     PropertyGraphDefinitionCatalog
 {
-    /// Database-wide v1 property graph definition namespace.
+    /// Component this catalog owns below a Tenant Partition's Framework root.
     ///
-    /// This namespace is intentionally disjoint from the RDF graph store:
-    /// SQL/PGQ definitions describe graph projections over relational sources,
-    /// while RDF named graphs own RDF dataset contents.
-    public static let defaultRootSubspace = Subspace(
-        prefix: Tuple([
-            "_database-framework",
-            "property-graph-definition-catalog",
-            Int64(1),
-        ]).pack()
-    )
+    /// The catalog is intentionally disjoint from the RDF graph store: SQL/PGQ
+    /// definitions describe graph projections over relational sources, while
+    /// RDF named graphs own RDF dataset contents.
+    public static let directoryName = "property-graph-definitions"
+
+    /// Derives this catalog's root from a Tenant Partition's Framework root.
+    public static func rootSubspace(forFrameworkRoot frameworkRoot: Subspace) -> Subspace {
+        frameworkRoot.subspace(directoryName).subspace(Int64(1))
+    }
 
     private let storage: PropertyGraphDefinitionCatalogStorage
 
     public init(
-        rootSubspace: Subspace = Self.defaultRootSubspace,
+        rootSubspace: Subspace,
         storageLimits: StorageFrameLimits = .default
     ) {
         self.storage = PropertyGraphDefinitionCatalogStorage(

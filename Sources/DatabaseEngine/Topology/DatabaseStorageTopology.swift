@@ -55,7 +55,7 @@ public struct DatabaseStorageTopology: Sendable {
                 )
             }
             if let existing = validatedPlacements.first(where: {
-                $0.domainID == placement.domainID && $0.path == placement.path
+                $0.domainID == placement.domainID
             }) {
                 throw .duplicatePlacementDestination(
                     first: existing.id,

@@ -6,7 +6,7 @@ import StorageKit
 struct ClaimedDatabaseStorageTopology: Sendable {
     struct Domain: Sendable {
         let id: DatabaseStorageDomain.ID
-        let namespacePath: [String]
+        let rootPath: [String]
         let engine: any StorageEngine
     }
 

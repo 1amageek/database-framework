@@ -14,5 +14,12 @@ struct DatabaseSchemaGeneration: Sendable {
     let schema: Schema
     let runtimeConfiguration: DatabaseRuntimeConfiguration
     let indexPhysicalLayouts: [String: IndexPhysicalLayout]
+    /// Layer of every Directory node position `schema` declares.
+    ///
+    /// The derivation is a property of the whole schema rather than of one
+    /// declaration, so it belongs to the generation that fixes that schema.
+    /// Deriving it here also rejects a schema whose declarations disagree about
+    /// a position before that schema can be published.
+    let directoryLayers: DirectoryLayerTagMap
     let securityDelegate: (any DataStoreSecurityDelegate)?
 }

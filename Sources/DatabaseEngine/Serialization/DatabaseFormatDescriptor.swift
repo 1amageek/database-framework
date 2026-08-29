@@ -2,8 +2,23 @@ import DatabaseTypes
 import StorageKit
 
 /// Immutable physical format contract stored with every database store.
+///
+/// The descriptor carries two independent versions and they are bumped for
+/// different reasons.
+///
+/// | Version | Describes | Bumped when |
+/// |---|---|---|
+/// | `descriptorVersion` | the 48-byte encoding of this descriptor | a field is added, removed, resized, or moved |
+/// | `layoutVersion` | the item layout named by `layoutKind` | stored item bytes stop being readable by the previous reader |
+///
+/// Neither version describes the Directory layout of the database. Directory
+/// existence and compatibility are owned by StorageKit's Directory catalog and
+/// its root layout marker, which reject an incompatible store before the
+/// descriptor is read.
 public struct DatabaseFormatDescriptor: Sendable, Equatable {
+    /// Encoding version of this descriptor's own serialized bytes.
     public static let descriptorVersion: UInt8 = 2
+    /// Item layout version this build writes for its `layoutKind`.
     public static let currentLayoutVersion: UInt16 = 1
     public static let serializedSize = 48
 
@@ -11,6 +26,8 @@ public struct DatabaseFormatDescriptor: Sendable, Equatable {
     private static let checksumOffset = 44
 
     public let layoutKind: DatabaseStorageLayoutKind
+    /// Version of the item layout `layoutKind` names, not of this descriptor
+    /// and not of the Directory layout.
     public let layoutVersion: UInt16
     public let persistableFormatVersion: UInt16
     public let envelopeVersion: UInt8

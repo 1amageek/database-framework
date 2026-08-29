@@ -34,25 +34,23 @@ struct PostgreSQLCompositionTests {
                 domains: [
                     try DatabaseStorageDomain(
                         id: controlDomainID,
-                        namespacePath: ["composition", "control"],
+                        rootPath: ["composition", "control"],
                         storageEngine: controlEngine
                     ),
                     try DatabaseStorageDomain(
                         id: secondaryDomainID,
-                        namespacePath: ["composition", "secondary"],
+                        rootPath: ["composition", "secondary"],
                         storageEngine: secondaryEngine
                     ),
                 ],
                 placements: [
-                    try DatabaseStoragePlacement(
+                    DatabaseStoragePlacement(
                         id: primaryPlacementID,
-                        domainID: controlDomainID,
-                        path: ["bases"]
+                        domainID: controlDomainID
                     ),
-                    try DatabaseStoragePlacement(
+                    DatabaseStoragePlacement(
                         id: secondaryPlacementID,
-                        domainID: secondaryDomainID,
-                        path: ["bases"]
+                        domainID: secondaryDomainID
                     ),
                 ],
                 defaultPlacementID: primaryPlacementID

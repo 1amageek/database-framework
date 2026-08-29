@@ -70,15 +70,14 @@ struct SHACLBaseWriteAuthorizationTests {
             domains: [
                 try DatabaseStorageDomain(
                     id: domainID,
-                    namespacePath: ["tests", "shacl-write-authorization"],
+                    rootPath: ["tests", "shacl-write-authorization"],
                     storageEngine: InMemoryEngine()
                 )
             ],
             placements: [
-                try DatabaseStoragePlacement(
+                DatabaseStoragePlacement(
                     id: placementID,
-                    domainID: domainID,
-                    path: ["bases"]
+                    domainID: domainID
                 )
             ],
             defaultPlacementID: placementID

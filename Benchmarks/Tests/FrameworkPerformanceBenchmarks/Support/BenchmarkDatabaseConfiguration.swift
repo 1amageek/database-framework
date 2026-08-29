@@ -6,13 +6,13 @@ extension DBConfiguration {
         name: String? = nil,
         databaseIdentifier: String? = nil,
         storageEngine: any StorageEngine
-    ) -> DBConfiguration {
-        DBConfiguration(
+    ) throws(DatabaseDirectoryLayoutError) -> DBConfiguration {
+        try DBConfiguration(
             name: name,
             storageEngine: storageEngine,
-            databaseRoot: databaseIdentifier.map {
-                Subspace("benchmark-database", $0)
-            } ?? Subspace(),
+            databaseRootPath: databaseIdentifier.map {
+                ["benchmark-database", $0]
+            } ?? [],
             monotonicClock: BenchmarkProcessMonotonicClock(),
             wallClock: FixedBenchmarkWallClock()
         )

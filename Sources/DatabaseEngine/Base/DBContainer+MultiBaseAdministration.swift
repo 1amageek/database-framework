@@ -186,7 +186,7 @@ extension DBContainer {
         }
         return DatabaseGrantStore(
             resource: .base(expectedBaseID),
-            root: lease.root
+            root: lease.systemRoot
         )
     }
 
@@ -199,7 +199,7 @@ extension DBContainer {
         guard lease.baseID == expectedBaseID else {
             throw DatabaseBaseCatalogError.baseNotFound(expectedBaseID)
         }
-        return lease.root.subspace("_metadata").subspace(component)
+        return lease.systemRoot.subspace("_metadata").subspace(component)
     }
 
     @_spi(DatabaseExecution)

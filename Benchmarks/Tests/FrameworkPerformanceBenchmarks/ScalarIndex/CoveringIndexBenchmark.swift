@@ -34,7 +34,12 @@ struct User {
     )
 }
 
-@Suite("ScalarIndex: Covering Index Benchmark", .serialized, .heartbeat)
+@Suite(
+    "ScalarIndex: Covering Index Benchmark",
+    .foundationDBBenchmark,
+    .serialized,
+    .heartbeat
+)
 struct CoveringIndexBenchmark {
     private let database: any StorageEngine
 
@@ -43,12 +48,6 @@ struct CoveringIndexBenchmark {
     }
 
     private func makeContext() async throws -> DatabaseContext {
-        do {
-            try await database.removeNamespace(path: ["benchmarks", "users"])
-        } catch {
-            // Ignore missing benchmark directories so each benchmark starts clean.
-        }
-
         let schema = try Schema(
             entities: [try User.schemaEntity],
             version: Schema.Version(1, 0, 0)

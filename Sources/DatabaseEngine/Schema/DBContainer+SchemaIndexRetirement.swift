@@ -276,7 +276,7 @@ extension DBContainer {
         _ retirement: DatabasePendingIndexRetirement,
         partitions: FieldObject,
         transaction: any TransactionAccess
-    ) throws {
+    ) async throws {
         try validateSchemaIndexRetirement(retirement)
         let path: [String]
         switch retirement.scope {
@@ -297,13 +297,21 @@ extension DBContainer {
             definitionFingerprint: retirement.identity.definitionFingerprint,
             layoutFingerprint: retirement.identity.layoutFingerprint
         )
-        let subspace = try operationDataSubspace(relativePath: path)
-        try IndexStorageRetirer.retire(
-            indexName: retirement.identity.name,
-            selection: selection,
-            storeSubspace: subspace,
+        // The recorded path may belong to a declaration the active schema no
+        // longer has, so there is no declared layer to verify it against. The
+        // stored tag stays authoritative for addressing, and a directory that
+        // no longer exists holds no storage to retire.
+        if let subspace = try await openUnverifiedDataDirectory(
+            relativePath: path,
             transaction: transaction
-        )
+        ) {
+            try IndexStorageRetirer.retire(
+                indexName: retirement.identity.name,
+                selection: selection,
+                storeSubspace: subspace,
+                transaction: transaction
+            )
+        }
         try clearSchemaIndexBuildPending(
             scope: retirement.scope,
             index: retirement.identity.name,
@@ -407,7 +415,7 @@ extension DBContainer {
                         "index retirement partition is missing"
                     )
                 }
-                result.append(try CanonicalDirectoryPartitionCodec.encode(value))
+                result.append(try DirectoryComponentCodec.encode(value))
             }
         }
         return result

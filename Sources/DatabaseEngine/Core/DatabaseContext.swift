@@ -263,34 +263,42 @@ public final class DatabaseContext: Sendable {
         }
     }
 
-    /// Builds a generation-bound store for one operation. A store owns schema,
-    /// runtime, and authorization state and therefore must not outlive the
-    /// operation's schema lease.
+    /// Builds a generation-bound read store for one operation, or `nil` when
+    /// the directory it would read has never been created.
+    ///
+    /// A store owns schema, runtime, and authorization state and therefore must
+    /// not outlive the operation's schema lease. The directory walk is part of
+    /// the caller's transaction, so a store is only ever built for a keyspace
+    /// that exists at the caller's read version.
     private func operationStore<T: Persistable>(
-        for type: T.Type
-    ) async throws -> DatabaseDataStore {
+        for type: T.Type,
+        transaction: any TransactionReadAccess
+    ) async throws -> DatabaseDataStore? {
         let readPolicy = try readPolicy()
         #if DATABASE_MULTI_BASE
         _ = try requireOperationDataRoot()
         #endif
-        return try container.readStore(
+        return try await container.readStore(
             for: type,
-            readPolicy: readPolicy
+            readPolicy: readPolicy,
+            transaction: transaction
         )
     }
 
     private func operationStore<T: Persistable>(
         for type: T.Type,
-        path: DirectoryPath<T>
-    ) async throws -> DatabaseDataStore {
+        path: DirectoryPath<T>,
+        transaction: any TransactionReadAccess
+    ) async throws -> DatabaseDataStore? {
         let readPolicy = try readPolicy()
         #if DATABASE_MULTI_BASE
         _ = try requireOperationDataRoot()
         #endif
-        return try container.readStore(
+        return try await container.readStore(
             for: type,
             path: path,
-            readPolicy: readPolicy
+            readPolicy: readPolicy,
+            transaction: transaction
         )
     }
 
@@ -744,11 +752,25 @@ public final class DatabaseContext: Sendable {
             path = DirectoryPath<T>()
         }
 
-        let store = try container.readStore(
+        guard let store = try await container.readStore(
             for: T.self,
             path: path,
-            readPolicy: readPolicy
-        )
+            readPolicy: readPolicy,
+            transaction: transaction.storageAccess
+        ) else {
+            // A directory no write ever created is an absent keyspace, so the
+            // scan resolves no candidate rather than failing.
+            let empty = try DatabaseRetainedArrayBuilder<
+                DatabaseRetainedPersistedModels.Entry?
+            >(
+                workMeter: workMeter,
+                stage: .storageRow,
+                layout: try DatabaseRetainedArrayLayout.forElement(
+                    DatabaseRetainedPersistedModels.Entry?.self
+                )
+            )
+            return try DatabaseRetainedPersistedModels(buffer: empty.finish())
+        }
         return try await store.fetchCanonicalPersistedModels(
             query,
             transaction: transaction.storageAccess,
@@ -814,15 +836,36 @@ public final class DatabaseContext: Sendable {
             try binding.validate()
         }
 
-        let store: DatabaseDataStore
-        if let binding = query.partitionBinding {
-            store = try await operationStore(for: T.self, path: binding)
-        } else {
-            store = try await operationStore(for: T.self)
-        }
         return try await withStorageAccess(requiredAccess: .read) {
             transaction in
-            try await store.executionPlan(
+            let store: DatabaseDataStore?
+            if let binding = query.partitionBinding {
+                store = try await self.operationStore(
+                    for: T.self,
+                    path: binding,
+                    transaction: transaction
+                )
+            } else {
+                store = try await self.operationStore(
+                    for: T.self,
+                    transaction: transaction
+                )
+            }
+            guard let store else {
+                // A plan names an access path, not a keyspace. Without a
+                // directory no index has ever recorded lifecycle state, so
+                // every index resolves to the state an absent record means.
+                guard let entity = self.container.schema.entity(
+                    named: T.persistableType
+                ) else {
+                    throw ContainerSchemaError.entityNotFound(T.persistableType)
+                }
+                return try await DatabaseDataStore.executionPlan(
+                    for: query,
+                    indexDescriptors: entity.indexDescriptors
+                ) { _ in .disabled }
+            }
+            return try await store.executionPlan(
                 for: query,
                 transaction: transaction
             )
@@ -850,14 +893,6 @@ public final class DatabaseContext: Sendable {
             try binding.validate()
         }
 
-        // Get store for this type (partition-aware if needed)
-        let store: DatabaseDataStore
-        if let binding = query.partitionBinding {
-            store = try await operationStore(for: T.self, path: binding)
-        } else {
-            store = try await operationStore(for: T.self)
-        }
-
         // Create TransactionConfiguration with CachePolicy
         let config = TransactionConfiguration(cachePolicy: query.cachePolicy)
 
@@ -866,10 +901,31 @@ public final class DatabaseContext: Sendable {
             requiredAccess: .read,
             configuration: config
         ) { transaction in
-            let models = try await store.fetchInTransaction(
-                query,
-                transaction: transaction.storageAccess
-            )
+            // Get store for this type (partition-aware if needed). A directory
+            // no write ever created holds no model, so the dependent operation
+            // runs on an empty result rather than failing.
+            let store: DatabaseDataStore?
+            if let binding = query.partitionBinding {
+                store = try await self.operationStore(
+                    for: T.self,
+                    path: binding,
+                    transaction: transaction.storageAccess
+                )
+            } else {
+                store = try await self.operationStore(
+                    for: T.self,
+                    transaction: transaction.storageAccess
+                )
+            }
+            let models: [T]
+            if let store {
+                models = try await store.fetchInTransaction(
+                    query,
+                    transaction: transaction.storageAccess
+                )
+            } else {
+                models = []
+            }
             return try await operation(models, transaction)
         }
         }
@@ -898,14 +954,6 @@ public final class DatabaseContext: Sendable {
             try binding.validate()
         }
 
-        // Get store (partition-aware if needed)
-        let store: DatabaseDataStore
-        if let binding = query.partitionBinding {
-            store = try await operationStore(for: T.self, path: binding)
-        } else {
-            store = try await operationStore(for: T.self)
-        }
-
         // Create TransactionConfiguration with CachePolicy
         let config = TransactionConfiguration(cachePolicy: query.cachePolicy)
 
@@ -914,7 +962,23 @@ public final class DatabaseContext: Sendable {
             requiredAccess: .read,
             configuration: config
         ) { transaction in
-            try await store.fetchCountInTransaction(
+            // Get store (partition-aware if needed). A directory no write ever
+            // created is an absent keyspace and therefore counts zero.
+            let store: DatabaseDataStore?
+            if let binding = query.partitionBinding {
+                store = try await self.operationStore(
+                    for: T.self,
+                    path: binding,
+                    transaction: transaction
+                )
+            } else {
+                store = try await self.operationStore(
+                    for: T.self,
+                    transaction: transaction
+                )
+            }
+            guard let store else { return 0 }
+            return try await store.fetchCountInTransaction(
                 query,
                 transaction: transaction
             )
@@ -996,20 +1060,26 @@ public final class DatabaseContext: Sendable {
         // Auto-commit for default cache policy (single point read, no transaction needed).
         // Non-default cache policies require TransactionRunner for ReadVersionCache support.
         if case .server = cachePolicy {
-            let store = try await operationStore(for: type)
             return try await withStorageAccess(
                 requiredAccess: .read
             ) { transaction in
-                try await store.fetchByIDInTransaction(type, id: id, transaction: transaction)
+                guard let store = try await self.operationStore(
+                    for: type,
+                    transaction: transaction
+                ) else { return nil }
+                return try await store.fetchByIDInTransaction(type, id: id, transaction: transaction)
             }
         } else {
-            let store = try await operationStore(for: type)
             let config = TransactionConfiguration(cachePolicy: cachePolicy)
             return try await self.withStorageAccess(
                 requiredAccess: .read,
                 configuration: config
             ) { transaction in
-                try await store.fetchByIDInTransaction(type, id: id, transaction: transaction)
+                guard let store = try await self.operationStore(
+                    for: type,
+                    transaction: transaction
+                ) else { return nil }
+                return try await store.fetchByIDInTransaction(type, id: id, transaction: transaction)
             }
         }
     }
@@ -1069,11 +1139,14 @@ public final class DatabaseContext: Sendable {
         }
 
         if case .server = cachePolicy {
-            let store = try await operationStore(for: type)
             return try await withStorageAccess(
                 requiredAccess: .read
             ) { transaction in
-                try await store.fetchByIdentifierTupleInTransaction(
+                guard let store = try await self.operationStore(
+                    for: type,
+                    transaction: transaction
+                ) else { return nil }
+                return try await store.fetchByIdentifierTupleInTransaction(
                     type,
                     identifier: identifierTuple,
                     transaction: transaction
@@ -1081,13 +1154,16 @@ public final class DatabaseContext: Sendable {
             }
         }
 
-        let store = try await operationStore(for: type)
         let configuration = TransactionConfiguration(cachePolicy: cachePolicy)
         return try await withStorageAccess(
             requiredAccess: .read,
             configuration: configuration
         ) { transaction in
-            try await store.fetchByIdentifierTupleInTransaction(
+            guard let store = try await self.operationStore(
+                for: type,
+                transaction: transaction
+            ) else { return nil }
+            return try await store.fetchByIdentifierTupleInTransaction(
                 type,
                 identifier: identifierTuple,
                 transaction: transaction
@@ -1160,20 +1236,28 @@ public final class DatabaseContext: Sendable {
         // Auto-commit for default cache policy (single point read, no transaction needed).
         // Non-default cache policies require TransactionRunner for ReadVersionCache support.
         if case .server = cachePolicy {
-            let store = try await operationStore(for: type, path: path)
             return try await withStorageAccess(
                 requiredAccess: .read
             ) { transaction in
-                try await store.fetchByIDInTransaction(type, id: id, transaction: transaction)
+                guard let store = try await self.operationStore(
+                    for: type,
+                    path: path,
+                    transaction: transaction
+                ) else { return nil }
+                return try await store.fetchByIDInTransaction(type, id: id, transaction: transaction)
             }
         } else {
-            let store = try await operationStore(for: type, path: path)
             let config = TransactionConfiguration(cachePolicy: cachePolicy)
             return try await self.withStorageAccess(
                 requiredAccess: .read,
                 configuration: config
             ) { transaction in
-                try await store.fetchByIDInTransaction(type, id: id, transaction: transaction)
+                guard let store = try await self.operationStore(
+                    for: type,
+                    path: path,
+                    transaction: transaction
+                ) else { return nil }
+                return try await store.fetchByIDInTransaction(type, id: id, transaction: transaction)
             }
         }
     }
@@ -1225,11 +1309,15 @@ public final class DatabaseContext: Sendable {
         }
 
         if case .server = cachePolicy {
-            let store = try await operationStore(for: type, path: path)
             return try await withStorageAccess(
                 requiredAccess: .read
             ) { transaction in
-                try await store.fetchByIdentifierTupleInTransaction(
+                guard let store = try await self.operationStore(
+                    for: type,
+                    path: path,
+                    transaction: transaction
+                ) else { return nil }
+                return try await store.fetchByIdentifierTupleInTransaction(
                     type,
                     identifier: identifierTuple,
                     transaction: transaction
@@ -1237,13 +1325,17 @@ public final class DatabaseContext: Sendable {
             }
         }
 
-        let store = try await operationStore(for: type, path: path)
         let configuration = TransactionConfiguration(cachePolicy: cachePolicy)
         return try await withStorageAccess(
             requiredAccess: .read,
             configuration: configuration
         ) { transaction in
-            try await store.fetchByIdentifierTupleInTransaction(
+            guard let store = try await self.operationStore(
+                for: type,
+                path: path,
+                transaction: transaction
+            ) else { return nil }
+            return try await store.fetchByIdentifierTupleInTransaction(
                 type,
                 identifier: identifierTuple,
                 transaction: transaction
@@ -1983,14 +2075,26 @@ extension DatabaseContext {
         }
     }
 
-    /// Root of the database data selected for this context. The lightweight
-    /// runtime has one fixed root; `MultiBase` resolves the operation-bound
-    /// Base lease before returning its root.
+    /// Framework metadata root of the Tenant Partition selected for this
+    /// context. Framework state derives only from this Subspace; application
+    /// entity data, indexes, and relationships derive from
+    /// ``operationDataRoot()``.
+    package func operationSystemRoot() throws -> Subspace {
+        #if DATABASE_MULTI_BASE
+        try requireOperationDataRoot().systemRoot
+        #else
+        container.defaultTenant.systemRoot
+        #endif
+    }
+
+    /// Application data root of the Tenant Partition selected for this context.
+    /// The lightweight runtime has one fixed Tenant; `MultiBase` resolves the
+    /// operation-bound Base lease before returning its `data` Directory.
     package func operationDataRoot() throws -> Subspace {
         #if DATABASE_MULTI_BASE
-        try requireOperationDataRoot().root
+        try requireOperationDataRoot().dataDirectory.root
         #else
-        container.databaseRoot
+        container.defaultTenant.data.root
         #endif
     }
 
@@ -2001,7 +2105,8 @@ extension DatabaseContext {
         return DatabaseExecutionStorage(
             engine: lease.domain.engine,
             transactionExecutor: lease.transactionExecutor,
-            root: lease.root,
+            systemRoot: lease.systemRoot,
+            dataRoot: lease.dataDirectory.root,
             resource: lease.resource,
             generation: lease.generation,
             domainIdentifier: lease.domain.id.value
@@ -2034,7 +2139,7 @@ extension DatabaseContext {
     ) async throws -> Security.Access {
         return try await DatabaseGrantStore(
             resource: resource,
-            root: lease.root
+            root: lease.systemRoot
         ).require(
             access,
             authorization: authorization,

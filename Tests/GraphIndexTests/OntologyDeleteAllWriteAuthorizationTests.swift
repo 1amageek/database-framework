@@ -48,15 +48,14 @@ struct OntologyDeleteAllWriteAuthorizationTests {
             domains: [
                 try DatabaseStorageDomain(
                     id: domainID,
-                    namespacePath: ["tests", "ontology-delete-all"],
+                    rootPath: ["tests", "ontology-delete-all"],
                     storageEngine: InMemoryEngine()
                 )
             ],
             placements: [
-                try DatabaseStoragePlacement(
+                DatabaseStoragePlacement(
                     id: placementID,
-                    domainID: domainID,
-                    path: ["bases"]
+                    domainID: domainID
                 )
             ],
             defaultPlacementID: placementID

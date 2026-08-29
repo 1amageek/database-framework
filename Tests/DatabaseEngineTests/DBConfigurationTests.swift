@@ -121,12 +121,12 @@ struct DBConfigurationOwnershipTests {
             shutdownState.withLock { $0.completionCount }
         }
 
-        var namespaceResolver: any NamespaceResolver {
-            base.namespaceResolver
+        var transactionDomain: StorageTransactionDomain {
+            base.transactionDomain
         }
 
-        var namespaceCatalog: (any NamespaceCatalog)? {
-            base.namespaceCatalog
+        var directoryAccess: any DirectoryAccess {
+            base.directoryAccess
         }
 
         func createTransaction() throws -> InMemoryTransaction {
@@ -186,18 +186,17 @@ struct DBConfigurationOwnershipTests {
         let placementID = try Base.Placement.ID("default")
         let firstDomain = try DatabaseStorageDomain(
             id: firstDomainID,
-            namespacePath: ["database", "primary"],
+            rootPath: ["database", "primary"],
             storageEngine: engine
         )
         let secondDomain = try DatabaseStorageDomain(
             id: secondDomainID,
-            namespacePath: ["database", "secondary"],
+            rootPath: ["database", "secondary"],
             storageEngine: engine
         )
-        let placement = try DatabaseStoragePlacement(
+        let placement = DatabaseStoragePlacement(
             id: placementID,
-            domainID: firstDomainID,
-            path: ["bases"]
+            domainID: firstDomainID
         )
 
         #expect(
@@ -408,26 +407,33 @@ struct DBConfigurationOwnershipTests {
         #expect(engine.shutdownCount == 1)
     }
 
-    @Test("Namespace operations reject bare and foreign container transactions")
-    func namespaceOperationsRequireOwnedTransaction() async throws {
+    @Test("Directory operations reject bare and foreign container transactions")
+    func directoryOperationsRequireAdmittedTransaction() async throws {
         let firstEngine = ShutdownRecordingEngine()
         let secondEngine = ShutdownRecordingEngine()
         let firstContainer = try await makeContainer(engine: firstEngine)
         let secondContainer = try await makeContainer(engine: secondEngine)
-        let resolver = firstContainer.engine.namespaceResolver
+        let access = firstContainer.engine.directoryAccess
 
         var ownedTransaction: (any Transaction)? = try firstContainer.engine
             .createOwnedTransaction()
-        _ = try await resolver.resolveOrCreate(
-            path: ["owned"],
+        let root = try await access.openOrInitializeRoot(
+            transaction: try #require(ownedTransaction)
+        )
+        _ = try await access.openOrCreate(
+            "owned",
+            layer: .default,
+            in: root,
             transaction: try #require(ownedTransaction)
         )
 
         var foreignTransaction: (any Transaction)? = try secondContainer.engine
             .createOwnedTransaction()
         await #expect(throws: StorageError.self) {
-            _ = try await resolver.resolveOrCreate(
-                path: ["foreign"],
+            _ = try await access.openOrCreate(
+                "foreign",
+                layer: .default,
+                in: root,
                 transaction: try #require(foreignTransaction)
             )
         }
@@ -435,8 +441,10 @@ struct DBConfigurationOwnershipTests {
         var bareTransaction: (any Transaction)? = try firstEngine
             .createTransaction()
         await #expect(throws: StorageError.self) {
-            _ = try await resolver.resolveOrCreate(
-                path: ["bare"],
+            _ = try await access.openOrCreate(
+                "bare",
+                layer: .default,
+                in: root,
                 transaction: try #require(bareTransaction)
             )
         }

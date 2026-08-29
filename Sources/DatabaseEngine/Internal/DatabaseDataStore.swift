@@ -264,7 +264,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
                 descriptors: indexDescriptors,
                 forcedIndexName: query.forcedIndex?.indexName
            ) {
-            let accessPath = try encodeScalarIndexAccess(selection)
+            let accessPath = try Self.encodeScalarIndexAccess(selection)
             let state = try await indexLifecycleStore.state(
                 of: accessPath.descriptor.name,
                 transaction: transaction
@@ -314,6 +314,29 @@ package final class DatabaseDataStore: DataStore, Sendable {
     func executionPlan<T: Persistable>(
         for query: Query<T>,
         transaction: any TransactionAccess
+    ) async throws -> QueryAccessPlan {
+        try await Self.executionPlan(
+            for: query,
+            indexDescriptors: indexDescriptors
+        ) { indexName in
+            try await self.indexLifecycleStore.state(
+                of: indexName,
+                transaction: transaction
+            )
+        }
+    }
+
+    /// Resolve the physical access path from the schema-declared indexes and
+    /// the lifecycle state each of them currently holds.
+    ///
+    /// A plan names an access path rather than a keyspace, so it does not
+    /// depend on where the entity's directory is. A caller whose directory does
+    /// not exist resolves every index to `.disabled`, which is exactly what an
+    /// absent lifecycle record means.
+    static func executionPlan<T: Persistable>(
+        for query: Query<T>,
+        indexDescriptors: [IndexDescriptor],
+        indexState: (String) async throws -> IndexState
     ) async throws -> QueryAccessPlan {
         try QueryResultWindow.validate(
             limit: query.fetchLimit,
@@ -370,10 +393,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         // be reported as a viable physical access path.
         _ = try encodeScalarIndexAccess(selection)
 
-        let state = try await indexLifecycleStore.state(
-            of: selection.descriptor.name,
-            transaction: transaction
-        )
+        let state = try await indexState(selection.descriptor.name)
         guard state.isReadable else {
             if query.forcedIndex != nil {
                 throw CanonicalReadError.indexHintNotReadable(
@@ -433,7 +453,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
             }
             return nil
         }
-        let accessPath = try encodeScalarIndexAccess(selection)
+        let accessPath = try Self.encodeScalarIndexAccess(selection)
         let condition = accessPath.condition
         let matchingIndex = accessPath.descriptor
 
@@ -607,7 +627,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         let condition: ScalarIndexCondition
     }
 
-    private func encodeScalarIndexAccess(
+    private static func encodeScalarIndexAccess(
         _ selection: ScalarIndexAccessSelection
     ) throws -> ScalarIndexAccessPath {
         var elements: [any TupleElement] = []
@@ -1229,7 +1249,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
                 descriptors: indexDescriptors,
                 forcedIndexName: query.forcedIndex?.indexName
             ) {
-                let accessPath = try encodeScalarIndexAccess(selection)
+                let accessPath = try Self.encodeScalarIndexAccess(selection)
                 let state = try await indexLifecycleStore.state(
                     of: accessPath.descriptor.name
                 )
@@ -1599,7 +1619,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
             }
             return nil
         }
-        let accessPath = try encodeScalarIndexAccess(selection)
+        let accessPath = try Self.encodeScalarIndexAccess(selection)
         let condition = accessPath.condition
         let matchingIndex = accessPath.descriptor
         let needsPostFiltering = selection.requiresPostFilter
@@ -1895,7 +1915,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
                 descriptors: indexDescriptors,
                 forcedIndexName: query.forcedIndex?.indexName
             ) {
-                let accessPath = try encodeScalarIndexAccess(selection)
+                let accessPath = try Self.encodeScalarIndexAccess(selection)
                 let state = try await indexLifecycleStore.state(
                     of: accessPath.descriptor.name,
                     transaction: transaction

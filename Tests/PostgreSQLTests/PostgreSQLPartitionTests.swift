@@ -324,7 +324,7 @@ struct PostgreSQLPartitionTests {
                     precondition: .notExists
                 )
 
-                var binding = DirectoryPath<TenantOrder>()
+                var binding = DatabaseEngine.DirectoryPath<TenantOrder>()
                 binding.set(TenantOrder.fields.tenantID, to: tenantID)
                 let fetched = try await transaction.fetch(
                     TenantOrder.self,

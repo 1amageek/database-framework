@@ -69,15 +69,14 @@ struct CompositionMemberSnapshotBindingTests {
             domains: [
                 try DatabaseStorageDomain(
                     id: domainID,
-                    namespacePath: ["tests", "composition-snapshot-binding"],
+                    rootPath: ["tests", "composition-snapshot-binding"],
                     storageEngine: engine
                 )
             ],
             placements: [
-                try DatabaseStoragePlacement(
+                DatabaseStoragePlacement(
                     id: placementID,
-                    domainID: domainID,
-                    path: ["bases"]
+                    domainID: domainID
                 )
             ],
             defaultPlacementID: placementID

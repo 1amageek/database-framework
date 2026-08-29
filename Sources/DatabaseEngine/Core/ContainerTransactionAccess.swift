@@ -3,7 +3,9 @@ import StorageKit
 
 /// Transaction access whose range cursors retain the container operation that
 /// admitted their underlying transaction.
-final class ContainerTransactionAccess: TransactionAccess, Sendable {
+final class ContainerTransactionAccess: TransactionAccess,
+    ContainerAdmittedTransaction, Sendable
+{
     private let transaction: any TransactionAccess
     private let operationLease: DatabaseStorageOperationLease
 
@@ -15,18 +17,21 @@ final class ContainerTransactionAccess: TransactionAccess, Sendable {
         self.operationLease = operationLease
     }
 
+    /// A write-capable transaction may create, move, and remove Directories.
+    var admitsDirectoryMutation: Bool { true }
+
     /// The backend-owned access used only when the container delegates a
-    /// backend-specific namespace operation. The wrapper remains retained by
+    /// backend-specific Directory operation. The wrapper remains retained by
     /// the caller, so its operation lease stays active for the entire borrow.
-    func namespaceTransactionBorrow(
+    func directoryTransactionBorrow(
         for lifecycle: DatabaseStorageLifecycle
-    ) throws -> ContainerNamespaceTransactionBorrow {
+    ) throws -> ContainerDirectoryTransactionBorrow {
         guard operationLease.belongs(to: lifecycle) else {
             throw StorageError.invalidOperation(
-                "Namespace operations require a transaction admitted by the same database container"
+                "Directory operations require a transaction admitted by the same database container"
             )
         }
-        return ContainerNamespaceTransactionBorrow(
+        return ContainerDirectoryTransactionBorrow(
             transaction: transaction,
             operationLease: operationLease
         )

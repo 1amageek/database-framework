@@ -46,15 +46,15 @@ extension DBContainer {
                         destinationPlacement.domainID
                     )
                 }
-                let destinationPath = destinationDomain.namespacePath
-                    + destinationPlacement.path
-                    + [id.value]
                 guard current.placementID != destinationPlacementID else {
                     throw DatabaseBaseCatalogError
                         .placementAlreadySelected(destinationPlacementID)
                 }
-                guard current.domainID != destinationDomain.id
-                        || current.namespacePath != destinationPath else {
+                // Section 14 fixes a Base Partition at `bases/<Base.ID>` below
+                // the database root of its domain, so two placements naming one
+                // domain address one Partition. Only the domain distinguishes a
+                // destination from the source.
+                guard current.domainID != destinationDomain.id else {
                     throw DatabaseBaseCatalogError
                         .placementDestinationMatchesSource(id)
                 }
@@ -76,12 +76,10 @@ extension DBContainer {
                     baseID: id,
                     sourcePlacementID: current.placementID,
                     sourceDomainID: current.domainID,
-                    sourceNamespacePath: current.namespacePath,
                     sourcePlacementGeneration: current.placementGeneration,
                     movingRevision: revision,
                     destinationPlacementID: destinationPlacementID,
                     destinationDomainID: destinationDomain.id,
-                    destinationNamespacePath: destinationPath,
                     destinationPlacementGeneration: destinationGeneration
                 )
                 try await moveStore.insert(
@@ -96,7 +94,6 @@ extension DBContainer {
                         id: current.id,
                         placementID: current.placementID,
                         domainID: current.domainID,
-                        namespacePath: current.namespacePath,
                         placementGeneration: current.placementGeneration,
                         revision: revision,
                         lifecycle: .moving
@@ -124,7 +121,6 @@ extension DBContainer {
                     == destinationPlacementID,
                 stored.descriptor.sourcePlacementID == current.placementID,
                 stored.descriptor.sourceDomainID == current.domainID,
-                stored.descriptor.sourceNamespacePath == current.namespacePath,
                 stored.descriptor.sourcePlacementGeneration
                     == current.placementGeneration,
                 stored.descriptor.movingRevision == current.revision else {
@@ -142,67 +138,33 @@ extension DBContainer {
         let moving = prepared.0
         let descriptorIntent = prepared.1
 
-        let sourceRoot = try await placementRoot(
-            domainID: descriptorIntent.sourceDomainID,
-            namespacePath: descriptorIntent.sourceNamespacePath,
-            create: false
+        let sourceDomain = try placementDomain(descriptorIntent.sourceDomainID)
+        let sourceTenant = try await placementTenant(
+            descriptorIntent.baseID,
+            in: sourceDomain,
+            expecting: nil
         )
-        try publishBaseGeneration(moving, root: sourceRoot)
+        try publishBaseGeneration(moving, tenant: sourceTenant)
         try await stopBaseAdmissionAndDrain(id)
 
-        let destinationRoot = try await placementRoot(
+        let destinationTenant = try await claimDestinationTenant(
+            descriptorIntent.baseID,
             domainID: descriptorIntent.destinationDomainID,
-            namespacePath: descriptorIntent.destinationNamespacePath,
-            create: true
+            owner: owner
         )
-        let destinationExecutor = try placementDomain(
-            descriptorIntent.destinationDomainID
-        ).transactionExecutor
-        try await destinationExecutor.withTransaction(
-            configuration: .batch,
-            clock: monotonicClock
-        ) { transaction in
-            if let existingOwner = try await transaction.getValue(
-                for: destinationRoot.prefix,
-                snapshot: false
-            ) {
-                guard existingOwner == owner else {
-                    throw DatabaseBaseCatalogError
-                        .placementDestinationClaimed(id)
-                }
-                return
-            }
-            let range = destinationRoot.range()
-            let existing = try await TransactionRangeCollection.collect(
-                using: transaction,
-                from: .firstGreaterOrEqual(range.begin),
-                to: .firstGreaterOrEqual(range.end),
-                limit: 1,
-                reverse: false,
-                snapshot: false,
-                streamingMode: .small
-            )
-            guard existing.isEmpty else {
-                throw DatabaseBaseCatalogError
-                    .placementDestinationNotEmpty(id)
-            }
-            try transaction.setValue(owner, for: destinationRoot.prefix)
-        }
         let descriptor = DatabaseBasePlacementMoveDescriptor(
             baseID: descriptorIntent.baseID,
             sourcePlacementID: descriptorIntent.sourcePlacementID,
             sourceDomainID: descriptorIntent.sourceDomainID,
-            sourceNamespacePath: descriptorIntent.sourceNamespacePath,
             sourcePlacementGeneration:
                 descriptorIntent.sourcePlacementGeneration,
             movingRevision: descriptorIntent.movingRevision,
             destinationPlacementID: descriptorIntent.destinationPlacementID,
             destinationDomainID: descriptorIntent.destinationDomainID,
-            destinationNamespacePath: descriptorIntent.destinationNamespacePath,
             destinationPlacementGeneration:
                 descriptorIntent.destinationPlacementGeneration,
-            sourceRootPrefix: sourceRoot.prefix,
-            destinationRootPrefix: destinationRoot.prefix
+            sourceRootPrefix: sourceTenant.partition.root.generation,
+            destinationRootPrefix: destinationTenant.partition.root.generation
         )
         try await withControlMetadataTransaction(
             configuration: .batch
@@ -225,49 +187,64 @@ extension DBContainer {
         keyCount: UInt64,
         byteCount: UInt64
     ) async throws -> DatabaseBasePlacementTransferProgress {
-        let sourceRoot = try Self.preparedRoot(
-            descriptor.sourceRootPrefix,
-            baseID: descriptor.baseID
+        let sourceDomain = try placementDomain(descriptor.sourceDomainID)
+        let destinationDomain = try placementDomain(
+            descriptor.destinationDomainID
         )
-        let destinationRoot = try Self.preparedRoot(
-            descriptor.destinationRootPrefix,
-            baseID: descriptor.baseID
+        let sourceTenant = try await placementTenant(
+            descriptor.baseID,
+            in: sourceDomain,
+            expecting: descriptor.sourceRootPrefix
+        )
+        let destinationTenant = try await placementTenant(
+            descriptor.baseID,
+            in: destinationDomain,
+            expecting: descriptor.destinationRootPrefix
         )
         let page = try await placementPage(
-            root: sourceRoot,
-            domainID: descriptor.sourceDomainID,
+            tenant: sourceTenant,
+            domain: sourceDomain,
             continuation: continuation
         )
-        let destinationExecutor = try placementDomain(
-            descriptor.destinationDomainID
-        ).transactionExecutor
-        try await destinationExecutor.withTransaction(
+        // The destination structure is created through the catalog rather than
+        // rebased from source keys: Directory Layout V1 stores a parent prefix
+        // inside each child edge key and the child prefix inside its value, so
+        // only the catalog can produce edges that address the destination.
+        let access = destinationDomain.directoryAccess
+        let baseID = descriptor.baseID
+        try await destinationDomain.transactionExecutor.withTransaction(
             configuration: .batch,
             clock: monotonicClock
         ) { transaction in
-            for (key, value) in page.rows {
-                let destinationKey = try Self.rebase(
-                    key,
-                    from: sourceRoot,
-                    to: destinationRoot
-                )
-                if let existing = try await transaction.getValue(
-                    for: destinationKey,
-                    snapshot: false
-                ) {
-                    guard existing == value else {
-                        throw DatabaseBaseCatalogError
-                            .placementDigestMismatch(descriptor.baseID)
+            for node in page.nodes {
+                let directory = try await DatabaseBaseTenantTransfer
+                    .resolveOrCreate(
+                        node.path,
+                        layers: node.layers,
+                        in: destinationTenant,
+                        access: access,
+                        transaction: transaction
+                    )
+                for row in node.rows {
+                    let key = directory.root.prefix.appending(
+                        contentsOf: row.suffix
+                    )
+                    if let existing = try await transaction.getValue(
+                        for: key,
+                        snapshot: false
+                    ) {
+                        guard existing == row.value else {
+                            throw DatabaseBaseCatalogError
+                                .placementDigestMismatch(baseID)
+                        }
+                    } else {
+                        try transaction.setValue(row.value, for: key)
                     }
-                } else {
-                    try transaction.setValue(value, for: destinationKey)
                 }
             }
         }
         return try Self.progress(
-            rows: page.rows,
-            root: sourceRoot,
-            continuation: page.continuation,
+            page: page,
             digest: digest,
             keyCount: keyCount,
             byteCount: byteCount
@@ -282,24 +259,42 @@ extension DBContainer {
         keyCount: UInt64,
         byteCount: UInt64
     ) async throws -> DatabaseBasePlacementTransferProgress {
-        let domainID = destination
-            ? descriptor.destinationDomainID
-            : descriptor.sourceDomainID
-        let root = try Self.preparedRoot(
+        let domain = try placementDomain(
             destination
-                ? descriptor.destinationRootPrefix
-                : descriptor.sourceRootPrefix,
-            baseID: descriptor.baseID
+                ? descriptor.destinationDomainID
+                : descriptor.sourceDomainID
         )
+        // A side whose Partition is absent holds no keys, so verification
+        // reports the empty keyspace instead of failing. Cleanup removes the
+        // source Partition, and the caller proves the removal by verifying
+        // that side again. A destination that was never created also verifies
+        // as empty and diverges from a non-empty source in the digest.
+        guard
+            let tenant = try await placementTenantIfPresent(
+                descriptor.baseID,
+                in: domain,
+                expecting: destination
+                    ? descriptor.destinationRootPrefix
+                    : descriptor.sourceRootPrefix
+            )
+        else {
+            return try Self.progress(
+                page: DatabaseBaseTenantTransfer.Page(
+                    nodes: [],
+                    continuation: nil
+                ),
+                digest: digest,
+                keyCount: keyCount,
+                byteCount: byteCount
+            )
+        }
         let page = try await placementPage(
-            root: root,
-            domainID: domainID,
+            tenant: tenant,
+            domain: domain,
             continuation: continuation
         )
         return try Self.progress(
-            rows: page.rows,
-            root: root,
-            continuation: page.continuation,
+            page: page,
             digest: digest,
             keyCount: keyCount,
             byteCount: byteCount
@@ -309,9 +304,13 @@ extension DBContainer {
     package func cutOverBasePlacementMove(
         _ descriptor: DatabaseBasePlacementMoveDescriptor
     ) async throws -> DatabaseBaseRecord {
-        let destinationRoot = try Self.preparedRoot(
-            descriptor.destinationRootPrefix,
-            baseID: descriptor.baseID
+        let destinationDomain = try placementDomain(
+            descriptor.destinationDomainID
+        )
+        let destinationTenant = try await placementTenant(
+            descriptor.baseID,
+            in: destinationDomain,
+            expecting: descriptor.destinationRootPrefix
         )
         let record = try await withControlMetadataTransaction(
             configuration: .batch
@@ -331,7 +330,6 @@ extension DBContainer {
             guard current.lifecycle == .moving,
                   current.placementID == descriptor.sourcePlacementID,
                   current.domainID == descriptor.sourceDomainID,
-                  current.namespacePath == descriptor.sourceNamespacePath,
                   current.placementGeneration
                     == descriptor.sourcePlacementGeneration,
                   current.revision == descriptor.movingRevision else {
@@ -348,7 +346,6 @@ extension DBContainer {
                     id: current.id,
                     placementID: descriptor.destinationPlacementID,
                     domainID: descriptor.destinationDomainID,
-                    namespacePath: descriptor.destinationNamespacePath,
                     placementGeneration:
                         descriptor.destinationPlacementGeneration,
                     revision: revision,
@@ -358,7 +355,7 @@ extension DBContainer {
                 transaction: transaction.storageAccess
             )
         }
-        try publishBaseGeneration(record, root: destinationRoot)
+        try publishBaseGeneration(record, tenant: destinationTenant)
         return record
     }
 
@@ -384,7 +381,6 @@ extension DBContainer {
             guard current.lifecycle == .retired,
                   current.placementID == descriptor.destinationPlacementID,
                   current.domainID == descriptor.destinationDomainID,
-                  current.namespacePath == descriptor.destinationNamespacePath,
                   current.placementGeneration
                     == descriptor.destinationPlacementGeneration else {
                 throw DatabaseBaseCatalogError.corruptedRecord(
@@ -401,59 +397,17 @@ extension DBContainer {
             }
             return current
         }
-        let destinationRoot = try Self.preparedRoot(
-            descriptor.destinationRootPrefix,
-            baseID: descriptor.baseID
+        try await clearPlacementClaim(descriptor, owner: owner)
+        // Both `remove` implementations of `DirectoryAccess` delete the whole
+        // subtree in one transaction, so no separate content clear is needed
+        // and an absent Partition is the state a retried finish expects.
+        try await removePlacementTenant(
+            descriptor.baseID,
+            domainID: descriptor.sourceDomainID
         )
-        let destinationDomain = try placementDomain(
-            descriptor.destinationDomainID
-        )
-        try await destinationDomain.transactionExecutor.withTransaction(
-            configuration: .batch,
-            clock: monotonicClock
-        ) { transaction in
-            let recordedOwner = try await transaction.getValue(
-                for: destinationRoot.prefix,
-                snapshot: false
-            )
-            guard recordedOwner == nil || recordedOwner == owner else {
-                throw DatabaseBaseCatalogError.placementDestinationClaimed(
-                    descriptor.baseID
-                )
-            }
-            if recordedOwner != nil {
-                try transaction.clear(key: destinationRoot.prefix)
-            }
-        }
-
-        let sourceDomain = try placementDomain(descriptor.sourceDomainID)
-        if try await sourceDomain.engine.namespaceExists(
-            path: descriptor.sourceNamespacePath
-        ) {
-            let sourceRoot = try await sourceDomain.engine
-                .resolveExistingNamespace(path: descriptor.sourceNamespacePath)
-            try await sourceDomain.transactionExecutor.withTransaction(
-                configuration: .batch,
-                clock: monotonicClock
-            ) { transaction in
-                let range = sourceRoot.range()
-                try transaction.clearRange(
-                    beginKey: range.begin,
-                    endKey: range.end
-                )
-            }
-            if sourceDomain.engine.namespaceCatalog != nil {
-                try await sourceDomain.engine.removeNamespace(
-                    path: descriptor.sourceNamespacePath
-                )
-            }
-        }
         return current
     }
 
-    /// Removes the move record only in the transaction that also commits the
-    /// owning persistent job's successful result. Until then a repeated
-    /// cleanup slice can prove ownership and converge after a crash.
     package func finalizeSuccessfulBasePlacementMove(
         _ descriptor: DatabaseBasePlacementMoveDescriptor,
         owner: ByteString,
@@ -468,7 +422,6 @@ extension DBContainer {
         ), current.lifecycle == .retired,
         current.placementID == descriptor.destinationPlacementID,
         current.domainID == descriptor.destinationDomainID,
-        current.namespacePath == descriptor.destinationNamespacePath,
         current.placementGeneration
             == descriptor.destinationPlacementGeneration else {
             throw DatabaseBaseCatalogError.corruptedRecord(descriptor.baseID)
@@ -518,22 +471,20 @@ extension DBContainer {
            current.placementID == descriptor.destinationPlacementID,
            current.placementGeneration
             == descriptor.destinationPlacementGeneration {
-            try await clearPreparedPlacementRoot(
-                prefix: descriptor.sourceRootPrefix,
-                domainID: descriptor.sourceDomainID,
-                clearExactRootKey: false
+            let destinationDomain = try placementDomain(
+                descriptor.destinationDomainID
             )
-            try await clearPlacementOwner(
-                descriptor,
-                owner: owner
+            let destinationTenant = try await placementTenant(
+                descriptor.baseID,
+                in: destinationDomain,
+                expecting: descriptor.destinationRootPrefix
             )
-            try publishBaseGeneration(
-                current,
-                root: try Self.preparedRoot(
-                    descriptor.destinationRootPrefix,
-                    baseID: descriptor.baseID
-                )
+            try await removePlacementTenant(
+                descriptor.baseID,
+                domainID: descriptor.sourceDomainID
             )
+            try await clearPlacementClaim(descriptor, owner: owner)
+            try publishBaseGeneration(current, tenant: destinationTenant)
             return current
         }
 
@@ -543,11 +494,7 @@ extension DBContainer {
            current.placementGeneration
             == descriptor.sourcePlacementGeneration,
            current.revision == descriptor.movingRevision {
-            try await clearPreparedPlacementRoot(
-                prefix: descriptor.destinationRootPrefix,
-                domainID: descriptor.destinationDomainID,
-                clearExactRootKey: true
-            )
+            try await discardPreparedDestination(descriptor, owner: owner)
             sourceRecord = try await withControlMetadataTransaction(
                 configuration: .batch
             ) { transaction in
@@ -577,7 +524,6 @@ extension DBContainer {
                         id: latest.id,
                         placementID: descriptor.sourcePlacementID,
                         domainID: descriptor.sourceDomainID,
-                        namespacePath: descriptor.sourceNamespacePath,
                         placementGeneration:
                             descriptor.sourcePlacementGeneration,
                         revision: revision,
@@ -592,21 +538,17 @@ extension DBContainer {
                   current.placementGeneration
                     == descriptor.sourcePlacementGeneration {
             sourceRecord = current
-            try await clearPreparedPlacementRoot(
-                prefix: descriptor.destinationRootPrefix,
-                domainID: descriptor.destinationDomainID,
-                clearExactRootKey: true
-            )
+            try await discardPreparedDestination(descriptor, owner: owner)
         } else {
             throw DatabaseBaseCatalogError.corruptedRecord(descriptor.baseID)
         }
-        try publishBaseGeneration(
-            sourceRecord,
-            root: try Self.preparedRoot(
-                descriptor.sourceRootPrefix,
-                baseID: descriptor.baseID
-            )
+        let sourceDomain = try placementDomain(descriptor.sourceDomainID)
+        let sourceTenant = try await placementTenant(
+            descriptor.baseID,
+            in: sourceDomain,
+            expecting: descriptor.sourceRootPrefix
         )
+        try publishBaseGeneration(sourceRecord, tenant: sourceTenant)
         return sourceRecord
     }
 
@@ -653,95 +595,210 @@ extension DBContainer {
         )
     }
 
-    private func clearPlacementOwner(
+    /// Key of the destination claim of one Base move.
+    ///
+    /// The claim lives in the Default Partition system Directory of the
+    /// destination domain, never inside the Base Partition it protects. A
+    /// recovery slice removes that Partition, and a marker stored inside it
+    /// would disappear with it; a marker stored at the Partition root would
+    /// also collide with the content copied into that root.
+    private static func placementClaimKey(
+        _ id: Base.ID,
+        systemRoot: Subspace
+    ) -> ByteString {
+        systemRoot.subspace("base-placement-claims").pack(Tuple(id.value))
+    }
+
+    /// Opens or creates the destination Base Partition and claims it in one
+    /// transaction.
+    ///
+    /// A Partition that already exists without a claim belongs to a live Base,
+    /// so the move refuses it rather than merging two Bases at one address.
+    private func claimDestinationTenant(
+        _ id: Base.ID,
+        domainID: DatabaseStorageDomain.ID,
+        owner: ByteString
+    ) async throws -> DatabaseTenantDirectories {
+        let domain = try placementDomain(domainID)
+        let access = domain.directoryAccess
+        let databaseRoot = domain.databaseRoot
+        let claimKey = Self.placementClaimKey(id, systemRoot: domain.systemRoot)
+        let name = id.value
+        return try await domain.transactionExecutor.withTransaction(
+            configuration: .batch,
+            clock: monotonicClock
+        ) { transaction in
+            let claim = try await transaction.getValue(
+                for: claimKey,
+                snapshot: false
+            )
+            if let claim {
+                guard claim == owner else {
+                    throw DatabaseBaseCatalogError
+                        .placementDestinationClaimed(id)
+                }
+            } else {
+                let existing = try await DatabaseDirectoryLayout.openBaseTenant(
+                    name,
+                    in: databaseRoot,
+                    access: access,
+                    transaction: transaction
+                )
+                guard existing == nil else {
+                    throw DatabaseBaseCatalogError
+                        .placementDestinationNotEmpty(id)
+                }
+                try transaction.setValue(owner, for: claimKey)
+            }
+            return try await DatabaseDirectoryLayout.openOrCreateBaseTenant(
+                name,
+                in: databaseRoot,
+                access: access,
+                transaction: transaction
+            )
+        }
+    }
+
+    /// Opens the Base Partition of one side of a move.
+    ///
+    /// `generation` is the ``Directory/generation`` recorded at prepare. A
+    /// Partition removed and recreated at the same address receives a different
+    /// generation, so comparing it stops a resumed slice from copying into a
+    /// keyspace that is no longer the one the move prepared.
+    private func placementTenant(
+        _ id: Base.ID,
+        in domain: DatabaseStorageDomainRuntime,
+        expecting generation: ByteString?
+    ) async throws -> DatabaseTenantDirectories {
+        guard
+            let tenant = try await placementTenantIfPresent(
+                id,
+                in: domain,
+                expecting: generation
+            )
+        else {
+            throw DatabaseBaseExecutionError.placementRootMissing(id)
+        }
+        return tenant
+    }
+
+    /// Opens the Base Partition of one side of a move when that side exists.
+    ///
+    /// A step that must move or take authority over data requires the
+    /// Partition and uses ``placementTenant(_:in:expecting:)``. A step that
+    /// only observes the keyspace accepts the absent Partition as the empty
+    /// keyspace, because a completed cleanup removes the Partition itself
+    /// rather than emptying it.
+    private func placementTenantIfPresent(
+        _ id: Base.ID,
+        in domain: DatabaseStorageDomainRuntime,
+        expecting generation: ByteString?
+    ) async throws -> DatabaseTenantDirectories? {
+        let access = domain.directoryAccess
+        let databaseRoot = domain.databaseRoot
+        let name = id.value
+        let tenant = try await domain.transactionExecutor.withTransaction(
+            configuration: .readOnly,
+            clock: monotonicClock
+        ) { transaction in
+            try await DatabaseDirectoryLayout.openBaseTenant(
+                name,
+                in: databaseRoot,
+                access: access,
+                transaction: transaction
+            )
+        }
+        guard let tenant else { return nil }
+        if let generation, tenant.partition.root.generation != generation {
+            throw DatabaseBaseCatalogError.corruptedRecord(id)
+        }
+        return tenant
+    }
+
+    /// Removes a Base Partition and its whole subtree from one domain.
+    ///
+    /// An absent Partition is success: a retried cleanup slice observes the
+    /// state its predecessor already reached.
+    private func removePlacementTenant(
+        _ id: Base.ID,
+        domainID: DatabaseStorageDomain.ID
+    ) async throws {
+        let domain = try placementDomain(domainID)
+        let access = domain.directoryAccess
+        let databaseRoot = domain.databaseRoot
+        let name = id.value
+        try await domain.transactionExecutor.withTransaction(
+            configuration: .batch,
+            clock: monotonicClock
+        ) { transaction in
+            try await DatabaseDirectoryLayout.removeBaseTenant(
+                name,
+                in: databaseRoot,
+                access: access,
+                transaction: transaction
+            )
+        }
+    }
+
+    /// Releases the destination claim of a move that reached its destination.
+    private func clearPlacementClaim(
         _ descriptor: DatabaseBasePlacementMoveDescriptor,
         owner: ByteString
     ) async throws {
-        let root = try Self.preparedRoot(
-            descriptor.destinationRootPrefix,
-            baseID: descriptor.baseID
-        )
         let domain = try placementDomain(descriptor.destinationDomainID)
+        let claimKey = Self.placementClaimKey(
+            descriptor.baseID,
+            systemRoot: domain.systemRoot
+        )
+        let baseID = descriptor.baseID
         try await domain.transactionExecutor.withTransaction(
             configuration: .batch,
             clock: monotonicClock
         ) { transaction in
             let recorded = try await transaction.getValue(
-                for: root.prefix,
+                for: claimKey,
                 snapshot: false
             )
             guard recorded == nil || recorded == owner else {
-                throw DatabaseBaseCatalogError.placementDestinationClaimed(
-                    descriptor.baseID
-                )
+                throw DatabaseBaseCatalogError
+                    .placementDestinationClaimed(baseID)
             }
-            if recorded != nil { try transaction.clear(key: root.prefix) }
+            if recorded != nil { try transaction.clear(key: claimKey) }
         }
     }
 
-    private func clearPreparedPlacementRoot(
-        prefix: ByteString?,
-        domainID: DatabaseStorageDomain.ID,
-        clearExactRootKey: Bool
+    /// Discards a destination that never took authority.
+    ///
+    /// The Partition is removed before the claim so that a slice interrupted
+    /// between the two leaves a claimed empty address rather than an unclaimed
+    /// half-filled one, which a later prepare would refuse.
+    private func discardPreparedDestination(
+        _ descriptor: DatabaseBasePlacementMoveDescriptor,
+        owner: ByteString
     ) async throws {
-        let root = try Self.preparedRoot(prefix, baseID: nil)
-        let clear: @Sendable (any TransactionAccess) async throws -> Void = {
-            transaction in
-            let range = root.range()
-            try transaction.clearRange(
-                beginKey: range.begin,
-                endKey: range.end
-            )
-            if clearExactRootKey {
-                try transaction.clear(key: root.prefix)
-            }
-        }
-        let domain = try placementDomain(domainID)
-        try await domain.transactionExecutor.withTransaction(
-            configuration: .batch,
-            clock: monotonicClock,
-            clear
+        try await removePlacementTenant(
+            descriptor.baseID,
+            domainID: descriptor.destinationDomainID
         )
+        try await clearPlacementClaim(descriptor, owner: owner)
     }
 
     private func placementPage(
-        root: Subspace,
-        domainID: DatabaseStorageDomain.ID,
+        tenant: DatabaseTenantDirectories,
+        domain: DatabaseStorageDomainRuntime,
         continuation: ByteString?
-    ) async throws -> (
-        rows: [(ByteString, ByteString)],
-        continuation: ByteString?
-    ) {
-        let range = root.range()
-        let begin: KeySelector
-        if let continuation {
-            guard root.contains(continuation) else {
-                throw DatabaseBaseCatalogError.corruptedRecord(nil)
-            }
-            begin = .firstGreaterThan(continuation)
-        } else {
-            begin = .firstGreaterOrEqual(range.begin)
-        }
-        let domain = try placementDomain(domainID)
+    ) async throws -> DatabaseBaseTenantTransfer.Page {
+        let access = domain.directoryAccess
         return try await domain.transactionExecutor.withTransaction(
             configuration: .readOnly,
             clock: monotonicClock
         ) { transaction in
-            let rows = try await TransactionRangeCollection.collect(
-                using: transaction,
-                from: begin,
-                to: .firstGreaterOrEqual(range.end),
-                limit: Self.placementTransferBatchSize + 1,
-                reverse: false,
-                snapshot: false,
-                streamingMode: .iterator
-            )
-            let visible = Array(rows.prefix(Self.placementTransferBatchSize))
-            return (
-                visible,
-                rows.count > Self.placementTransferBatchSize
-                    ? visible.last?.0
-                    : nil
+            try await DatabaseBaseTenantTransfer.page(
+                tenant: tenant,
+                access: access,
+                continuation: continuation,
+                limit: Self.placementTransferBatchSize,
+                transaction: transaction
             )
         }
     }
@@ -755,26 +812,13 @@ extension DBContainer {
         return domain
     }
 
-    private func placementRoot(
-        domainID: DatabaseStorageDomain.ID,
-        namespacePath: [String],
-        create: Bool
-    ) async throws -> Subspace {
-        let domain = try placementDomain(domainID)
-        if create {
-            return try await domain.engine.resolveOrCreateNamespace(
-                path: namespacePath
-            )
-        }
-        return try await domain.engine.resolveExistingNamespace(
-            path: namespacePath
-        )
-    }
-
+    /// Folds one page into the running transfer digest.
+    ///
+    /// The digest covers the path of every visited node as well as its rows,
+    /// because two sides can hold identical bytes under different structures
+    /// once content is recreated through the catalog instead of rebased.
     private static func progress(
-        rows: [(ByteString, ByteString)],
-        root: Subspace,
-        continuation: ByteString?,
+        page: DatabaseBaseTenantTransfer.Page,
         digest: ByteString?,
         keyCount: UInt64,
         byteCount: UInt64
@@ -785,46 +829,44 @@ extension DBContainer {
         var nextDigest = digest ?? ByteString(repeating: 0, count: 32)
         var nextKeyCount = keyCount
         var nextByteCount = byteCount
-        for (key, value) in rows {
-            guard root.contains(key) else {
-                throw DatabaseBaseCatalogError.corruptedRecord(nil)
+        for node in page.nodes {
+            let path = Tuple(node.path.map { $0 as any TupleElement }).pack()
+            // A node contributes its path once even when it holds no rows, so
+            // a destination missing an empty Directory diverges here instead
+            // of verifying as equal. `resumed` keeps a node that spans several
+            // pages contributing that path exactly once.
+            if !node.resumed {
+                var header = SHA256Accumulator()
+                nextDigest.withUnsafeBytes { header.update($0) }
+                update(UInt64(path.count), accumulator: &header)
+                path.withUnsafeBytes { header.update($0) }
+                nextDigest = header.finalize()
             }
-            let suffix = key[
-                (key.startIndex + root.prefix.count)..<key.endIndex
-            ]
-            var accumulator = SHA256Accumulator()
-            nextDigest.withUnsafeBytes { accumulator.update($0) }
-            update(UInt64(suffix.count), accumulator: &accumulator)
-            suffix.withUnsafeBytes { accumulator.update($0) }
-            update(UInt64(value.count), accumulator: &accumulator)
-            value.withUnsafeBytes { accumulator.update($0) }
-            nextDigest = accumulator.finalize()
-            nextKeyCount = try adding(nextKeyCount, 1)
-            nextByteCount = try adding(
-                nextByteCount,
-                try adding(UInt64(suffix.count), UInt64(value.count))
-            )
+            for row in node.rows {
+                var accumulator = SHA256Accumulator()
+                nextDigest.withUnsafeBytes { accumulator.update($0) }
+                update(UInt64(path.count), accumulator: &accumulator)
+                path.withUnsafeBytes { accumulator.update($0) }
+                update(UInt64(row.suffix.count), accumulator: &accumulator)
+                row.suffix.withUnsafeBytes { accumulator.update($0) }
+                update(UInt64(row.value.count), accumulator: &accumulator)
+                row.value.withUnsafeBytes { accumulator.update($0) }
+                nextDigest = accumulator.finalize()
+                nextKeyCount = try adding(nextKeyCount, 1)
+                nextByteCount = try adding(
+                    nextByteCount,
+                    try adding(
+                        UInt64(row.suffix.count),
+                        UInt64(row.value.count)
+                    )
+                )
+            }
         }
         return DatabaseBasePlacementTransferProgress(
-            continuation: continuation,
+            continuation: page.continuation,
             digest: nextDigest,
             keyCount: nextKeyCount,
             byteCount: nextByteCount
-        )
-    }
-
-    private static func rebase(
-        _ key: ByteString,
-        from source: Subspace,
-        to destination: Subspace
-    ) throws -> ByteString {
-        guard source.contains(key) else {
-            throw DatabaseBaseCatalogError.corruptedRecord(nil)
-        }
-        return destination.prefix.appending(
-            contentsOf: key[
-                (key.startIndex + source.prefix.count)..<key.endIndex
-            ]
         )
     }
 
@@ -853,16 +895,6 @@ extension DBContainer {
             throw DatabaseBaseCatalogError.corruptedRecord(baseID)
         }
         return result.partialValue
-    }
-
-    private static func preparedRoot(
-        _ prefix: ByteString?,
-        baseID: Base.ID?
-    ) throws -> Subspace {
-        guard let prefix, !prefix.isEmpty else {
-            throw DatabaseBaseCatalogError.corruptedRecord(baseID)
-        }
-        return Subspace(prefix: prefix)
     }
 }
 

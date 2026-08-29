@@ -11,8 +11,17 @@ import StorageKit
 package struct DatabaseDataRootLease: Sendable {
     package let resource: Security.Resource
     package let domain: DatabaseStorageDomainRuntime
-    package let root: Subspace
+    package let tenant: DatabaseTenantDirectories
     package let generation: UInt64
+
+    /// Framework metadata Subspace of this Tenant Partition.
+    package var systemRoot: Subspace { tenant.systemRoot }
+
+    /// Directory application `#Directory` binding starts from.
+    package var dataDirectory: Directory { tenant.data }
+
+    /// Stable identity of the Partition this lease admits operations against.
+    package var partitionRoot: Subspace { tenant.partitionRoot }
 
     package var transactionExecutor: StorageTransactionExecutor {
         domain.transactionExecutor

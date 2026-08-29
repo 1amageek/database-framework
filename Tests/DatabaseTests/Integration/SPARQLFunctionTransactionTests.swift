@@ -401,12 +401,12 @@ private final class SPARQLTransactionCountingEngine: StorageEngine, Sendable {
         return transaction
     }
 
-    var namespaceResolver: any NamespaceResolver {
-        engine.namespaceResolver
+    var transactionDomain: StorageTransactionDomain {
+        engine.transactionDomain
     }
 
-    var namespaceCatalog: (any NamespaceCatalog)? {
-        engine.namespaceCatalog
+    var directoryAccess: any DirectoryAccess {
+        engine.directoryAccess
     }
 
     func requestShutdown() {

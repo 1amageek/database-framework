@@ -372,7 +372,7 @@ struct PartitionedDirectoryTests {
             try await context.save()
 
             // Fetch using model(for:as:partition:)
-            var binding = DirectoryPath<TenantOrder>()
+            var binding = DatabaseEngine.DirectoryPath<TenantOrder>()
             binding.set(TenantOrder.fields.tenantID, to: tenantID)
 
             let fetched = try await context.model(for: orderID, as: TenantOrder.self, partition: binding)
@@ -397,7 +397,7 @@ struct PartitionedDirectoryTests {
 
                 try await transaction.save(order, precondition: .notExists)
 
-                var binding = DirectoryPath<TenantOrder>()
+                var binding = DatabaseEngine.DirectoryPath<TenantOrder>()
                 binding.set(TenantOrder.fields.tenantID, to: tenantID)
                 let fetched = try await transaction.fetch(
                     TenantOrder.self,

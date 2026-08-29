@@ -44,6 +44,11 @@ public final class DatabaseSchemaLease: Sendable {
         value.indexPhysicalLayouts
     }
 
+    /// Layer of every Directory node position this generation's schema declares.
+    package var directoryLayers: DirectoryLayerTagMap {
+        value.directoryLayers
+    }
+
     var securityDelegate: (any DataStoreSecurityDelegate)? {
         value.securityDelegate
     }

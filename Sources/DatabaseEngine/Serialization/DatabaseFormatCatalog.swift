@@ -25,9 +25,7 @@ public struct DatabaseFormatCatalog: Sendable {
         self.transactionExecutor = StorageTransactionExecutor(engine: database)
         self.clock = clock
         self.root = root
-        self.descriptorKey = root
-            .subspace("_database-framework")
-            .pack(Tuple("format"))
+        self.descriptorKey = root.pack(Tuple("format"))
     }
 
     /// Installs a descriptor only in an empty database, or validates it exactly.

@@ -116,7 +116,7 @@ public extension CompositionDataSource {
                     for member in lease.members {
                         try await DatabaseGrantStore(
                             resource: .base(member.baseID),
-                            root: member.root
+                            root: member.systemRoot
                         ).require(
                             .read,
                             authorization: authorization,

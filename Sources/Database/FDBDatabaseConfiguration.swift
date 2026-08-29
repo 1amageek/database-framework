@@ -30,12 +30,9 @@ public struct FDBDatabaseConfiguration: DatabaseContainerConfiguration {
     ) async throws -> DBConfiguration {
         let engine = try await FDBStorageEngine(configuration: storage)
         do {
-            let root = try await engine.resolveOrCreateNamespace(
-                path: directoryPath
-            )
-            return DBConfiguration(
+            return try DBConfiguration(
                 storageEngine: engine,
-                databaseRoot: root,
+                databaseRootPath: directoryPath,
                 monotonicClock: monotonicClock,
                 wallClock: wallClock
             )

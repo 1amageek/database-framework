@@ -70,10 +70,8 @@ public struct OntologyContextAPI: Sendable {
         _ operation: @Sendable @escaping (OntologyStore) async throws -> Result
     ) async throws -> Result {
         try await context.withDataOperation {
-            let root = try context.operationDataRoot()
-                .subspace("data")
-                .subspace("database-framework")
-                .subspace("ontology-index")
+            let root = try context.operationSystemRoot()
+                .subspace("ontology")
             return try await operation(
                 OntologyStore(
                     subspace: OntologySubspace(base: root)

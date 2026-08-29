@@ -50,7 +50,7 @@ struct DataStoreProbeTests {
         defer { await container.shutdown() }
 
         let partitionID = "partition-\(UUID().uuidString)"
-        var path = DirectoryPath<DataStoreProbeEntity>()
+        var path = DatabaseEngine.DirectoryPath<DataStoreProbeEntity>()
         path.set(
             DataStoreProbeEntity.fields.partitionID,
             to: partitionID

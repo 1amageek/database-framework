@@ -584,6 +584,7 @@ public struct DatabaseReadSession: Sendable {
         }
     }
 
+    private let systemRoot: Subspace
     private let dataRoot: Subspace
     private let scope: Scope
 
@@ -623,6 +624,7 @@ public struct DatabaseReadSession: Sendable {
         )
         self.schema = policy.schema
         self.schemaGeneration = policy.schemaGeneration
+        self.systemRoot = binding.systemRoot
         self.dataRoot = binding.dataRoot
         self.monotonicClock = context.container.monotonicClock
         self.wallClock = context.container.wallClock
@@ -633,6 +635,7 @@ public struct DatabaseReadSession: Sendable {
         transaction: DatabaseReadTransaction,
         schema: Schema,
         schemaGeneration: UInt64,
+        systemRoot: Subspace,
         dataRoot: Subspace,
         monotonicClock: any StorageMonotonicClock,
         wallClock: any WallClock
@@ -641,6 +644,7 @@ public struct DatabaseReadSession: Sendable {
         self.transaction = transaction
         self.schema = schema
         self.schemaGeneration = schemaGeneration
+        self.systemRoot = systemRoot
         self.dataRoot = dataRoot
         self.monotonicClock = monotonicClock
         self.wallClock = wallClock
@@ -1027,9 +1031,17 @@ public struct DatabaseReadSession: Sendable {
         }
     }
 
-    /// Immutable data root captured for this exact read execution.
+    /// Application data root of the Tenant Partition captured for this exact
+    /// read execution. Application entity data, indexes, and relationships
+    /// derive from this Subspace.
     public var operationDataRoot: Subspace {
         dataRoot
+    }
+
+    /// Framework metadata root of the Tenant Partition captured for this exact
+    /// read execution. Framework state derives only from this Subspace.
+    public var operationSystemRoot: Subspace {
+        systemRoot
     }
 
     package func validatePreparedExecution(
@@ -1131,6 +1143,7 @@ public struct DatabaseReadSession: Sendable {
             transaction: authorized,
             schema: schema,
             schemaGeneration: schemaGeneration,
+            systemRoot: systemRoot,
             dataRoot: dataRoot,
             monotonicClock: monotonicClock,
             wallClock: wallClock

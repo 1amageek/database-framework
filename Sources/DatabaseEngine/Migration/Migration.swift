@@ -305,7 +305,7 @@ public struct MigrationContext: Sendable {
     ) async throws {
         try await withAuthorizedTransaction(configuration: .batch) {
             transaction in
-            try removeIndex(
+            try await removeIndex(
                 indexName: indexName,
                 addedVersion: addedVersion,
                 transaction: transaction
@@ -317,11 +317,11 @@ public struct MigrationContext: Sendable {
         indexName: String,
         addedVersion: Schema.Version,
         transaction: any TransactionAccess
-    ) throws {
+    ) async throws {
         // 1. Find index descriptor in source schema to identify target entity
         guard let indexDescriptor = sourceSchema.indexDescriptor(named: indexName) else {
             if let group = sourceSchema.polymorphicGroup(containingIndexNamed: indexName) {
-                try removePolymorphicIndex(indexName: indexName, group: group, addedVersion: addedVersion,
+                try await removePolymorphicIndex(indexName: indexName, group: group, addedVersion: addedVersion,
                     transaction: transaction
                 )
                 return
@@ -332,7 +332,7 @@ public struct MigrationContext: Sendable {
         }
 
         if let group = try identifyPolymorphicTargetGroup(for: indexDescriptor, in: sourceSchema) {
-            try removePolymorphicIndex(indexName: indexName, group: group, addedVersion: addedVersion,
+            try await removePolymorphicIndex(indexName: indexName, group: group, addedVersion: addedVersion,
                 transaction: transaction
             )
             return
@@ -390,7 +390,7 @@ public struct MigrationContext: Sendable {
     package func retireIndexStorage(
         _ target: DatabaseIndexTransitionPlan.Target,
         transaction: any TransactionAccess
-    ) throws {
+    ) async throws {
         let selection = DatabaseIndexStorageRetirement.physicalGeneration(
             definitionFingerprint: target.identity.definitionFingerprint,
             layoutFingerprint: target.identity.layoutFingerprint
@@ -409,9 +409,17 @@ public struct MigrationContext: Sendable {
                 transaction: transaction
             )
         case .polymorphicGroup(_, let directoryPath):
-            let subspace = try container.operationDataSubspace(
-                relativePath: directoryPath
-            )
+            // The plan records the path of the source schema, whose group the
+            // target may no longer declare, so no declared layer types it. A
+            // directory that no longer exists holds no storage to retire.
+            guard let subspace = try await container
+                .openUnverifiedDataDirectory(
+                    relativePath: directoryPath,
+                    transaction: transaction
+                )
+            else {
+                return
+            }
             try IndexStorageRetirer.retire(
                 indexName: target.identity.name,
                 selection: selection,
@@ -563,7 +571,7 @@ public struct MigrationContext: Sendable {
     ) async throws {
         try await withAuthorizedTransaction(configuration: .batch) {
             transaction in
-            try removePolymorphicIndex(
+            try await removePolymorphicIndex(
                 indexName: indexName,
                 group: group,
                 addedVersion: addedVersion,
@@ -577,9 +585,10 @@ public struct MigrationContext: Sendable {
         group: PolymorphicGroup,
         addedVersion: Schema.Version,
         transaction: any TransactionAccess
-    ) throws {
-        let subspace = try container.operationDataSubspace(
-            relativePath: group.resolvedDirectoryPath()
+    ) async throws {
+        let subspace = try await container.resolvePolymorphicDirectory(
+            for: group.identifier,
+            transaction: transaction
         )
         let formerIndexKey =
             subspace

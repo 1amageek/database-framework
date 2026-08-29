@@ -62,9 +62,7 @@ struct QueryCursorTests {
 
     private func cleanup(container: DBContainer) async throws {
         let path = ["test", "cursor", "users"]
-        if try await container.engine.namespaceExists(path: path) {
-            try await container.engine.removeNamespace(path: path)
-        }
+        try await ensureDirectoryRemoved(from: container.engine, path: path)
     }
 
     private func seedUsers(context: DatabaseContext, count: Int) async throws -> [PaginatedUser] {

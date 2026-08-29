@@ -255,9 +255,11 @@ struct FullTextReadContractTests {
             #expect(execution.workMeter.retainedIntermediateBytes == 0)
         }
 
-        let dataRoot = try await container.resolveDirectory(
-            for: FullTextRetainedRegularArticle.self
-        )
+        let dataRoot = try await container.withTestBaseOperation {
+            try await container.resolveDirectory(
+                for: FullTextRetainedRegularArticle.self
+            )
+        }
         let indexRoot = try IndexLifecycleStore(
             container: container,
             subspace: dataRoot

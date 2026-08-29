@@ -1,5 +1,5 @@
 {
-  "originHash" : "ff953a2630d975dad51f9f07ce6a484a45201da706ebd065010e31c522b0f402",
+  "originHash" : "d696aeb7d0d5e862df089308602ec5cd342b520ecfd816ab86d45587c8acfa42",
   "pins" : [
     {
       "identity" : "database-kit",
@@ -22,7 +22,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/fdb-swift-bindings.git",
       "state" : {
-        "revision" : "383603e99773b7935e1f59f38ea9590372851656"
+        "revision" : "a6a623376c0a5c2b702babf0baec00e8724995fd"
       }
     },
     {
@@ -39,7 +39,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/storage-kit.git",
       "state" : {
-        "revision" : "53e615faee772d2ee7c1a59311beaf8e8f0cf7c1"
+        "revision" : "5408f55259f3ae883c2f6ba31b2fbd230856019d"
       }
     },
     {

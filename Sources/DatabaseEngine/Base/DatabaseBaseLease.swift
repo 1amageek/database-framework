@@ -30,7 +30,7 @@ public final class DatabaseBaseLease: Sendable {
         generation.record.placementGeneration
     }
     public var domainID: String { generation.domain.id.value }
-    package var root: Subspace { generation.root }
+    package var systemRoot: Subspace { generation.tenant.systemRoot }
     package var transactionExecutor: StorageTransactionExecutor {
         generation.domain.transactionExecutor
     }
@@ -39,7 +39,7 @@ public final class DatabaseBaseLease: Sendable {
         DatabaseDataRootLease(
             resource: .base(baseID),
             domain: generation.domain,
-            root: generation.root,
+            tenant: generation.tenant,
             generation: generation.record.placementGeneration
         )
     }

@@ -6,8 +6,15 @@ package struct DatabaseTransactionExecutionBinding: Sendable {
     package let container: DBContainer
     package let schemaLease: DatabaseSchemaLease
     package let storageEngineIdentity: ObjectIdentifier
+    /// Root Subspace of the bound Tenant Partition. This value identifies the
+    /// Partition an admitted operation was bound to; it is never used to derive
+    /// stored content.
+    package let partitionRoot: Subspace
+    package let partitionGeneration: UInt64
+    /// `system/database-framework` of the bound Tenant Partition.
+    package let systemRoot: Subspace
+    /// `data` of the bound Tenant Partition.
     package let dataRoot: Subspace
-    package let dataRootGeneration: UInt64
     package let authorization: AuthorizationContext
     #if DATABASE_MULTI_BASE
     package let resource: Security.Resource
@@ -25,10 +32,12 @@ package struct DatabaseTransactionExecutionBinding: Sendable {
         self.transaction = transaction
         self.container = context.container
         self.schemaLease = context.container.acquireActiveSchemaLease()
-        let dataRoot = try context.requireOperationDataRoot()
-        self.storageEngineIdentity = ObjectIdentifier(dataRoot.domain.engine)
-        self.dataRoot = dataRoot.root
-        self.dataRootGeneration = dataRoot.generation
+        let lease = try context.requireOperationDataRoot()
+        self.storageEngineIdentity = ObjectIdentifier(lease.domain.engine)
+        self.partitionRoot = lease.partitionRoot
+        self.partitionGeneration = lease.generation
+        self.systemRoot = lease.systemRoot
+        self.dataRoot = lease.dataDirectory.root
         self.resource = context.resource
         self.authorization = context.authorization
         self.grantedAccess = grantedAccess
@@ -44,8 +53,10 @@ package struct DatabaseTransactionExecutionBinding: Sendable {
         self.container = context.container
         self.schemaLease = context.container.acquireActiveSchemaLease()
         self.storageEngineIdentity = ObjectIdentifier(context.container.engine)
-        self.dataRoot = context.container.databaseRoot
-        self.dataRootGeneration = 0
+        self.partitionRoot = context.container.defaultTenant.partitionRoot
+        self.partitionGeneration = 0
+        self.systemRoot = context.container.defaultTenant.systemRoot
+        self.dataRoot = context.container.defaultTenant.data.root
         self.authorization = context.authorization
         self.databaseTransaction = databaseTransaction
     }
@@ -71,8 +82,10 @@ package struct DatabaseTransactionExecutionBinding: Sendable {
         self.container = binding.container
         self.schemaLease = binding.schemaLease
         self.storageEngineIdentity = binding.storageEngineIdentity
+        self.partitionRoot = binding.partitionRoot
+        self.partitionGeneration = binding.partitionGeneration
+        self.systemRoot = binding.systemRoot
         self.dataRoot = binding.dataRoot
-        self.dataRootGeneration = binding.dataRootGeneration
         self.authorization = binding.authorization
         #if DATABASE_MULTI_BASE
         self.resource = binding.resource
@@ -105,15 +118,15 @@ package struct DatabaseTransactionExecutionBinding: Sendable {
         }
         let currentRoot = try context.requireOperationDataRoot()
         guard storageEngineIdentity == ObjectIdentifier(currentRoot.domain.engine),
-              dataRoot == currentRoot.root,
-              dataRootGeneration == currentRoot.generation
+              partitionRoot == currentRoot.partitionRoot,
+              partitionGeneration == currentRoot.generation
         else {
             throw DatabaseTransactionError.invalidOperationContext
         }
         #else
         guard storageEngineIdentity == ObjectIdentifier(context.container.engine),
-              dataRoot == context.container.databaseRoot,
-              dataRootGeneration == 0 else {
+              partitionRoot == context.container.defaultTenant.partitionRoot,
+              partitionGeneration == 0 else {
             throw DatabaseTransactionError.invalidOperationContext
         }
         #endif

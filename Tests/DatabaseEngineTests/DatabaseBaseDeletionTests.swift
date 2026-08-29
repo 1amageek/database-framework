@@ -76,7 +76,7 @@ struct DatabaseBaseDeletionTests {
             .withControlMetadataTransaction(configuration: .readOnly) {
                 transaction in
                 try await DatabaseBaseDeletionStore(
-                    root: container.storageTopology.controlDomain.root,
+                    root: container.storageTopology.controlDomain.systemRoot,
                     collection: "intents"
                 ).load(baseID, transaction: transaction.storageAccess)
             }

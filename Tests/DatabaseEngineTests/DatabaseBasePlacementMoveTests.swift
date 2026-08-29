@@ -161,25 +161,23 @@ struct DatabaseBasePlacementMoveTests {
             domains: [
                 try DatabaseStorageDomain(
                     id: sourceDomainID,
-                    namespacePath: ["database", "source"],
+                    rootPath: ["database", "source"],
                     storageEngine: InMemoryEngine()
                 ),
                 try DatabaseStorageDomain(
                     id: destinationDomainID,
-                    namespacePath: ["database", "destination"],
+                    rootPath: ["database", "destination"],
                     storageEngine: InMemoryEngine()
                 ),
             ],
             placements: [
-                try DatabaseStoragePlacement(
+                DatabaseStoragePlacement(
                     id: sourcePlacementID,
-                    domainID: sourceDomainID,
-                    path: ["bases"]
+                    domainID: sourceDomainID
                 ),
-                try DatabaseStoragePlacement(
+                DatabaseStoragePlacement(
                     id: destinationPlacementID,
-                    domainID: destinationDomainID,
-                    path: ["bases"]
+                    domainID: destinationDomainID
                 ),
             ],
             defaultPlacementID: sourcePlacementID

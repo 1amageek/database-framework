@@ -132,15 +132,18 @@ private struct IndexedBenchmarkContext: Sendable {
     }
 
     func cleanup() async throws {
-        for path in [
-            ["test", "performance", "plain-entities"],
-            ["test", "performance", "single-index-entities"],
-            ["test", "performance", "triple-index-entities"],
-        ] {
-            do {
-                try await engine.removeNamespace(path: path)
-            } catch {
-                // Ignore missing directory when the strategy did not materialize it.
+        // Clearing the resolved Directory contents keeps the Directory nodes and
+        // their allocated prefixes in place, which is what a repeated benchmark
+        // run needs: the same layout is reused and only stored data is dropped.
+        let subspaces = [
+            try await container.resolveDirectory(for: PlainBenchmarkEntity.self),
+            try await container.resolveDirectory(for: SingleIndexBenchmarkEntity.self),
+            try await container.resolveDirectory(for: TripleIndexBenchmarkEntity.self),
+        ]
+        for subspace in subspaces {
+            try await engine.withTransaction { transaction in
+                let (begin, end) = subspace.range()
+                try transaction.clearRange(beginKey: begin, endKey: end)
             }
         }
     }

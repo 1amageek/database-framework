@@ -10,7 +10,7 @@ extension PostgreSQLStorageEngine.Configuration: DatabaseContainerConfiguration 
         wallClock: any WallClock
     ) async throws -> DBConfiguration {
         let engine = try await PostgreSQLStorageEngine(configuration: self)
-        return DBConfiguration(
+        return try DBConfiguration(
             storageEngine: engine,
             monotonicClock: monotonicClock,
             wallClock: wallClock

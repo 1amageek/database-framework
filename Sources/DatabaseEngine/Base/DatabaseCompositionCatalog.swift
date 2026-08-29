@@ -16,7 +16,7 @@ package struct DatabaseCompositionCatalog: Sendable {
     ) {
         self.transactionExecutor = controlDomain.transactionExecutor
         self.clock = clock
-        self.records = controlDomain.root
+        self.records = controlDomain.systemRoot
             .subspace("catalog")
             .subspace("compositions")
             .subspace("records")

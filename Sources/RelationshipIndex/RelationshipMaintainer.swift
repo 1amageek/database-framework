@@ -42,7 +42,7 @@ public final class RelationshipMaintainer: Sendable {
         guard !state.visited.contains(target),
               try await !RelationshipDeleteMarker.isMarked(
                 target,
-                baseRoot: context.baseRoot,
+                dataRoot: context.dataRoot,
                 transaction: context.storageAccess
               ) else {
             return
@@ -50,7 +50,7 @@ public final class RelationshipMaintainer: Sendable {
         state.visited.insert(target)
         try RelationshipDeleteMarker.mark(
             target,
-            baseRoot: context.baseRoot,
+            dataRoot: context.dataRoot,
             transaction: context.storageAccess
         )
 
@@ -73,7 +73,7 @@ public final class RelationshipMaintainer: Sendable {
                     }
                     if try await RelationshipDeleteMarker.isMarked(
                         identity,
-                        baseRoot: context.baseRoot,
+                        dataRoot: context.dataRoot,
                         transaction: context.storageAccess
                     ) {
                         continue
@@ -112,7 +112,7 @@ public final class RelationshipMaintainer: Sendable {
                         )
                         try RelationshipDeleteMarker.mark(
                             identity,
-                            baseRoot: context.baseRoot,
+                            dataRoot: context.dataRoot,
                             transaction: context.storageAccess
                         )
                         try await context.delete(
@@ -121,7 +121,7 @@ public final class RelationshipMaintainer: Sendable {
                         )
                         try RelationshipDeleteMarker.clear(
                             identity,
-                            baseRoot: context.baseRoot,
+                            dataRoot: context.dataRoot,
                             transaction: context.storageAccess
                         )
                     case .nullify:
@@ -145,7 +145,7 @@ public final class RelationshipMaintainer: Sendable {
 
         try RelationshipDeleteMarker.clear(
             target,
-            baseRoot: context.baseRoot,
+            dataRoot: context.dataRoot,
             transaction: context.storageAccess
         )
     }
@@ -167,7 +167,7 @@ public final class RelationshipMaintainer: Sendable {
             of: target,
             descriptor: descriptor,
             limit: Int(requested),
-            baseRoot: context.baseRoot,
+            dataRoot: context.dataRoot,
             transaction: context.storageAccess
         )
         guard UInt64(identities.count) <= remaining else {

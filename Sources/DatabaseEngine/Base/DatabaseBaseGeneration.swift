@@ -5,7 +5,7 @@ import StorageKit
 package struct DatabaseBaseGeneration: Sendable {
     package let record: DatabaseBaseRecord
     package let domain: DatabaseStorageDomainRuntime
-    package let root: Subspace
+    package let tenant: DatabaseTenantDirectories
 }
 
 #endif

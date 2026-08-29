@@ -130,7 +130,7 @@ public struct RelationshipReferenceMaintainer: PersistableMutationMaintainer {
                         target: target,
                         owner: identity,
                         descriptor: descriptor,
-                        baseRoot: context.baseRoot,
+                        dataRoot: context.dataRoot,
                         transaction: context.storageAccess
                     )
                 }
@@ -151,7 +151,7 @@ public struct RelationshipReferenceMaintainer: PersistableMutationMaintainer {
                         target: target,
                         owner: identity,
                         descriptor: descriptor,
-                        baseRoot: context.baseRoot,
+                        dataRoot: context.dataRoot,
                         transaction: context.storageAccess
                     )
                 }

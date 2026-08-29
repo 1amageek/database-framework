@@ -119,10 +119,9 @@ struct DatabaseFormatCatalogTests {
     @Test("Corrupted persisted descriptor is never replaced")
     func rejectsCorruptedDescriptor() async throws {
         let engine = InMemoryEngine()
-        let descriptorKey = Tuple([
-            "_database-framework",
-            "format"
-        ]).pack()
+        // The catalog roots the descriptor at its own root, which the caller
+        // sets to the Partition's `system/database-framework` Directory.
+        let descriptorKey = Subspace().pack(Tuple("format"))
         try await engine.withTransaction { transaction in
             try transaction.setValue([0x00], for: descriptorKey)
         }

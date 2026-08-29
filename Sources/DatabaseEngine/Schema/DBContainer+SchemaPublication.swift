@@ -56,11 +56,11 @@ extension DBContainer {
         #endif
         #if DATABASE_MULTI_BASE
         let schemaEngine = storageTopology.controlDomain.engine
-        let schemaRoot = storageTopology.controlDomain.root
+        let schemaRoot = storageTopology.controlDomain.systemRoot
         let schemaTransactionExecutor = controlTransactionExecutor
         #else
         let schemaEngine = engine
-        let schemaRoot = databaseRoot
+        let schemaRoot = defaultTenant.systemRoot
         let schemaTransactionExecutor = transactionExecutor
         #endif
         let registry = SchemaRegistry(
@@ -279,11 +279,11 @@ extension DBContainer {
         let leasedGeneration = publishedLease.generation
         #if DATABASE_MULTI_BASE
         let schemaEngine = storageTopology.controlDomain.engine
-        let schemaRoot = storageTopology.controlDomain.root
+        let schemaRoot = storageTopology.controlDomain.systemRoot
         let schemaTransactionExecutor = controlTransactionExecutor
         #else
         let schemaEngine = engine
-        let schemaRoot = databaseRoot
+        let schemaRoot = defaultTenant.systemRoot
         let schemaTransactionExecutor = transactionExecutor
         _ = authorization
         #endif
@@ -480,7 +480,7 @@ extension DBContainer {
         }
 
         if outcome.shouldPublishGeneration {
-            publishSchemaGeneration(
+            try publishSchemaGeneration(
                 schema,
                 fingerprint: outcome.publication.fingerprint,
                 indexPhysicalFingerprint:
@@ -543,13 +543,18 @@ extension DBContainer {
         transaction: any TransactionAccess
     ) async throws -> Bool {
         var requiresPersistentBuild = false
+        // The schema being applied is not published yet, so its declarations
+        // are typed by a map derived from it rather than by the container's
+        // current one.
+        let targetLayers = try DirectoryLayerTagMap(entities: target.entities)
         for targetEntity in target.entities {
             let indexes = targetEntity.indexDescriptors
             guard !indexes.isEmpty else { continue }
 
             if targetEntity.hasDynamicDirectory {
                 guard try await partitionCatalogContainsEntries(
-                    entity: targetEntity.name,
+                    entity: targetEntity,
+                    directoryLayers: targetLayers,
                     transaction: transaction
                 ) else {
                     continue
@@ -570,6 +575,7 @@ extension DBContainer {
             let subspace = try await resolveDirectory(
                 for: targetEntity,
                 declaredIn: target,
+                directoryLayers: targetLayers,
                 transaction: transaction
             )
             let lifecycleStore = IndexLifecycleStore(
@@ -614,8 +620,11 @@ extension DBContainer {
         }
 
         for group in target.polymorphicGroups where !group.indexes.isEmpty {
-            let subspace = try operationDataSubspace(
-                relativePath: group.resolvedDirectoryPath()
+            let groupPath = try group.resolvedDirectoryPath()
+            let subspace = try await resolveDataDirectory(
+                relativePath: groupPath,
+                layers: targetLayers.layers(forPath: groupPath),
+                transaction: transaction
             )
             let lifecycleStore = IndexLifecycleStore(
                 container: self,
@@ -911,11 +920,13 @@ extension DBContainer {
     }
 
     private func partitionCatalogContainsEntries(
-        entity: String,
+        entity: Schema.Entity,
+        directoryLayers layerMap: DirectoryLayerTagMap,
         transaction: any TransactionAccess
     ) async throws -> Bool {
         let page = try await partitionCatalogPage(
             entity: entity,
+            directoryLayers: layerMap,
             continuation: nil,
             limit: 1,
             transaction: transaction
@@ -1013,17 +1024,17 @@ extension DBContainer {
 
     private func activeDataRootMetadataSubspace() throws -> Subspace {
         #if DATABASE_MULTI_BASE
-        try requireActiveDataRoot().root.subspace("metadata")
+        try requireActiveDataRoot().systemRoot.subspace("metadata")
         #else
-        databaseRoot.subspace("metadata")
+        defaultTenant.systemRoot.subspace("metadata")
         #endif
     }
 
     private func activeDataRootInternalMetadataSubspace() throws -> Subspace {
         #if DATABASE_MULTI_BASE
-        try requireActiveDataRoot().root.subspace("_metadata")
+        try requireActiveDataRoot().systemRoot.subspace("_metadata")
         #else
-        databaseRoot.subspace("_metadata")
+        defaultTenant.systemRoot.subspace("_metadata")
         #endif
     }
 

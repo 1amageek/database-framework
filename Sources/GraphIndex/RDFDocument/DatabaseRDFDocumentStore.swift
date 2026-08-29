@@ -407,15 +407,14 @@ public struct DatabaseRDFDocumentStore: Sendable {
         }
     }
 
+    /// Stored RDF documents are application data, so they derive from the
+    /// Tenant Partition's `data` Directory rather than an application
+    /// `#Directory` binding, which addresses declared entity paths only.
     private func documentSubspace(_ identifier: String) throws -> Subspace {
-        try container.operationDataSubspace(
-            relativePath: [
-                "database-framework",
-                "rdf-documents",
-                namespace,
-                identifier,
-            ]
-        )
+        try container.operationDataRoot()
+            .subspace("rdf-documents")
+            .subspace(namespace)
+            .subspace(identifier)
     }
 
     private func metadataKey(_ identifier: String) throws -> ByteString {

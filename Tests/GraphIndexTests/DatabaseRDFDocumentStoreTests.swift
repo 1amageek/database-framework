@@ -148,14 +148,11 @@ struct DatabaseRDFDocumentStoreTests {
         try await context.withExecutionTransaction(
             configuration: .batch
         ) { transaction in
-            let metadataKey = try container.operationDataSubspace(
-                relativePath: [
-                    "database-framework",
-                    "rdf-documents",
-                    "ontology",
-                    identifier,
-                ]
-            ).pack(Tuple("metadata"))
+            let metadataKey = try container.operationDataRoot()
+                .subspace("rdf-documents")
+                .subspace("ontology")
+                .subspace(identifier)
+                .pack(Tuple("metadata"))
             try transaction.executionStorageAccess.setValue(
                 metadata,
                 for: metadataKey

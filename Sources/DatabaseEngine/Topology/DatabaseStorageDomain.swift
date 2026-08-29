@@ -50,24 +50,25 @@ public struct DatabaseStorageDomain: Sendable {
     }
 
     public let id: ID
-    public let namespacePath: [String]
+    /// Directory path of this domain's database root, as defined by Section 13.
+    public let rootPath: [String]
     public let storageEngine: any StorageEngine
 
     public init(
         id: ID,
-        namespacePath: [String],
+        rootPath: [String],
         storageEngine: any StorageEngine
     ) throws(DatabaseStorageTopologyError) {
-        guard !namespacePath.isEmpty else {
-            throw .emptyDomainNamespace(domainID: id)
+        guard !rootPath.isEmpty else {
+            throw .emptyDomainRootPath(domainID: id)
         }
-        for component in namespacePath {
+        for component in rootPath {
             guard !component.isEmpty else {
-                throw .emptyNamespaceComponent(domainID: id)
+                throw .emptyDomainRootPathComponent(domainID: id)
             }
         }
         self.id = id
-        self.namespacePath = namespacePath
+        self.rootPath = rootPath
         self.storageEngine = storageEngine
     }
 }

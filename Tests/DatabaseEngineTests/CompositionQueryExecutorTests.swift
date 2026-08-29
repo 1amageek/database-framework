@@ -1277,7 +1277,12 @@ struct CompositionQueryExecutorTests {
         let controlDomainID = try DatabaseStorageDomain.ID("control")
         let secondaryDomainID = try DatabaseStorageDomain.ID("secondary")
         let primaryPlacementID = try Base.Placement.ID("primary")
-        let secondaryPlacementID = try Base.Placement.ID("secondary")
+        // Section 14 addresses a Base Partition at `bases/<Base.ID>` below the
+        // database root of its domain, so one domain has exactly one placement
+        // destination. Two Bases share a domain by sharing its placement.
+        let secondaryPlacementID = secondarySharesControlDomain
+            ? primaryPlacementID
+            : try Base.Placement.ID("secondary")
         let primaryBaseID = try Base.ID("company-a")
         let secondaryBaseID = try Base.ID("company-b")
         let compositionID = try Base.Composition.ID("shared")
@@ -1290,7 +1295,7 @@ struct CompositionQueryExecutorTests {
         var domains = [
             try DatabaseStorageDomain(
                 id: controlDomainID,
-                namespacePath: ["tests", "composition", "control"],
+                rootPath: ["tests", "composition", "control"],
                 storageEngine: controlEngine
             )
         ]
@@ -1298,30 +1303,29 @@ struct CompositionQueryExecutorTests {
             domains.append(
                 try DatabaseStorageDomain(
                     id: secondaryDomainID,
-                    namespacePath: ["tests", "composition", "secondary"],
+                    rootPath: ["tests", "composition", "secondary"],
                     storageEngine: secondaryEngine
+                )
+            )
+        }
+        var placements = [
+            DatabaseStoragePlacement(
+                id: primaryPlacementID,
+                domainID: controlDomainID
+            )
+        ]
+        if !secondarySharesControlDomain {
+            placements.append(
+                DatabaseStoragePlacement(
+                    id: secondaryPlacementID,
+                    domainID: secondaryDomainID
                 )
             )
         }
         let topology = try DatabaseStorageTopology(
             controlDomainID: controlDomainID,
             domains: domains,
-            placements: [
-                try DatabaseStoragePlacement(
-                    id: primaryPlacementID,
-                    domainID: controlDomainID,
-                    path: ["bases"]
-                ),
-                try DatabaseStoragePlacement(
-                    id: secondaryPlacementID,
-                    domainID: secondarySharesControlDomain
-                        ? controlDomainID
-                        : secondaryDomainID,
-                    path: secondarySharesControlDomain
-                        ? ["secondary-bases"]
-                        : ["bases"]
-                ),
-            ],
+            placements: placements,
             defaultPlacementID: primaryPlacementID
         )
         let container = try await DBContainer.open(

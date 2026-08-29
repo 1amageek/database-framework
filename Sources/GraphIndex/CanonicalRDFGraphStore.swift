@@ -12,11 +12,9 @@ public struct CanonicalRDFGraphStore: RDFGraphMutationStore {
     /// database-wide default. Keeping the transformation here makes the
     /// physical layout identical for reads and mutations without a directory
     /// lookup on the hot path.
-    public static func rootSubspace(forBaseRoot baseRoot: Subspace) -> Subspace {
-        baseRoot
-            .subspace("data")
-            .subspace("_database-framework")
-            .subspace("rdf-graph-store")
+    public static func rootSubspace(forDataRoot dataRoot: Subspace) -> Subspace {
+        dataRoot
+            .subspace("rdf-graph")
             .subspace(Int64(1))
     }
 

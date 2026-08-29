@@ -78,6 +78,9 @@ not provide DatabaseEngine authorization guarantees.
 - A transaction-bound `SPARQLQueryExecutor` never creates a storage
   transaction. The low-level top-level executor may use its explicit supplied
   engine only at its own entry boundary.
+- Graph catalogs and index storage are rooted at a caller-supplied subspace
+  derived from the Partition's Framework root. GraphIndex owns only the
+  component name below that root, never a database-wide reserved prefix.
 - Property-graph and RDF index physical keys preserve their declared roles,
   ordering, prefixes, and range boundaries. The six RDF quad orderings use
   canonical term bytes and typed validation; they do not substitute strings

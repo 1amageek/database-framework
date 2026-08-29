@@ -224,7 +224,7 @@ struct FieldSecuritySQLiteTests {
             )
         )
         #else
-        let configuration = DBConfiguration(
+        let configuration = try DBConfiguration(
             name: "field-security",
             storageEngine: engine,
             monotonicClock: TestProcessMonotonicClock(),

@@ -707,22 +707,22 @@ struct PolymorphicMigrationSQLiteTests {
         indexName: String
     ) async throws -> Int {
         try await container.withTestBaseOperation {
-        let group = try container.polymorphicGroup(
-            identifier: SQLitePolymorphicMigrationArticleV2.polymorphableType
-        )
-        let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
-        let indexSubspace = groupSubspace
-            .subspace(SubspaceKey.indexes)
-            .subspace(indexName)
+            let group = try container.polymorphicGroup(
+                identifier: SQLitePolymorphicMigrationArticleV2.polymorphableType
+            )
+            let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
+            let indexSubspace = groupSubspace
+                .subspace(SubspaceKey.indexes)
+                .subspace(indexName)
 
-        return try await container.engine.withTransaction { transaction -> Int in
-            let (begin, end) = indexSubspace.range()
-            return try await transaction.collectRange(
-                begin: begin,
-                end: end,
-                snapshot: true
-            ).count
-        }
+            return try await container.engine.withTransaction { transaction -> Int in
+                let (begin, end) = indexSubspace.range()
+                return try await transaction.collectRange(
+                    begin: begin,
+                    end: end,
+                    snapshot: true
+                ).count
+            }
         }
     }
 
@@ -731,18 +731,18 @@ struct PolymorphicMigrationSQLiteTests {
         indexName: String
     ) async throws {
         try await container.withTestBaseOperation {
-        let group = try container.polymorphicGroup(
-            identifier: SQLitePolymorphicMigrationArticleV2.polymorphableType
-        )
-        let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
-        let indexSubspace = groupSubspace
-            .subspace(SubspaceKey.indexes)
-            .subspace(indexName)
-        let range = indexSubspace.range()
+            let group = try container.polymorphicGroup(
+                identifier: SQLitePolymorphicMigrationArticleV2.polymorphableType
+            )
+            let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
+            let indexSubspace = groupSubspace
+                .subspace(SubspaceKey.indexes)
+                .subspace(indexName)
+            let range = indexSubspace.range()
 
-        try await container.engine.withTransaction { transaction in
-            try transaction.clearRange(beginKey: range.begin, endKey: range.end)
-        }
+            try await container.engine.withTransaction { transaction in
+                try transaction.clearRange(beginKey: range.begin, endKey: range.end)
+            }
         }
     }
 
@@ -777,12 +777,12 @@ struct PolymorphicMigrationSQLiteTests {
         indexName: String
     ) async throws -> IndexState {
         try await container.withTestBaseOperation {
-        let group = try container.polymorphicGroup(
-            identifier: SQLitePolymorphicMigrationArticleV2.polymorphableType
-        )
-        let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
-        let lifecycleStore = IndexLifecycleStore(container: container, subspace: groupSubspace)
-        return try await lifecycleStore.state(of: indexName)
+            let group = try container.polymorphicGroup(
+                identifier: SQLitePolymorphicMigrationArticleV2.polymorphableType
+            )
+            let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
+            let lifecycleStore = IndexLifecycleStore(container: container, subspace: groupSubspace)
+            return try await lifecycleStore.state(of: indexName)
         }
     }
 }

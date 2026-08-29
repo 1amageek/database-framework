@@ -35,19 +35,22 @@ public struct DatabaseMutationStateStore: Sendable {
         return key
     }
 
+    /// Operation state is Framework runtime metadata, so it derives from the
+    /// Framework root of the control domain's Tenant Partition.
     public func controlBinding() -> DatabaseMutationStateBinding {
         DatabaseMutationStateBinding(
-            root: container.controlStorage().root
-                .subspace("_metadata")
+            root: container.controlStorage().systemRoot
                 .subspace("operation-state")
         )
     }
 
+    /// Operation state owned by one bound Tenant Partition rather than by the
+    /// control domain.
     public func binding(
         for storage: DatabaseExecutionStorage
     ) -> DatabaseMutationStateBinding {
         DatabaseMutationStateBinding(
-            root: storage.root.subspace("operation-state")
+            root: storage.systemRoot.subspace("operation-state")
         )
     }
 

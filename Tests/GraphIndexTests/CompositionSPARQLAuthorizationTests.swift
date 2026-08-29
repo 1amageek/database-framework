@@ -432,17 +432,16 @@ struct CompositionSPARQLAuthorizationTests {
             domains: [
                 try DatabaseStorageDomain(
                     id: domainID,
-                    namespacePath: [
+                    rootPath: [
                         "tests", "composition-sparql-authorization"
                     ],
                     storageEngine: engine
                 )
             ],
             placements: [
-                try DatabaseStoragePlacement(
+                DatabaseStoragePlacement(
                     id: placementID,
-                    domainID: domainID,
-                    path: ["bases"]
+                    domainID: domainID
                 )
             ],
             defaultPlacementID: placementID

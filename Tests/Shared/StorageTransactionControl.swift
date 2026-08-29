@@ -37,7 +37,6 @@ public final class StorageTransactionControl: Sendable {
         var keyReadCount = 0
         var openedRangeCursorCount = 0
         var rangeCursorLimits: [Int] = []
-        var namespaceReadCount = 0
         var readVersionCount = 0
         var rangeMetadataReadCount = 0
         var finishedRangeCursorCount = 0
@@ -147,7 +146,6 @@ public final class StorageTransactionControl: Sendable {
             $0.valueReadCount
                 + $0.keyReadCount
                 + $0.openedRangeCursorCount
-                + $0.namespaceReadCount
                 + $0.readVersionCount
                 + $0.rangeMetadataReadCount
         }
@@ -197,10 +195,6 @@ public final class StorageTransactionControl: Sendable {
 
     func recordKeyRead() {
         state.withLock { $0.keyReadCount += 1 }
-    }
-
-    func recordNamespaceRead() {
-        state.withLock { $0.namespaceReadCount += 1 }
     }
 
     func recordReadVersion() {

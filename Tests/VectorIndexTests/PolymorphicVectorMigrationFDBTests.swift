@@ -443,23 +443,7 @@ struct PolymorphicVectorMigrationFDBTests {
     }
 
     private static func clearState(in database: any StorageEngine) async throws {
-        for path in [
-            ["fdb_polymorphic_vector_migration"],
-            ["_metadata"],
-        ] {
-            if try await database.namespaceExists(path: path) {
-                try await database.removeNamespace(path: path)
-            }
-        }
-
-        try await database.withTransaction { transaction in
-            for typeName in [
-                FDBPolymorphicVectorPersonV1.persistableType,
-                FDBPolymorphicVectorOrganizationV1.persistableType,
-            ] {
-                try transaction.clear(key: Tuple(["_schema", typeName]).pack())
-            }
-        }
+        try await ensureTestingDatabaseCleared(from: database)
     }
 
     private static func resultIDV2(_ result: PolymorphicQueryResult) throws -> String? {

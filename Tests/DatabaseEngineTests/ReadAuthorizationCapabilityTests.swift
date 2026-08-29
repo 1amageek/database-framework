@@ -1404,7 +1404,7 @@ struct ReadAuthorizationCapabilityTests {
             ) { transaction in
                 let scanned = try await transaction.scan(
                     ReadPolicyAuthorizationAnchor.self,
-                    in: DirectoryPath(),
+                    in: DatabaseEngine.DirectoryPath(),
                     after: nil,
                     limit: 1,
                     consistency: .snapshot
@@ -1615,7 +1615,7 @@ struct ReadAuthorizationCapabilityTests {
                 runtimeConfiguration: targetRuntime
             )
             let targetGeneration = container.schemaGeneration + 1
-            container.publishSchemaGeneration(
+            try container.publishSchemaGeneration(
                 schema,
                 fingerprint: try SchemaManifest(schema: schema).fingerprint(),
                 indexPhysicalFingerprint: prepared.indexPhysicalFingerprint,

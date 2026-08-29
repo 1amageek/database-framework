@@ -14,10 +14,26 @@ struct PropertyGraphDefinitionCatalogTests {
         case rollback
     }
 
+    /// Framework root a Tenant Partition supplies; the catalog owns one
+    /// component below it and never a database-wide reserved prefix.
+    private static let frameworkRoot = Subspace("test", "database-framework")
+
+    private static var catalogRootSubspace: Subspace {
+        CanonicalPropertyGraphDefinitionCatalog
+            .rootSubspace(forFrameworkRoot: frameworkRoot)
+    }
+
+    private static func makeCatalog()
+        -> CanonicalPropertyGraphDefinitionCatalog {
+        CanonicalPropertyGraphDefinitionCatalog(
+            rootSubspace: catalogRootSubspace
+        )
+    }
+
     @Test("Creation persists the complete canonical definition")
     func createAndReadDefinition() async throws {
         let engine = InMemoryEngine()
-        let catalog = CanonicalPropertyGraphDefinitionCatalog()
+        let catalog = Self.makeCatalog()
         let requested = makeDefinition(
             named: "calendar",
             ifNotExists: true
@@ -44,7 +60,7 @@ struct PropertyGraphDefinitionCatalogTests {
     @Test("Duplicate creation fails and preserves the original definition")
     func duplicateCreationFails() async throws {
         let engine = InMemoryEngine()
-        let catalog = CanonicalPropertyGraphDefinitionCatalog()
+        let catalog = Self.makeCatalog()
         let original = makeDefinition(named: "calendar")
         let replacement = CreateGraphStatement(
             graphName: original.graphName,
@@ -93,7 +109,7 @@ struct PropertyGraphDefinitionCatalogTests {
     @Test("IF NOT EXISTS retains a valid existing definition")
     func conditionalCreationRetainsExistingDefinition() async throws {
         let engine = InMemoryEngine()
-        let catalog = CanonicalPropertyGraphDefinitionCatalog()
+        let catalog = Self.makeCatalog()
         let original = makeDefinition(named: "calendar")
         let conditionalReplacement = CreateGraphStatement(
             graphName: original.graphName,
@@ -133,7 +149,7 @@ struct PropertyGraphDefinitionCatalogTests {
     @Test("IF NOT EXISTS never hides a corrupt existing definition")
     func conditionalCreationRejectsCorruptExistingDefinition() async throws {
         let engine = InMemoryEngine()
-        let catalog = CanonicalPropertyGraphDefinitionCatalog()
+        let catalog = Self.makeCatalog()
         let definition = makeDefinition(
             named: "calendar",
             ifNotExists: true
@@ -169,7 +185,7 @@ struct PropertyGraphDefinitionCatalogTests {
     @Test("Drop removes only the definition and missing drop fails")
     func dropDefinitionLifecycle() async throws {
         let engine = InMemoryEngine()
-        let catalog = CanonicalPropertyGraphDefinitionCatalog()
+        let catalog = Self.makeCatalog()
         let definition = makeDefinition(named: "calendar")
 
         try await create(
@@ -214,7 +230,7 @@ struct PropertyGraphDefinitionCatalogTests {
     @Test("Malformed stored bytes are reported as catalog corruption")
     func malformedStoredDefinitionFails() async throws {
         let engine = InMemoryEngine()
-        let catalog = CanonicalPropertyGraphDefinitionCatalog()
+        let catalog = Self.makeCatalog()
         let graphName = "calendar"
         let storage = makeStorage()
         let key = try storage.key(for: graphName)
@@ -240,7 +256,7 @@ struct PropertyGraphDefinitionCatalogTests {
     @Test("Stored graph name must match its catalog key")
     func storedGraphNameMismatchFails() async throws {
         let engine = InMemoryEngine()
-        let catalog = CanonicalPropertyGraphDefinitionCatalog()
+        let catalog = Self.makeCatalog()
         let expectedName = "calendar"
         let actualName = "contacts"
 
@@ -281,6 +297,7 @@ struct PropertyGraphDefinitionCatalogTests {
             maximumNestingDepth: 64
         )
         let catalog = CanonicalPropertyGraphDefinitionCatalog(
+            rootSubspace: Self.catalogRootSubspace,
             storageLimits: limits
         )
         let key = try makeStorage().key(for: graphName)
@@ -311,7 +328,7 @@ struct PropertyGraphDefinitionCatalogTests {
     @Test("Caller transaction rollback removes catalog mutation")
     func callerTransactionRollbackIsAtomic() async throws {
         let engine = InMemoryEngine()
-        let catalog = CanonicalPropertyGraphDefinitionCatalog()
+        let catalog = Self.makeCatalog()
         let definition = makeDefinition(named: "calendar")
 
         await #expect(throws: ExpectedFailure.self) {
@@ -341,7 +358,7 @@ struct PropertyGraphDefinitionCatalogTests {
     @Test("Property graph and RDF graph namespaces remain independent")
     func rdfGraphNamespaceIsIndependent() async throws {
         let engine = InMemoryEngine()
-        let catalog = CanonicalPropertyGraphDefinitionCatalog()
+        let catalog = Self.makeCatalog()
         let rdfStore = CanonicalRDFGraphStore(
             rootSubspace: Subspace(
                 prefix: Tuple(["test", "rdf-graph-store"]).pack()
@@ -428,9 +445,7 @@ struct PropertyGraphDefinitionCatalogTests {
 
     private func makeStorage() -> PropertyGraphDefinitionCatalogStorage {
         PropertyGraphDefinitionCatalogStorage(
-            subspace: CanonicalPropertyGraphDefinitionCatalog
-                .defaultRootSubspace
-                .subspace(Int64(1)),
+            subspace: Self.catalogRootSubspace.subspace(Int64(1)),
             limits: .default
         )
     }

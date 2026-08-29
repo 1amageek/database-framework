@@ -58,7 +58,7 @@ extension DBContainer {
             ) { transaction in
                 let store = DatabaseGrantStore(
                     resource: grant.resource,
-                    root: lease.root
+                    root: lease.systemRoot
                 )
                 let current = try await store.direct(
                     subject: grant.subject,

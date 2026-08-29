@@ -693,23 +693,28 @@ public struct IndexQueryContext: Sendable {
         _ = try context.requireOperationDataRoot()
         #endif
         let readPolicy = try context.readPolicy()
-        let store: DatabaseDataStore
+        let store: DatabaseDataStore?
         if let binding = try partitionBinding(for: type) {
-            store = try context.container.readStore(
+            store = try await context.container.readStore(
                 for: type,
                 path: binding,
-                readPolicy: readPolicy
+                readPolicy: readPolicy,
+                transaction: transaction.storageAccess
             )
         } else {
-            store = try context.container.readStore(
+            store = try await context.container.readStore(
                 for: type,
-                readPolicy: readPolicy
+                readPolicy: readPolicy,
+                transaction: transaction.storageAccess
             )
         }
         _ = try PersistableIdentifierKeyCodec.value(
             from: id,
             expectedType: T.persistableIdentifierType
         )
+        // A directory no write ever created holds no item, so the fetch is a
+        // miss rather than a failure.
+        guard let store else { return nil }
         return try await store.fetchByIdentifierTupleInTransaction(
             type,
             identifier: id,

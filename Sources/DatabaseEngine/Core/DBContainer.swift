@@ -89,8 +89,7 @@ public final class DBContainer: Sendable {
         let baseGenerations: [DatabaseBaseGeneration]
         let databaseGrantStore: DatabaseGrantStore
         #else
-        let databaseRoot: Subspace
-        let partitionCatalog: DatabasePartitionCatalog
+        let defaultTenant: DatabaseTenantDirectories
         #endif
         let metadataSubspace: Subspace
         let schemaGeneration: UInt64
@@ -123,12 +122,14 @@ public final class DBContainer: Sendable {
     /// The single storage engine exclusively owned by this container.
     public let engine: any StorageEngine
 
-    /// Root resolved once for the container's one ordinary database.
+    /// Reserved Directories of the Default Partition, resolved once for the
+    /// container's one ordinary database.
     ///
-    /// All schema, metadata, model, and index paths are derived from this
-    /// retained root. The optional MultiBase runtime replaces this value
-    /// with operation-bound leases instead of consulting it.
-    package let databaseRoot: Subspace
+    /// Framework metadata derives from `defaultTenant.systemRoot` and
+    /// application binding from `defaultTenant.data`. The optional MultiBase
+    /// runtime replaces this value with operation-bound leases instead of
+    /// consulting it.
+    package let defaultTenant: DatabaseTenantDirectories
     #endif
 
     /// Typed transaction execution over the dynamically selected storage engine.
@@ -187,6 +188,11 @@ public final class DBContainer: Sendable {
         activeSchemaLease.indexPhysicalLayouts
     }
 
+    /// Layer of every Directory node position the request's schema declares.
+    package var directoryLayers: DirectoryLayerTagMap {
+        activeSchemaLease.directoryLayers
+    }
+
     /// Container-scoped factory for the database's canonical entity format.
     public let itemStorageFactory: ItemStorageFactory
 
@@ -226,9 +232,6 @@ public final class DBContainer: Sendable {
 
     /// Immutable Base placement generations and operation admission leases.
     private let baseGenerationStore: DatabaseBaseGenerationStore
-    #else
-    /// Persistent catalog of every resolved dynamic partition.
-    private let partitionCatalog: DatabasePartitionCatalog
     #endif
 
     /// Stable metadata namespace used by schema lifecycle operations.
@@ -333,7 +336,7 @@ public final class DBContainer: Sendable {
                 transactionCapabilities: transactionCapabilities
             )
             #endif
-            let container = DBContainer(
+            let container = try DBContainer(
                 schema: schema,
                 schemaFingerprint: schemaFingerprint,
                 indexPhysicalFingerprint:
@@ -361,7 +364,7 @@ public final class DBContainer: Sendable {
                             preparedGeneration.executionRuntimeFingerprint,
                         indexPhysicalLayouts: indexPhysicalLayouts
                     )
-                container.publishSchemaGeneration(
+                try container.publishSchemaGeneration(
                     schema,
                     fingerprint: schemaFingerprint,
                     indexPhysicalFingerprint:
@@ -438,10 +441,10 @@ public final class DBContainer: Sendable {
             let schemaRoot: Subspace
             let schemaMetadataSubspace: Subspace
             #if DATABASE_MULTI_BASE
-            schemaRoot = preparedStorage.topology.controlDomain.root
+            schemaRoot = preparedStorage.topology.controlDomain.systemRoot
             schemaMetadataSubspace = preparedStorage.metadataSubspace
             #else
-            schemaRoot = preparedStorage.databaseRoot
+            schemaRoot = preparedStorage.defaultTenant.systemRoot
             schemaMetadataSubspace = preparedStorage.metadataSubspace
             #endif
             let restored = try await restoreSchemaState(
@@ -486,7 +489,7 @@ public final class DBContainer: Sendable {
                 schema: restored.schema,
                 transactionCapabilities: preparedStorage.transactionCapabilities
             )
-            let container = DBContainer(
+            let container = try DBContainer(
                 schema: restored.schema,
                 schemaFingerprint: restored.fingerprint,
                 indexPhysicalFingerprint:
@@ -509,7 +512,7 @@ public final class DBContainer: Sendable {
                     preparedGeneration.executionRuntimeFingerprint,
                 indexPhysicalLayouts: indexPhysicalLayouts
             )
-            container.publishSchemaGeneration(
+            try container.publishSchemaGeneration(
                 restored.schema,
                 fingerprint: restored.fingerprint,
                 indexPhysicalFingerprint:
@@ -595,19 +598,37 @@ public final class DBContainer: Sendable {
             let capabilities = try await inspectTransactionCapabilities(
                 storageEngine: claimedDomain.engine
             )
-            let root = try await claimedDomain.engine.resolveOrCreateNamespace(
-                path: claimedDomain.namespacePath
-            )
-            preparedDomains[claimedDomain.id] = DatabaseStorageDomainRuntime(
-                id: claimedDomain.id,
-                namespacePath: claimedDomain.namespacePath,
-                engine: claimedDomain.engine,
-                transactionExecutor: StorageTransactionExecutor(
-                    engine: claimedDomain.engine
-                ),
-                root: root,
-                transactionCapabilities: capabilities
-            )
+            let domainID = claimedDomain.id
+            let rootPath = claimedDomain.rootPath
+            let engine = claimedDomain.engine
+            let access = engine.directoryAccess
+            let executor = StorageTransactionExecutor(engine: engine)
+            preparedDomains[domainID] = try await executor.withTransaction(
+                configuration: .default,
+                clock: configuration.monotonicClock
+            ) { transaction in
+                let databaseRoot = try await DatabaseDirectoryLayout
+                    .openOrInitializeDatabaseRoot(
+                        path: rootPath,
+                        access: access,
+                        transaction: transaction
+                    )
+                let defaultTenant = try await DatabaseDirectoryLayout
+                    .openOrCreateDefaultTenant(
+                        in: databaseRoot,
+                        access: access,
+                        transaction: transaction
+                    )
+                return DatabaseStorageDomainRuntime(
+                    id: domainID,
+                    rootPath: rootPath,
+                    engine: engine,
+                    transactionExecutor: executor,
+                    databaseRoot: databaseRoot,
+                    defaultTenant: defaultTenant,
+                    transactionCapabilities: capabilities
+                )
+            }
         }
         let preparedTopology = DatabaseStorageRuntimeTopology(
             controlDomainID: storageTopology.controlDomainID,
@@ -631,19 +652,19 @@ public final class DBContainer: Sendable {
         let databaseDataRoot = DatabaseDataRootLease(
             resource: .database,
             domain: preparedTopology.controlDomain,
-            root: preparedTopology.controlDomain.root,
+            tenant: preparedTopology.controlDomain.defaultTenant,
             generation: 0
         )
         let databaseGrantStore = DatabaseGrantStore(
             resource: .database,
-            root: preparedTopology.controlDomain.root
+            root: preparedTopology.controlDomain.systemRoot
         )
-        let bootstrapMarkerKey = preparedTopology.controlDomain.root
+        let bootstrapMarkerKey = preparedTopology.controlDomain.systemRoot
             .subspace("_metadata")
             .pack(Tuple("security-bootstrap-v1"))
         let persistedFormat = try await DatabaseFormatCatalog(
             database: storageEngine,
-            root: preparedTopology.controlDomain.root,
+            root: preparedTopology.controlDomain.systemRoot,
             clock: configuration.monotonicClock
         ).installIfEmptyOrValidate(
             expectedFormat,
@@ -673,38 +694,63 @@ public final class DBContainer: Sendable {
             clock: configuration.monotonicClock
         )
         let baseRecords = try await baseCatalog.loadAll()
-        var baseGenerations: [DatabaseBaseGeneration] = []
-        baseGenerations.reserveCapacity(baseRecords.count)
+        var restorableRecords: [
+            DatabaseStorageDomain.ID: [DatabaseBaseRecord]
+        ] = [:]
         for record in baseRecords {
             switch record.lifecycle {
             case .provisioning, .tombstone:
                 continue
             case .active, .retiring, .retired, .moving, .deleting:
-                guard let domain = preparedTopology.domain(
-                    identifiedBy: record.domainID
-                ) else {
-                    throw DatabaseBaseCatalogError.storageDomainNotFound(
-                        record.domainID
-                    )
+                restorableRecords[record.domainID, default: []].append(record)
+            }
+        }
+        var baseGenerations: [DatabaseBaseGeneration] = []
+        baseGenerations.reserveCapacity(baseRecords.count)
+        // One transaction per domain: a Base Partition is resolved against the
+        // database root of the domain its record names, so records of different
+        // domains cannot share a transaction.
+        for (domainID, records) in restorableRecords {
+            guard let domain = preparedTopology.domain(
+                identifiedBy: domainID
+            ) else {
+                throw DatabaseBaseCatalogError.storageDomainNotFound(domainID)
+            }
+            let access = domain.directoryAccess
+            let databaseRoot = domain.databaseRoot
+            let tenants = try await domain.transactionExecutor.withTransaction(
+                configuration: .default,
+                clock: configuration.monotonicClock
+            ) { transaction in
+                var tenants: [DatabaseTenantDirectories] = []
+                tenants.reserveCapacity(records.count)
+                for record in records {
+                    guard let tenant = try await DatabaseDirectoryLayout
+                        .openBaseTenant(
+                            record.id.value,
+                            in: databaseRoot,
+                            access: access,
+                            transaction: transaction
+                        ) else {
+                        throw DatabaseBaseCatalogError.corruptedRecord(
+                            record.id
+                        )
+                    }
+                    tenants.append(tenant)
                 }
-                let root: Subspace
-                do {
-                    root = try await domain.engine.resolveExistingNamespace(
-                        path: record.namespacePath
-                    )
-                } catch {
-                    throw DatabaseBaseCatalogError.corruptedRecord(record.id)
-                }
+                return tenants
+            }
+            for (record, tenant) in zip(records, tenants) {
                 baseGenerations.append(
                     DatabaseBaseGeneration(
                         record: record,
                         domain: domain,
-                        root: root
+                        tenant: tenant
                     )
                 )
             }
         }
-        let metadataSubspace = preparedTopology.controlDomain.root
+        let metadataSubspace = preparedTopology.controlDomain.systemRoot
             .subspace("_metadata")
         let schemaGeneration = try await loadSchemaGeneration(
             storageEngine: storageEngine,
@@ -748,18 +794,32 @@ public final class DBContainer: Sendable {
             layoutKind: .singleDatabase,
             itemStorage: configuration.itemStorage
         )
-        let databaseRoot = configuration.databaseRoot
+        let directoryAccess = storageEngine.directoryAccess
+        let rootPath = configuration.databaseRootPath
+        let defaultTenant = try await StorageTransactionExecutor(
+            engine: storageEngine
+        ).withTransaction(
+            configuration: .default,
+            clock: configuration.monotonicClock
+        ) { transaction in
+            let databaseRoot = try await DatabaseDirectoryLayout
+                .openOrInitializeDatabaseRoot(
+                    path: rootPath,
+                    access: directoryAccess,
+                    transaction: transaction
+                )
+            return try await DatabaseDirectoryLayout.openOrCreateDefaultTenant(
+                in: databaseRoot,
+                access: directoryAccess,
+                transaction: transaction
+            )
+        }
         let persistedFormat = try await DatabaseFormatCatalog(
             database: storageEngine,
-            root: databaseRoot,
+            root: defaultTenant.systemRoot,
             clock: configuration.monotonicClock
         ).installIfEmptyOrValidate(expectedFormat)
-        let partitionCatalog = DatabasePartitionCatalog(
-            engine: storageEngine,
-            root: databaseRoot.subspace("data"),
-            clock: configuration.monotonicClock
-        )
-        let metadataSubspace = databaseRoot.subspace("_metadata")
+        let metadataSubspace = defaultTenant.systemRoot.subspace("_metadata")
         let schemaGeneration = try await loadSchemaGeneration(
             storageEngine: storageEngine,
             metadataSubspace: metadataSubspace,
@@ -768,8 +828,7 @@ public final class DBContainer: Sendable {
         return PreparedStorage(
             engine: storageEngine,
             format: persistedFormat,
-            databaseRoot: databaseRoot,
-            partitionCatalog: partitionCatalog,
+            defaultTenant: defaultTenant,
             metadataSubspace: metadataSubspace,
             schemaGeneration: schemaGeneration,
             transactionCapabilities: resolvedTransactionCapabilities
@@ -831,7 +890,7 @@ public final class DBContainer: Sendable {
         security: SecurityConfiguration,
         migrationAdmissionGate: DatabaseMigrationAdmissionGate? = nil,
         preparedStorage: PreparedStorage
-    ) {
+    ) throws(DirectoryLayerTagError) {
         #if DATABASE_MULTI_BASE
         self.controlEngine = preparedStorage.engine
         self.controlDomainID = preparedStorage.topology.controlDomainID
@@ -843,7 +902,7 @@ public final class DBContainer: Sendable {
             preparedStorage.transactionCapabilities
         #else
         self.engine = preparedStorage.engine
-        self.databaseRoot = preparedStorage.databaseRoot
+        self.defaultTenant = preparedStorage.defaultTenant
         self.transactionExecutor = StorageTransactionExecutor(
             engine: preparedStorage.engine
         )
@@ -874,6 +933,9 @@ public final class DBContainer: Sendable {
                 schema: schema,
                 runtimeConfiguration: runtimeConfiguration,
                 indexPhysicalLayouts: indexPhysicalLayouts,
+                directoryLayers: try DirectoryLayerTagMap(
+                    entities: schema.entities
+                ),
                 securityDelegate: securityDelegate
             )
         )
@@ -894,8 +956,6 @@ public final class DBContainer: Sendable {
         self.baseGenerationStore = DatabaseBaseGenerationStore(
             generations: preparedStorage.baseGenerations
         )
-        #else
-        self.partitionCatalog = preparedStorage.partitionCatalog
         #endif
         self.metadataSubspace = preparedStorage.metadataSubspace
     }
@@ -984,7 +1044,7 @@ public final class DBContainer: Sendable {
 
     package func publishBaseGeneration(
         _ record: DatabaseBaseRecord,
-        root: Subspace
+        tenant: DatabaseTenantDirectories
     ) throws {
         guard let domain = storageTopology.domain(
             identifiedBy: record.domainID
@@ -997,7 +1057,7 @@ public final class DBContainer: Sendable {
             DatabaseBaseGeneration(
                 record: record,
                 domain: domain,
-                root: root
+                tenant: tenant
             )
         )
     }
@@ -1057,19 +1117,6 @@ public final class DBContainer: Sendable {
 
     #endif
 
-    #if DATABASE_MULTI_BASE
-    package func activeDataSubspace(
-        relativePath: [String]
-    ) throws -> Subspace {
-        var subspace = try requireActiveDataRoot().root
-            .subspace("data")
-        for component in relativePath {
-            subspace = subspace.subspace(component)
-        }
-        return subspace
-    }
-    #endif
-
     @_spi(DatabaseExecution)
     public func executionStorage() throws -> DatabaseExecutionStorage {
         #if DATABASE_MULTI_BASE
@@ -1077,7 +1124,8 @@ public final class DBContainer: Sendable {
         return DatabaseExecutionStorage(
             engine: lease.domain.engine,
             transactionExecutor: lease.transactionExecutor,
-            root: lease.root,
+            systemRoot: lease.systemRoot,
+            dataRoot: lease.dataDirectory.root,
             resource: lease.resource,
             generation: lease.generation,
             domainIdentifier: lease.domain.id.value
@@ -1086,7 +1134,8 @@ public final class DBContainer: Sendable {
         return DatabaseExecutionStorage(
             engine: engine,
             transactionExecutor: transactionExecutor,
-            root: databaseRoot,
+            systemRoot: defaultTenant.systemRoot,
+            dataRoot: defaultTenant.data.root,
             generation: 0,
             domainIdentifier: "database"
         )
@@ -1100,7 +1149,8 @@ public final class DBContainer: Sendable {
         return DatabaseExecutionStorage(
             engine: domain.engine,
             transactionExecutor: domain.transactionExecutor,
-            root: domain.root,
+            systemRoot: domain.systemRoot,
+            dataRoot: domain.dataDirectory.root,
             resource: .database,
             generation: 0,
             domainIdentifier: domain.id.value
@@ -1109,7 +1159,8 @@ public final class DBContainer: Sendable {
         return DatabaseExecutionStorage(
             engine: engine,
             transactionExecutor: transactionExecutor,
-            root: databaseRoot,
+            systemRoot: defaultTenant.systemRoot,
+            dataRoot: defaultTenant.data.root,
             generation: 0,
             domainIdentifier: "database"
         )
@@ -1121,32 +1172,149 @@ public final class DBContainer: Sendable {
         ActiveDatabaseTransactionContext.binding != nil
     }
 
+    /// Application data root of the Tenant Partition bound to the current
+    /// operation. Content derived directly from this Subspace never collides
+    /// with an application `#Directory`, because Directory children are
+    /// allocated from the enclosing Partition rather than below this prefix.
     @_spi(DatabaseExecution)
-    public func operationDataSubspace(
-        relativePath: [String]
-    ) throws -> Subspace {
+    public func operationDataRoot() throws -> Subspace {
         #if DATABASE_MULTI_BASE
-        return try activeDataSubspace(relativePath: relativePath)
+        return try requireActiveDataRoot().dataDirectory.root
         #else
-        var subspace = databaseRoot.subspace("data")
-        for component in relativePath {
-            subspace = subspace.subspace(component)
-        }
-        return subspace
+        return defaultTenant.data.root
         #endif
     }
 
-    private func activePartitionCatalog() throws -> DatabasePartitionCatalog {
+    /// Framework metadata root of the Tenant Partition bound to the current
+    /// operation.
+    @_spi(DatabaseExecution)
+    public func operationSystemRoot() throws -> Subspace {
         #if DATABASE_MULTI_BASE
-        let lease = try requireActiveDataRoot()
-        return DatabasePartitionCatalog(
-            engine: lease.domain.engine,
-            root: lease.root.subspace("data"),
-            clock: monotonicClock
-        )
+        return try requireActiveDataRoot().systemRoot
         #else
-        return partitionCatalog
+        return defaultTenant.systemRoot
         #endif
+    }
+
+    /// Directory an application `#Directory` path is bound below for the
+    /// current operation.
+    private func operationDataDirectory() throws -> Directory {
+        #if DATABASE_MULTI_BASE
+        return try requireActiveDataRoot().tenant.data
+        #else
+        return defaultTenant.data
+        #endif
+    }
+
+    /// Directory catalog owning the Partition bound to the current operation.
+    private func operationDirectoryAccess() throws -> any DirectoryAccess {
+        #if DATABASE_MULTI_BASE
+        return try requireActiveDataRoot().domain.directoryAccess
+        #else
+        return engine.directoryAccess
+        #endif
+    }
+
+    /// Runs `body` in one transaction on the executor of the bound Partition.
+    ///
+    /// Only entry points that have no caller-owned transaction use this. A
+    /// caller that owns one passes it, so directory metadata commits with the
+    /// mutation that needed it.
+    package func withOperationTransaction<Result: Sendable>(
+        _ body: @Sendable @escaping (any TransactionAccess) async throws -> Result
+    ) async throws -> Result {
+        #if DATABASE_MULTI_BASE
+        let executor = try requireActiveDataRoot().transactionExecutor
+        #else
+        let executor = transactionExecutor
+        #endif
+        return try await executor.withTransaction(
+            configuration: .default,
+            clock: monotonicClock
+        ) { transaction in
+            try await body(transaction)
+        }
+    }
+
+    /// Opens the application Directory `relativePath` addresses, or `nil` when
+    /// a component of it has never been created.
+    ///
+    /// This is the read direction of Section 12.1: absence is an absent
+    /// keyspace, not a failure and not a reason to create anything. `layers`
+    /// carries the declared layer of each component so a node stored under a
+    /// different layer is rejected instead of being addressed at the wrong
+    /// prefix.
+    package func openDataDirectory(
+        relativePath: [String],
+        layers: [DirectoryLayer],
+        transaction: any TransactionReadAccess
+    ) async throws -> Subspace? {
+        try await DatabaseDirectoryBinding.open(
+            relativePath,
+            layers: layers,
+            below: operationDataDirectory(),
+            access: operationDirectoryAccess(),
+            transaction: transaction
+        )?.root
+    }
+
+    /// Opens the application Directory `relativePath` addresses, creating the
+    /// components that do not exist yet.
+    ///
+    /// The catalog metadata this records commits with `transaction`, so a
+    /// mutation and the Directory it needed become visible together.
+    package func resolveDataDirectory(
+        relativePath: [String],
+        layers: [DirectoryLayer],
+        transaction: any TransactionAccess
+    ) async throws -> Subspace {
+        try await DatabaseDirectoryBinding.openOrCreate(
+            relativePath,
+            layers: layers,
+            below: operationDataDirectory(),
+            access: operationDirectoryAccess(),
+            transaction: transaction
+        ).root
+    }
+
+    /// Opens the application Directory `relativePath` addresses without
+    /// verifying a layer, or `nil` when a component of it does not exist.
+    ///
+    /// Only retirement of a path the active schema no longer declares uses
+    /// this: there is no declared layer to verify against, and the stored tag
+    /// remains authoritative for addressing.
+    package func openUnverifiedDataDirectory(
+        relativePath: [String],
+        transaction: any TransactionReadAccess
+    ) async throws -> Subspace? {
+        try await DatabaseDirectoryBinding.openUnverified(
+            relativePath,
+            below: operationDataDirectory(),
+            access: operationDirectoryAccess(),
+            transaction: transaction
+        )?.root
+    }
+
+    /// Declared layer of every component of an entity's directory path.
+    ///
+    /// A resolved dynamic component is not a static edge of the schema trie, so
+    /// the entity's own declaration is the only source that types it. Falling
+    /// back to a path walk would type that component, and everything below it,
+    /// as a plain Directory.
+    package func declaredDirectoryLayers(
+        for entity: Schema.Entity
+    ) throws -> [DirectoryLayer] {
+        try Self.declaredLayers(for: entity, in: directoryLayers)
+    }
+
+    package static func declaredLayers(
+        for entity: Schema.Entity,
+        in layerMap: DirectoryLayerTagMap
+    ) throws -> [DirectoryLayer] {
+        guard let layers = layerMap.layers(forEntityNamed: entity.name) else {
+            throw ContainerSchemaError.entityNotFound(entity.name)
+        }
+        return layers
     }
 
     /// Returns the latest atomically published generation even when the
@@ -1305,7 +1473,7 @@ public final class DBContainer: Sendable {
         runtimeConfiguration: DatabaseRuntimeConfiguration,
         indexPhysicalLayouts: [String: IndexPhysicalLayout],
         generation: UInt64
-    ) {
+    ) throws {
         let securityDelegate: (any DataStoreSecurityDelegate)?
         switch securityConfiguration.policyEvaluation {
         case .enabled:
@@ -1325,6 +1493,9 @@ public final class DBContainer: Sendable {
                 schema: schema,
                 runtimeConfiguration: runtimeConfiguration,
                 indexPhysicalLayouts: indexPhysicalLayouts,
+                directoryLayers: try DirectoryLayerTagMap(
+                    entities: schema.entities
+                ),
                 securityDelegate: securityDelegate
             )
         )
@@ -1593,14 +1764,23 @@ public final class DBContainer: Sendable {
         try await resolveDirectory(
             for: entity,
             declaredIn: schema,
+            directoryLayers: directoryLayers,
             path: path,
             transaction: transaction
         )
     }
 
+    /// Opens the Directory an entity's `#Directory` declaration addresses,
+    /// creating the components that do not exist yet.
+    ///
+    /// `authoritySchema` and `layerMap` are one pair: the layer of a node
+    /// position is a property of the whole schema that declares it, so a map
+    /// derived from a different generation could type a component the schema
+    /// being applied types differently.
     package func resolveDirectory(
         for candidate: Schema.Entity,
         declaredIn authoritySchema: Schema,
+        directoryLayers layerMap: DirectoryLayerTagMap,
         path: AnyDirectoryPath? = nil,
         transaction: any TransactionAccess
     ) async throws -> Subspace {
@@ -1615,30 +1795,23 @@ public final class DBContainer: Sendable {
             directoryPath = try AnyDirectoryPath(for: entity)
         }
         try directoryPath.validate()
-
-        let subspace = try operationDataSubspace(
-            relativePath: directoryPath.resolve()
+        return try await resolveDataDirectory(
+            relativePath: directoryPath.resolve(),
+            layers: try Self.declaredLayers(for: entity, in: layerMap),
+            transaction: transaction
         )
-
-        let partitions = directoryPath.canonicalPartitions()
-        if !partitions.isEmpty {
-            try await activePartitionCatalog().register(
-                entity: entity.name,
-                partitions: partitions,
-                transaction: transaction
-            )
-        }
-
-        return subspace
     }
 
-    /// Open an existing model directory without creating namespace metadata or
-    /// registering partition catalog entries.
+    /// Opens the Directory an entity's `#Directory` declaration addresses, or
+    /// `nil` when it has never been created.
+    ///
+    /// Creating nothing is what makes a read of a directory no write ever
+    /// reached report no data rather than publishing that directory.
     package func openDirectory(
         for entity: Schema.Entity,
         path: AnyDirectoryPath? = nil,
-        transaction: any TransactionAccess
-    ) async throws -> Subspace {
+        transaction: any TransactionReadAccess
+    ) async throws -> Subspace? {
         let entity = try canonicalEntity(entity)
         let directoryPath: AnyDirectoryPath
         if let path {
@@ -1647,8 +1820,11 @@ public final class DBContainer: Sendable {
             directoryPath = try AnyDirectoryPath(for: entity)
         }
         try directoryPath.validate()
-        let components = directoryPath.resolve()
-        return try operationDataSubspace(relativePath: components)
+        return try await openDataDirectory(
+            relativePath: directoryPath.resolve(),
+            layers: try declaredDirectoryLayers(for: entity),
+            transaction: transaction
+        )
     }
 
     /// Resolves one declared index in the caller's read transaction.
@@ -1684,18 +1860,13 @@ public final class DBContainer: Sendable {
             directoryPath = try AnyDirectoryPath(for: entity)
         }
         try directoryPath.validate()
-        let components = directoryPath.resolve()
-        let partitions = directoryPath.canonicalPartitions()
-        if entity.hasDynamicDirectory {
-            guard try await activePartitionCatalog().contains(
-                entity: entity.name,
-                partitions: partitions,
-                transaction: transaction
-            ) else {
-                return nil
-            }
+        guard let subspace = try await openDataDirectory(
+            relativePath: directoryPath.resolve(),
+            layers: try declaredDirectoryLayers(for: entity),
+            transaction: transaction
+        ) else {
+            return nil
         }
-        let subspace = try operationDataSubspace(relativePath: components)
         let lifecycleStore = IndexLifecycleStore(
             container: self,
             subspace: subspace
@@ -1707,26 +1878,67 @@ public final class DBContainer: Sendable {
         return try lifecycleStore.indexSubspace(for: indexName)
     }
 
+    /// One page of the directory partitions `entity` currently has, read in a
+    /// transaction of its own.
+    ///
+    /// Paging is not one snapshot in either direction: a continuation
+    /// re-descends the recorded path, so a partition created or removed between
+    /// two pages is reported or skipped rather than making the page sequence
+    /// fail.
     package func partitionCatalogPage(
-        entity: String? = nil,
+        entity: String,
         continuation: ByteString? = nil,
         limit: Int
     ) async throws -> DatabasePartitionCatalogPage {
-        return try await activePartitionCatalog().page(
-            entity: entity,
-            continuation: continuation,
-            limit: limit
-        )
+        try await withOperationTransaction { transaction in
+            try await self.partitionCatalogPage(
+                entity: entity,
+                continuation: continuation,
+                limit: limit,
+                transaction: transaction
+            )
+        }
     }
 
+    /// One page of the directory partitions `entity` currently has.
+    ///
+    /// Section 12.3 makes StorageKit's Directory catalog the only record of
+    /// which partitions exist, so this walks that catalog instead of a second
+    /// index the framework would have to keep consistent with it.
     package func partitionCatalogPage(
         entity: String,
         continuation: ByteString? = nil,
         limit: Int,
-        transaction: any TransactionAccess
+        transaction: any TransactionReadAccess
     ) async throws -> DatabasePartitionCatalogPage {
-        try await activePartitionCatalog().page(
+        let entity = try schemaEntity(named: entity)
+        return try await partitionCatalogPage(
             entity: entity,
+            directoryLayers: directoryLayers,
+            continuation: continuation,
+            limit: limit,
+            transaction: transaction
+        )
+    }
+
+    /// One page of the directory partitions an entity of `layerMap`'s
+    /// generation has.
+    ///
+    /// Schema application enumerates entities of the schema it is applying,
+    /// which the container has not published yet, so the declaration and the
+    /// layer map it is typed by are both supplied by the caller.
+    package func partitionCatalogPage(
+        entity: Schema.Entity,
+        directoryLayers layerMap: DirectoryLayerTagMap,
+        continuation: ByteString? = nil,
+        limit: Int,
+        transaction: any TransactionReadAccess
+    ) async throws -> DatabasePartitionCatalogPage {
+        try await DatabaseDirectoryPartitionEnumerator.page(
+            entity: entity,
+            layers: try Self.declaredLayers(for: entity, in: layerMap),
+            below: operationDataDirectory(),
+            access: operationDirectoryAccess(),
             continuation: continuation,
             limit: limit,
             transaction: transaction
@@ -1804,23 +2016,34 @@ public final class DBContainer: Sendable {
         )
     }
 
-    /// Builds a read-only store without creating directory, partition-catalog,
-    /// or index lifecycle metadata. The returned store performs all reads on
-    /// the transaction supplied by its caller.
+    /// Builds a read-only store, or `nil` when the directory it would read has
+    /// never been created.
+    ///
+    /// Nothing is created: no Directory node, no catalog metadata, and no index
+    /// lifecycle state. The returned store performs all reads on the
+    /// transaction supplied by its caller.
     package func readStore<T: Persistable>(
         for type: T.Type,
         path: DirectoryPath<T> = DirectoryPath(),
-        readPolicy: DatabaseReadPolicy
-    ) throws -> DatabaseDataStore {
+        readPolicy: DatabaseReadPolicy,
+        transaction: any TransactionReadAccess
+    ) async throws -> DatabaseDataStore? {
         guard let entity = readPolicy.schema.entity(named: T.persistableType)
         else {
             throw ContainerSchemaError.entityNotFound(T.persistableType)
         }
         let directoryPath = try AnyDirectoryPath(path)
         try directoryPath.validate()
-        let subspace = try operationDataSubspace(
-            relativePath: directoryPath.resolve()
-        )
+        guard let subspace = try await openDataDirectory(
+            relativePath: directoryPath.resolve(),
+            layers: try Self.declaredLayers(
+                for: entity,
+                in: readPolicy.directoryLayers
+            ),
+            transaction: transaction
+        ) else {
+            return nil
+        }
         return DatabaseDataStore(
             container: self,
             subspace: subspace,
@@ -1865,7 +2088,15 @@ public final class DBContainer: Sendable {
             matching: entity,
             declaredIn: readPolicy.schema
         )
-        let subspace = try await resolveDirectory(for: entity, path: path)
+        let subspace = try await withOperationTransaction { transaction in
+            try await self.resolveDirectory(
+                for: entity,
+                declaredIn: readPolicy.schema,
+                directoryLayers: readPolicy.directoryLayers,
+                path: path,
+                transaction: transaction
+            )
+        }
         try await initializeIndexStates(for: entity, subspace: subspace)
         return DatabaseDataStore(
             container: self,
@@ -1892,6 +2123,7 @@ public final class DBContainer: Sendable {
         let subspace = try await resolveDirectory(
             for: entity,
             declaredIn: readPolicy.schema,
+            directoryLayers: readPolicy.directoryLayers,
             path: path,
             transaction: transaction
         )
@@ -2019,12 +2251,12 @@ public final class DBContainer: Sendable {
     /// - Throws: Error if protocol has Field path components (not allowed)
     package func resolvePolymorphicDirectory<P: Polymorphable>(for protocolType: P.Type) async throws -> Subspace {
         let pathComponents = P.polymorphicDirectoryPathComponents
-        var path: [String] = []
+        var components: [String] = []
 
         for component in pathComponents {
             switch component {
             case .staticPath(let value):
-                path.append(value)
+                components.append(value)
             case .dynamicField:
                 throw DatabaseRuntimeError.internalError(
                     "Polymorphic protocols cannot use Field path components. " +
@@ -2033,7 +2265,16 @@ public final class DBContainer: Sendable {
             }
         }
 
-        return try operationDataSubspace(relativePath: path)
+        // The path is fully resolved before the transaction begins, so it
+        // crosses into the transaction as an immutable value.
+        let path = components
+        return try await withOperationTransaction { transaction in
+            try await self.resolveDataDirectory(
+                relativePath: path,
+                layers: self.directoryLayers.layers(forPath: path),
+                transaction: transaction
+            )
+        }
     }
 
     /// Resolve a polymorphic group by its logical identifier.
@@ -2046,33 +2287,59 @@ public final class DBContainer: Sendable {
         return group
     }
 
-    /// Resolve the directory for a polymorphic group identifier.
+    /// Resolves the directory of a polymorphic group in a transaction of its
+    /// own.
+    ///
+    /// Maintenance resolves the projection once and then runs its batches in
+    /// separate transactions, so this direction never had, and does not gain,
+    /// an atomic relationship with the writes that follow it.
     package func resolvePolymorphicDirectory(for identifier: String) async throws -> Subspace {
-        let group = try polymorphicGroup(identifier: identifier)
-        let path = try group.resolvedDirectoryPath()
-        return try operationDataSubspace(relativePath: path)
+        let path = try polymorphicGroupPath(identifier: identifier)
+        return try await withOperationTransaction { transaction in
+            try await self.resolveDataDirectory(
+                relativePath: path,
+                layers: self.directoryLayers.layers(forPath: path),
+                transaction: transaction
+            )
+        }
     }
 
     /// Resolves a polymorphic projection directory in the caller-owned
-    /// transaction so namespace creation and projected writes commit atomically.
+    /// transaction so directory creation and projected writes commit
+    /// atomically.
     package func resolvePolymorphicDirectory(
         for identifier: String,
         transaction: any TransactionAccess
     ) async throws -> Subspace {
-        let group = try polymorphicGroup(identifier: identifier)
-        let path = try group.resolvedDirectoryPath()
-        return try operationDataSubspace(relativePath: path)
+        let path = try polymorphicGroupPath(identifier: identifier)
+        return try await resolveDataDirectory(
+            relativePath: path,
+            layers: directoryLayers.layers(forPath: path),
+            transaction: transaction
+        )
     }
 
-    /// Opens an existing polymorphic projection without mutating namespace
-    /// metadata. An absent directory represents an empty projection.
+    /// Opens an existing polymorphic projection without creating anything. An
+    /// absent directory represents an empty projection.
     package func openPolymorphicDirectory(
         for identifier: String,
         transaction: any TransactionReadAccess
     ) async throws -> Subspace? {
-        let group = try polymorphicGroup(identifier: identifier)
-        let path = try group.resolvedDirectoryPath()
-        return try operationDataSubspace(relativePath: path)
+        let path = try polymorphicGroupPath(identifier: identifier)
+        return try await openDataDirectory(
+            relativePath: path,
+            layers: directoryLayers.layers(forPath: path),
+            transaction: transaction
+        )
+    }
+
+    /// The literal path a polymorphic group declares.
+    ///
+    /// A group declares no entity, so its components are typed by walking the
+    /// schema's derived positions rather than by an entity's declared layers.
+    /// Every component of a group path is static, so that walk is exact.
+    private func polymorphicGroupPath(identifier: String) throws -> [String] {
+        try polymorphicGroup(identifier: identifier).resolvedDirectoryPath()
     }
 
     /// Opens and admits one exact polymorphic index without creating metadata.
@@ -2122,9 +2389,9 @@ extension DBContainer {
     /// never used as a Base migration checkpoint.
     private func getMetadataSubspace() async throws -> Subspace {
         #if DATABASE_MULTI_BASE
-        try requireActiveDataRoot().root.subspace("metadata")
+        try requireActiveDataRoot().systemRoot.subspace("metadata")
         #else
-        databaseRoot.subspace("metadata")
+        defaultTenant.systemRoot.subspace("metadata")
         #endif
     }
 
@@ -2142,10 +2409,10 @@ extension DBContainer {
         transaction: any TransactionAccess
     ) async throws -> Schema.Version? {
         #if DATABASE_MULTI_BASE
-        let metadataSubspace = try requireActiveDataRoot().root
+        let metadataSubspace = try requireActiveDataRoot().systemRoot
             .subspace("metadata")
         #else
-        let metadataSubspace = databaseRoot.subspace("metadata")
+        let metadataSubspace = defaultTenant.systemRoot.subspace("metadata")
         #endif
         let versionKey = metadataSubspace
             .subspace("schema")
@@ -2652,11 +2919,11 @@ extension DBContainer {
         }
         #if DATABASE_MULTI_BASE
         let schemaEngine = controlEngine
-        let schemaRoot = storageTopology.controlDomain.root
+        let schemaRoot = storageTopology.controlDomain.systemRoot
         let schemaTransactionExecutor = controlTransactionExecutor
         #else
         let schemaEngine = engine
-        let schemaRoot = databaseRoot
+        let schemaRoot = defaultTenant.systemRoot
         let schemaTransactionExecutor = transactionExecutor
         #endif
         let registry = SchemaRegistry(
@@ -2868,7 +3135,7 @@ extension DBContainer {
         let compiledFingerprint = try SchemaManifest(schema: schema)
             .fingerprint()
         if targetFingerprint == compiledFingerprint {
-            publishSchemaGeneration(
+            try publishSchemaGeneration(
                 schema,
                 fingerprint: targetFingerprint,
                 indexPhysicalFingerprint:
@@ -2992,10 +3259,10 @@ extension DBContainer {
         transaction: any TransactionAccess
     ) async throws {
         #if DATABASE_MULTI_BASE
-        let metadataSubspace = try requireActiveDataRoot().root
+        let metadataSubspace = try requireActiveDataRoot().systemRoot
             .subspace("metadata")
         #else
-        let metadataSubspace = databaseRoot.subspace("metadata")
+        let metadataSubspace = defaultTenant.systemRoot.subspace("metadata")
         #endif
         let fingerprintKey = metadataSubspace
             .subspace("schema")
@@ -3334,14 +3601,14 @@ extension DBContainer {
                 transaction: transaction
             )
             for retirement in indexTransition.retirements {
-                try context.retireIndexStorage(
+                try await context.retireIndexStorage(
                     retirement,
                     transaction: transaction
                 )
             }
 
             for indexName in removedIndexNames {
-                try context.removeIndex(
+                try await context.removeIndex(
                     indexName: indexName,
                     addedVersion: stage.fromVersionIdentifier,
                     transaction: transaction
@@ -3356,6 +3623,10 @@ extension DBContainer {
     private func buildStoreRegistry(for schema: Schema) async throws -> [String: MigrationStoreInfo]
     {
         var registry: [String: MigrationStoreInfo] = [:]
+        // A registry may be built for a schema the container has not published,
+        // so the Directory layer tags come from that schema rather than from the
+        // generation currently installed.
+        let layers = try DirectoryLayerTagMap(entities: schema.entities)
 
         for entity in schema.entities {
             guard runtimeConfiguration.entityRuntimes.registration(
@@ -3374,6 +3645,7 @@ extension DBContainer {
                 try await self.resolveDirectory(
                     for: entity,
                     declaredIn: schema,
+                    directoryLayers: layers,
                     transaction: transaction
                 )
             }

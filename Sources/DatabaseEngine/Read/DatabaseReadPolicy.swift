@@ -94,6 +94,15 @@ package struct DatabaseReadPolicy: Sendable {
 
     package var schema: Schema { schemaLease.schema }
 
+    /// Layer map derived from the same generation as `schema`.
+    ///
+    /// The layer of a Directory position is a property of the whole schema that
+    /// declares it, so binding a path declared by this policy's schema must use
+    /// the map of that generation rather than the container's current one.
+    package var directoryLayers: DirectoryLayerTagMap {
+        schemaLease.directoryLayers
+    }
+
     private var runtimeConfiguration: DatabaseRuntimeConfiguration {
         schemaLease.runtimeConfiguration
     }

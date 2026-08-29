@@ -58,8 +58,8 @@ public struct SHACLContextAPI: Sendable {
 
     private let context: DatabaseContext
 
-    /// SHACL subspace key prefix
-    private static let shaclPrefix = ByteString(utf8: "S")
+    /// Component the SHACL shapes store owns below the Framework root.
+    private static let shaclDirectoryName = "shacl"
 
     internal init(context: DatabaseContext) {
         self.context = context
@@ -74,9 +74,8 @@ public struct SHACLContextAPI: Sendable {
     ) async throws -> Result {
         let context = self.context
         return try await context.withDataOperation {
-            let baseSubspace = try context.operationDataRoot()
-                .subspace("data")
-                .subspace(Self.shaclPrefix)
+            let baseSubspace = try context.operationSystemRoot()
+                .subspace(Self.shaclDirectoryName)
             return try await operation(
                 SHACLShapesStore(subspace: baseSubspace)
             )

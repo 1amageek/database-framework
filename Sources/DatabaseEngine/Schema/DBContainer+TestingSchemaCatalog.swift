@@ -35,10 +35,10 @@ extension DBContainer {
         #if DATABASE_MULTI_BASE
         let controlDomain = storageTopology.controlDomain
         let schemaEngine = controlDomain.engine
-        let schemaRoot = controlDomain.root
+        let schemaRoot = controlDomain.systemRoot
         #else
         let schemaEngine = engine
-        let schemaRoot = databaseRoot
+        let schemaRoot = defaultTenant.systemRoot
         #endif
         return try await SchemaRegistry(
             database: schemaEngine,

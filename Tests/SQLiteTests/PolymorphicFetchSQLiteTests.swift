@@ -315,51 +315,51 @@ struct PolymorphicFetchSQLiteTests {
         valuePrefix: String? = nil
     ) async throws -> Int {
         try await container.withTestBaseOperation {
-        let group = try container.polymorphicGroup(identifier: SQLitePolymorphicArticle.polymorphableType)
-        let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
-        let baseIndexSubspace = try IndexLifecycleStore(
-                container: container,
-                subspace: groupSubspace
-            ).indexSubspace(for: indexName)
-        let indexSubspace: Subspace
-        if let valuePrefix {
-            indexSubspace = Subspace(
-                prefix: baseIndexSubspace.prefix.appending(contentsOf: Tuple(
-                    try FieldValue.string(valuePrefix).toTupleElement()
-                ).pack())
-            )
-        } else {
-            indexSubspace = baseIndexSubspace
-        }
+            let group = try container.polymorphicGroup(identifier: SQLitePolymorphicArticle.polymorphableType)
+            let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
+            let baseIndexSubspace = try IndexLifecycleStore(
+                    container: container,
+                    subspace: groupSubspace
+                ).indexSubspace(for: indexName)
+            let indexSubspace: Subspace
+            if let valuePrefix {
+                indexSubspace = Subspace(
+                    prefix: baseIndexSubspace.prefix.appending(contentsOf: Tuple(
+                        try FieldValue.string(valuePrefix).toTupleElement()
+                    ).pack())
+                )
+            } else {
+                indexSubspace = baseIndexSubspace
+            }
 
-        return try await container.engine.withTransaction { transaction -> Int in
-            let (begin, end) = indexSubspace.range()
-            return try await transaction.collectRange(
-                begin: begin,
-                end: end,
-                snapshot: true
-            ).count
-        }
+            return try await container.engine.withTransaction { transaction -> Int in
+                let (begin, end) = indexSubspace.range()
+                return try await transaction.collectRange(
+                    begin: begin,
+                    end: end,
+                    snapshot: true
+                ).count
+            }
         }
     }
 
     private func countPolymorphicVectorIndexEntries(container: DBContainer) async throws -> Int {
         try await container.withTestBaseOperation {
-        let group = try container.polymorphicGroup(identifier: SQLitePolymorphicVectorArticle.polymorphableType)
-        let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
-        let indexSubspace = try IndexLifecycleStore(
-                container: container,
-                subspace: groupSubspace
-            ).indexSubspace(for: "SQLitePolymorphicVectorDocument_embedding")
+            let group = try container.polymorphicGroup(identifier: SQLitePolymorphicVectorArticle.polymorphableType)
+            let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
+            let indexSubspace = try IndexLifecycleStore(
+                    container: container,
+                    subspace: groupSubspace
+                ).indexSubspace(for: "SQLitePolymorphicVectorDocument_embedding")
 
-        return try await container.engine.withTransaction { transaction -> Int in
-            let (begin, end) = indexSubspace.range()
-            return try await transaction.collectRange(
-                begin: begin,
-                end: end,
-                snapshot: true
-            ).count
-        }
+            return try await container.engine.withTransaction { transaction -> Int in
+                let (begin, end) = indexSubspace.range()
+                return try await transaction.collectRange(
+                    begin: begin,
+                    end: end,
+                    snapshot: true
+                ).count
+            }
         }
     }
 
@@ -368,57 +368,57 @@ struct PolymorphicFetchSQLiteTests {
         valuePrefix: String? = nil
     ) async throws -> Int {
         try await container.withTestBaseOperation {
-        let group = try container.polymorphicGroup(
-            identifier: SQLiteSecurePolymorphicArticle.polymorphableType
-        )
-        let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
-        let baseIndexSubspace = try IndexLifecycleStore(
-                container: container,
-                subspace: groupSubspace
-            ).indexSubspace(for: "SQLiteSecurePolymorphicDocument_title")
-        let indexSubspace: Subspace
-        if let valuePrefix {
-            indexSubspace = Subspace(
-                prefix: baseIndexSubspace.prefix.appending(contentsOf: Tuple(
-                    try FieldValue.string(valuePrefix).toTupleElement()
-                ).pack())
+            let group = try container.polymorphicGroup(
+                identifier: SQLiteSecurePolymorphicArticle.polymorphableType
             )
-        } else {
-            indexSubspace = baseIndexSubspace
-        }
+            let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
+            let baseIndexSubspace = try IndexLifecycleStore(
+                    container: container,
+                    subspace: groupSubspace
+                ).indexSubspace(for: "SQLiteSecurePolymorphicDocument_title")
+            let indexSubspace: Subspace
+            if let valuePrefix {
+                indexSubspace = Subspace(
+                    prefix: baseIndexSubspace.prefix.appending(contentsOf: Tuple(
+                        try FieldValue.string(valuePrefix).toTupleElement()
+                    ).pack())
+                )
+            } else {
+                indexSubspace = baseIndexSubspace
+            }
 
-        return try await container.engine.withTransaction { transaction -> Int in
-            let (begin, end) = indexSubspace.range()
-            return try await transaction.collectRange(
-                begin: begin,
-                end: end,
-                snapshot: true
-            ).count
-        }
+            return try await container.engine.withTransaction { transaction -> Int in
+                let (begin, end) = indexSubspace.range()
+                return try await transaction.collectRange(
+                    begin: begin,
+                    end: end,
+                    snapshot: true
+                ).count
+            }
         }
     }
 
     private func countPolymorphicOptionalVectorIndexEntries(container: DBContainer) async throws -> Int {
         try await container.withTestBaseOperation {
-        let group = try container.polymorphicGroup(
-            identifier: SQLitePolymorphicOptionalVectorArticle.polymorphableType
-        )
-        let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
-        let indexSubspace = try IndexLifecycleStore(
-                container: container,
-                subspace: groupSubspace
-            ).indexSubspace(
-                for: "SQLitePolymorphicOptionalVectorDocument_embedding"
+            let group = try container.polymorphicGroup(
+                identifier: SQLitePolymorphicOptionalVectorArticle.polymorphableType
             )
+            let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
+            let indexSubspace = try IndexLifecycleStore(
+                    container: container,
+                    subspace: groupSubspace
+                ).indexSubspace(
+                    for: "SQLitePolymorphicOptionalVectorDocument_embedding"
+                )
 
-        return try await container.engine.withTransaction { transaction -> Int in
-            let (begin, end) = indexSubspace.range()
-            return try await transaction.collectRange(
-                begin: begin,
-                end: end,
-                snapshot: true
-            ).count
-        }
+            return try await container.engine.withTransaction { transaction -> Int in
+                let (begin, end) = indexSubspace.range()
+                return try await transaction.collectRange(
+                    begin: begin,
+                    end: end,
+                    snapshot: true
+                ).count
+            }
         }
     }
 

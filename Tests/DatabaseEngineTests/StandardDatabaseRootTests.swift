@@ -21,7 +21,7 @@ struct StandardDatabaseRootTests {
         Principal(identifier: "standard-root")
     )
 
-    @Test("The engine root is authoritative by default and reopens")
+    @Test("An empty root path places the database root at the store root")
     func engineRootReopens() async throws {
         let sharedEngine = InMemoryEngine()
         let firstContainer = try await makeContainer(
@@ -37,17 +37,22 @@ struct StandardDatabaseRootTests {
         try firstContext.insert(entity)
         try await firstContext.save()
 
+        // Section 13 places the Default Partition directly below the database
+        // root, so an empty root path makes it a child of the store root.
+        let rootChildren = try await Self.storeRootChildren(of: sharedEngine)
+        #expect(
+            rootChildren.contains(
+                DirectoryEntry(name: "default", layer: .partition)
+            )
+        )
+
+        // Application data resolves into its own Directory below the Partition's
+        // `data` Directory, never into the framework metadata root.
         let executionStorage = try firstContainer.executionStorage()
-        #expect(executionStorage.root == Subspace())
         let resolvedDirectory = try await firstContainer
             .resolveDirectoryForTesting(for: StandardDatabaseRootEntity.self)
-        #expect(
-            resolvedDirectory
-                == Subspace()
-                    .subspace("data")
-                    .subspace("standard-root")
-                    .subspace("entities")
-        )
+        #expect(resolvedDirectory != executionStorage.systemRoot)
+        #expect(resolvedDirectory != executionStorage.dataRoot)
 
         await firstContainer.shutdown()
 
@@ -71,73 +76,97 @@ struct StandardDatabaseRootTests {
         await sharedEngine.waitUntilShutdown()
     }
 
-    @Test("A host-selected root is retained without namespace resolution")
+    @Test("A host-selected root path contains the whole fixed layout")
     func hostSelectedRootIsRetained() async throws {
         let sharedEngine = InMemoryEngine()
-        let root = Subspace("host-selected-root")
         let container = try await makeContainer(
             engine: RetainedInMemoryEngine(sharedEngine),
-            root: root
+            rootPath: ["host-selected-root"]
         )
 
-        #expect(try container.executionStorage().root == root)
-        let rootDescriptor = root
-            .subspace("_database-framework")
-            .pack(Tuple("format"))
-        let engineRootDescriptor = Subspace()
-            .subspace("_database-framework")
-            .pack(Tuple("format"))
-        let stored = try await sharedEngine.withTransaction { transaction in
-            (
-                try await transaction.getValue(
-                    for: rootDescriptor,
-                    snapshot: true
-                ),
-                try await transaction.getValue(
-                    for: engineRootDescriptor,
-                    snapshot: true
-                )
+        // Nothing of the fixed layout escapes the selected database root: the
+        // store root holds that Directory alone, and the Default Partition is
+        // created below it rather than beside it.
+        let rootChildren = try await Self.storeRootChildren(of: sharedEngine)
+        #expect(
+            rootChildren == [
+                DirectoryEntry(name: "host-selected-root", layer: .default)
+            ]
+        )
+
+        let access = sharedEngine.directoryAccess
+        let selectedChildren = try await sharedEngine.withTransaction {
+            transaction in
+            guard let storeRoot = try await access.openRoot(
+                transaction: transaction
+            ),
+            let selected = try await access.openDirectory(
+                "host-selected-root",
+                in: storeRoot,
+                transaction: transaction
+            ) else {
+                return [DirectoryEntry]()
+            }
+            return try await access.listChildren(
+                in: selected,
+                after: nil,
+                limit: 16,
+                transaction: transaction
             )
         }
-        #expect(stored.0 != nil)
-        #expect(stored.1 == nil)
+        #expect(
+            selectedChildren.contains(
+                DirectoryEntry(name: "default", layer: .partition)
+            )
+        )
+
+        // The physical format descriptor is Framework metadata, so it lives
+        // below the Default Partition's `system/database-framework` Directory.
+        let descriptorKey = try container.executionStorage()
+            .systemRoot
+            .pack(Tuple("format"))
+        let storedDescriptor = try await sharedEngine.withTransaction {
+            transaction in
+            try await transaction.getValue(for: descriptorKey, snapshot: true)
+        }
+        #expect(storedDescriptor != nil)
 
         await container.shutdown()
         sharedEngine.requestShutdown()
         await sharedEngine.waitUntilShutdown()
     }
 
-    @Test("A populated selected root without a descriptor is not mutated")
+    @Test("A populated store without a layout marker is rejected and unchanged")
     func populatedRootWithoutDescriptorIsRejected() async throws {
         let sharedEngine = InMemoryEngine()
-        let root = Subspace("selected-root")
-        let sentinelKey = root.subspace("data").pack(Tuple("existing-data"))
+        let sentinelKey = Subspace("existing").pack(Tuple("data"))
         let sentinelValue: ByteString = [0x01, 0x02, 0x03]
         try await sharedEngine.withTransaction { transaction in
             try transaction.setValue(sentinelValue, for: sentinelKey)
         }
 
-        await #expect(
-            throws: DatabaseFormatCatalogError
-                .descriptorMissingInNonEmptyDatabase
-        ) {
+        // StorageKit's root state machine rejects a non-empty keyspace that
+        // carries no layout marker, so opening the database root fails before
+        // the format catalog is ever consulted.
+        let failure = await #expect(throws: StorageError.self) {
             _ = try await self.makeContainer(
                 engine: RetainedInMemoryEngine(sharedEngine),
-                root: root
+                rootPath: ["selected-root"]
             )
         }
+        #expect(failure?.code == .incompatibleStorageLayout)
 
-        let descriptorKey = root
-            .subspace("_database-framework")
-            .pack(Tuple("format"))
-        let stored = try await sharedEngine.withTransaction { transaction in
-            (
-                try await transaction.getValue(for: sentinelKey, snapshot: true),
-                try await transaction.getValue(for: descriptorKey, snapshot: true)
+        // A rejected open writes nothing at all, marker included.
+        let remaining = try await sharedEngine.withTransaction { transaction in
+            try await transaction.collectRange(
+                begin: ByteString(),
+                end: ByteString([0xFF]),
+                snapshot: true
             )
         }
-        #expect(stored.0 == sentinelValue)
-        #expect(stored.1 == nil)
+        #expect(remaining.count == 1)
+        #expect(remaining.first?.0 == sentinelKey)
+        #expect(remaining.first?.1 == sentinelValue)
 
         sharedEngine.requestShutdown()
         await sharedEngine.waitUntilShutdown()
@@ -145,19 +174,40 @@ struct StandardDatabaseRootTests {
 
     private func makeContainer(
         engine: any StorageEngine,
-        root: Subspace = Subspace()
+        rootPath: [String] = []
     ) async throws -> DBContainer {
         try await DBContainer.open(
             for: Self.schema(),
             configuration: DBConfiguration(
                 storageEngine: engine,
-                databaseRoot: root,
+                databaseRootPath: rootPath,
                 monotonicClock: TestProcessMonotonicClock(),
                 wallClock: FixedTestWallClock()
             ),
             runtimeConfiguration: Self.runtimeConfiguration(),
             security: .testingDisabled
         )
+    }
+
+    /// Children of the store root Directory, which Section 13 populates with
+    /// the database root a configuration selects.
+    private static func storeRootChildren(
+        of engine: InMemoryEngine
+    ) async throws -> [DirectoryEntry] {
+        let access = engine.directoryAccess
+        return try await engine.withTransaction { transaction in
+            guard let storeRoot = try await access.openRoot(
+                transaction: transaction
+            ) else {
+                return [DirectoryEntry]()
+            }
+            return try await access.listChildren(
+                in: storeRoot,
+                after: nil,
+                limit: 16,
+                transaction: transaction
+            )
+        }
     }
 
     private static func schema() throws -> Schema {
@@ -197,12 +247,12 @@ private final class RetainedInMemoryEngine: StorageEngine, Sendable {
         self.shared = InMemoryEngine()
     }
 
-    var namespaceResolver: any NamespaceResolver {
-        shared.namespaceResolver
+    var transactionDomain: StorageTransactionDomain {
+        shared.transactionDomain
     }
 
-    var namespaceCatalog: (any NamespaceCatalog)? {
-        shared.namespaceCatalog
+    var directoryAccess: any DirectoryAccess {
+        shared.directoryAccess
     }
 
     func createTransaction() throws -> InMemoryTransaction {

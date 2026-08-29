@@ -29,7 +29,7 @@ extension DBContainer {
             #if DATABASE_MULTI_BASE
             try await DatabaseGrantStore(
                 resource: lease.resource,
-                root: lease.root
+                root: lease.systemRoot
             ).require(
                 requiredAccess,
                 authorization: authorization,

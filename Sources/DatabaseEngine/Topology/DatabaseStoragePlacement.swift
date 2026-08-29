@@ -1,28 +1,21 @@
 #if DATABASE_MULTI_BASE
 import DatabaseKit
 
-/// A named placement maps newly provisioned Bases to one storage domain path.
+/// A named placement routes newly provisioned Bases to one storage domain.
+///
+/// Section 14 fixes the address of a Base Partition at `bases/<Base.ID>` below
+/// the database root of its domain, so a placement carries no path of its own:
+/// naming the domain fully determines where the Partition is created.
 public struct DatabaseStoragePlacement: Sendable, Hashable {
     public let id: Base.Placement.ID
     public let domainID: DatabaseStorageDomain.ID
-    public let path: [String]
 
     public init(
         id: Base.Placement.ID,
-        domainID: DatabaseStorageDomain.ID,
-        path: [String]
-    ) throws(DatabaseStorageTopologyError) {
-        guard !path.isEmpty else {
-            throw .emptyPlacementPath(placementID: id)
-        }
-        for component in path {
-            guard !component.isEmpty else {
-                throw .emptyPlacementPathComponent(placementID: id)
-            }
-        }
+        domainID: DatabaseStorageDomain.ID
+    ) {
         self.id = id
         self.domainID = domainID
-        self.path = path
     }
 }
 #endif

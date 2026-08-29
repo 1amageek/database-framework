@@ -71,17 +71,27 @@ extension DBContainer {
             return provisioning
         }
 
-        let root = try await domain.engine.resolveOrCreateNamespace(
-            path: provisioning.namespacePath
-        )
-        let grantStore = DatabaseGrantStore(
-            resource: .base(id),
-            root: root
-        )
-        try await domain.transactionExecutor.withTransaction(
+        let access = domain.directoryAccess
+        let databaseRoot = domain.databaseRoot
+        let baseName = id.value
+        // The Base Partition, its reserved children, and the Base-local Grants
+        // commit together. A Partition observable without its initial
+        // administer Grant would admit unauthorized operations.
+        let tenant = try await domain.transactionExecutor.withTransaction(
             configuration: .batch,
             clock: monotonicClock
         ) { transaction in
+            let tenant = try await DatabaseDirectoryLayout
+                .openOrCreateBaseTenant(
+                    baseName,
+                    in: databaseRoot,
+                    access: access,
+                    transaction: transaction
+                )
+            let grantStore = DatabaseGrantStore(
+                resource: .base(id),
+                root: tenant.systemRoot
+            )
             let existing = try await grantStore.direct(
                 transaction: transaction
             )
@@ -100,13 +110,13 @@ extension DBContainer {
                     )
                 }
             }
+            return tenant
         }
 
         let provisionalRecord = DatabaseBaseRecord(
             id: provisioning.id,
             placementID: provisioning.placementID,
             domainID: provisioning.domainID,
-            namespacePath: provisioning.namespacePath,
             placementGeneration: provisioning.placementGeneration,
             revision: provisioning.revision,
             lifecycle: .active
@@ -114,7 +124,7 @@ extension DBContainer {
         let provisionalGeneration = DatabaseBaseGeneration(
             record: provisionalRecord,
             domain: domain,
-            root: root
+            tenant: tenant
         )
         let provisionalLease = DatabaseBaseLease(
             generation: provisionalGeneration,
@@ -154,7 +164,6 @@ extension DBContainer {
                         id: current.id,
                         placementID: current.placementID,
                         domainID: current.domainID,
-                        namespacePath: current.namespacePath,
                         placementGeneration: current.placementGeneration,
                         revision: nextRevision,
                         lifecycle: .active
@@ -163,7 +172,7 @@ extension DBContainer {
                     transaction: transaction
                 )
             }
-        try publishBaseGeneration(active, root: root)
+        try publishBaseGeneration(active, tenant: tenant)
         return active
     }
 

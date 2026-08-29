@@ -59,14 +59,15 @@ extension DBConfiguration {
         let domainID = try DatabaseStorageDomain.ID("test-primary")
         let domain = try DatabaseStorageDomain(
             id: domainID,
-            namespacePath: ["database", databaseIdentifier ?? "test"],
+            rootPath: testingDatabaseRootPath(
+                databaseIdentifier: databaseIdentifier
+            ),
             storageEngine: storageEngine
         )
         let placementID = try Base.Placement.ID("test-default")
-        let placement = try DatabaseStoragePlacement(
+        let placement = DatabaseStoragePlacement(
             id: placementID,
-            domainID: domainID,
-            path: ["bases"]
+            domainID: domainID
         )
         let topology = try DatabaseStorageTopology(
             controlDomainID: domainID,
@@ -91,12 +92,12 @@ extension DBConfiguration {
             metrics: metrics
         )
         #else
-        return DBConfiguration(
+        return try DBConfiguration(
             name: name,
             storageEngine: storageEngine,
-            databaseRoot: databaseIdentifier.map {
-                Subspace("test-database", $0)
-            } ?? Subspace(),
+            databaseRootPath: testingDatabaseRootPath(
+                databaseIdentifier: databaseIdentifier
+            ),
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
             itemStorage: itemStorage,
@@ -121,15 +122,14 @@ extension DatabaseStorageTopology {
             domains: [
                 try DatabaseStorageDomain(
                     id: domainID,
-                    namespacePath: ["database", "test"],
+                    rootPath: testingDatabaseRootPath(),
                     storageEngine: storageEngine
                 )
             ],
             placements: [
-                try DatabaseStoragePlacement(
+                DatabaseStoragePlacement(
                     id: placementID,
-                    domainID: domainID,
-                    path: ["bases"]
+                    domainID: domainID
                 )
             ],
             defaultPlacementID: placementID
@@ -141,9 +141,12 @@ extension DatabaseStorageTopology {
 /// Explicit test-only Base identity and authorization used by behavioral
 /// fixtures that are not themselves testing authorization.
 public enum TestBaseEnvironment {
+    /// Directory name of the Base Partition every test fixture binds.
+    public static let name = "test"
+
     #if MultiBase
     public static func id() throws -> Base.ID {
-        try Base.ID("test")
+        try Base.ID(name)
     }
     #endif
 
@@ -255,7 +258,7 @@ extension DBContainer {
     public func resetTestBaseData() async throws {
         try await withTestBaseOperation {
             let storage = try self.executionStorage()
-            let dataRoot = storage.root.subspace("data")
+            let dataRoot = storage.dataRoot
             try await storage.engine.withTransaction { transaction in
                 try transaction.clearRange(
                     beginKey: dataRoot.range().begin,
@@ -288,7 +291,7 @@ extension DBContainer {
     /// Resolves a model directory inside the explicit test Base.
     public func testBaseDirectory<Model: Persistable>(
         for type: Model.Type,
-        path: DirectoryPath<Model> = DirectoryPath()
+        path: DatabaseEngine.DirectoryPath<Model> = DatabaseEngine.DirectoryPath()
     ) async throws -> Subspace {
         try await withTestBaseOperation {
             try await self.resolveDirectory(for: type, path: path)
@@ -308,7 +311,7 @@ extension DBContainer {
     /// Builds a low-level store under the explicit test Base lease.
     package func testBaseStore<Model: Persistable>(
         for type: Model.Type,
-        path: DirectoryPath<Model> = DirectoryPath()
+        path: DatabaseEngine.DirectoryPath<Model> = DatabaseEngine.DirectoryPath()
     ) async throws -> DatabaseDataStore {
         try await withTestBaseOperation {
             try await self.store(for: type, path: path)
@@ -363,7 +366,7 @@ extension DBContainer {
         let context = session(
             authorization: TestBaseEnvironment.authorization
         ).base(baseID).newContext()
-        let fingerprintKey = lease.root
+        let fingerprintKey = lease.systemRoot
             .subspace("metadata")
             .subspace("schema")
             .pack(Tuple("fingerprint"))
@@ -398,7 +401,7 @@ extension DBContainer {
     }
 
     /// Reads the durable database-wide entity catalog through the production
-    /// control-domain namespace while keeping the SPI out of feature tests.
+    /// control-domain Directory while keeping the SPI out of feature tests.
     public func testPersistedControlSchemaEntities() async throws -> [Schema.Entity] {
         try await persistedControlSchemaEntitiesForTesting()
     }

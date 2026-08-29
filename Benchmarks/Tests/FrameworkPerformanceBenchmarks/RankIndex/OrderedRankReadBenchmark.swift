@@ -26,7 +26,12 @@ private struct RankBenchmarkPlayer {
     )
 }
 
-@Suite("RankIndex ordered range benchmark", .serialized, .heartbeat)
+@Suite(
+    "RankIndex ordered range benchmark",
+    .foundationDBBenchmark,
+    .serialized,
+    .heartbeat
+)
 struct OrderedRankReadBenchmark {
     private let database: any StorageEngine
 
@@ -35,10 +40,6 @@ struct OrderedRankReadBenchmark {
     }
 
     private func makeContext(playerCount: Int) async throws -> DatabaseContext {
-        if try await database.namespaceExists(path: ["benchmarks", "rank_players"]) {
-            try await database.removeNamespace(path: ["benchmarks", "rank_players"])
-        }
-
         let schema = try Schema(
             entities: [try RankBenchmarkPlayer.schemaEntity],
             version: Schema.Version(1, 0, 0)

@@ -268,7 +268,7 @@ public struct CompositionDataSource: Sendable {
                 }
                 try await DatabaseGrantStore(
                     resource: .base(member.baseID),
-                    root: member.root
+                    root: member.systemRoot
                 ).require(
                     .read,
                     authorization: authorization,

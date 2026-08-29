@@ -5,8 +5,6 @@ import Synchronization
 /// Decorates a real storage engine with deterministic test-only boundaries.
 public final class ControlledStorageEngine<Base: StorageEngine>:
     StorageEngine,
-    NamespaceResolver,
-    NamespaceCatalog,
     Sendable {
     public struct Configuration: Sendable {
         let base: Base.Configuration
@@ -20,6 +18,7 @@ public final class ControlledStorageEngine<Base: StorageEngine>:
 
     private let base: Base
     public let control: StorageTransactionControl
+    private let directoryAccessAdapter: DirectoryAccessAdapter
 
     public init(
         base: Base,
@@ -27,11 +26,18 @@ public final class ControlledStorageEngine<Base: StorageEngine>:
     ) {
         self.base = base
         self.control = control
+        self.directoryAccessAdapter = DirectoryAccessAdapter(
+            base: base.directoryAccess
+        )
     }
 
     public init(configuration: Configuration) async throws {
-        self.base = try await Base(configuration: configuration.base)
+        let base = try await Base(configuration: configuration.base)
+        self.base = base
         self.control = StorageTransactionControl()
+        self.directoryAccessAdapter = DirectoryAccessAdapter(
+            base: base.directoryAccess
+        )
     }
 
     public func createTransaction() throws -> ControlledTransaction {
@@ -41,81 +47,19 @@ public final class ControlledStorageEngine<Base: StorageEngine>:
         )
     }
 
-    public var namespaceResolver: any NamespaceResolver {
-        self
+    public var transactionDomain: StorageTransactionDomain {
+        base.transactionDomain
     }
 
-    public var namespaceCatalog: (any NamespaceCatalog)? {
-        base.namespaceCatalog == nil ? nil : self
-    }
-
-    public func resolveOrCreate(
-        path: [String],
-        transaction: any TransactionAccess
-    ) async throws -> Subspace {
-        let controlled = try controlledTransaction(from: transaction)
-        control.recordNamespaceRead()
-        let subspace = try await base.namespaceResolver.resolveOrCreate(
-            path: path,
-            transaction: controlled.base
-        )
-        controlled.recordNamespaceMutation()
-        return subspace
-    }
-
-    public func resolveExisting(
-        path: [String],
-        transaction: any TransactionAccess
-    ) async throws -> Subspace {
-        control.recordNamespaceRead()
-        return try await base.namespaceResolver.resolveExisting(
-            path: path,
-            transaction: try controlledTransaction(from: transaction).base
-        )
-    }
-
-    public func namespaceExists(
-        path: [String],
-        transaction: any TransactionAccess
-    ) async throws -> Bool {
-        control.recordNamespaceRead()
-        return try await base.namespaceResolver.namespaceExists(
-            path: path,
-            transaction: try controlledTransaction(from: transaction).base
-        )
-    }
-
-    public func listNamespaces(
-        path: [String],
-        transaction: any TransactionAccess
-    ) async throws -> [String] {
-        guard let namespaceCatalog = base.namespaceCatalog else {
-            throw StorageError.invalidOperation(
-                "The controlled storage backend has no namespace catalog"
-            )
-        }
-        control.recordNamespaceRead()
-        return try await namespaceCatalog.listNamespaces(
-            path: path,
-            transaction: try controlledTransaction(from: transaction).base
-        )
-    }
-
-    public func removeNamespace(
-        path: [String],
-        transaction: any TransactionAccess
-    ) async throws {
-        guard let namespaceCatalog = base.namespaceCatalog else {
-            throw StorageError.invalidOperation(
-                "The controlled storage backend has no namespace catalog"
-            )
-        }
-        let controlled = try controlledTransaction(from: transaction)
-        try await namespaceCatalog.removeNamespace(
-            path: path,
-            transaction: controlled.base
-        )
-        controlled.recordNamespaceMutation()
+    /// Directory work runs on the transaction the base engine created.
+    ///
+    /// A decorator that wraps transactions owns the translation back at every
+    /// boundary that consumes one: a backend catalog such as FoundationDB
+    /// drives its native Directory Layer and accepts only its own transaction
+    /// type. Mutating Directory operations still mark the controlled
+    /// transaction, so a scenario that intercepts a commit observes them.
+    public var directoryAccess: any DirectoryAccess {
+        directoryAccessAdapter
     }
 
     public func requestShutdown() {
@@ -124,17 +68,6 @@ public final class ControlledStorageEngine<Base: StorageEngine>:
 
     public func waitUntilShutdown() async {
         await base.waitUntilShutdown()
-    }
-
-    private func controlledTransaction(
-        from transaction: any TransactionAccess
-    ) throws -> ControlledTransaction {
-        guard let controlled = transaction as? ControlledTransaction else {
-            throw StorageError.invalidOperation(
-                "Namespace operations require this controlled engine's transaction"
-            )
-        }
-        return controlled
     }
 
     public final class ControlledTransaction: Transaction, Sendable {
@@ -389,7 +322,7 @@ public final class ControlledStorageEngine<Base: StorageEngine>:
             try base.getCommittedVersion()
         }
 
-        fileprivate func recordNamespaceMutation() {
+        fileprivate func recordDirectoryMutation() {
             mutationState.withLock { $0.hasMutations = true }
         }
 
@@ -398,6 +331,139 @@ public final class ControlledStorageEngine<Base: StorageEngine>:
                 $0.hasMutations = true
                 $0.keys.append(key)
             }
+        }
+    }
+
+    /// Forwards Directory operations to the base catalog on the base engine's
+    /// own transaction.
+    private final class DirectoryAccessAdapter: DirectoryAccess {
+        private let base: any DirectoryAccess
+
+        init(base: any DirectoryAccess) {
+            self.base = base
+        }
+
+        var transactionDomain: StorageTransactionDomain {
+            base.transactionDomain
+        }
+
+        var backend: StorageBackend {
+            base.backend
+        }
+
+        func openRoot(
+            transaction: any TransactionReadAccess
+        ) async throws -> Directory? {
+            try await base.openRoot(transaction: read(transaction))
+        }
+
+        func openOrInitializeRoot(
+            transaction: any TransactionAccess
+        ) async throws -> Directory {
+            let root = try await base.openOrInitializeRoot(
+                transaction: write(transaction)
+            )
+            markMutation(transaction)
+            return root
+        }
+
+        func open(
+            _ name: String,
+            expecting expected: LayerTag?,
+            in parent: Directory,
+            transaction: any TransactionReadAccess
+        ) async throws -> Directory? {
+            try await base.open(
+                name,
+                expecting: expected,
+                in: parent,
+                transaction: read(transaction)
+            )
+        }
+
+        func openOrCreate(
+            _ name: String,
+            layer: LayerTag,
+            in parent: Directory,
+            transaction: any TransactionAccess
+        ) async throws -> Directory {
+            let directory = try await base.openOrCreate(
+                name,
+                layer: layer,
+                in: parent,
+                transaction: write(transaction)
+            )
+            markMutation(transaction)
+            return directory
+        }
+
+        func listChildren(
+            in parent: Directory,
+            after: String?,
+            limit: Int,
+            transaction: any TransactionReadAccess
+        ) async throws -> [DirectoryEntry] {
+            try await base.listChildren(
+                in: parent,
+                after: after,
+                limit: limit,
+                transaction: read(transaction)
+            )
+        }
+
+        func move(
+            _ name: String,
+            in source: Directory,
+            to newName: String,
+            in destination: Directory,
+            transaction: any TransactionAccess
+        ) async throws -> Directory {
+            let directory = try await base.move(
+                name,
+                in: source,
+                to: newName,
+                in: destination,
+                transaction: write(transaction)
+            )
+            markMutation(transaction)
+            return directory
+        }
+
+        func remove(
+            _ name: String,
+            in parent: Directory,
+            transaction: any TransactionAccess
+        ) async throws {
+            try await base.remove(
+                name,
+                in: parent,
+                transaction: write(transaction)
+            )
+            markMutation(transaction)
+        }
+
+        /// A transaction this engine did not create is forwarded unchanged, so
+        /// the base catalog reports the domain mismatch it owns.
+        private func read(
+            _ transaction: any TransactionReadAccess
+        ) -> any TransactionReadAccess {
+            guard let controlled = transaction as? ControlledTransaction else {
+                return transaction
+            }
+            return controlled.base
+        }
+
+        private func write(
+            _ transaction: any TransactionAccess
+        ) -> any TransactionAccess {
+            guard let controlled = transaction as? ControlledTransaction else {
+                return transaction
+            }
+            return controlled.base
+        }
+
+        private func markMutation(_ transaction: any TransactionAccess) {
+            (transaction as? ControlledTransaction)?.recordDirectoryMutation()
         }
     }
 

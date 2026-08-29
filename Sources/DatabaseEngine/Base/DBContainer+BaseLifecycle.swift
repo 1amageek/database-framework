@@ -56,8 +56,8 @@ extension DBContainer {
                 )
             }
         }
-        let root = try await root(for: retiring)
-        try publishBaseGeneration(retiring, root: root)
+        let tenant = try await tenant(for: retiring)
+        try publishBaseGeneration(retiring, tenant: tenant)
         try await stopBaseAdmissionAndDrain(id)
 
         let retired = try await withControlMetadataTransaction(
@@ -85,7 +85,7 @@ extension DBContainer {
                 transaction: transaction.storageAccess
             )
         }
-        try publishBaseGeneration(retired, root: root)
+        try publishBaseGeneration(retired, tenant: tenant)
         return retired
     }
 
@@ -141,12 +141,11 @@ extension DBContainer {
                 retired.domainID
             )
         }
-        let root = try await root(for: retired)
+        let tenant = try await tenant(for: retired)
         let readinessRecord = DatabaseBaseRecord(
             id: retired.id,
             placementID: retired.placementID,
             domainID: retired.domainID,
-            namespacePath: retired.namespacePath,
             placementGeneration: retired.placementGeneration,
             revision: retired.revision,
             lifecycle: .active
@@ -155,7 +154,7 @@ extension DBContainer {
             generation: DatabaseBaseGeneration(
                 record: readinessRecord,
                 domain: domain,
-                root: root
+                tenant: tenant
             ),
             token: DatabaseBaseLeaseToken(finishOperation: {})
         )
@@ -194,7 +193,7 @@ extension DBContainer {
                 transaction: transaction.storageAccess
             )
         }
-        try publishBaseGeneration(active, root: root)
+        try publishBaseGeneration(active, tenant: tenant)
         return active
     }
 
@@ -207,7 +206,7 @@ extension DBContainer {
             throw DatabaseBaseCatalogError.invalidDeletionOwner
         }
         let deletionStore = DatabaseBaseDeletionStore(
-            root: storageTopology.controlDomain.root,
+            root: storageTopology.controlDomain.systemRoot,
             collection: "intents"
         )
         let deleting = try await withControlMetadataTransaction(
@@ -267,8 +266,8 @@ extension DBContainer {
             return record
         }
         guard deleting.lifecycle != .tombstone else { return deleting }
-        let root = try await root(for: deleting)
-        try publishBaseGeneration(deleting, root: root)
+        let tenant = try await tenant(for: deleting)
+        try publishBaseGeneration(deleting, tenant: tenant)
         try await stopBaseAdmissionAndDrain(id)
         return deleting
     }
@@ -290,7 +289,7 @@ extension DBContainer {
         }
         let domain = try domain(for: record)
         let markerStore = DatabaseBaseDeletionStore(
-            root: domain.root,
+            root: domain.systemRoot,
             collection: "markers"
         )
         if record.lifecycle == .tombstone {
@@ -301,7 +300,9 @@ extension DBContainer {
             )
             return record
         }
-        let baseRoot = try await root(for: record)
+        let access = domain.directoryAccess
+        let databaseRoot = domain.databaseRoot
+        let baseName = id.value
         try await domain.transactionExecutor.withTransaction(
             configuration: .batch,
             clock: monotonicClock
@@ -315,18 +316,26 @@ extension DBContainer {
                 }
                 return
             }
+            guard let tenant = try await DatabaseDirectoryLayout.openBaseTenant(
+                baseName,
+                in: databaseRoot,
+                access: access,
+                transaction: transaction
+            ) else {
+                throw DatabaseBaseExecutionError.placementRootMissing(id)
+            }
             try await DatabaseGrantStore(
                 resource: .base(id),
-                root: baseRoot
+                root: tenant.systemRoot
             ).require(
                 .administer,
                 authorization: authorization,
                 transaction: transaction
             )
-            let range = baseRoot.range()
-            try transaction.clearRange(
-                beginKey: range.begin,
-                endKey: range.end
+            _ = try await DatabaseDirectoryLayout.clearTenantContents(
+                tenant,
+                access: access,
+                transaction: transaction
             )
             try await markerStore.insert(intent, transaction: transaction)
         }
@@ -340,7 +349,7 @@ extension DBContainer {
         let prepared = try await baseDeletionPreparation(id, owner: owner)
         let domain = try domain(for: prepared.record)
         let markerStore = DatabaseBaseDeletionStore(
-            root: domain.root,
+            root: domain.systemRoot,
             collection: "markers"
         )
         try await requireBaseDeletionMarker(
@@ -359,7 +368,7 @@ extension DBContainer {
                 throw DatabaseBaseCatalogError.baseNotFound(id)
             }
             guard let intent = try await DatabaseBaseDeletionStore(
-                root: self.storageTopology.controlDomain.root,
+                root: self.storageTopology.controlDomain.systemRoot,
                 collection: "intents"
             ).load(id, transaction: transaction.storageAccess),
             intent == prepared.intent else {
@@ -379,16 +388,9 @@ extension DBContainer {
             )
         }
 
-        if try await domain.engine.namespaceExists(path: tombstone.namespacePath) {
-            let tombstoneRoot = try await domain.engine.resolveExistingNamespace(
-                path: tombstone.namespacePath
-            )
-            try publishBaseGeneration(tombstone, root: tombstoneRoot)
-            if domain.engine.namespaceCatalog != nil {
-                try await domain.engine.removeNamespace(
-                    path: tombstone.namespacePath
-                )
-            }
+        if let tenant = try await existingTenant(for: tombstone) {
+            try publishBaseGeneration(tombstone, tenant: tenant)
+            try await removeTenant(for: tombstone)
         }
         return tombstone
     }
@@ -407,7 +409,7 @@ extension DBContainer {
                     transaction: transaction.storageAccess
                 )
                 let intent = try await DatabaseBaseDeletionStore(
-                    root: self.storageTopology.controlDomain.root,
+                    root: self.storageTopology.controlDomain.systemRoot,
                     collection: "intents"
                 ).load(id, transaction: transaction.storageAccess)
                 return (record, intent)
@@ -422,7 +424,7 @@ extension DBContainer {
             }
             let domain = try domain(for: record)
             let markerStore = DatabaseBaseDeletionStore(
-                root: domain.root,
+                root: domain.systemRoot,
                 collection: "markers"
             )
             return try await domain.transactionExecutor.withTransaction(
@@ -456,7 +458,7 @@ extension DBContainer {
         let intent = prepared.intent
         let domain = try domain(for: current)
         let markerStore = DatabaseBaseDeletionStore(
-            root: domain.root,
+            root: domain.systemRoot,
             collection: "markers"
         )
         let marker = try await domain.transactionExecutor.withTransaction(
@@ -476,7 +478,7 @@ extension DBContainer {
                     id,
                     transaction: transaction.storageAccess
                 ), let latestIntent = try await DatabaseBaseDeletionStore(
-                    root: self.storageTopology.controlDomain.root,
+                    root: self.storageTopology.controlDomain.systemRoot,
                     collection: "intents"
                 ).load(id, transaction: transaction.storageAccess),
                 latestIntent == intent else {
@@ -493,16 +495,9 @@ extension DBContainer {
                     transaction: transaction.storageAccess
                 )
             }
-            if domain.engine.namespaceCatalog != nil,
-               try await domain.engine.namespaceExists(
-                   path: tombstone.namespacePath
-               ) {
-                let tombstoneRoot = try await domain.engine
-                    .resolveExistingNamespace(path: tombstone.namespacePath)
-                try publishBaseGeneration(tombstone, root: tombstoneRoot)
-                try await domain.engine.removeNamespace(
-                    path: tombstone.namespacePath
-                )
+            if let tenant = try await existingTenant(for: tombstone) {
+                try publishBaseGeneration(tombstone, tenant: tenant)
+                try await removeTenant(for: tombstone)
             }
             return tombstone
         }
@@ -514,7 +509,7 @@ extension DBContainer {
                 id,
                 transaction: transaction.storageAccess
             ), let latestIntent = try await DatabaseBaseDeletionStore(
-                root: self.storageTopology.controlDomain.root,
+                root: self.storageTopology.controlDomain.systemRoot,
                 collection: "intents"
             ).load(id, transaction: transaction.storageAccess),
             latestIntent == intent else {
@@ -531,7 +526,10 @@ extension DBContainer {
                 transaction: transaction.storageAccess
             )
         }
-        try publishBaseGeneration(restored, root: try await root(for: restored))
+        try publishBaseGeneration(
+            restored,
+            tenant: try await tenant(for: restored)
+        )
         return restored
     }
 
@@ -552,7 +550,7 @@ extension DBContainer {
             throw DatabaseBaseCatalogError.baseNotFound(id)
         }
         let intentStore = DatabaseBaseDeletionStore(
-            root: storageTopology.controlDomain.root,
+            root: storageTopology.controlDomain.systemRoot,
             collection: "intents"
         )
         guard let intent = try await intentStore.load(
@@ -590,7 +588,7 @@ extension DBContainer {
             throw DatabaseBaseCatalogError.corruptedRecord(id)
         }
         let intentStore = DatabaseBaseDeletionStore(
-            root: storageTopology.controlDomain.root,
+            root: storageTopology.controlDomain.systemRoot,
             collection: "intents"
         )
         guard try await intentStore.load(
@@ -626,7 +624,7 @@ extension DBContainer {
                 throw DatabaseBaseCatalogError.baseNotFound(id)
             }
             guard let intent = try await DatabaseBaseDeletionStore(
-                root: self.storageTopology.controlDomain.root,
+                root: self.storageTopology.controlDomain.systemRoot,
                 collection: "intents"
             ).load(id, transaction: transaction.storageAccess),
             intent.owner == owner else {
@@ -670,7 +668,6 @@ extension DBContainer {
                 id: record.id,
                 placementID: record.placementID,
                 domainID: record.domainID,
-                namespacePath: record.namespacePath,
                 placementGeneration: record.placementGeneration,
                 revision: revision,
                 lifecycle: lifecycle
@@ -690,16 +687,59 @@ extension DBContainer {
         return domain
     }
 
-    private func root(
+    /// Opens the Base Partition of `record`.
+    ///
+    /// Section 14 fixes its address at `bases/<Base.ID>` below the database root
+    /// of the record's domain, so an absent Partition is a placement defect
+    /// rather than an alternative location to search.
+    private func tenant(
         for record: DatabaseBaseRecord
-    ) async throws -> Subspace {
-        let domain = try domain(for: record)
-        do {
-            return try await domain.engine.resolveExistingNamespace(
-                path: record.namespacePath
-            )
-        } catch {
+    ) async throws -> DatabaseTenantDirectories {
+        guard let tenant = try await existingTenant(for: record) else {
             throw DatabaseBaseExecutionError.placementRootMissing(record.id)
+        }
+        return tenant
+    }
+
+    /// Opens the Base Partition of `record`, reporting absence rather than
+    /// failing. A lifecycle step that has already removed the Partition is
+    /// resumable, so absence is an expected observation there.
+    private func existingTenant(
+        for record: DatabaseBaseRecord
+    ) async throws -> DatabaseTenantDirectories? {
+        let domain = try domain(for: record)
+        let access = domain.directoryAccess
+        let databaseRoot = domain.databaseRoot
+        let name = record.id.value
+        return try await domain.transactionExecutor.withTransaction(
+            configuration: .readOnly,
+            clock: monotonicClock
+        ) { transaction in
+            try await DatabaseDirectoryLayout.openBaseTenant(
+                name,
+                in: databaseRoot,
+                access: access,
+                transaction: transaction
+            )
+        }
+    }
+
+    /// Removes the Base Partition of `record` and its whole subtree.
+    private func removeTenant(for record: DatabaseBaseRecord) async throws {
+        let domain = try domain(for: record)
+        let access = domain.directoryAccess
+        let databaseRoot = domain.databaseRoot
+        let name = record.id.value
+        try await domain.transactionExecutor.withTransaction(
+            configuration: .batch,
+            clock: monotonicClock
+        ) { transaction in
+            try await DatabaseDirectoryLayout.removeBaseTenant(
+                name,
+                in: databaseRoot,
+                access: access,
+                transaction: transaction
+            )
         }
     }
 }

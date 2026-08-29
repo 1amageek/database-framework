@@ -60,29 +60,27 @@ struct BaseIsolationSQLiteTests {
             domains: [
                 try DatabaseStorageDomain(
                     id: controlDomainID,
-                    namespacePath: ["sqlite", "control"],
+                    rootPath: ["sqlite", "control"],
                     storageEngine: try SQLiteStorageEngine(
                         configuration: .inMemory
                     )
                 ),
                 try DatabaseStorageDomain(
                     id: secondaryDomainID,
-                    namespacePath: ["sqlite", "secondary"],
+                    rootPath: ["sqlite", "secondary"],
                     storageEngine: try SQLiteStorageEngine(
                         configuration: .inMemory
                     )
                 ),
             ],
             placements: [
-                try DatabaseStoragePlacement(
+                DatabaseStoragePlacement(
                     id: primaryPlacementID,
-                    domainID: controlDomainID,
-                    path: ["bases"]
+                    domainID: controlDomainID
                 ),
-                try DatabaseStoragePlacement(
+                DatabaseStoragePlacement(
                     id: secondaryPlacementID,
-                    domainID: secondaryDomainID,
-                    path: ["bases"]
+                    domainID: secondaryDomainID
                 ),
             ],
             defaultPlacementID: primaryPlacementID
