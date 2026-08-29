@@ -22,6 +22,18 @@ private struct BitmapBenchmarkProduct {
 
 }
 
+// MARK: - Work Meter
+
+/// Bitmap reads are metered by the engine, so each benchmarked read gets its
+/// own meter: a shared one would accumulate the work of every iteration and
+/// measure budget exhaustion instead of storage throughput.
+private func makeBenchmarkWorkMeter() -> DatabaseWorkMeter {
+    DatabaseWorkMeter(
+        budget: ExecutionBudget(),
+        monotonicClock: BenchmarkProcessMonotonicClock()
+    )
+}
+
 // MARK: - Bitmap Benchmark Context
 
 private struct BitmapBenchmarkContext {
@@ -292,7 +304,11 @@ struct BitmapIndexFDBPerformanceBenchmarks {
 
         // Verify
         let count = try await ctx.database.withTransaction { transaction in
-            try await ctx.maintainer.getCount(for: ["category-0"], transaction: transaction)
+            try await ctx.maintainer.getCount(
+                for: ["category-0"],
+                transaction: transaction,
+                workMeter: makeBenchmarkWorkMeter()
+            )
         }
         #expect(count == 10, "Each category should have 10 products")
 
@@ -331,7 +347,11 @@ struct BitmapIndexFDBPerformanceBenchmarks {
 
         // Verify
         let count = try await ctx.database.withTransaction { transaction in
-            try await ctx.maintainer.getCount(for: ["category-0"], transaction: transaction)
+            try await ctx.maintainer.getCount(
+                for: ["category-0"],
+                transaction: transaction,
+                workMeter: makeBenchmarkWorkMeter()
+            )
         }
         #expect(count == 100, "Each category should have 100 products")
 
@@ -368,7 +388,11 @@ struct BitmapIndexFDBPerformanceBenchmarks {
         var bitmap: RoaringBitmap!
         let (getMs, _) = try await benchmark("Get bitmap", iterations: 100) {
             bitmap = try await ctx.database.withTransaction { transaction in
-                try await ctx.maintainer.getBitmap(for: ["category-0"], transaction: transaction)
+                try await ctx.maintainer.getBitmap(
+                    for: ["category-0"],
+                    transaction: transaction,
+                    workMeter: makeBenchmarkWorkMeter()
+                )
             }
         }
 
@@ -380,7 +404,11 @@ struct BitmapIndexFDBPerformanceBenchmarks {
         var count = 0
         let (countMs, _) = try await benchmark("Get count", iterations: 100) {
             count = try await ctx.database.withTransaction { transaction in
-                try await ctx.maintainer.getCount(for: ["category-0"], transaction: transaction)
+                try await ctx.maintainer.getCount(
+                    for: ["category-0"],
+                    transaction: transaction,
+                    workMeter: makeBenchmarkWorkMeter()
+                )
             }
         }
 
@@ -423,7 +451,8 @@ struct BitmapIndexFDBPerformanceBenchmarks {
             bitmap = try await ctx.database.withTransaction { transaction in
                 try await ctx.maintainer.orQuery(
                     values: [["category-0"], ["category-1"], ["category-2"]],
-                    transaction: transaction
+                    transaction: transaction,
+                    workMeter: makeBenchmarkWorkMeter()
                 )
             }
         }
@@ -504,10 +533,18 @@ struct BitmapIndexFDBPerformanceBenchmarks {
         var result: RoaringBitmap!
         let (andMs, _) = try await benchmark("AND query (2 indexes)", iterations: 100) {
             let categoryBitmap = try await database.withTransaction { transaction in
-                try await categoryMaintainer.getBitmap(for: ["category-0"], transaction: transaction)
+                try await categoryMaintainer.getBitmap(
+                    for: ["category-0"],
+                    transaction: transaction,
+                    workMeter: makeBenchmarkWorkMeter()
+                )
             }
             let brandBitmap = try await database.withTransaction { transaction in
-                try await brandMaintainer.getBitmap(for: ["brand-0"], transaction: transaction)
+                try await brandMaintainer.getBitmap(
+                    for: ["brand-0"],
+                    transaction: transaction,
+                    workMeter: makeBenchmarkWorkMeter()
+                )
             }
             result = categoryBitmap && brandBitmap
         }
@@ -554,14 +591,22 @@ struct BitmapIndexFDBPerformanceBenchmarks {
 
         // Get bitmap
         let bitmap = try await ctx.database.withTransaction { transaction in
-            try await ctx.maintainer.getBitmap(for: ["category-0"], transaction: transaction)
+            try await ctx.maintainer.getBitmap(
+                for: ["category-0"],
+                transaction: transaction,
+                workMeter: makeBenchmarkWorkMeter()
+            )
         }
 
         // Benchmark: Convert bitmap to primary keys
         var primaryKeys: [Tuple]!
         let (retrieveMs, _) = try await benchmark("Get primary keys (100 items)", iterations: 100) {
             primaryKeys = try await ctx.database.withTransaction { transaction in
-                try await ctx.maintainer.getPrimaryKeys(from: bitmap, transaction: transaction)
+                try await ctx.maintainer.getPrimaryKeys(
+                    from: bitmap,
+                    transaction: transaction,
+                    workMeter: makeBenchmarkWorkMeter()
+                )
             }
         }
 
@@ -605,7 +650,11 @@ struct BitmapIndexFDBPerformanceBenchmarks {
 
         // Verify initial state
         let initialCount = try await ctx.database.withTransaction { transaction in
-            try await ctx.maintainer.getCount(for: ["category-0"], transaction: transaction)
+            try await ctx.maintainer.getCount(
+                for: ["category-0"],
+                transaction: transaction,
+                workMeter: makeBenchmarkWorkMeter()
+            )
         }
         #expect(initialCount == 100)
 
@@ -627,10 +676,18 @@ struct BitmapIndexFDBPerformanceBenchmarks {
 
         // Verify final state
         let finalCount0 = try await ctx.database.withTransaction { transaction in
-            try await ctx.maintainer.getCount(for: ["category-0"], transaction: transaction)
+            try await ctx.maintainer.getCount(
+                for: ["category-0"],
+                transaction: transaction,
+                workMeter: makeBenchmarkWorkMeter()
+            )
         }
         let finalCount1 = try await ctx.database.withTransaction { transaction in
-            try await ctx.maintainer.getCount(for: ["category-1"], transaction: transaction)
+            try await ctx.maintainer.getCount(
+                for: ["category-1"],
+                transaction: transaction,
+                workMeter: makeBenchmarkWorkMeter()
+            )
         }
         #expect(finalCount0 == 0)
         #expect(finalCount1 == 100)
@@ -681,7 +738,11 @@ struct BitmapIndexFDBPerformanceBenchmarks {
 
         // Verify
         let finalCount = try await ctx.database.withTransaction { transaction in
-            try await ctx.maintainer.getCount(for: ["category-0"], transaction: transaction)
+            try await ctx.maintainer.getCount(
+                for: ["category-0"],
+                transaction: transaction,
+                workMeter: makeBenchmarkWorkMeter()
+            )
         }
         #expect(finalCount == 0)
 
