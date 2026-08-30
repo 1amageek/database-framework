@@ -216,7 +216,18 @@ package enum DatabaseDirectoryLayout {
             limit: limit,
             transaction: transaction
         )
-        return entries.filter(\.isPartition).map(\.name)
+        // Skipping a child of another layer would report a shorter listing as
+        // a complete one and hide a node that occupies a Base address. Every
+        // Base is committed as a Partition, so a child of another layer is a
+        // corrupted layout the caller must see.
+        return try entries.map { entry in
+            guard entry.isPartition else {
+                throw DatabaseDirectoryLayoutError.nonPartitionBase(
+                    name: entry.name
+                )
+            }
+            return entry.name
+        }
     }
 
     /// Empties a Tenant Partition while leaving the Partition node in place.
@@ -250,7 +261,12 @@ package enum DatabaseDirectoryLayout {
         )
     }
 
-    /// Removes `bases/<name>` and its whole subtree.
+    /// Removes the Base Partition `bases/<name>` and its whole subtree.
+    ///
+    /// Only a Partition is admitted at the address. A node stored under
+    /// another layer is a structure this layout never committed there, and
+    /// removing it would destroy a subtree this call has no contract over, so
+    /// the layer mismatch `openPartition` reports propagates unchanged.
     package static func removeBaseTenant(
         _ name: String,
         in databaseRoot: Directory,
@@ -265,12 +281,9 @@ package enum DatabaseDirectoryLayout {
             return
         }
         // Absence is the state this call establishes, so a resumed deletion or
-        // move-cleanup slice observing it has succeeded rather than failed. The
-        // stored layer tag is not verified here: whatever occupies the address
-        // is removed with its whole subtree.
-        guard try await access.open(
+        // move-cleanup slice observing it has succeeded rather than failed.
+        guard try await access.openPartition(
             name,
-            expecting: nil,
             in: bases,
             transaction: transaction
         ) != nil else {

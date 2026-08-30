@@ -3,17 +3,33 @@ import DatabaseTypes
 @_spi(DatabaseExecution) import DatabaseWire
 import StorageKit
 
+/// The source directory contract of one durable retirement marker.
+///
+/// Version 1 records the scope alone. Version 2 appends the layer of each
+/// component of that scope's path, so the address the work runs against can be
+/// verified against the declaration that issued it. A version 1 marker written
+/// before the layers were recorded stays readable and reports no layers, which
+/// is the state its writer actually knew.
 private struct IndexRetirementScopeFrame: StorageFrameValue {
-    let scope: DatabaseIndexStorageScope
+    private static let versionWithoutLayers: UInt8 = 1
+    private static let versionWithLayers: UInt8 = 2
 
-    init(_ scope: DatabaseIndexStorageScope) {
-        self.scope = scope
+    let scope: DatabaseIndexStorageScope
+    let directoryLayers: [DirectoryLayer]?
+
+    init(_ retirement: DatabasePendingIndexRetirement) {
+        self.scope = retirement.scope
+        self.directoryLayers = retirement.directoryLayers
     }
 
     func encode(
         to encoder: inout StorageFrameEncoder
     ) throws(StorageFrameError) {
-        encoder.writeUInt8(1)
+        encoder.writeUInt8(
+            directoryLayers == nil
+                ? Self.versionWithoutLayers
+                : Self.versionWithLayers
+        )
         switch scope {
         case .entity(let name, let components):
             encoder.writeUInt8(0)
@@ -37,12 +53,20 @@ private struct IndexRetirementScopeFrame: StorageFrameValue {
                 try encoder.writeString(component)
             }
         }
+        guard let directoryLayers else { return }
+        try encoder.writeCount(directoryLayers.count)
+        for layer in directoryLayers {
+            encoder.writeUInt8(Self.image(of: layer))
+        }
     }
 
     init(
         from decoder: inout StorageFrameDecoder
     ) throws(StorageFrameError) {
-        guard try decoder.readUInt8() == 1 else {
+        let version = try decoder.readUInt8()
+        guard version == Self.versionWithoutLayers
+            || version == Self.versionWithLayers
+        else {
             throw .invalidValue
         }
         let kind = try decoder.readUInt8()
@@ -81,6 +105,39 @@ private struct IndexRetirementScopeFrame: StorageFrameValue {
         default:
             throw .invalidValue
         }
+        guard version == Self.versionWithLayers else {
+            directoryLayers = nil
+            return
+        }
+        // One layer per component: a shorter or longer vector cannot type the
+        // path this marker addresses.
+        guard try decoder.readCount() == count else {
+            throw .invalidValue
+        }
+        var layers: [DirectoryLayer] = []
+        layers.reserveCapacity(count)
+        for _ in 0..<count {
+            guard let layer = Self.layer(ofImage: try decoder.readUInt8()) else {
+                throw .invalidValue
+            }
+            layers.append(layer)
+        }
+        directoryLayers = layers
+    }
+
+    private static func image(of layer: DirectoryLayer) -> UInt8 {
+        switch layer {
+        case .default: 0
+        case .partition: 1
+        }
+    }
+
+    private static func layer(ofImage image: UInt8) -> DirectoryLayer? {
+        switch image {
+        case 0: .default
+        case 1: .partition
+        default: nil
+        }
     }
 }
 
@@ -102,11 +159,31 @@ extension DBContainer {
             try validateSchemaIndexRetirement(addition)
         }
         let storage = try schemaIndexRetirementSubspace()
-        var pending = Set(
-            try await loadSchemaIndexRetirements(transaction: transaction)
-        )
-        pending.formUnion(additions)
-        let retained = try pending.filter { retirement in
+        // The additions were planned against the published generation, which
+        // is still the source here because staging precedes publication. That
+        // generation is the only one that can type the paths being retired.
+        let source = acquirePublishedSchemaLease()
+        // Identity ignores the recorded layers, so a marker already staged is
+        // the same work as an addition repeating it. The record that carries
+        // layers wins, and an already recorded vector is kept: it was derived
+        // from the generation that created the storage, which is at least as
+        // close to it as the generation staging now.
+        var pending: [DatabasePendingIndexRetirement: DatabasePendingIndexRetirement] = [:]
+        for retirement in try await loadSchemaIndexRetirements(
+            transaction: transaction
+        ) {
+            pending[retirement] = retirement
+        }
+        for addition in additions {
+            guard pending[addition]?.directoryLayers == nil else { continue }
+            pending[addition] = addition.recording(
+                directoryLayers: try Self.declaredRetirementLayers(
+                    for: addition.scope,
+                    in: source
+                )
+            )
+        }
+        let retained = try pending.values.filter { retirement in
             try activeIndexIdentity(
                 matching: retirement,
                 in: target,
@@ -120,7 +197,7 @@ extension DBContainer {
             try validateSchemaIndexRetirement(retirement)
             try transaction.setValue(
                 try StorageFrameCodec.encode(
-                    IndexRetirementScopeFrame(retirement.scope)
+                    IndexRetirementScopeFrame(retirement)
                 ),
                 for: Self.schemaIndexRetirementKey(
                     retirement,
@@ -205,17 +282,18 @@ extension DBContainer {
                     "schema index retirement marker cannot be decoded"
                 )
             }
-            let scope: DatabaseIndexStorageScope
+            let frame: IndexRetirementScopeFrame
             do {
-                scope = try StorageFrameCodec.decode(
+                frame = try StorageFrameCodec.decode(
                     IndexRetirementScopeFrame.self,
                     from: value
-                ).scope
+                )
             } catch {
                 throw DatabaseSchemaPublicationError.corruptedState(
                     "schema index retirement scope cannot be decoded"
                 )
             }
+            let scope = frame.scope
             guard scope.stableOrderingKey == scopeKey else {
                 throw DatabaseSchemaPublicationError.corruptedState(
                     "schema index retirement scope is invalid"
@@ -243,7 +321,8 @@ extension DBContainer {
             }
             let retirement = DatabasePendingIndexRetirement(
                 scope: scope,
-                identity: identity
+                identity: identity,
+                directoryLayers: frame.directoryLayers
             )
             try validateSchemaIndexRetirement(retirement)
             retirements.append(retirement)
@@ -270,7 +349,9 @@ extension DBContainer {
 
     /// Retires the exact generation using the source directory contract stored
     /// with the durable marker. The published target schema is intentionally
-    /// not consulted because the source entity or group may have been removed.
+    /// not consulted because the source entity or group may have been removed;
+    /// the marker carries the layer of each component of its own path, so the
+    /// address is still verified against the declaration that issued it.
     @_spi(DatabaseExecution)
     public func retireSchemaIndexStorage(
         _ retirement: DatabasePendingIndexRetirement,
@@ -297,14 +378,32 @@ extension DBContainer {
             definitionFingerprint: retirement.identity.definitionFingerprint,
             layoutFingerprint: retirement.identity.layoutFingerprint
         )
-        // The recorded path may belong to a declaration the active schema no
-        // longer has, so there is no declared layer to verify it against. The
-        // stored tag stays authoritative for addressing, and a directory that
-        // no longer exists holds no storage to retire.
-        if let subspace = try await openUnverifiedDataDirectory(
-            relativePath: path,
-            transaction: transaction
-        ) {
+        let subspace: Subspace?
+        if let layers = retirement.directoryLayers {
+            guard layers.count == path.count else {
+                throw DatabaseSchemaPublicationError.corruptedState(
+                    "schema index retirement layers do not describe its path"
+                )
+            }
+            // A node recreated under another layer since this work was staged
+            // holds storage this record never described, so the mismatch the
+            // Directory reports must stop the retirement rather than clear it.
+            subspace = try await openDataDirectory(
+                relativePath: path,
+                layers: layers,
+                transaction: transaction
+            )
+        } else {
+            // A marker staged before the source layers were recorded has no
+            // declared layer to verify against, and the declaration it names
+            // may be gone. The stored tag stays authoritative for addressing.
+            subspace = try await openUnverifiedDataDirectory(
+                relativePath: path,
+                transaction: transaction
+            )
+        }
+        // A directory that no longer exists holds no storage to retire.
+        if let subspace {
             try IndexStorageRetirer.retire(
                 indexName: retirement.identity.name,
                 selection: selection,
@@ -318,6 +417,39 @@ extension DBContainer {
             selection: selection,
             transaction: transaction
         )
+    }
+
+    /// The layer of each component of a retiring path, taken from the schema
+    /// generation the retirement was planned against.
+    ///
+    /// Only a declaration that still matches the recorded scope exactly types
+    /// it: the same name over different components describes a different
+    /// position, and a generation that no longer declares it types nothing. A
+    /// path this cannot type is recorded without layers rather than with an
+    /// invented contract, which leaves the stored tag authoritative for
+    /// addressing exactly as it was before layers were recorded.
+    private static func declaredRetirementLayers(
+        for scope: DatabaseIndexStorageScope,
+        in lease: DatabaseSchemaLease
+    ) throws -> [DirectoryLayer]? {
+        switch scope {
+        case .entity(let name, let components):
+            guard let entity = lease.schema.entity(named: name),
+                  entity.directoryComponents == components else {
+                return nil
+            }
+            return try DBContainer.declaredLayers(
+                for: entity,
+                in: lease.directoryLayers
+            )
+        case .polymorphicGroup(let identifier, let directoryPath):
+            guard let group = lease.schema.polymorphicGroup(
+                identifier: identifier
+            ), try group.resolvedDirectoryPath() == directoryPath else {
+                return nil
+            }
+            return lease.directoryLayers.layers(forPath: directoryPath)
+        }
     }
 
     private func activeIndexIdentity(

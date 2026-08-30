@@ -11,6 +11,11 @@ public enum DatabaseDirectoryLayoutError: Error, Sendable, Hashable {
     /// absent Tenant.
     case missingReservedDirectory(partition: [String], name: String)
 
+    /// A child of `bases` is stored under a layer other than `.partition`.
+    /// Every Base is created as a Partition, so a child of another layer is a
+    /// structure this layout did not commit and cannot address as a Base.
+    case nonPartitionBase(name: String)
+
     /// The configured database root path contains an empty component.
     case emptyRootPathComponent(index: Int)
 }
@@ -21,6 +26,8 @@ extension DatabaseDirectoryLayoutError: CustomStringConvertible {
         case .missingReservedDirectory(let partition, let name):
             let address = partition.joined(separator: "/")
             return "Partition /\(address) is missing its reserved \(name) Directory"
+        case .nonPartitionBase(let name):
+            return "Base '\(name)' is not stored as a Partition"
         case .emptyRootPathComponent(let index):
             return "Database root path component \(index) is empty"
         }

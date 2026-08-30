@@ -54,8 +54,16 @@ package enum DatabaseDirectoryPartitionEnumerator {
             return DatabasePartitionCatalogPage(entries: [], continuation: nil)
         }
 
+        let declaration = declarationBinding(
+            entity: entity.name,
+            components: components
+        )
         var stack = try await descend(
-            decodeCursor(continuation, componentCount: components.count),
+            try decodeCursor(
+                continuation,
+                declaration: declaration,
+                componentCount: components.count
+            ),
             components: components,
             layers: layers,
             below: data,
@@ -91,7 +99,10 @@ package enum DatabaseDirectoryPartitionEnumerator {
                 guard entries.count < limit else {
                     return DatabasePartitionCatalogPage(
                         entries: entries,
-                        continuation: encodeCursor(stack.map(\.name))
+                        continuation: encodeCursor(
+                            stack.map(\.name),
+                            declaration: declaration
+                        )
                     )
                 }
                 continue
@@ -254,9 +265,43 @@ package enum DatabaseDirectoryPartitionEnumerator {
     /// decode instead.
     private static let cursorMarker = "directory-partition-v1"
 
-    private static func encodeCursor(_ path: [String?]) -> ByteString {
-        var elements: [any TupleElement] = [cursorMarker]
-        elements.reserveCapacity(path.count + 1)
+    /// The declaration a cursor was issued for.
+    ///
+    /// The marker alone types the encoding, not the walk: two entities whose
+    /// declarations have the same number of components accept each other's
+    /// cursors, and a declaration whose components changed between two pages
+    /// accepts a cursor describing a shape it no longer has. Either case
+    /// resumes at a position the current walk never describes and reports the
+    /// remainder of a different tree as this entity's partitions.
+    ///
+    /// The binding is the entity name and the component shape, packed as a
+    /// tuple so a name cannot be confused with a component and a static value
+    /// cannot be confused with a dynamic field of the same text.
+    private static func declarationBinding(
+        entity: String,
+        components: [DirectoryPathComponent]
+    ) -> ByteString {
+        var elements: [any TupleElement] = [entity]
+        elements.reserveCapacity(components.count * 2 + 1)
+        for component in components {
+            switch component {
+            case .staticPath(let value):
+                elements.append("s")
+                elements.append(value)
+            case .dynamicField(let name):
+                elements.append("d")
+                elements.append(name)
+            }
+        }
+        return Tuple(elements).pack()
+    }
+
+    private static func encodeCursor(
+        _ path: [String?],
+        declaration: ByteString
+    ) -> ByteString {
+        var elements: [any TupleElement] = [cursorMarker, declaration]
+        elements.reserveCapacity(path.count + 2)
         for name in path {
             elements.append(name ?? "")
         }
@@ -265,20 +310,23 @@ package enum DatabaseDirectoryPartitionEnumerator {
 
     private static func decodeCursor(
         _ bytes: ByteString?,
+        declaration: ByteString,
         componentCount: Int
     ) throws -> [String] {
         guard let bytes else { return [] }
         do {
             let tuple = try Tuple(packed: bytes)
-            guard tuple.count == componentCount + 1,
+            guard tuple.count == componentCount + 2,
                   case .string(let marker) = try tuple.value(at: 0),
-                  marker == cursorMarker
+                  marker == cursorMarker,
+                  case .bytes(let issuer) = try tuple.value(at: 1),
+                  issuer == declaration
             else {
                 throw DatabasePartitionCatalogError.invalidContinuation
             }
             var path: [String] = []
             path.reserveCapacity(componentCount)
-            for index in 1..<tuple.count {
+            for index in 2..<tuple.count {
                 guard case .string(let name) = try tuple.value(at: index) else {
                     throw DatabasePartitionCatalogError.invalidContinuation
                 }

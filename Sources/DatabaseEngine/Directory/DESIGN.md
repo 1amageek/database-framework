@@ -28,11 +28,13 @@ The component owns:
   admits or rejects an existing storage root;
 - open-existing resolution for reads and open-or-create resolution for writes,
   both executed inside the caller's transaction;
+- the declaration-shaped walk that enumerates the partitions of one entity over
+  StorageKit's child listing, and the continuation that resumes it;
 - the container admission and unwrapping contract that lets an adapter-owned
   `DirectoryAccess` accept a container-issued transaction.
 
 The component does not own key layout, prefix allocation, node existence,
-enumeration, or recursive removal. Those belong to StorageKit. It computes no
+child listing, or recursive removal. Those belong to StorageKit. It computes no
 key prefix: every prefix it uses is read from a `Directory` returned by
 `DirectoryAccess`. It does not decide query authority, index policy, or
 serialization framing.
@@ -278,9 +280,55 @@ read as V1.
   selects the nested Directory Layer of a Partition node, so opening a child
   `in:` a Partition node descends into that nested layer. This component never
   computes the nested layer root itself.
+- Every open passes the declared tag of the position it addresses, so a node
+  stored under another layer is refused by `DirectoryAccess` instead of being
+  addressed at the wrong prefix. A layer is part of a node's identity, so this
+  holds wherever an address is used, not only on the binding walk.
 - Ordinary row deletion never removes a node. Explicit removal is a separate
   destructive operation admitted by authorization and the absence of an active
   lease, and performed by StorageKit.
+
+### Base addresses
+
+`bases` holds one Partition per Base and nothing else, so a child stored under
+another layer occupies a Base address without being one.
+
+- `listBaseTenantNames` reports it as
+  `DatabaseDirectoryLayoutError.nonPartitionBase`. Omitting it would present a
+  shorter listing as a complete one and hide the node.
+- `removeBaseTenant` opens the address as a Partition before removing it, so
+  the mismatch StorageKit reports stops a deletion that would otherwise destroy
+  a subtree this layout never committed. An address no node occupies is the
+  state the call establishes, so an absent name returns without failing.
+
+### Partition enumeration
+
+The partitions an entity has are the nodes its declaration resolves at its
+dynamic positions. The walk is depth-first, expects the declared tag at every
+level, and lists children through StorageKit.
+
+A page's continuation is the path of the last partition it reported, and the
+caller hands it back on the next call, so it is bound to the declaration that
+issued it: the cursor carries the entity name and the component shape, and a
+cursor issued for another declaration, or for a shape this declaration no
+longer has, is `DatabasePartitionCatalogError.invalidContinuation`. Without
+that binding, two declarations of equal component count accept each other's
+cursors and report the remainder of a different tree as this entity's
+partitions.
+
+### Durable work that outlives its declaration
+
+Index retirement runs against a path the published schema may no longer
+declare, so it cannot re-derive that path's layer when it executes. The durable
+marker records the layer of every component of its own path, taken from the
+generation the retirement was planned against, and retirement opens the path
+with that vector. A node recreated under another layer since the work was
+staged is refused rather than cleared.
+
+A scope the source generation cannot type exactly, because the component shape
+differs or the declaration is gone, records no layer. Such a marker addresses
+its path without verification, which is the state a marker written before
+layers were recorded is read back in; it is never given an invented contract.
 
 ### Container admission and unwrapping
 
@@ -421,6 +469,9 @@ transaction observe read-your-writes.
 | Read never creates | A read of a missing declaration returns absent and leaves the catalog byte-identical. |
 | Write atomicity | Node creation and the row mutation are observable only after the same commit. |
 | Layout rejection | A nonempty unmarked root fails with `incompatibleStorageLayout` and is not modified. |
+| Base addresses | A `bases` child stored under another layer fails both listing and removal, an absent name removes nothing, and a Base Partition is still listed and removed. |
+| Enumeration cursor | A cursor issued for one declaration is refused by another declaration of the same shape, and resumes its own walk to exhaustion. |
+| Retirement layer identity | A staged retirement records the layer of every source component, a source node recreated under another layer is refused, and a scope the schema cannot type records none and stays addressable. |
 
 Owners:
 [DirectoryComponentCodecTests](../../../Tests/DatabaseEngineTests/DirectoryComponentCodecTests.swift)
@@ -428,7 +479,11 @@ for the canonical form, injectivity, and bijection;
 [DirectoryLayerTagMapTests](../../../Tests/DatabaseEngineTests/DirectoryLayerTagMapTests.swift)
 for derivation, the reserved image, and admitted kinds;
 [DirectoryBindingTests](../../../Tests/DatabaseEngineTests/DirectoryBindingTests.swift)
-for topology, bootstrap, and binding.
+for topology, bootstrap, and binding;
+[DirectoryReadCreatesNothingTests](../../../Tests/DatabaseEngineTests/DirectoryReadCreatesNothingTests.swift)
+for the read direction creating nothing;
+[DirectoryLayerIdentityTests](../../../Tests/DatabaseEngineTests/DirectoryLayerIdentityTests.swift)
+for Base addresses, the enumeration cursor, and retirement layer identity.
 
 Changing the canonical grammar, the reserved image rule, the derived tag rule,
 or the reserved topology is persistent schema identity under SPEC 10.2. It
