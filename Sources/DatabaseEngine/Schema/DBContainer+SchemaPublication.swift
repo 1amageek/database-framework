@@ -546,7 +546,10 @@ extension DBContainer {
         // The schema being applied is not published yet, so its declarations
         // are typed by a map derived from it rather than by the container's
         // current one.
-        let targetLayers = try DirectoryLayerTagMap(entities: target.entities)
+        let targetLayers = try DirectoryLayerTagMap(
+            entities: target.entities,
+            polymorphicGroups: target.polymorphicGroups
+        )
         for targetEntity in target.entities {
             let indexes = targetEntity.indexDescriptors
             guard !indexes.isEmpty else { continue }

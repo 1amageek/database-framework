@@ -74,11 +74,21 @@ A position is the ordered sequence of component shapes leading to it, where a
 static shape is its literal name and a dynamic shape is its declared field
 kind.
 
+- A declaration is an entity `#Directory` or a polymorphic group `#Directory`.
+  An entity resolves the directory holding its records; a group resolves the
+  directory holding the projection shared by its members. Both assign a layer,
+  so derivation reads the complete declaration set rather than the entities
+  alone.
+- A group declares only static components, because it addresses one directory
+  shared by every member and has no record from which a dynamic component could
+  be resolved. A dynamic component in a group is
+  `DirectoryLayerTagError.dynamicComponentInPolymorphicGroup`.
 - A declaration assigns a layer tag only to its own leaf position.
 - A position that some declaration resolves as a `.partition` leaf is a
   Partition for every declaration passing through it.
 - A position resolved as a `.default` leaf by one declaration and as a
-  `.partition` leaf by another is `DirectoryLayerTagError.inconsistentLayer`.
+  `.partition` leaf by another is `DirectoryLayerTagError.inconsistentLayer`,
+  whether the two declarations are entities, groups, or one of each.
 - Declarations sharing a dynamic position must declare the same field kind
   there; a disagreement is
   `DirectoryLayerTagError.inconsistentDynamicFieldKind`.
@@ -90,14 +100,18 @@ kind.
 
 SPEC 10.1 requires every dynamic component to be a required scalar field with a
 canonical textual Directory component form. DatabaseKit validates the required,
-scalar, and occurs-once parts per declaration; the canonical-form part is this
-component's obligation, because only the codec here defines that form. A
-dynamic component whose field kind has no canonical component is
-`DirectoryLayerTagError.unsupportedDynamicFieldKind`, and the admitted set is
-exactly the set `DirectoryComponentCodec` can encode. The two sets are pinned
-against each other by a test naming every `FieldSchemaType` case, because that
-type is not `CaseIterable` and a new kind would otherwise be admitted or
-rejected by omission.
+scalar, occurs-once, and admitted-kind parts per declaration, so a declaration
+this component cannot encode fails where it is written rather than at container
+bootstrap; `FieldSchemaType.hasCanonicalDirectoryComponent` owns which kinds are
+admitted and `DirectoryLayerTagMap.admitsDynamicComponent` delegates to it. This
+component still owns the exact strings and keeps
+`DirectoryLayerTagError.unsupportedDynamicFieldKind` as a precondition on a
+`package` input it does not construct, so a schema that reached derivation
+without that validation is rejected at bootstrap rather than at a later write. The
+owner's set and the set `DirectoryComponentCodec` can encode are pinned against
+each other by a test naming every `FieldSchemaType` case, because that type is
+not `CaseIterable` and a new kind would otherwise be admitted or rejected by
+omission.
 
 `FieldSchema` records a field kind, not an enum's raw representation, so
 `.enum` is one kind covering both representations an enum value materializes
@@ -377,7 +391,10 @@ transaction observe read-your-writes.
 ## Failure, Concurrency, and Constraints
 
 - `DirectoryLayerTagError` reports declaration defects: `inconsistentLayer`,
-  `inconsistentDynamicFieldKind`, `staticComponentInCanonicalImage`.
+  `inconsistentDynamicFieldKind`, `staticComponentInCanonicalImage`,
+  `dynamicComponentInPolymorphicGroup`. Each names the declaration it refers to
+  as a `DirectoryDeclarationOwner`, because a leaf may be owned by an entity or
+  by a polymorphic group.
 - `DirectoryComponentCodecError` reports value defects: `unsupportedFieldKind`,
   `valueKindMismatch`, `malformedComponent`.
 - `DatabaseDirectoryError.incompatibleStorageLayout` reports a root that
@@ -397,6 +414,7 @@ transaction observe read-your-writes.
 | Per-kind injectivity | Discriminator pairs including `+0.0` against `-0.0`, `Int128` extremes, empty string against empty bytes, and values forcing escapes. |
 | Bijection | Round-trip in both directions, plus rejection of non-canonical spellings. |
 | Layer-tag derivation | Declaration sets producing a Partition position inherited by a declaration passing through it, a position no declaration leaves as a leaf, and both typed disagreements in either supply order. |
+| Group declarations | A group Partition leaf is inherited by an entity passing through it, a group disagreeing with an entity or with another group is rejected in either supply order, and a dynamic component in a group is rejected. |
 | Admitted kinds | Every `FieldSchemaType` case paired with a materializable value; admission agrees with `DirectoryComponentCodec.encode` for each, and `.enum` is checked in both representations. |
 | Reserved image | A static component inside the image fails with `staticComponentInCanonicalImage`; a static sibling outside it succeeds. |
 | Topology | Bootstrap creates `default/system/database-framework` and `default/data`, and a declaration binds below `data`. |

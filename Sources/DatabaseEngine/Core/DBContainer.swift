@@ -934,7 +934,8 @@ public final class DBContainer: Sendable {
                 runtimeConfiguration: runtimeConfiguration,
                 indexPhysicalLayouts: indexPhysicalLayouts,
                 directoryLayers: try DirectoryLayerTagMap(
-                    entities: schema.entities
+                    entities: schema.entities,
+                    polymorphicGroups: schema.polymorphicGroups
                 ),
                 securityDelegate: securityDelegate
             )
@@ -1494,7 +1495,8 @@ public final class DBContainer: Sendable {
                 runtimeConfiguration: runtimeConfiguration,
                 indexPhysicalLayouts: indexPhysicalLayouts,
                 directoryLayers: try DirectoryLayerTagMap(
-                    entities: schema.entities
+                    entities: schema.entities,
+                    polymorphicGroups: schema.polymorphicGroups
                 ),
                 securityDelegate: securityDelegate
             )
@@ -3626,7 +3628,10 @@ extension DBContainer {
         // A registry may be built for a schema the container has not published,
         // so the Directory layer tags come from that schema rather than from the
         // generation currently installed.
-        let layers = try DirectoryLayerTagMap(entities: schema.entities)
+        let layers = try DirectoryLayerTagMap(
+            entities: schema.entities,
+            polymorphicGroups: schema.polymorphicGroups
+        )
 
         for entity in schema.entities {
             guard runtimeConfiguration.entityRuntimes.registration(

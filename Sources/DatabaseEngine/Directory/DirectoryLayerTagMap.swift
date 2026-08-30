@@ -27,9 +27,21 @@ package struct DirectoryLayerTagMap: Sendable {
 
     /// Derives the map, or rejects the schema with the first disagreement found.
     ///
-    /// Declarations are visited in entity-name order so that a rejection names
-    /// the same pair of declarations regardless of how the schema was assembled.
-    package init(entities: [Schema.Entity]) throws(DirectoryLayerTagError) {
+    /// Both kinds of `#Directory` declaration are inserted: an entity resolves
+    /// the directory holding its records, and a polymorphic group resolves the
+    /// directory holding the projection shared by its members. A group leaf
+    /// therefore assigns a layer exactly as an entity leaf does, so a group that
+    /// declares `.partition` is created as a Partition and a group that
+    /// disagrees with an entity about one position is rejected here rather than
+    /// silently resolved as a plain Directory.
+    ///
+    /// Entities are visited in name order and groups in identifier order, so a
+    /// rejection names the same pair of declarations regardless of how the
+    /// schema was assembled.
+    package init(
+        entities: [Schema.Entity],
+        polymorphicGroups: [PolymorphicGroup]
+    ) throws(DirectoryLayerTagError) {
         var positions: [Position] = [Position()]
         var renderedPaths: [String] = [""]
         let ordered = entities.sorted { $0.name < $1.name }
@@ -45,7 +57,10 @@ package struct DirectoryLayerTagMap: Sendable {
                 switch component {
                 case .staticPath(let value):
                     guard !Self.isCanonicalComponent(value) else {
-                        throw .staticComponentInCanonicalImage(entity: entity.name, component: value)
+                        throw .staticComponentInCanonicalImage(
+                            declaration: .entity(entity.name),
+                            component: value
+                        )
                     }
                     if let child = positions[index].staticChildren[value] {
                         index = child
@@ -97,21 +112,55 @@ package struct DirectoryLayerTagMap: Sendable {
             }
 
             if let leafIndex = indices.last {
-                if let existing = positions[leafIndex].leaf {
-                    guard existing.layer == entity.directoryLayer else {
-                        throw .inconsistentLayer(
-                            position: renderedPaths[leafIndex],
-                            entity: entity.name,
-                            layer: entity.directoryLayer,
-                            conflictingEntity: existing.owner,
-                            conflictingLayer: existing.layer
-                        )
-                    }
-                } else {
-                    positions[leafIndex].leaf = Leaf(layer: entity.directoryLayer, owner: entity.name)
-                }
+                try Self.resolveLeaf(
+                    at: leafIndex,
+                    layer: entity.directoryLayer,
+                    owner: .entity(entity.name),
+                    positions: &positions,
+                    renderedPaths: renderedPaths
+                )
             }
             visited.append((name: entity.name, indices: indices))
+        }
+
+        // A group declares only static components, so it never opens a dynamic
+        // position; it can still resolve a position an entity passes through.
+        for group in polymorphicGroups.sorted(by: { $0.identifier < $1.identifier }) {
+            var index = 0
+            for component in group.directoryComponents {
+                switch component {
+                case .staticPath(let value):
+                    guard !Self.isCanonicalComponent(value) else {
+                        throw .staticComponentInCanonicalImage(
+                            declaration: .polymorphicGroup(group.identifier),
+                            component: value
+                        )
+                    }
+                    if let child = positions[index].staticChildren[value] {
+                        index = child
+                    } else {
+                        positions.append(Position())
+                        renderedPaths.append(Self.path(renderedPaths[index], appending: value))
+                        let child = positions.count - 1
+                        positions[index].staticChildren[value] = child
+                        index = child
+                    }
+
+                case .dynamicField(let fieldName):
+                    throw .dynamicComponentInPolymorphicGroup(
+                        group: group.identifier,
+                        fieldName: fieldName
+                    )
+                }
+            }
+            guard !group.directoryComponents.isEmpty else { continue }
+            try Self.resolveLeaf(
+                at: index,
+                layer: group.directoryLayer,
+                owner: .polymorphicGroup(group.identifier),
+                positions: &positions,
+                renderedPaths: renderedPaths
+            )
         }
 
         // The layer of a position is known only once every declaration has been
@@ -152,21 +201,36 @@ package struct DirectoryLayerTagMap: Sendable {
 
     /// Whether a field kind has a canonical textual Directory component form.
     ///
-    /// The admitted set is exactly the set `DirectoryComponentCodec` can encode.
-    /// The switch is exhaustive so that a new field kind cannot be admitted or
-    /// rejected by omission.
+    /// `FieldSchemaType` owns the admitted set so that a declaration this
+    /// bridge cannot encode is rejected where it is written rather than at
+    /// container bootstrap. This bridge owns the exact strings, and
+    /// `DirectoryLayerTagMapTests` proves the owner's set is exactly the set
+    /// `DirectoryComponentCodec` encodes.
     package static func admitsDynamicComponent(_ type: FieldSchemaType) -> Bool {
-        switch type {
-        case .bool, .int8, .int16, .int32, .int64,
-             .uint8, .uint16, .uint32, .uint64,
-             .float32, .float64, .decimal,
-             .string, .bytes,
-             .date, .time, .dateTime, .timestamp, .timeSpan, .calendarPeriod,
-             .geographicPoint, .geographicPosition,
-             .uuid, .enum:
-            true
-        case .vector, .object, .rdfTerm, .reference, .nested:
-            false
+        type.hasCanonicalDirectoryComponent
+    }
+
+    /// Records the layer a declaration assigns to its leaf position, or rejects
+    /// the pair of declarations that disagree about it.
+    private static func resolveLeaf(
+        at index: Int,
+        layer: DirectoryLayer,
+        owner: DirectoryDeclarationOwner,
+        positions: inout [Position],
+        renderedPaths: [String]
+    ) throws(DirectoryLayerTagError) {
+        if let existing = positions[index].leaf {
+            guard existing.layer == layer else {
+                throw .inconsistentLayer(
+                    position: renderedPaths[index],
+                    declaration: owner,
+                    layer: layer,
+                    conflictingDeclaration: existing.owner,
+                    conflictingLayer: existing.layer
+                )
+            }
+        } else {
+            positions[index].leaf = Leaf(layer: layer, owner: owner)
         }
     }
 
@@ -186,7 +250,7 @@ package struct DirectoryLayerTagMap: Sendable {
 
     private struct Leaf: Sendable {
         let layer: DirectoryLayer
-        let owner: String
+        let owner: DirectoryDeclarationOwner
     }
 
     private static func path(_ parent: String, appending component: String) -> String {

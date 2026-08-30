@@ -100,7 +100,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/database-kit.git",
-            revision: "cca9c9da970c7cbf2d41e8f7471632df0aa92ff2",
+            revision: "0e5d22225d3f676c9cc85802f861f32f3ffb000f",
             traits: databaseKitTraits
         ),
         .package(
@@ -109,7 +109,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/storage-kit.git",
-            revision: "5408f55259f3ae883c2f6ba31b2fbd230856019d"
+            revision: "d30b29d657586278665747cc3ffdff119e1f3ce0"
         ),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.7.0"),
         .package(url: "https://github.com/apple/swift-metrics.git", from: "2.7.0"),

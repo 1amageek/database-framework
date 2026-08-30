@@ -11,12 +11,13 @@ package enum DirectoryLayerTagError: Error, Equatable, Sendable {
 
     /// Two declarations resolve the same node position as a leaf and assign it
     /// different layers. The position cannot be both a plain Directory and a
-    /// Partition, so neither reading wins.
+    /// Partition, so neither reading wins. Either declaration may be an entity
+    /// or a polymorphic group, because both declare a leaf.
     case inconsistentLayer(
         position: String,
-        entity: String,
+        declaration: DirectoryDeclarationOwner,
         layer: DirectoryLayer,
-        conflictingEntity: String,
+        conflictingDeclaration: DirectoryDeclarationOwner,
         conflictingLayer: DirectoryLayer
     )
 
@@ -37,7 +38,15 @@ package enum DirectoryLayerTagError: Error, Equatable, Sendable {
     /// A static component is itself a canonical component image. A dynamic sibling
     /// can produce the same name, so the static component is not addressable as a
     /// distinct node.
-    case staticComponentInCanonicalImage(entity: String, component: String)
+    case staticComponentInCanonicalImage(
+        declaration: DirectoryDeclarationOwner,
+        component: String
+    )
+
+    /// A polymorphic group declaration carries a dynamic component. A group
+    /// addresses one directory shared by every member, so it has no record from
+    /// which a dynamic component could be resolved.
+    case dynamicComponentInPolymorphicGroup(group: String, fieldName: String)
 
     /// A dynamic component references a field the entity does not declare.
     case unknownDynamicField(entity: String, fieldName: String)
