@@ -632,7 +632,7 @@ public final class DatabaseContext: Sendable {
         _ = try requireOperationDataRoot()
         #endif
 
-        let path: AnyDirectoryPath?
+        let path: DirectoryPath<T>
         if T.hasDynamicDirectory {
             guard let binding = query.partitionBinding else {
                 throw DirectoryPathError.dynamicFieldsRequired(
@@ -641,19 +641,21 @@ public final class DatabaseContext: Sendable {
                 )
             }
             try binding.validate()
-            path = try AnyDirectoryPath(binding)
+            path = binding
         } else {
-            path = nil
+            path = DirectoryPath<T>()
         }
 
-        guard let entity = container.schema.entity(named: T.persistableType) else {
-            throw ContainerSchemaError.entityNotFound(T.persistableType)
-        }
-        let store = try await container.store(
-            for: entity,
+        // A directory no write ever created is an absent keyspace, so the
+        // query resolves no model rather than publishing that directory.
+        guard let store = try await container.readStore(
+            for: T.self,
             path: path,
+            readPolicy: try readPolicy(),
             transaction: transaction
-        )
+        ) else {
+            return []
+        }
         return try await store.fetchInTransaction(
             query,
             transaction: transaction
@@ -680,7 +682,7 @@ public final class DatabaseContext: Sendable {
         _ = try requireOperationDataRoot()
         #endif
 
-        let path: AnyDirectoryPath?
+        let path: DirectoryPath<T>
         if T.hasDynamicDirectory {
             guard let binding = query.partitionBinding else {
                 throw DirectoryPathError.dynamicFieldsRequired(
@@ -689,20 +691,21 @@ public final class DatabaseContext: Sendable {
                 )
             }
             try binding.validate()
-            path = try AnyDirectoryPath(binding)
+            path = binding
         } else {
-            path = nil
+            path = DirectoryPath<T>()
         }
 
-        guard let entity = container.schema.entity(named: T.persistableType)
-        else {
-            throw ContainerSchemaError.entityNotFound(T.persistableType)
-        }
-        let store = try await container.store(
-            for: entity,
+        // A directory no write ever created is an absent keyspace, so the
+        // query resolves no model rather than publishing that directory.
+        guard let store = try await container.readStore(
+            for: T.self,
             path: path,
+            readPolicy: try readPolicy(),
             transaction: transaction
-        )
+        ) else {
+            return []
+        }
         return try await store.fetchInTransaction(
             query,
             transaction: transaction,
@@ -793,7 +796,7 @@ public final class DatabaseContext: Sendable {
         _ = try requireOperationDataRoot()
         #endif
 
-        let path: AnyDirectoryPath?
+        let path: DirectoryPath<T>
         if T.hasDynamicDirectory {
             guard let binding = query.partitionBinding else {
                 throw DirectoryPathError.dynamicFieldsRequired(
@@ -802,19 +805,21 @@ public final class DatabaseContext: Sendable {
                 )
             }
             try binding.validate()
-            path = try AnyDirectoryPath(binding)
+            path = binding
         } else {
-            path = nil
+            path = DirectoryPath<T>()
         }
 
-        guard let entity = container.schema.entity(named: T.persistableType) else {
-            throw ContainerSchemaError.entityNotFound(T.persistableType)
-        }
-        let store = try await container.store(
-            for: entity,
+        // A directory no write ever created is an absent keyspace, so the
+        // count is zero rather than publishing that directory.
+        guard let store = try await container.readStore(
+            for: T.self,
             path: path,
+            readPolicy: try readPolicy(),
             transaction: transaction
-        )
+        ) else {
+            return 0
+        }
         return try await store.fetchCountInTransaction(
             query,
             transaction: transaction

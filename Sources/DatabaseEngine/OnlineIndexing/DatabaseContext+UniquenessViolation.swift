@@ -44,10 +44,16 @@ extension DatabaseContext {
             requiredAccess: .administer,
             configuration: .batch
         ) { transaction in
-            let databaseStore = try await self.container.store(
+            // A directory no write ever created records no violation, so the
+            // read reports an empty result rather than publishing that
+            // directory.
+            guard let databaseStore = try await self.container.readStore(
                 for: type,
+                readPolicy: try self.readPolicy(),
                 transaction: transaction
-            )
+            ) else {
+                return []
+            }
             return try await databaseStore.violationTracker.scanViolations(
                 indexName: indexName,
                 limit: limit,
@@ -88,11 +94,17 @@ extension DatabaseContext {
             requiredAccess: .administer,
             configuration: .batch
         ) { transaction in
-            let databaseStore = try await self.container.store(
+            // A directory no write ever created records no violation, so the
+            // read reports an empty result rather than publishing that
+            // directory.
+            guard let databaseStore = try await self.container.readStore(
                 for: type,
                 path: partition,
+                readPolicy: try self.readPolicy(),
                 transaction: transaction
-            )
+            ) else {
+                return []
+            }
             return try await databaseStore.violationTracker.scanViolations(
                 indexName: indexName,
                 limit: limit,
@@ -124,10 +136,16 @@ extension DatabaseContext {
             requiredAccess: .administer,
             configuration: .batch
         ) { transaction in
-            let databaseStore = try await self.container.store(
+            // A directory no write ever created records no violation, so the
+            // read reports an empty result rather than publishing that
+            // directory.
+            guard let databaseStore = try await self.container.readStore(
                 for: type,
+                readPolicy: try self.readPolicy(),
                 transaction: transaction
-            )
+            ) else {
+                return false
+            }
             return try await databaseStore.violationTracker.hasViolations(
                 indexName: indexName,
                 transaction: transaction
@@ -153,11 +171,17 @@ extension DatabaseContext {
             requiredAccess: .administer,
             configuration: .batch
         ) { transaction in
-            let databaseStore = try await self.container.store(
+            // A directory no write ever created records no violation, so the
+            // read reports an empty result rather than publishing that
+            // directory.
+            guard let databaseStore = try await self.container.readStore(
                 for: type,
                 path: partition,
+                readPolicy: try self.readPolicy(),
                 transaction: transaction
-            )
+            ) else {
+                return false
+            }
             return try await databaseStore.violationTracker.hasViolations(
                 indexName: indexName,
                 transaction: transaction
@@ -194,10 +218,20 @@ extension DatabaseContext {
             requiredAccess: .administer,
             configuration: .batch
         ) { transaction in
-            let databaseStore = try await self.container.store(
+            // A directory no write ever created records no violation, so the
+            // read reports an empty result rather than publishing that
+            // directory.
+            guard let databaseStore = try await self.container.readStore(
                 for: type,
+                readPolicy: try self.readPolicy(),
                 transaction: transaction
-            )
+            ) else {
+                return ViolationSummary(
+                    indexName: indexName,
+                    violationCount: 0,
+                    totalConflictingEntities: 0
+                )
+            }
             return try await databaseStore.violationTracker.violationSummary(
                 indexName: indexName,
                 transaction: transaction
@@ -223,11 +257,21 @@ extension DatabaseContext {
             requiredAccess: .administer,
             configuration: .batch
         ) { transaction in
-            let databaseStore = try await self.container.store(
+            // A directory no write ever created records no violation, so the
+            // read reports an empty result rather than publishing that
+            // directory.
+            guard let databaseStore = try await self.container.readStore(
                 for: type,
                 path: partition,
+                readPolicy: try self.readPolicy(),
                 transaction: transaction
-            )
+            ) else {
+                return ViolationSummary(
+                    indexName: indexName,
+                    violationCount: 0,
+                    totalConflictingEntities: 0
+                )
+            }
             return try await databaseStore.violationTracker.violationSummary(
                 indexName: indexName,
                 transaction: transaction
@@ -397,10 +441,16 @@ extension DatabaseContext {
             requiredAccess: .administer,
             configuration: .batch
         ) { transaction in
-            let databaseStore = try await self.container.store(
+            // A directory no write ever created records no violation, so the
+            // read reports an empty result rather than publishing that
+            // directory.
+            guard let databaseStore = try await self.container.readStore(
                 for: type,
+                readPolicy: try self.readPolicy(),
                 transaction: transaction
-            )
+            ) else {
+                return .notFound
+            }
             let indexSubspace = try databaseStore.indexLifecycleStore
                 .indexSubspace(for: indexName)
             return try await databaseStore.violationTracker.verifyResolution(
@@ -432,11 +482,17 @@ extension DatabaseContext {
             requiredAccess: .administer,
             configuration: .batch
         ) { transaction in
-            let databaseStore = try await self.container.store(
+            // A directory no write ever created records no violation, so the
+            // read reports an empty result rather than publishing that
+            // directory.
+            guard let databaseStore = try await self.container.readStore(
                 for: type,
                 path: partition,
+                readPolicy: try self.readPolicy(),
                 transaction: transaction
-            )
+            ) else {
+                return .notFound
+            }
             let indexSubspace = try databaseStore.indexLifecycleStore
                 .indexSubspace(for: indexName)
             return try await databaseStore.violationTracker.verifyResolution(

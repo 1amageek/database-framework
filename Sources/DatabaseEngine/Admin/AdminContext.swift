@@ -100,15 +100,21 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         _ type: T.Type
     ) async throws -> AdminCollectionStatistics {
         try await context.withDataOperation { [self] in
-        let subspace = try await container.resolveDirectory(for: type)
-        let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(T.persistableType)
-        let (begin, end) = itemSubspace.range()
-
-        // Use server-side estimation for size and count
-        let (documentCount, storageSize) = try await context.withStorageAccess(
+        // The Directory is opened in the transaction that measures it. A
+        // directory no write ever created holds no item, so the statistics
+        // report an absent keyspace rather than publishing that directory.
+        let measurement = try await context.withStorageAccess(
             requiredAccess: .read,
             configuration: .batch
-        ) { transaction in
+        ) { transaction -> (count: Int64, sizeBytes: Int64, begin: ByteString, end: ByteString)? in
+            guard let subspace = try await self.container.openDirectory(
+                for: type,
+                transaction: transaction
+            ) else { return nil }
+            let itemSubspace = subspace.subspace(SubspaceKey.items)
+                .subspace(T.persistableType)
+            let (begin, end) = itemSubspace.range()
+
             // Get estimated range size
             let sizeBytes = try await transaction.getEstimatedRangeSizeBytes(
                 beginKey: begin,
@@ -125,19 +131,33 @@ public final class AdminContext: AdminContextProtocol, Sendable {
                 }
             }
 
-            return (count, Int64(sizeBytes))
+            return (count, Int64(sizeBytes), begin, end)
         }
 
-        let avgDocumentSize = documentCount > 0 ? Int(storageSize / documentCount) : 0
+        guard let measurement else {
+            return AdminCollectionStatistics(
+                entityName: T.persistableType,
+                documentCount: 0,
+                storageByteCount: 0,
+                averageDocumentByteCount: 0,
+                lastModified: nil,
+                keyRangeStart: ByteString(),
+                keyRangeEnd: ByteString()
+            )
+        }
+
+        let avgDocumentSize = measurement.count > 0
+            ? Int(measurement.sizeBytes / measurement.count)
+            : 0
 
         return AdminCollectionStatistics(
             entityName: T.persistableType,
-            documentCount: documentCount,
-            storageByteCount: storageSize,
+            documentCount: measurement.count,
+            storageByteCount: measurement.sizeBytes,
             averageDocumentByteCount: avgDocumentSize,
             lastModified: nil,
-            keyRangeStart: begin,
-            keyRangeEnd: end
+            keyRangeStart: measurement.begin,
+            keyRangeEnd: measurement.end
         )
         }
     }
@@ -160,19 +180,23 @@ public final class AdminContext: AdminContextProtocol, Sendable {
             throw AdminError.indexNotFound(indexName)
         }
 
-        // Resolve directory for the entity
-        let subspace = try await resolveDirectoryForEntity(entity)
-        let indexSubspace = try IndexLifecycleStore(
-                container: container,
-                subspace: subspace
-            ).indexSubspace(for: indexName)
-        let (begin, end) = indexSubspace.range()
-
-        // Get index statistics
-        let (entryCount, storageSize, state) = try await context.withStorageAccess(
+        // The Directory is opened in the transaction that measures it. An
+        // index in a directory no write ever created holds no entry and no
+        // lifecycle state, so it reports as disabled and empty.
+        let measurement = try await context.withStorageAccess(
             requiredAccess: .read,
             configuration: .batch
-        ) { transaction in
+        ) { transaction -> (count: Int64, sizeBytes: Int64, state: AdminIndexState)? in
+            guard let subspace = try await self.openDirectoryForEntity(
+                entity,
+                transaction: transaction
+            ) else { return nil }
+            let indexSubspace = try IndexLifecycleStore(
+                container: self.container,
+                subspace: subspace
+            ).indexSubspace(for: indexName)
+            let (begin, end) = indexSubspace.range()
+
             let sizeBytes = try await transaction.getEstimatedRangeSizeBytes(
                 beginKey: begin,
                 endKey: end
@@ -196,11 +220,11 @@ public final class AdminContext: AdminContextProtocol, Sendable {
 
         return AdminIndexStatistics(
             indexName: indexName,
-                indexType: indexDescriptor.type,
-                entryCount: entryCount,
-            storageByteCount: storageSize,
+            indexType: indexDescriptor.type,
+            entryCount: measurement?.count ?? 0,
+            storageByteCount: measurement?.sizeBytes ?? 0,
             uniqueKeyCount: nil, // Would need HyperLogLog to estimate
-            state: state,
+            state: measurement?.state ?? .disabled,
             lastUsed: nil,
             usageCount: nil
         )
@@ -305,23 +329,26 @@ public final class AdminContext: AdminContextProtocol, Sendable {
 
         progress?(0.05)
 
-        // Resolve directory for the entity
-        let subspace = try await resolveDirectoryForEntity(entity)
-            // Create IndexLifecycleStore using entity subspace (consistent with DatabaseDataStore)
-            let indexLifecycleStore = IndexLifecycleStore(container: container, subspace: subspace)
-
-        progress?(0.1)
-
-        // Step 1: Disable index and clear existing entries atomically
-        let indexDataSubspace = try indexLifecycleStore.indexSubspace(
-                for: indexName
-            )
-        let indexRange = indexDataSubspace.range()
-
-        try await context.withStorageAccess(
+        // Step 1: Resolve the directory and disable, clear, and re-enable the
+        // index in one transaction, so the directory metadata a rebuild needs
+        // commits with the index state that rebuild writes.
+        let subspace = try await context.withStorageAccess(
             requiredAccess: .administer,
             configuration: .batch
-        ) { transaction in
+        ) { transaction -> Subspace in
+            let subspace = try await self.resolveDirectoryForEntity(
+                entity,
+                transaction: transaction
+            )
+            // Create IndexLifecycleStore using entity subspace (consistent with DatabaseDataStore)
+            let indexLifecycleStore = IndexLifecycleStore(
+                container: self.container,
+                subspace: subspace
+            )
+            let indexRange = try indexLifecycleStore.indexSubspace(
+                for: indexName
+            ).range()
+
             // Disable index (from any state)
             try await indexLifecycleStore.disable(indexName, transaction: transaction)
 
@@ -330,7 +357,12 @@ public final class AdminContext: AdminContextProtocol, Sendable {
 
             // Enable index (disabled → writeOnly)
             try await indexLifecycleStore.enable(indexName, transaction: transaction)
+            return subspace
         }
+        let indexLifecycleStore = IndexLifecycleStore(
+            container: container,
+            subspace: subspace
+        )
 
         progress?(0.2)
 
@@ -403,20 +435,32 @@ public final class AdminContext: AdminContextProtocol, Sendable {
             configuration: .default
         )
 
-        // Collect index statistics for all indexes
+        // Collect index statistics for all indexes. Each entity's Directory is
+        // opened in a read transaction: one no write ever created holds no
+        // index entry, so it contributes no statistics instead of being
+        // published by this collection pass.
         for entity in container.schema.entities {
-            let subspace = try await resolveDirectoryForEntity(entity)
+            let indexSubspaces = try await context.withStorageAccess(
+                requiredAccess: .read,
+                configuration: .batch
+            ) { transaction -> [(descriptor: IndexDescriptor, subspace: Subspace)] in
+                guard let subspace = try await self.openDirectoryForEntity(
+                    entity,
+                    transaction: transaction
+                ) else { return [] }
                 let lifecycleStore = IndexLifecycleStore(
-                    container: container,
+                    container: self.container,
                     subspace: subspace
                 )
+                return try entity.indexDescriptors.map { descriptor in
+                    (descriptor, try lifecycleStore.indexSubspace(for: descriptor.name))
+                }
+            }
 
-                for indexDescriptor in entity.indexDescriptors {
-                let indexDataSubspace = try lifecycleStore.indexSubspace(
-                        for: indexDescriptor.name)
+            for indexSubspace in indexSubspaces {
                 try await statisticsService.collectIndexStatistics(
-                    index: indexDescriptor,
-                    indexSubspace: indexDataSubspace
+                    index: indexSubspace.descriptor,
+                    indexSubspace: indexSubspace.subspace
                 )
             }
         }
@@ -443,8 +487,21 @@ public final class AdminContext: AdminContextProtocol, Sendable {
             configuration: .default
         )
 
-        // Get data store for this type
-        let dataStore = try await container.store(for: type)
+        // Sampling reads the entity's directory. A directory no write ever
+        // created holds no row to sample, so analysis is a no-op instead of
+        // publishing that directory.
+        let readPolicy = try context.readPolicy()
+        let container = self.container
+        let dataStore = try await context.withStorageAccess(
+            requiredAccess: .administer
+        ) { transaction in
+            try await container.readStore(
+                for: type,
+                readPolicy: readPolicy,
+                transaction: transaction
+            )
+        }
+        guard let dataStore else { return }
 
         // Collect statistics through the query-planning statistics service.
         try await statisticsService.collectStatistics(
@@ -480,15 +537,20 @@ public final class AdminContext: AdminContextProtocol, Sendable {
 
     public func estimatedStorageSize<T: Persistable>(for type: T.Type) async throws -> Int64 {
         try await context.withDataOperation { [self] in
-        let subspace = try await container.resolveDirectory(for: type)
-        let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(T.persistableType)
-        let (begin, end) = itemSubspace.range()
-
+        // A directory no write ever created occupies no storage, so the
+        // estimate is zero rather than a published directory.
         let sizeBytes = try await context.withStorageAccess(
             requiredAccess: .read,
             configuration: .batch
-        ) { transaction in
-            try await transaction.getEstimatedRangeSizeBytes(
+        ) { transaction -> Int in
+            guard let subspace = try await self.container.openDirectory(
+                for: type,
+                transaction: transaction
+            ) else { return 0 }
+            let itemSubspace = subspace.subspace(SubspaceKey.items)
+                .subspace(T.persistableType)
+            let (begin, end) = itemSubspace.range()
+            return try await transaction.getEstimatedRangeSizeBytes(
                 beginKey: begin,
                 endKey: end
             )
@@ -518,14 +580,39 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         return nil
     }
 
-    private func resolveDirectoryForEntity(_ entity: Schema.Entity) async throws -> Subspace {
+    /// Resolves an entity's `#Directory` in the caller's transaction, creating
+    /// the components that do not exist yet.
+    private func resolveDirectoryForEntity(
+        _ entity: Schema.Entity,
+        transaction: any TransactionAccess
+    ) async throws -> Subspace {
+        try requirePersistableRegistration(entity)
+        // Use container's resolveDirectory to respect #Directory definitions
+        return try await container.resolveDirectory(
+            for: entity,
+            transaction: transaction
+        )
+    }
+
+    /// Opens an entity's `#Directory` in the caller's transaction, or `nil`
+    /// when it has never been created.
+    private func openDirectoryForEntity(
+        _ entity: Schema.Entity,
+        transaction: any TransactionReadAccess
+    ) async throws -> Subspace? {
+        try requirePersistableRegistration(entity)
+        return try await container.openDirectory(
+            for: entity,
+            transaction: transaction
+        )
+    }
+
+    private func requirePersistableRegistration(_ entity: Schema.Entity) throws {
         guard container.runtimeConfiguration.entityRuntimes.registration(
             named: entity.name
         ) != nil else {
             throw AdminError.operationFailed("Entity '\(entity.name)' has no Persistable type")
         }
-        // Use container's resolveDirectory to respect #Directory definitions
-        return try await container.resolveDirectory(for: entity)
     }
 
     private func describeCondition<T>(_ predicate: Predicate<T>) -> String {

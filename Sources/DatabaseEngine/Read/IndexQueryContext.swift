@@ -762,28 +762,45 @@ public struct IndexQueryContext: Sendable {
             orderBy: nil
         )
 
-        let store: DatabaseDataStore
-        if let binding = try partitionBinding(for: type) {
-            store = try await context.container.store(for: type, path: binding)
-        } else {
-            store = try await context.container.store(for: type)
-        }
-        let fetcher = BatchFetcher<T>(
-            itemSubspace: store.itemSubspace,
-            blobsSubspace: store.blobsSubspace,
-            itemType: T.persistableType,
-            itemStorageFactory: context.container.itemStorageFactory,
-            configuration: configuration
-        )
+        let readPolicy = try context.readPolicy()
+        let binding = try partitionBinding(for: type)
+        let container = context.container
 
         let items = try await context.withStorageAccess(
             requiredAccess: .read,
             configuration: .default
         ) { transaction in
-            try await fetcher.fetch(primaryKeys: ids, transaction: transaction)
+            let store: DatabaseDataStore?
+            if let binding {
+                store = try await container.readStore(
+                    for: type,
+                    path: binding,
+                    readPolicy: readPolicy,
+                    transaction: transaction
+                )
+            } else {
+                store = try await container.readStore(
+                    for: type,
+                    readPolicy: readPolicy,
+                    transaction: transaction
+                )
+            }
+            // A directory no write ever created holds no item, so the batch
+            // resolves no model rather than publishing that directory.
+            guard let store else { return [T]() }
+            let fetcher = BatchFetcher<T>(
+                itemSubspace: store.itemSubspace,
+                blobsSubspace: store.blobsSubspace,
+                itemType: T.persistableType,
+                itemStorageFactory: container.itemStorageFactory,
+                configuration: configuration
+            )
+            return try await fetcher.fetch(
+                primaryKeys: ids,
+                transaction: transaction
+            )
         }
 
-        let readPolicy = try context.readPolicy()
         for item in items {
             try readPolicy.authorizeGet(try PersistedModel(item))
         }

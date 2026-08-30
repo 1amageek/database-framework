@@ -538,26 +538,50 @@ public struct MigrationContext: Sendable {
         group: PolymorphicGroup,
         batchSize: Int
     ) async throws {
-        let subspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
-        let lifecycleStore = IndexLifecycleStore(container: container, subspace: subspace,
+        // The polymorphic Directory and the index state that admits writes to
+        // it are created in one transaction, so a build never begins behind
+        // directory metadata that committed on its own.
+        let prepared = try await withAuthorizedTransaction(
+            configuration: .default
+        ) { transaction -> (subspace: Subspace, alreadyReadable: Bool) in
+            let subspace = try await self.container.resolvePolymorphicDirectory(
+                for: group.identifier,
+                transaction: transaction
+            )
+            let lifecycleStore = IndexLifecycleStore(
+                container: self.container,
+                subspace: subspace,
+                schema: self.schema,
+                indexPhysicalLayouts: self.targetIndexPhysicalLayouts
+            )
+            switch try await lifecycleStore.state(
+                of: indexName,
+                transaction: transaction
+            ) {
+            case .disabled:
+                try await lifecycleStore.enable(
+                    indexName,
+                    transaction: transaction
+                )
+            case .readable:
+                return (subspace, true)
+            case .writeOnly:
+                break
+            }
+            return (subspace, false)
+        }
+        guard !prepared.alreadyReadable else { return }
+
+        let lifecycleStore = IndexLifecycleStore(
+            container: container,
+            subspace: prepared.subspace,
             schema: schema,
             indexPhysicalLayouts: targetIndexPhysicalLayouts
         )
-        let currentState = try await lifecycleStore.state(of: indexName)
-
-        switch currentState {
-        case .disabled:
-            try await lifecycleStore.enable(indexName)
-        case .readable:
-            return
-        case .writeOnly:
-            break
-        }
-
         try await buildPolymorphicIndexEntries(
             indexName: indexName,
             group: group,
-            subspace: subspace,
+            subspace: prepared.subspace,
             lifecycleStore: lifecycleStore,
             batchSize: batchSize
         )
@@ -628,24 +652,40 @@ public struct MigrationContext: Sendable {
         group: PolymorphicGroup,
         batchSize: Int
     ) async throws {
-        let subspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
-        let lifecycleStore = IndexLifecycleStore(container: container, subspace: subspace,
-            schema: schema,
-            indexPhysicalLayouts: targetIndexPhysicalLayouts
-        )
-        let indexRange = try lifecycleStore.indexSubspace(
-            for: indexName
-        )
-            .range()
-
-        try await withAuthorizedTransaction(configuration: .batch) { transaction in
+        // Resolving the Directory and clearing the index share one
+        // transaction, so the metadata a rebuild needs commits with the index
+        // state that rebuild writes.
+        let subspace = try await withAuthorizedTransaction(
+            configuration: .batch
+        ) { transaction -> Subspace in
+            let subspace = try await self.container.resolvePolymorphicDirectory(
+                for: group.identifier,
+                transaction: transaction
+            )
+            let lifecycleStore = IndexLifecycleStore(
+                container: self.container,
+                subspace: subspace,
+                schema: self.schema,
+                indexPhysicalLayouts: self.targetIndexPhysicalLayouts
+            )
+            let indexRange = try lifecycleStore.indexSubspace(
+                for: indexName
+            )
+                .range()
             try await lifecycleStore.disable(indexName, transaction: transaction)
             try transaction.clearRange(
                 beginKey: indexRange.begin,
                 endKey: indexRange.end
             )
             try await lifecycleStore.enable(indexName, transaction: transaction)
+            return subspace
         }
+        let lifecycleStore = IndexLifecycleStore(
+            container: container,
+            subspace: subspace,
+            schema: schema,
+            indexPhysicalLayouts: targetIndexPhysicalLayouts
+        )
 
         try await buildPolymorphicIndexEntries(
             indexName: indexName,
@@ -865,11 +905,27 @@ public struct MigrationContext: Sendable {
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let subspace = try await container.resolveDirectory(for: type)
-                    let info = MigrationStoreInfo(
-                        subspace: subspace,
-                        blobsSubspace: subspace.subspace(SubspaceKey.blobs)
-                    )
+                    // A directory no write ever created holds no item, so the
+                    // enumeration completes empty rather than publishing it.
+                    let info = try await container.withDatabaseTransaction(
+                        requiredAccess: .administer,
+                        configuration: .default
+                    ) { transaction -> MigrationStoreInfo? in
+                        guard
+                            let subspace = try await container.openDirectory(
+                                for: type,
+                                transaction: transaction
+                            )
+                        else { return nil }
+                        return MigrationStoreInfo(
+                            subspace: subspace,
+                            blobsSubspace: subspace.subspace(SubspaceKey.blobs)
+                        )
+                    }
+                    guard let info else {
+                        continuation.finish()
+                        return
+                    }
                     let enumerator = ItemEnumerator<T>(
                         itemType: itemType,
                         storeInfo: info,
@@ -899,17 +955,21 @@ public struct MigrationContext: Sendable {
     /// - Throws: Error if update fails
     public func update<T: Persistable>(_ item: T) async throws {
         let itemType = T.persistableType
-        let subspace = try await container.resolveDirectory(for: T.self)
-
         let data = try DataAccess.serialize(item)
         let identifier = try item.persistableIdentifierTuple()
-        let itemKey = subspace.subspace(SubspaceKey.items).subspace(itemType).pack(identifier)
-        let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
 
+        // The Directory is resolved in the transaction that writes the item,
+        // so the metadata it creates commits with that write.
         try await withAuthorizedTransaction(configuration: .default) { transaction in
+            let subspace = try await self.container.resolveDirectory(
+                for: T.self,
+                transaction: transaction
+            )
+            let itemKey = subspace.subspace(SubspaceKey.items)
+                .subspace(itemType).pack(identifier)
             let storage = self.container.itemStorageFactory.make(
                 transaction: transaction,
-                blobsSubspace: blobsSubspace
+                blobsSubspace: subspace.subspace(SubspaceKey.blobs)
             )
             try await storage.write(data, for: itemKey)
         }
@@ -924,16 +984,20 @@ public struct MigrationContext: Sendable {
     /// - Throws: Error if delete fails
     public func delete<T: Persistable>(_ item: T) async throws {
         let itemType = T.persistableType
-        let subspace = try await container.resolveDirectory(for: T.self)
-
         let identifier = try item.persistableIdentifierTuple()
-        let itemKey = subspace.subspace(SubspaceKey.items).subspace(itemType).pack(identifier)
-        let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
 
+        // The Directory is resolved in the transaction that deletes the item,
+        // matching the delete path of the runtime store.
         try await withAuthorizedTransaction(configuration: .default) { transaction in
+            let subspace = try await self.container.resolveDirectory(
+                for: T.self,
+                transaction: transaction
+            )
+            let itemKey = subspace.subspace(SubspaceKey.items)
+                .subspace(itemType).pack(identifier)
             let storage = self.container.itemStorageFactory.make(
                 transaction: transaction,
-                blobsSubspace: blobsSubspace
+                blobsSubspace: subspace.subspace(SubspaceKey.blobs)
             )
             try await storage.delete(for: itemKey)
         }
@@ -950,19 +1014,22 @@ public struct MigrationContext: Sendable {
     /// - Throws: Error if any batch fails
     public func batchUpdate<T: Persistable>(_ items: [T], batchSize: Int = 100) async throws {
         let itemType = T.persistableType
-        let subspace = try await container.resolveDirectory(for: T.self)
-
-        let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(itemType)
-        let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
-        // Process in batches
+        // Process in batches. Each batch resolves the Directory in its own
+        // write transaction, so the metadata commits with the rows it holds.
         for batchStart in stride(from: 0, to: items.count, by: batchSize) {
             let batchEnd = min(batchStart + batchSize, items.count)
             let batch = Array(items[batchStart..<batchEnd])
 
             try await withAuthorizedTransaction(configuration: .batch) { transaction in
+                let subspace = try await self.container.resolveDirectory(
+                    for: T.self,
+                    transaction: transaction
+                )
+                let itemSubspace = subspace.subspace(SubspaceKey.items)
+                    .subspace(itemType)
                 let storage = self.container.itemStorageFactory.make(
                     transaction: transaction,
-                    blobsSubspace: blobsSubspace
+                    blobsSubspace: subspace.subspace(SubspaceKey.blobs)
                 )
                 for item in batch {
                     let data = try DataAccess.serialize(item)
@@ -985,20 +1052,22 @@ public struct MigrationContext: Sendable {
     /// - Throws: Error if any batch fails
     public func batchDelete<T: Persistable>(_ items: [T], batchSize: Int = 100) async throws {
         let itemType = T.persistableType
-        let subspace = try await container.resolveDirectory(for: T.self)
-
-        let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(itemType)
-        let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
-
-        // Process in batches
+        // Process in batches. Each batch resolves the Directory in its own
+        // write transaction, matching the delete path of the runtime store.
         for batchStart in stride(from: 0, to: items.count, by: batchSize) {
             let batchEnd = min(batchStart + batchSize, items.count)
             let batch = items[batchStart..<batchEnd]
 
             try await withAuthorizedTransaction(configuration: .batch) { transaction in
+                let subspace = try await self.container.resolveDirectory(
+                    for: T.self,
+                    transaction: transaction
+                )
+                let itemSubspace = subspace.subspace(SubspaceKey.items)
+                    .subspace(itemType)
                 let storage = self.container.itemStorageFactory.make(
                     transaction: transaction,
-                    blobsSubspace: blobsSubspace
+                    blobsSubspace: subspace.subspace(SubspaceKey.blobs)
                 )
                 for item in batch {
                     let identifier = try item.persistableIdentifierTuple()
@@ -1024,15 +1093,22 @@ public struct MigrationContext: Sendable {
         avgRowSizeBytes: Int = 500
     ) async throws -> Int {
         let itemType = T.persistableType
-        let subspace = try await container.resolveDirectory(for: T.self)
 
-        let itemPrefix = subspace.subspace(SubspaceKey.items).subspace(itemType)
-        let (beginKey, endKey) = itemPrefix.range()
-
+        // Each scan opens the Directory in its own read transaction. One no
+        // write ever created holds no item, so the count is zero rather than a
+        // published directory.
         // Use approximate count for large datasets
         if approximate {
-            let sizeBytes = try await withAuthorizedTransaction(configuration: .batch) { transaction in
-                try await transaction.getEstimatedRangeSizeBytes(
+            let sizeBytes = try await withAuthorizedTransaction(configuration: .batch) { transaction -> Int in
+                guard
+                    let subspace = try await self.container.openDirectory(
+                        for: type,
+                        transaction: transaction
+                    )
+                else { return 0 }
+                let (beginKey, endKey) = subspace.subspace(SubspaceKey.items)
+                    .subspace(itemType).range()
+                return try await transaction.getEstimatedRangeSizeBytes(
                     beginKey: beginKey,
                     endKey: endKey
                 )
@@ -1048,7 +1124,15 @@ public struct MigrationContext: Sendable {
 
         while true {
             let currentLastKey = lastKey
-            let (batchCount, newLastKey): (Int, ByteString?) = try await withAuthorizedTransaction(configuration: .batch) { transaction in
+            let (batchCount, newLastKey): (Int, ByteString?) = try await withAuthorizedTransaction(configuration: .batch) { transaction -> (Int, ByteString?) in
+                guard
+                    let subspace = try await self.container.openDirectory(
+                        for: type,
+                        transaction: transaction
+                    )
+                else { return (0, nil) }
+                let (beginKey, endKey) = subspace.subspace(SubspaceKey.items)
+                    .subspace(itemType).range()
                 let rangeBegin = currentLastKey.map { $0.appending(0x00) } ?? beginKey
 
                 var count = 0
@@ -1097,17 +1181,23 @@ public struct MigrationContext: Sendable {
     /// the V1 location still holds the original rows and their indexes.
     /// Call this with the source-schema type (`V1.self`) to reclaim that space.
     ///
-    /// Uses the type's own `#Directory` definition via
-    /// `container.resolveDirectory(for: T.self)`, so V1 and V2 — even with the
-    /// same `persistableType` — clear independent subspaces.
+    /// Uses the type's own `#Directory` definition, so V1 and V2 — even with
+    /// the same `persistableType` — clear independent subspaces. The directory
+    /// is opened in the transaction that clears it: one no write ever created
+    /// holds nothing to reclaim, so the purge is a no-op rather than creating
+    /// the keyspace it is about to clear.
     ///
     /// - Parameter type: The source-schema Persistable type whose storage should be removed.
-    /// - Throws: Any error from directory resolution or the clearRange transaction.
+    /// - Throws: Any error from opening the directory or the clearRange transaction.
     public func purgeSourceSchemaStorage<T: Persistable>(_ type: T.Type) async throws {
-        let subspace = try await container.resolveDirectory(for: T.self)
-        let (beginKey, endKey) = subspace.range()
-
         try await withAuthorizedTransaction(configuration: .batch) { transaction in
+            guard
+                let subspace = try await self.container.openDirectory(
+                    for: type,
+                    transaction: transaction
+                )
+            else { return }
+            let (beginKey, endKey) = subspace.range()
             try transaction.clearRange(beginKey: beginKey, endKey: endKey)
         }
     }

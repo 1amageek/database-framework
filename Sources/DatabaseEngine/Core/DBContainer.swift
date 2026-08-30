@@ -1222,6 +1222,7 @@ public final class DBContainer: Sendable {
     /// caller that owns one passes it, so directory metadata commits with the
     /// mutation that needed it.
     package func withOperationTransaction<Result: Sendable>(
+        configuration: TransactionConfiguration = .default,
         _ body: @Sendable @escaping (any TransactionAccess) async throws -> Result
     ) async throws -> Result {
         #if DATABASE_MULTI_BASE
@@ -1230,7 +1231,7 @@ public final class DBContainer: Sendable {
         let executor = transactionExecutor
         #endif
         return try await executor.withTransaction(
-            configuration: .default,
+            configuration: configuration,
             clock: monotonicClock
         ) { transaction in
             try await body(transaction)
@@ -1539,13 +1540,18 @@ public final class DBContainer: Sendable {
                 throw DatabaseRuntimeConfigurationError
                     .missingCompiledEntityType(entityName: entity.name)
             }
-            let subspace = try await resolveDirectory(for: entity)
-            let lifecycleStore = IndexLifecycleStore(container: self, subspace: subspace)
             let indexNames = entity.indexDescriptors.map { $0.name }
-            try await transactionExecutor.withTransaction(
-                configuration: .batch,
-                clock: monotonicClock
+            try await withOperationTransaction(
+                configuration: .batch
             ) { transaction in
+                let subspace = try await self.resolveDirectory(
+                    for: entity,
+                    transaction: transaction
+                )
+                let lifecycleStore = IndexLifecycleStore(
+                    container: self,
+                    subspace: subspace
+                )
                 let pending = try await self.pendingSchemaIndexBuilds(
                     entity: entity.name,
                     indexes: indexNames,
@@ -1564,13 +1570,18 @@ public final class DBContainer: Sendable {
         }
         for group in schema.polymorphicGroups {
             guard !group.indexes.isEmpty else { continue }
-            let subspace = try await resolvePolymorphicDirectory(for: group.identifier)
-            let lifecycleStore = IndexLifecycleStore(container: self, subspace: subspace)
             let indexNames = group.indexes.map { $0.name }
-            try await transactionExecutor.withTransaction(
-                configuration: .batch,
-                clock: monotonicClock
+            try await withOperationTransaction(
+                configuration: .batch
             ) { transaction in
+                let subspace = try await self.resolvePolymorphicDirectory(
+                    for: group.identifier,
+                    transaction: transaction
+                )
+                let lifecycleStore = IndexLifecycleStore(
+                    container: self,
+                    subspace: subspace
+                )
                 let pending =
                     try await self
                     .pendingSchemaPolymorphicIndexBuilds(
@@ -1579,8 +1590,10 @@ public final class DBContainer: Sendable {
                         transaction: transaction
                     )
                 try await lifecycleStore.ensureReadable(
-                indexNames,
-                entityRange: subspace.subspace(SubspaceKey.items).range(),
+                    indexNames,
+                    entityRange: subspace
+                        .subspace(SubspaceKey.items)
+                        .range(),
                     pendingBuildIndexes: pending,
                     transaction: transaction
                 )
@@ -1683,7 +1696,11 @@ public final class DBContainer: Sendable {
 
     // MARK: - Directory Resolution
 
-    /// Resolve directory for a Persistable type
+    /// Resolve directory for a Persistable type in a transaction of its own.
+    ///
+    /// This is the entry point for an application that holds no transaction.
+    /// A Framework operation must instead use the `transaction:` form so the
+    /// directory metadata it creates commits with the mutation it serves.
     ///
     /// Unified API for both static and dynamic directories.
     /// - Static directories: Use default empty path
@@ -1825,6 +1842,36 @@ public final class DBContainer: Sendable {
         return try await openDataDirectory(
             relativePath: directoryPath.resolve(),
             layers: try declaredDirectoryLayers(for: entity),
+            transaction: transaction
+        )
+    }
+
+    /// Opens the Directory a `Persistable` type's `#Directory` declaration
+    /// addresses in the caller's transaction, or `nil` when it has never been
+    /// created.
+    package func openDirectory<T: Persistable>(
+        for type: T.Type,
+        path: DirectoryPath<T> = DirectoryPath(),
+        transaction: any TransactionReadAccess
+    ) async throws -> Subspace? {
+        try await openDirectory(
+            for: schemaEntity(named: T.persistableType),
+            path: try AnyDirectoryPath(path),
+            transaction: transaction
+        )
+    }
+
+    /// Opens the Directory a `Persistable` type's `#Directory` declaration
+    /// addresses in the caller's transaction, creating the components that do
+    /// not exist yet so the metadata commits with the mutation it serves.
+    package func resolveDirectory<T: Persistable>(
+        for type: T.Type,
+        path: DirectoryPath<T> = DirectoryPath(),
+        transaction: any TransactionAccess
+    ) async throws -> Subspace {
+        try await resolveDirectory(
+            for: schemaEntity(named: T.persistableType),
+            path: try AnyDirectoryPath(path),
             transaction: transaction
         )
     }
@@ -2006,15 +2053,10 @@ public final class DBContainer: Sendable {
         else {
             throw ContainerSchemaError.entityNotFound(T.persistableType)
         }
-        let subspace = try await resolveDirectory(for: type, path: path)
-        try await initializeIndexStates(for: entity, subspace: subspace)
-        return DatabaseDataStore(
-            container: self,
-            subspace: subspace,
-            entity: entity,
-            readPolicy: readPolicy,
-            securityDelegate: securityDelegate,
-            indexConfigurations: readPolicy.indexConfigurations
+        return try await store(
+            for: entity,
+            path: try AnyDirectoryPath(path),
+            readPolicy: readPolicy
         )
     }
 
@@ -2070,44 +2112,23 @@ public final class DBContainer: Sendable {
         )
     }
 
-    internal func store(
-        for entity: Schema.Entity,
-        path: AnyDirectoryPath? = nil
-    ) async throws -> DatabaseDataStore {
-        try await store(
-            for: entity,
-            path: path,
-            readPolicy: try readPolicyForCurrentOperation()
-        )
-    }
-
+    /// Builds a store for an entry point that owns no transaction.
+    ///
+    /// The directory this creates and the index lifecycle state it initializes
+    /// belong to one keyspace, so both commit together or neither does.
     internal func store(
         for entity: Schema.Entity,
         path: AnyDirectoryPath? = nil,
         readPolicy: DatabaseReadPolicy
     ) async throws -> DatabaseDataStore {
-        let entity = try schemaEntity(
-            matching: entity,
-            declaredIn: readPolicy.schema
-        )
-        let subspace = try await withOperationTransaction { transaction in
-            try await self.resolveDirectory(
+        try await withOperationTransaction { transaction in
+            try await self.store(
                 for: entity,
-                declaredIn: readPolicy.schema,
-                directoryLayers: readPolicy.directoryLayers,
                 path: path,
+                readPolicy: readPolicy,
                 transaction: transaction
             )
         }
-        try await initializeIndexStates(for: entity, subspace: subspace)
-        return DatabaseDataStore(
-            container: self,
-            subspace: subspace,
-            entity: entity,
-            readPolicy: readPolicy,
-            securityDelegate: securityDelegate,
-            indexConfigurations: readPolicy.indexConfigurations
-        )
     }
 
     /// Build a store whose directory and index state participate in the
@@ -2117,7 +2138,20 @@ public final class DBContainer: Sendable {
         path: AnyDirectoryPath? = nil,
         transaction: any TransactionAccess
     ) async throws -> DatabaseDataStore {
-        let readPolicy = try readPolicyForCurrentOperation()
+        try await store(
+            for: entity,
+            path: path,
+            readPolicy: try readPolicyForCurrentOperation(),
+            transaction: transaction
+        )
+    }
+
+    internal func store(
+        for entity: Schema.Entity,
+        path: AnyDirectoryPath? = nil,
+        readPolicy: DatabaseReadPolicy,
+        transaction: any TransactionAccess
+    ) async throws -> DatabaseDataStore {
         let entity = try schemaEntity(
             matching: entity,
             declaredIn: readPolicy.schema
@@ -2142,35 +2176,6 @@ public final class DBContainer: Sendable {
             securityDelegate: securityDelegate,
             indexConfigurations: readPolicy.indexConfigurations
         )
-    }
-
-    private func initializeIndexStates(
-        for entity: Schema.Entity,
-        subspace: Subspace
-    ) async throws {
-        let indexNames = entity.indexDescriptors.map { $0.name }
-        guard !indexNames.isEmpty else { return }
-
-        let lifecycleStore = IndexLifecycleStore(container: self, subspace: subspace)
-        try await transactionExecutor.withTransaction(
-            configuration: .batch,
-            clock: monotonicClock
-        ) { transaction in
-            let pending = try await self.pendingSchemaIndexBuilds(
-                entity: entity.name,
-                indexes: indexNames,
-                transaction: transaction
-            )
-            try await lifecycleStore.initializeMissingStates(
-                indexNames,
-                entityRange: subspace
-                    .subspace(SubspaceKey.items)
-                    .subspace(entity.name)
-                    .range(),
-                pendingBuildIndexes: pending,
-                transaction: transaction
-            )
-        }
     }
 
     private func initializeIndexStates(
@@ -2292,9 +2297,9 @@ public final class DBContainer: Sendable {
     /// Resolves the directory of a polymorphic group in a transaction of its
     /// own.
     ///
-    /// Maintenance resolves the projection once and then runs its batches in
-    /// separate transactions, so this direction never had, and does not gain,
-    /// an atomic relationship with the writes that follow it.
+    /// This is the entry point for a caller that holds no transaction. A
+    /// Framework operation must instead use the `transaction:` form so the
+    /// projection directory commits with the writes it admits.
     package func resolvePolymorphicDirectory(for identifier: String) async throws -> Subspace {
         let path = try polymorphicGroupPath(identifier: identifier)
         return try await withOperationTransaction { transaction in
@@ -3295,12 +3300,7 @@ extension DBContainer {
         let versionKey = metadataSubspace
             .subspace("schema")
             .pack(Tuple("version"))
-        var staticStores: [(
-            entity: String,
-            range: (begin: ByteString, end: ByteString),
-            lifecycleStore: IndexLifecycleStore,
-            indexNames: [String]
-        )] = []
+        var staticEntities: [Schema.Entity] = []
         for entity in schema.entities {
             guard !entity.hasDynamicDirectory else {
                 continue
@@ -3311,21 +3311,9 @@ extension DBContainer {
                 throw DatabaseRuntimeConfigurationError
                     .missingCompiledEntityType(entityName: entity.name)
             }
-            let subspace = try await resolveDirectory(for: entity)
-            staticStores.append((
-                entity: entity.name,
-                range: subspace
-                    .subspace(SubspaceKey.items)
-                    .subspace(entity.name)
-                    .range(),
-                lifecycleStore: IndexLifecycleStore(
-                    container: self,
-                    subspace: subspace
-                ),
-                indexNames: entity.indexDescriptors.map { $0.name }
-            ))
+            staticEntities.append(entity)
         }
-        let stores = staticStores
+        let entities = staticEntities
 
         let bootstrap: @Sendable (any TransactionAccess) async throws -> Bool = {
             transaction in
@@ -3335,10 +3323,34 @@ extension DBContainer {
             ) == nil else {
                 return false
             }
-            for store in stores {
+            // Each static store's Directory is resolved in the bootstrap
+            // transaction, so the metadata it creates commits with the index
+            // lifecycle state that same transaction writes for that store. An
+            // entity that declares no index has no state to initialize, so its
+            // Directory is opened rather than created and first appears when a
+            // write reaches it.
+            for entity in entities {
+                let indexNames = entity.indexDescriptors.map { $0.name }
+                let subspace: Subspace
+                if indexNames.isEmpty {
+                    guard let opened = try await self.openDirectory(
+                        for: entity,
+                        transaction: transaction
+                    ) else { continue }
+                    subspace = opened
+                } else {
+                    subspace = try await self.resolveDirectory(
+                        for: entity,
+                        transaction: transaction
+                    )
+                }
+                let range = subspace
+                    .subspace(SubspaceKey.items)
+                    .subspace(entity.name)
+                    .range()
                 let rows = try await TransactionRangeCollection.collect(using: transaction,
-                    from: .firstGreaterOrEqual(store.range.begin),
-                    to: .firstGreaterOrEqual(store.range.end),
+                    from: .firstGreaterOrEqual(range.begin),
+                    to: .firstGreaterOrEqual(range.end),
                     limit: 1,
                     reverse: false,
                     snapshot: false,
@@ -3346,12 +3358,17 @@ extension DBContainer {
                 )
                 guard rows.isEmpty else {
                     throw MigrationPlanError.unversionedStoreContainsEntities(
-                        entity: store.entity
+                        entity: entity.name
                     )
                 }
-                try await store.lifecycleStore.ensureReadable(
-                    store.indexNames,
-                    entityRange: store.range,
+                guard !indexNames.isEmpty else { continue }
+                let lifecycleStore = IndexLifecycleStore(
+                    container: self,
+                    subspace: subspace
+                )
+                try await lifecycleStore.ensureReadable(
+                    indexNames,
+                    entityRange: range,
                     transaction: transaction
                 )
             }

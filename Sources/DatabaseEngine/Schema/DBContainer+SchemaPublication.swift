@@ -29,32 +29,6 @@ extension DBContainer {
         indexPhysicalLayouts: [String: IndexPhysicalLayout]
     ) async throws -> UInt64 {
         #if DATABASE_MULTI_BASE
-        let unversionedEntityRanges:
-            [(
-                entity: String,
-                range: (begin: ByteString, end: ByteString)
-            )] = []
-        #else
-        var resolvedUnversionedEntityRanges:
-            [(
-                entity: String,
-                range: (begin: ByteString, end: ByteString)
-            )] = []
-        for entity in schema.entities where !entity.hasDynamicDirectory {
-            let subspace = try await resolveDirectory(for: entity)
-            resolvedUnversionedEntityRanges.append(
-                (
-                    entity: entity.name,
-                    range:
-                        subspace
-                        .subspace(SubspaceKey.items)
-                        .subspace(entity.name)
-                        .range()
-                ))
-        }
-        let unversionedEntityRanges = resolvedUnversionedEntityRanges
-        #endif
-        #if DATABASE_MULTI_BASE
         let schemaEngine = storageTopology.controlDomain.engine
         let schemaRoot = storageTopology.controlDomain.systemRoot
         let schemaTransactionExecutor = controlTransactionExecutor
@@ -136,11 +110,28 @@ extension DBContainer {
                     throw DatabaseSchemaRestorationError
                         .indexPhysicalFingerprintMismatch
                 }
-                for entityRange in unversionedEntityRanges {
+                #if !DATABASE_MULTI_BASE
+                // Bootstrapping asserts that no unversioned store already
+                // holds rows. The Directory is opened in the publication
+                // transaction: one no write ever created holds no row, so it
+                // is skipped rather than created by the check that declares
+                // it empty.
+                for entity in schema.entities where !entity.hasDynamicDirectory {
+                    guard
+                        let subspace = try await self.openDirectory(
+                            for: entity,
+                            transaction: transaction
+                        )
+                    else { continue }
+                    let range =
+                        subspace
+                        .subspace(SubspaceKey.items)
+                        .subspace(entity.name)
+                        .range()
                     let rows = try await TransactionRangeCollection.collect(
                         using: transaction,
-                        from: .firstGreaterOrEqual(entityRange.range.begin),
-                        to: .firstGreaterOrEqual(entityRange.range.end),
+                        from: .firstGreaterOrEqual(range.begin),
+                        to: .firstGreaterOrEqual(range.end),
                         limit: 1,
                         snapshot: false,
                         streamingMode: .small
@@ -149,10 +140,11 @@ extension DBContainer {
                         throw
                             MigrationPlanError
                             .unversionedStoreContainsEntities(
-                                entity: entityRange.entity
+                                entity: entity.name
                             )
                     }
                 }
+                #endif
                 try await registry.persistInitialSchema(
                     schema,
                     transaction: transaction
