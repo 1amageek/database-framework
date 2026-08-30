@@ -136,7 +136,7 @@ struct StandardDatabaseRootTests {
         await sharedEngine.waitUntilShutdown()
     }
 
-    @Test("A populated store without a layout marker is rejected and unchanged")
+    @Test("A populated store no Directory catalog wrote is rejected and unchanged")
     func populatedRootWithoutDescriptorIsRejected() async throws {
         let sharedEngine = InMemoryEngine()
         let sentinelKey = Subspace("existing").pack(Tuple("data"))
@@ -146,8 +146,8 @@ struct StandardDatabaseRootTests {
         }
 
         // StorageKit's root state machine rejects a non-empty keyspace that
-        // carries no layout marker, so opening the database root fails before
-        // the format catalog is ever consulted.
+        // holds no Directory catalog state, so opening the database root fails
+        // before the format catalog is ever consulted.
         let failure = await #expect(throws: StorageError.self) {
             _ = try await self.makeContainer(
                 engine: RetainedInMemoryEngine(sharedEngine),
@@ -156,7 +156,7 @@ struct StandardDatabaseRootTests {
         }
         #expect(failure?.code == .incompatibleStorageLayout)
 
-        // A rejected open writes nothing at all, marker included.
+        // A rejected open writes nothing at all.
         let remaining = try await sharedEngine.withTransaction { transaction in
             try await transaction.collectRange(
                 begin: ByteString(),

@@ -207,7 +207,7 @@ extension DBContainer {
             continuation: continuation
         )
         // The destination structure is created through the catalog rather than
-        // rebased from source keys: Directory Layout V1 stores a parent prefix
+        // rebased from source keys: the Directory layout stores a parent prefix
         // inside each child edge key and the child prefix inside its value, so
         // only the catalog can produce edges that address the destination.
         let access = destinationDomain.directoryAccess

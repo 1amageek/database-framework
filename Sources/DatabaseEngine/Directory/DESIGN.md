@@ -11,7 +11,7 @@ transaction unwrapping required before any `DirectoryAccess` call.
 - Parent: [DatabaseEngine](../DESIGN.md).
 - Children: none.
 
-This component realizes SPEC sections 10.1, 10.3, 12.1, 12.2, 12.3, and 13. It
+This component realizes SPEC sections 8.7, 10.1, 12.1, 12.2, 12.3, and 13. It
 is the single normative source for the canonical component grammar; no other
 design document restates it.
 
@@ -46,7 +46,7 @@ serialization framing.
 | [DatabaseEngine](../DESIGN.md) | parent | Session, transaction, and failure contract | Supplies the transaction and the operation admission this component requires. | This component is not a session boundary and never opens its own transaction. |
 | [Core](../Core/DESIGN.md) | used by | Resolved entity Directory | Core reads group and entity keyspaces resolved here. | A resolved node is valid only inside the transaction that resolved it. |
 | [Read](../Read/DESIGN.md) | depends on | Operation admission | Directory work is admitted like any other storage operation. | A bare session plus caller assertion is insufficient admission. |
-| StorageKit `Directory` | depends on | `DirectoryAccess`, `Directory`, `Partition`, `StorageLayoutMarker`, `DirectoryLimits` | Owns catalog transactions, opaque prefixes, layer tags, and the layout marker. | `FDBDirectoryAccess` downcasts the transaction to its own type, so a container wrapper must be unwrapped first. |
+| StorageKit `Directory` | depends on | `DirectoryAccess`, `Directory`, `Partition`, `DirectoryLimits` | Owns catalog transactions, opaque prefixes, layer tags, and root bootstrap. | `FDBDirectoryAccess` downcasts the transaction to its own type, so a container wrapper must be unwrapped first. |
 | DatabaseKit `Schema.Entity` | depends on | `directoryComponents`, `directoryLayer`, field schemas | Supplies declaration shape and declared field kinds. | DatabaseKit validates declarations; it never derives node layer tags. |
 
 ## Architecture
@@ -255,17 +255,18 @@ database root                       configured DirectoryPath, plain
   reference, but the StorageKit catalog remains the only resolver.
 - Framework metadata exists only below `system/database-framework`;
   application data, indexes, and relationships exist only below `data`.
-- Bootstrap inspects the root through StorageKit's `StorageLayoutMarker`. This
-  component consumes that inspection; it does not reimplement the marker.
+- Bootstrap opens the root through StorageKit, whose allocation authority is
+  the only witness that a root is initialized (SPEC 8.7). This component
+  consumes that verdict; it records no witness of its own.
 
 ```text
-inspect -> .openV1        -> open the reserved topology
-        -> .uninitialized -> create marker and topology in one transaction
-        -> .rejected(r)   -> DatabaseDirectoryError.incompatibleStorageLayout(r)
+open root -> initialized  -> open the reserved topology
+          -> uninitialized -> create the root and topology in one transaction
+          -> foreign        -> DatabaseDirectoryError.incompatibleStorageLayout(r)
 ```
 
-An existing root that carries no V1 marker is never initialized, deleted, or
-read as V1.
+A root holding data no Directory catalog wrote is never initialized, deleted,
+or reinterpreted.
 
 ### Binding
 
@@ -385,8 +386,7 @@ always resolves to a distinct parent.
 
 ```text
 open transaction
-  -> StorageLayoutMarker.inspect
-  -> openOrInitializeRoot (uninitialized) or openRoot (openV1)
+  -> openOrInitializeRoot (absent) or openRoot (initialized)
   -> open or create default Partition
   -> open or create system, system/database-framework, data
   -> derive DirectoryLayerTagMap from all declarations

@@ -12,9 +12,8 @@ import StorageKit
 /// | `layoutVersion` | the item layout named by `layoutKind` | stored item bytes stop being readable by the previous reader |
 ///
 /// Neither version describes the Directory layout of the database. Directory
-/// existence and compatibility are owned by StorageKit's Directory catalog and
-/// its root layout marker, which reject an incompatible store before the
-/// descriptor is read.
+/// existence and compatibility are owned by StorageKit's Directory catalog,
+/// which rejects an incompatible store before the descriptor is read.
 public struct DatabaseFormatDescriptor: Sendable, Equatable {
     /// Encoding version of this descriptor's own serialized bytes.
     public static let descriptorVersion: UInt8 = 2

@@ -4,8 +4,8 @@ import StorageKit
 
 /// Bounded pre-order walk over the content of one Tenant Partition.
 ///
-/// A placement move copies bytes between two storage domains, and Directory
-/// Layout V1 rules out copying one contiguous range and substituting its
+/// A placement move copies bytes between two storage domains, and the
+/// Directory layout rules out copying one contiguous range and substituting its
 /// leading prefix: a child edge is stored under a key that embeds its parent's
 /// absolute prefix as a packed element, and its value embeds the child's own
 /// absolute prefix. Rewriting the leading bytes of a key rewrites neither, so
