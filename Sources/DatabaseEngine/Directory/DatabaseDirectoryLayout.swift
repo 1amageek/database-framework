@@ -333,21 +333,39 @@ package enum DatabaseDirectoryLayout {
             in: partition.root,
             transaction: transaction
         ) else {
-            throw missingReservedChild(systemDirectoryName, of: partition)
+            throw try await missingReservedChild(
+                systemDirectoryName,
+                of: partition,
+                in: partition.root,
+                access: access,
+                transaction: transaction
+            )
         }
         guard let framework = try await access.openDirectory(
             frameworkDirectoryName,
             in: system,
             transaction: transaction
         ) else {
-            throw missingReservedChild(frameworkDirectoryName, of: partition)
+            throw try await missingReservedChild(
+                frameworkDirectoryName,
+                of: partition,
+                in: system,
+                access: access,
+                transaction: transaction
+            )
         }
         guard let data = try await access.openDirectory(
             dataDirectoryName,
             in: partition.root,
             transaction: transaction
         ) else {
-            throw missingReservedChild(dataDirectoryName, of: partition)
+            throw try await missingReservedChild(
+                dataDirectoryName,
+                of: partition,
+                in: partition.root,
+                access: access,
+                transaction: transaction
+            )
         }
         return DatabaseTenantDirectories(
             partition: partition,
@@ -356,10 +374,28 @@ package enum DatabaseDirectoryLayout {
         )
     }
 
+    /// Bound on the children reported beside a missing reserved node. The
+    /// report separates an unpopulated Partition from one that lost a single
+    /// node, which the reserved names already decide; it is not a subtree dump.
+    private static let reservedChildReportLimit = 8
+
     private static func missingReservedChild(
         _ name: String,
-        of partition: Partition
-    ) -> DatabaseDirectoryLayoutError {
-        .missingReservedDirectory(partition: partition.address.components, name: name)
+        of partition: Partition,
+        in parent: Directory,
+        access: any DirectoryAccess,
+        transaction: any TransactionReadAccess
+    ) async throws -> DatabaseDirectoryLayoutError {
+        let entries = try await access.listChildren(
+            in: parent,
+            after: nil,
+            limit: reservedChildReportLimit,
+            transaction: transaction
+        )
+        return .missingReservedDirectory(
+            partition: partition.address.components,
+            name: name,
+            presentChildren: entries.map(\.name)
+        )
     }
 }

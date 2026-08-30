@@ -128,6 +128,14 @@ struct CanonicalSQLRetainedOwnershipTests {
     func canonicalPhysicalWindowCapsCursorAndSkipsStableLimitZero() async throws {
         let (container, control) = try await makeControlledContainer()
         defer { await container.shutdown() }
+        // A read never creates a directory, so the window this test observes
+        // exists only after a write has created the directory it reads. The
+        // row is removed again so the scan itself stays empty.
+        let seedContext = container.testBaseContext()
+        try seedContext.insert(DecodeProbeItem(id: "seed", value: "seed"))
+        try await seedContext.save()
+        try seedContext.delete(DecodeProbeItem(id: "seed", value: "seed"))
+        try await seedContext.save()
         let recordedBefore = control.rangeCursorLimits.count
         let budget = ExecutionBudget(
             maximumRows: 3,
@@ -188,6 +196,11 @@ struct CanonicalSQLRetainedOwnershipTests {
             )
         )
         defer { await schemaDriven.shutdown() }
+        let schemaSeedContext = schemaDriven.testBaseContext()
+        try schemaSeedContext.insert(DecodeProbeItem(id: "seed", value: "seed"))
+        try await schemaSeedContext.save()
+        try schemaSeedContext.delete(DecodeProbeItem(id: "seed", value: "seed"))
+        try await schemaSeedContext.save()
         let schemaOpenedBefore = schemaControl.openedRangeCursorCount
         let schemaResponse = try await schemaDriven.testBaseContext().query(
             SelectQuery(

@@ -447,6 +447,18 @@ transaction observe read-your-writes.
   `valueKindMismatch`, `malformedComponent`.
 - `DatabaseDirectoryError.incompatibleStorageLayout` reports a root that
   Version 1 refuses to open.
+- `DatabaseDirectoryLayoutError` reports defects of the layout this component
+  commits itself: `missingReservedDirectory`, `nonPartitionBase`, and
+  `emptyRootPathComponent`. A Tenant Partition and its reserved children commit
+  in one transaction, so a Partition that exists without one of them is a
+  corrupted layout rather than an absent Tenant, and every read path reports it
+  instead of returning absent.
+- `missingReservedDirectory` carries the child names actually present beside
+  the missing one. Which node was lost is the distinction an operator acts on:
+  a Partition holding no child at all was never populated or resolves to a
+  prefix that is not its own, while a Partition still holding its siblings lost
+  exactly one node. The missing name alone cannot separate those cases, so the
+  observed children belong to the failure, bounded by a fixed report limit.
 - Address and depth bounds are owned by `DirectoryLimits`; this component
   propagates `DirectoryAddressError` unchanged.
 - No failure is converted into empty success. A missing node on read is an
@@ -470,6 +482,7 @@ transaction observe read-your-writes.
 | Write atomicity | Node creation and the row mutation are observable only after the same commit. |
 | Layout rejection | A nonempty unmarked root fails with `incompatibleStorageLayout` and is not modified. |
 | Base addresses | A `bases` child stored under another layer fails both listing and removal, an absent name removes nothing, and a Base Partition is still listed and removed. |
+| Reserved-child corruption | A Tenant Partition whose `system` node is removed fails every read path with `missingReservedDirectory`, naming the missing node and listing the children that remain. |
 | Enumeration cursor | A cursor issued for one declaration is refused by another declaration of the same shape, and resumes its own walk to exhaustion. |
 | Retirement layer identity | A staged retirement records the layer of every source component, a source node recreated under another layer is refused, and a scope the schema cannot type records none and stays addressable. |
 

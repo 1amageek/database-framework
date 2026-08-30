@@ -9,7 +9,15 @@ public enum DatabaseDirectoryLayoutError: Error, Sendable, Hashable {
     /// its reserved children commit in one transaction, so an existing
     /// Partition missing one of them is a corrupted layout rather than an
     /// absent Tenant.
-    case missingReservedDirectory(partition: [String], name: String)
+    ///
+    /// `presentChildren` reports the names found beside the missing one, so a
+    /// Partition that holds no child at all is distinguishable from one that
+    /// lost a single node. The listing is bounded and may be truncated.
+    case missingReservedDirectory(
+        partition: [String],
+        name: String,
+        presentChildren: [String]
+    )
 
     /// A child of `bases` is stored under a layer other than `.partition`.
     /// Every Base is created as a Partition, so a child of another layer is a
@@ -23,9 +31,13 @@ public enum DatabaseDirectoryLayoutError: Error, Sendable, Hashable {
 extension DatabaseDirectoryLayoutError: CustomStringConvertible {
     public var description: String {
         switch self {
-        case .missingReservedDirectory(let partition, let name):
+        case .missingReservedDirectory(let partition, let name, let presentChildren):
             let address = partition.joined(separator: "/")
-            return "Partition /\(address) is missing its reserved \(name) Directory"
+            let present = presentChildren.isEmpty
+                ? "none"
+                : presentChildren.joined(separator: ", ")
+            return "Partition /\(address) is missing its reserved \(name) "
+                + "Directory (present children: \(present))"
         case .nonPartitionBase(let name):
             return "Base '\(name)' is not stored as a Partition"
         case .emptyRootPathComponent(let index):

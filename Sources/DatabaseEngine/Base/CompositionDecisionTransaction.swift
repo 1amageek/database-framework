@@ -38,6 +38,12 @@ public final class CompositionDecisionTransaction: Sendable {
     }
 
     /// Reads one member through the same physical transaction used by writes.
+    ///
+    /// The read is admitted as the selected member, not as the writer: the
+    /// member's lease supplies the data root and the execution binding is
+    /// rebound to the member's resource and directories for the duration of
+    /// the read. `databaseTransaction` stays `nil` so a mutation cannot reach
+    /// the writer transaction through a member read.
     public func fetch<Model: Persistable>(
         _ query: Query<Model>,
         from baseID: Base.ID
@@ -51,13 +57,23 @@ public final class CompositionDecisionTransaction: Sendable {
             let context = container.session(
                 authorization: authorization
             ).base(baseID).newContext()
+            let executionBinding = try DatabaseTransactionExecutionBinding(
+                context: context,
+                transaction: storageAccess,
+                grantedAccess: .read,
+                databaseTransaction: nil
+            )
             return try await RequestAuthorization.$context.withValue(
                 authorization
             ) {
-                try await context.fetch(
-                    query,
-                    transaction: storageAccess
-                )
+                try await ActiveDatabaseTransactionContext.$binding.withValue(
+                    executionBinding
+                ) {
+                    try await context.fetch(
+                        query,
+                        transaction: storageAccess
+                    )
+                }
             }
         }
     }

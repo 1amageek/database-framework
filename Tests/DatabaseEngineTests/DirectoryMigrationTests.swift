@@ -825,20 +825,24 @@ struct DirectoryMigrationTests {
             )
             try await initialContainer.installTestBaseSchemaSnapshot(for: Schema.Version(1, 0, 0))
 
-            let migratedContainer = try await DBContainer.open(
-                for: DirectoryLightweightSchemaV2.self,
-                migrationPlan: DirectoryLightweightPlan.self,
-                configuration: .testing(storageEngine: engine),
-                runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
-                    executionIdentity: DatabaseExecutionRuntimeIdentity(
-                        identifier: "database-tests",
-                        revision: 1
-                    ),
-                    entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryLightweightUserV2.self)]),
-            )
+            // The plan is rejected while the container opens, so the failed
+            // open shuts down the engine it was handed. It therefore receives
+            // its own engine and never the one this scenario still reads.
+            let planEngine = try await makeSystemPriorityEngine()
+            let planRuntimeConfiguration = try DatabaseFrameworkRuntime.configuration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(
+                    identifier: "database-tests",
+                    revision: 1
+                ),
+                entityRuntimes: [try DatabaseFrameworkRuntime.entity(DirectoryLightweightUserV2.self)])
 
             await #expect(throws: MigrationPlanError.self) {
-                try await migratedContainer.testBaseAdmin().migrateIfNeeded()
+                _ = try await DBContainer.open(
+                    for: DirectoryLightweightSchemaV2.self,
+                    migrationPlan: DirectoryLightweightPlan.self,
+                    configuration: .testing(storageEngine: planEngine),
+                    runtimeConfiguration: planRuntimeConfiguration,
+                )
             }
 
             for path in [["directory_lightweight_test_legacy"], ["directory_lightweight_test_current"],
