@@ -7,7 +7,7 @@ Package-level design authority and design index for the in-process
 dependency direction, and the direct-child index. It does not copy the
 contracts owned by a child design.
 
-- Parent: none.
+- Parent: the workspace system design at [../DESIGN.md](../DESIGN.md).
 - Direct children: [Database](Sources/Database/DESIGN.md),
   [DatabaseEngine](Sources/DatabaseEngine/DESIGN.md),
   [GraphIndex](Sources/GraphIndex/DESIGN.md),
