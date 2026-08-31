@@ -667,6 +667,52 @@ struct DatabaseRetainedBufferTests {
         #expect(meter.retainedIntermediateBytes == 0)
     }
 
+    @Test("shared RDF graphs outlive their linear owner and page in bounds")
+    func sharedRDFGraphsOutliveLinearOwnerAndPageInBounds() throws {
+        let meter = makeMeter(
+            rows: 16,
+            bytes: 16_384,
+            workUnits: 16
+        )
+        let expected = try (0..<4).map { try graphQuad(identifier: $0) }
+        do {
+            let shared: DatabaseSharedRetainedRDFGraph
+            do {
+                var builder = try DatabaseRetainedRDFGraphBuilder(
+                    workMeter: meter
+                )
+                for quad in expected {
+                    try builder.append(quad)
+                }
+                shared = try builder.finish().moveToSharedOwnership(
+                    at: .resultMaterialization
+                )
+            }
+
+            #expect(meter.retainedIntermediateRows == 4)
+            #expect(shared.count == 4)
+
+            var borrowed: [RDFQuad] = []
+            for index in 0..<shared.count {
+                shared.withElement(at: index) { quad in
+                    borrowed.append(copy quad)
+                }
+            }
+            #expect(borrowed == expected)
+
+            do {
+                let alias = shared
+                #expect(alias.materializePage(1..<3) == Array(expected[1..<3]))
+                #expect(alias.materializePage(0..<4) == expected)
+            }
+            #expect(meter.retainedIntermediateRows == 4)
+            #expect(shared.materializePage(3..<4) == [expected[3]])
+        }
+
+        #expect(meter.retainedIntermediateRows == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
     @Test("shared aliases release transferred reservations exactly once")
     func sharedAliasesReleaseTransferredReservationExactlyOnce() throws {
         let meter = makeMeter(rows: 2, bytes: 32)

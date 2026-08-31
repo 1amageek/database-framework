@@ -2,9 +2,11 @@ import DatabaseKit
 
 /// Linear ownership for a request-accounted RDF graph result.
 ///
-/// The full result remains admitted through canonical ordering, duplicate
-/// removal, fingerprinting, and page selection. Only the final visible page
-/// crosses into an ordinary Array.
+/// The full result remains admitted through canonical ordering and duplicate
+/// removal, and only the final visible page crosses into an ordinary Array.
+/// Fingerprinting and multi-page emission need the result to outlive this
+/// linear owner, so they consume it into ``DatabaseSharedRetainedRDFGraph``
+/// rather than borrowing it in place.
 public struct DatabaseRetainedRDFGraph: ~Copyable, Sendable {
     private var storage: DatabaseRetainedBuffer<RDFQuad>
 
@@ -32,12 +34,19 @@ public struct DatabaseRetainedRDFGraph: ~Copyable, Sendable {
         try await storage.withElement(at: index, body)
     }
 
-    /// Moves retained graph storage into immutable shared ownership without
-    /// releasing its originating request reservation.
-    package consuming func moveToSharedOwnership(
+    /// Moves retained graph storage into shared ownership without releasing
+    /// its originating request reservation.
+    ///
+    /// The returned graph holds the reservation until its last owner is
+    /// released, so the result stays admitted after this linear owner and the
+    /// snapshot that produced it are gone.
+    @_spi(DatabaseExecution)
+    public consuming func moveToSharedOwnership(
         at stage: DatabaseWorkStage
-    ) throws -> DatabaseSharedRetainedArray<RDFQuad> {
-        try storage.moveToSharedOwnership(at: stage)
+    ) throws -> DatabaseSharedRetainedRDFGraph {
+        DatabaseSharedRetainedRDFGraph(
+            storage: try storage.moveToSharedOwnership(at: stage)
+        )
     }
 
     @_spi(DatabaseExecution)

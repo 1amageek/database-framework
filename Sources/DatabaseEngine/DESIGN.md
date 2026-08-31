@@ -68,6 +68,14 @@ QueryExecution receive a resolved Subspace rather than a computed prefix.
   promotion, not general copyable model/identifier/array access.
 - Point-fetch slots preserve input order and absence; scans preserve cursor
   order. Failure/cancellation release partial owners and complete cleanup.
+- A retained RDF graph result leaves linear ownership only by being
+  consumed into a shared graph. The shared graph is copyable and holds the
+  request reservation until its last owner is released, so canonical
+  fingerprinting and multi-page emission may outlive the storage snapshot
+  that produced the result. It exposes its element count, a Void-returning
+  scoped element borrow, and bounded page materialization that copies only
+  the requested range; the shared array backing it stays module-internal
+  and never escapes whole.
 
 ## Runtime Flows
 
@@ -87,6 +95,7 @@ Read closure/admission -> QueryExecution retained primary-key borrow
 | Identifier/model/slot | QueryExecution aggregate | Destination/promotion |
 | Canonical/index row | Destination owner | Query pipeline |
 | Resolved Directory/Subspace | Directory, per transaction | Resolving transaction |
+| Shared RDF graph result | Shared graph owners, refcounted | Until the last shared owner is released |
 
 ## Failure, Concurrency, and Constraints
 
@@ -106,6 +115,7 @@ raw entity arrays exist only at the consuming public-output boundary.
 | No raw escape | Source audit rejects general borrows, raw returns, and unmarked bridges. |
 | Bounded item path | Envelope and every chunk are observed as bounded reads. |
 | Directory binding | [Directory](Directory/DESIGN.md) owns the canonical component, tag derivation, and layout-rejection evidence. |
+| Graph shared ownership | Retained-buffer tests observe the reservation surviving the consumed linear owner, bounded page copies, and zero retained resources after the last shared owner is released. |
 
 Owners: [polymorphic retained tests](../../Tests/DatabaseEngineTests/PolymorphicRetainedResourceContractTests.swift),
 [item storage tests](../../Tests/DatabaseEngineTests/ItemStorageResourceTests.swift),
