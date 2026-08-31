@@ -130,6 +130,19 @@ public final class DBContainer: Sendable {
     /// runtime replaces this value with operation-bound leases instead of
     /// consulting it.
     package let defaultTenant: DatabaseTenantDirectories
+
+    /// Authority selector for the one Partition this container's data
+    /// operations address.
+    ///
+    /// The MultiBase runtime selects the Partition per operation instead, but
+    /// both builds end with the same contract: a data transaction attempt
+    /// holds a `PartitionLease` on the Partition it addresses.
+    package var defaultPartitionAuthority: DatabasePartitionAuthority {
+        DatabasePartitionAuthority(
+            engine: engine,
+            partition: defaultTenant.partition
+        )
+    }
     #endif
 
     /// Typed transaction execution over the dynamically selected storage engine.

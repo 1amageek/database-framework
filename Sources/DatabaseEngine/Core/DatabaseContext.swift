@@ -1786,8 +1786,10 @@ extension DatabaseContext {
             #if DATABASE_MULTI_BASE
             let lease = try self.requireOperationDataRoot()
             let selectedTransactionExecutor = lease.transactionExecutor
+            let partitionAuthority = lease.partitionAuthority
             #else
             let selectedTransactionExecutor = self.container.transactionExecutor
+            let partitionAuthority = self.container.defaultPartitionAuthority
             #endif
             let runner = TransactionRunner(
                 transactionExecutor: selectedTransactionExecutor,
@@ -1802,7 +1804,8 @@ extension DatabaseContext {
                 operationDescription: "DatabaseContext.withTransaction",
                 onCommitOutcomeUnknown: { [self] in
                     stateLock.withLock { $0.commitOutcomeUnknown = true }
-                }
+                },
+                partitionAuthority: partitionAuthority
             ) { storageAccess in
                 #if DATABASE_MULTI_BASE
                 let grantedAccess = try await self.requireGrant(
@@ -1966,6 +1969,11 @@ extension DatabaseContext {
             #else
             let selectedTransactionExecutor = self.container.transactionExecutor
             #endif
+            #if DATABASE_MULTI_BASE
+            let partitionAuthority = lease.partitionAuthority
+            #else
+            let partitionAuthority = self.container.defaultPartitionAuthority
+            #endif
             let runner = TransactionRunner(
                 transactionExecutor: selectedTransactionExecutor,
                 clock: self.container.monotonicClock,
@@ -1981,7 +1989,8 @@ extension DatabaseContext {
                 operationDescription: "DatabaseContext.withStorageAccess",
                 onCommitOutcomeUnknown: { [self] in
                     stateLock.withLock { $0.commitOutcomeUnknown = true }
-                }
+                },
+                partitionAuthority: partitionAuthority
             ) { transaction in
                 if let restoringReadPosition {
                     try ReadAuthorizedTransactionAccess.restoreReadPosition(
@@ -2175,7 +2184,8 @@ extension DatabaseContext {
                 "DatabaseContext.requireCurrentHistoricalReadGrant",
             onCommitOutcomeUnknown: { [self] in
                 stateLock.withLock { $0.commitOutcomeUnknown = true }
-            }
+            },
+            partitionAuthority: lease.partitionAuthority
         ) { transaction in
             try await self.requireGrant(
                 access,

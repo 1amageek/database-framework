@@ -183,6 +183,22 @@ internal struct TransactionRunner: Sendable {
         )
     }
 
+    // MARK: - Partition authority
+
+    /// Leases the operation's Partition, or nothing when the caller addresses
+    /// no single Partition.
+    ///
+    /// Returning the lease keeps it owned by the attempt scope, so an error
+    /// thrown anywhere in the attempt releases it through its own lifetime
+    /// rather than through a cleanup path that could be skipped.
+    private static func leaseIfRequired(
+        _ authority: DatabasePartitionAuthority?,
+        transaction: any TransactionReadAccess
+    ) async throws -> PartitionLease? {
+        guard let authority else { return nil }
+        return try await authority.lease(in: transaction)
+    }
+
     // MARK: - Execution
 
     /// Execute a transaction with the given configuration
@@ -202,6 +218,7 @@ internal struct TransactionRunner: Sendable {
         onCancel: (@Sendable (_ transaction: any Transaction) -> Void)? = nil,
         onCommitOutcomeUnknown: (@Sendable () -> Void)? = nil,
         onCommitSuccess: (@Sendable (_ transaction: any Transaction, _ commitNanos: UInt64) -> Void)? = nil,
+        partitionAuthority: DatabasePartitionAuthority? = nil,
         operation: @escaping @Sendable (any TransactionAccess) async throws -> T
     ) async throws -> T {
         try configuration.validate()
@@ -274,7 +291,20 @@ internal struct TransactionRunner: Sendable {
                     )
                 }
 
-                // 4. Execute operation (set TaskLocal for nested transaction detection)
+                // 4. Acquire Partition authority for this attempt.
+                //    The lease is taken in the attempt's own transaction so a
+                //    stale Partition is rejected here, and it is held across
+                //    the operation and the commit so a concurrent move or
+                //    removal of this Partition is refused for that whole
+                //    window. A data-plane caller supplies the authority; the
+                //    executor-level system paths address no single Partition
+                //    and pass none.
+                let partitionLease = try await Self.leaseIfRequired(
+                    partitionAuthority,
+                    transaction: newTransaction
+                )
+
+                // 5. Execute operation (set TaskLocal for nested transaction detection)
                 let attemptResult = try await executeOperationWithinDeadline(
                     transaction: newTransaction,
                     deadline: effectiveDeadline,
@@ -292,7 +322,7 @@ internal struct TransactionRunner: Sendable {
                     }
                 )
 
-                // 5. Commit (throws on failure)
+                // 6. Commit (throws on failure)
                 try ensureDatabaseTaskIsActive()
                 try ensureBeforeDeadline(effectiveDeadline)
                 let commitStart = clock.now
@@ -310,13 +340,20 @@ internal struct TransactionRunner: Sendable {
                     to: clock.now
                 )
 
-                // 6. Update cache after successful commit
+                // 7. Update cache after successful commit
                 updateCacheAfterCommit(
                     transaction: newTransaction,
                     capturedReadVersion: attemptResult.readVersionForCache,
                     cache: readVersionCache
                 )
                 onCommitSuccess?(newTransaction, commitNanos)
+
+                // 8. The transaction closed authoritatively, so the Partition
+                //    is no longer in use by this attempt. A failing attempt
+                //    releases the same way when the lease leaves scope.
+                if let partitionLease {
+                    partitionLease.release()
+                }
 
                 if attempt > 0 {
                     logger.info(

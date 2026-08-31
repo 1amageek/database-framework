@@ -289,6 +289,61 @@ or reinterpreted.
   destructive operation admitted by authorization and the absence of an active
   lease, and performed by StorageKit.
 
+### Partition authority
+
+An address is not authority (SPEC 9.1). A resolved `Directory` names where a
+node lives; it does not entitle the operation that resolved it to read or write
+there. Authority is a StorageKit `PartitionLease` on the Tenant Partition the
+operation selected, and every primitive touching data is issued through the
+`BoundReadAccess` or `BoundWriteAccess` that lease binds.
+
+Three distinct owners are named "lease" here and none substitutes for another:
+
+| Name | Owner | Grants |
+|---|---|---|
+| `DatabaseStorageOperationLease` | `DatabaseStorageLifecycle` | Admission of one container Directory operation |
+| `DatabaseDataRootLease` | Container operation | The resolved Tenant address and its placement generation |
+| `PartitionLease` | StorageKit `StorageEngine.leasePartition` | Authority over one Partition's keyspace |
+
+The first two are admission and address records. Only `PartitionLease` is
+authority; it is noncopyable and issued exclusively by StorageKit.
+
+Per-operation ordering follows SPEC 17.1:
+
+- the operation acquires the `PartitionLease` for its selected Partition inside
+  the transaction attempt that will use it, because `leasePartition` resolves
+  the Partition in the caller's transaction and rejects a stale generation;
+- every primary, index, and per-operation metadata primitive of that operation
+  is issued through the bound access the lease produces;
+- cursors drain and the transaction closes authoritatively before release.
+
+The executor creates a fresh transaction per attempt, so the lease is acquired
+and released once per attempt rather than once per logical operation.
+
+`DATABASE_MULTI_BASE` selects which Partition an operation leases. It does not
+select whether one is leased: both builds end with the identical authority
+contract, so the trait never removes a guarantee the untraited build has.
+
+A lease does not exclude a removal. StorageKit issues it without any registry
+of live holders, so a concurrent removal is admitted and whether it should be
+is a decision this layer owns. What the lease guarantees is that the operation
+holding it cannot land in the freed keyspace: `leasePartition` resolves the
+Partition in the attempt's own transaction, so a Partition already removed or
+recreated is refused as `staleLease`, and a removal committing during the
+attempt conflicts with the node that resolution read. A Base deletion
+concurrent with a live read therefore fails that read rather than silently
+reading a different generation.
+
+Admission of the removal itself is owned here, and the mechanism is the Base
+lifecycle rather than a registry of live leases. A deletion marks the Base
+`deleting` in its durable catalog record before it touches the keyspace, which
+is what every process consults, and then drains this process's Base leases
+before the Partition is removed. A registry of live leases would have to be
+process-local, and in a multi-process FoundationDB deployment that reproduces
+one layer up exactly the defect StorageKit deleted: it would report exclusion
+it cannot enforce. The durable marker plus the bind-time staleness above is
+enforceable in both places, which is why an advisory admission is sound here.
+
 ### Base addresses
 
 `bases` holds one Partition per Base and nothing else, so a child stored under
@@ -396,20 +451,25 @@ open transaction
 ### Read binding
 
 ```text
-tenant data Directory
+acquire PartitionLease on the selected Tenant Partition
+  -> tenant data Directory
   -> for each declared component
        -> static: name; dynamic: DirectoryComponentCodec.encode(value)
        -> open(name, expecting: derived tag) -> nil ends the walk
-  -> leaf Directory -> entity Subspaces
+  -> leaf Directory -> entity Subspaces -> bound read access
+  -> drain cursors -> close transaction -> release PartitionLease
 ```
 
 ### Write binding
 
 ```text
-tenant data Directory
+acquire PartitionLease on the selected Tenant Partition
+  -> tenant data Directory
   -> for each declared component
        -> openOrCreate(name, layer: derived tag)
-  -> leaf Directory -> entity Subspaces -> data mutation in the same transaction
+  -> leaf Directory -> entity Subspaces
+  -> bound write access mutates in the same transaction
+  -> close transaction -> release PartitionLease
 ```
 
 ## State, Ownership, and Lifecycle
@@ -420,6 +480,7 @@ tenant data Directory
 | Reserved topology handles | Container bootstrap | Container lifetime, revalidated per use |
 | Resolved entity `Directory` and `Subspace` | Caller transaction | The resolving transaction |
 | Operation lease | `DatabaseStorageLifecycle` | One Directory operation |
+| Partition authority | StorageKit `PartitionLease` | One transaction attempt of one operation |
 
 The two lifetimes differ because their writers differ. An entity node below
 `data` may be created by any concurrent writer, so a handle for it is valid
@@ -459,6 +520,11 @@ transaction observe read-your-writes.
   prefix that is not its own, while a Partition still holding its siblings lost
   exactly one node. The missing name alone cannot separate those cases, so the
   observed children belong to the failure, bounded by a fixed report limit.
+- `staleLease` reports that the Partition an operation leased is no longer the
+  generation it addressed, either because it was removed or because it was
+  recreated with a different keyspace prefix. It is never retryable: a replay
+  re-resolves the same live node, so it propagates unchanged rather than being
+  retried or reported as a completed operation.
 - Address and depth bounds are owned by `DirectoryLimits`; this component
   propagates `DirectoryAddressError` unchanged.
 - No failure is converted into empty success. A missing node on read is an
@@ -484,6 +550,9 @@ transaction observe read-your-writes.
 | Base addresses | A `bases` child stored under another layer fails both listing and removal, an absent name removes nothing, and a Base Partition is still listed and removed. |
 | Reserved-child corruption | A Tenant Partition whose `system` node is removed fails every read path with `missingReservedDirectory`, naming the missing node and listing the children that remain. |
 | Enumeration cursor | A cursor issued for one declaration is refused by another declaration of the same shape, and resumes its own walk to exhaustion. |
+| Partition authority | A kernel operation leases the Partition it selected inside its own transaction attempt, and a removal of that Partition concurrent with it fails that operation with `staleLease` rather than taking its write. |
+| Lease generation | A Partition removed and recreated at the same address rejects the retained handle instead of binding to the new prefix. |
+| Trait parity | The leased Partition differs between the `DATABASE_MULTI_BASE` and untraited builds; the presence of the lease and the staleness guarantee do not. |
 | Retirement layer identity | A staged retirement records the layer of every source component, a source node recreated under another layer is refused, and a scope the schema cannot type records none and stays addressable. |
 
 Owners:
