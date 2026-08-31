@@ -163,8 +163,8 @@ extension DBContainer {
             destinationDomainID: descriptorIntent.destinationDomainID,
             destinationPlacementGeneration:
                 descriptorIntent.destinationPlacementGeneration,
-            sourceRootPrefix: sourceTenant.partition.root.generation,
-            destinationRootPrefix: destinationTenant.partition.root.generation
+            sourceRootPrefix: sourceTenant.partition.root.keyspacePrefix,
+            destinationRootPrefix: destinationTenant.partition.root.keyspacePrefix
         )
         try await withControlMetadataTransaction(
             configuration: .batch
@@ -709,7 +709,7 @@ extension DBContainer {
             )
         }
         guard let tenant else { return nil }
-        if let generation, tenant.partition.root.generation != generation {
+        if let generation, tenant.partition.root.keyspacePrefix != generation {
             throw DatabaseBaseCatalogError.corruptedRecord(id)
         }
         return tenant
