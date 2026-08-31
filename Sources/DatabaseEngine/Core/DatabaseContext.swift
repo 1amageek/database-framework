@@ -1990,14 +1990,9 @@ extension DatabaseContext {
                 onCommitOutcomeUnknown: { [self] in
                     stateLock.withLock { $0.commitOutcomeUnknown = true }
                 },
-                partitionAuthority: partitionAuthority
+                partitionAuthority: partitionAuthority,
+                restoringReadPosition: restoringReadPosition
             ) { transaction in
-                if let restoringReadPosition {
-                    try ReadAuthorizedTransactionAccess.restoreReadPosition(
-                        restoringReadPosition,
-                        on: transaction
-                    )
-                }
                 #if DATABASE_MULTI_BASE
                 let grantedAccess: Security.Access
                 if let historicalGrantedAccess {

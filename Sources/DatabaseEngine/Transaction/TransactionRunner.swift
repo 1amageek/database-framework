@@ -219,6 +219,7 @@ internal struct TransactionRunner: Sendable {
         onCommitOutcomeUnknown: (@Sendable () -> Void)? = nil,
         onCommitSuccess: (@Sendable (_ transaction: any Transaction, _ commitNanos: UInt64) -> Void)? = nil,
         partitionAuthority: DatabasePartitionAuthority? = nil,
+        restoringReadPosition: DatabaseReadPosition? = nil,
         operation: @escaping @Sendable (any TransactionAccess) async throws -> T
     ) async throws -> T {
         try configuration.validate()
@@ -281,9 +282,22 @@ internal struct TransactionRunner: Sendable {
                     resolution,
                     operationDescription: operationDescription
                 )
-                // 3. Apply cached read version (only on first attempt)
-                //    On retry, we want a fresh version to avoid repeating transaction_too_old errors
-                if attempt == 0 {
+                // 3. Select this attempt's read version before any read.
+                //    The Partition lease below reads, and a backend that
+                //    supports historical reads refuses a read version set
+                //    after a transaction has taken one, so selection cannot
+                //    move into the operation.
+                //    A restored position names the exact version the caller
+                //    asked for, so every attempt restores it. A cached version
+                //    is applied only on the first attempt, because a retry
+                //    wants a fresh one rather than repeating a
+                //    transaction_too_old failure.
+                if let restoringReadPosition {
+                    try ReadAuthorizedTransactionAccess.restoreReadPosition(
+                        restoringReadPosition,
+                        on: newTransaction
+                    )
+                } else if attempt == 0 {
                     try applyCachedReadVersion(
                         to: newTransaction,
                         configuration: configuration,
