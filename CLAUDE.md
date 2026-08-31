@@ -289,9 +289,13 @@ Validation must cover actual behavior:
 6. zero-copy or unsafe performance claims include allocation/copy evidence or a
    benchmark.
 
-Before a release, confirm that no `Package.swift` contains `.package(path:)`,
-that dependency releases are committed, and that the release tag resolves to
-the same commit as `origin/main`.
+Before a release, confirm that the root `Package.swift` that consumers resolve
+contains no `.package(path:)`, that its dependency releases are committed, and
+that the release tag resolves to the same commit as `origin/main`. The
+benchmark packages under `Benchmarks/` are in-repository measurement harnesses
+that must resolve the working tree, so they declare a local path to this
+package by design; their remaining dependencies still use released
+requirements that match the root manifest.
 
 ## Released Dependency Baseline
 
