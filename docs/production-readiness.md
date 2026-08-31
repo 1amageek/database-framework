@@ -128,18 +128,19 @@ the harness proves that the resolved macro dependency revisions match the
 tracked release pins.
 
 The backend-independent unit gate selects `GraphIndexes` and executes exactly
-611 `DatabaseEngineTests`, 876 `GraphIndexTests`, and 18
+740 `DatabaseEngineTests`, 901 `GraphIndexTests`, and 18
 `DatabaseRuntimeTests`. These target-level counts prevent a hidden test group
 from being offset by an unrelated target's additions or removals.
 
-The framework release gate resolves database-kit 26.0819.0. That published tag
+The framework release gate resolves database-kit 26.0831.0. That published tag
 contains the `CompositionSelection`, `CompositionResolution`, and DatabaseWire
-v5 contracts consumed by this source revision and resolves to database-kit main
-commit `775facbae56d8ccbbf7024d40a8fb36da64093c2`. The remaining release
-dependencies are storage-kit 26.0807.0 and swift-hnsw 1.1.4. Record every
-resolved version and revision, the framework commit, result bundles, backend
-service identities, and platform build logs in the release report; do not
-preserve a previous release's results as evidence for a later source revision.
+v5 contracts consumed by this source revision and resolves to database-kit
+commit `0e5d22225d3f676c9cc85802f861f32f3ffb000f`. The remaining release
+dependencies are database-types 26.0831.0, storage-kit 26.0831.0, and
+swift-hnsw 1.2.0. Record every resolved version and revision, the framework
+commit, result bundles, backend service identities, and platform build logs in
+the release report; do not preserve a previous release's results as evidence
+for a later source revision.
 
 Command-line portability and process verification belong to the independent
 [`database-cli`](https://github.com/1amageek/database-cli) package. This

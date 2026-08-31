@@ -297,10 +297,10 @@ the same commit as `origin/main`.
 
 | Package | Minimum release |
 |---|---:|
-| `database-types` | `26.0730.0` |
-| `database-kit` | `26.0814.0` |
-| `storage-kit` | `26.0807.0` |
-| `swift-hnsw` | `1.1.4` |
+| `database-types` | `26.0831.0` |
+| `database-kit` | `26.0831.0` |
+| `storage-kit` | `26.0831.0` |
+| `swift-hnsw` | `1.2.0` |
 
 Repository branches and local paths are development conveniences, not part of
 the package or release contract.
