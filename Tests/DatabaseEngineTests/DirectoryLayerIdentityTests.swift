@@ -247,9 +247,10 @@ struct DirectoryLayerIdentityTests {
         }
         #expect(visited == [.string("tenant-1"), .string("tenant-2")])
 
+        let secondCursor = try #require(second.continuation)
         let third = try await Self.partitionPage(
             entity: LayerCursorProbeEntityA.persistableType,
-            continuation: try #require(second.continuation),
+            continuation: secondCursor,
             in: container
         )
         #expect(third.entries.isEmpty)
