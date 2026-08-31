@@ -24,7 +24,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/swift-testing-heartbeat.git",
-            revision: "74b9288fd7f21f575c06fd8b3b4bb7416321e5b0"
+            from: "0.1.1"
         ),
     ],
     targets: [

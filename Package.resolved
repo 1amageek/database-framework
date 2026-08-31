@@ -1,5 +1,5 @@
 {
-  "originHash" : "a4895cb30913b779c9d6c12cbf0d6fb43e04d03dc3b846289c4a6ea601345169",
+  "originHash" : "3ca935300c855642f208659dee3525d16578d5b3139afd45325bdf3a73ea3919",
   "pins" : [
     {
       "identity" : "database-kit",
@@ -177,7 +177,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/swift-testing-heartbeat.git",
       "state" : {
-        "revision" : "74b9288fd7f21f575c06fd8b3b4bb7416321e5b0"
+        "revision" : "74b9288fd7f21f575c06fd8b3b4bb7416321e5b0",
+        "version" : "0.1.1"
       }
     }
   ],

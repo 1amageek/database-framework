@@ -1,5 +1,5 @@
 {
-  "originHash" : "ae693a1cbffe9a232a7955ef9b1c3948e4a67ff3c670a8daaf486918d3eab574",
+  "originHash" : "3a44054cae4ed0fd81c882fbb085bc6dbd309cfa5d6652902d1bd5503f1af59a",
   "pins" : [
     {
       "identity" : "database-kit",
@@ -92,7 +92,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/swift-hnsw.git",
       "state" : {
-        "revision" : "499948ca5037ccac8e7126525f4be359c4d42697"
+        "revision" : "499948ca5037ccac8e7126525f4be359c4d42697",
+        "version" : "1.2.0"
       }
     },
     {
@@ -172,7 +173,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/swift-testing-heartbeat.git",
       "state" : {
-        "revision" : "74b9288fd7f21f575c06fd8b3b4bb7416321e5b0"
+        "revision" : "74b9288fd7f21f575c06fd8b3b4bb7416321e5b0",
+        "version" : "0.1.1"
       }
     }
   ],
