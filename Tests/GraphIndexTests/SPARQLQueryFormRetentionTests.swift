@@ -430,6 +430,64 @@ struct SPARQLQueryFormRetentionTests {
         #expect(cancelledMeter.retainedIntermediateBytes == 0)
     }
 
+    @Test("CONSTRUCT omission is local to the quad with an unbound term")
+    func constructOmissionRetainsReification() async throws {
+        let meter = makeMeter()
+        let engine = InMemoryEngine()
+        let transaction = try engine.createTransaction()
+        let reifiesIRI = "http://www.w3.org/1999/02/22-rdf-syntax-ns#reifies"
+        let graph = try await makeExecutor().executeConstructInTransaction(
+            ConstructQuery(
+                template: [
+                    TriplePattern(
+                        subject: .variable("subject"),
+                        predicate: .iri("https://example.com/retained"),
+                        object: .variable("object")
+                    ),
+                    TriplePattern(
+                        subject: .reifiedTriple(
+                            subject: .variable("subject"),
+                            predicate: .iri("https://example.com/statement"),
+                            object: .variable("object"),
+                            reifier: .blankNode("statement")
+                        ),
+                        predicate: .iri("https://example.com/omitted"),
+                        object: .variable("unbound")
+                    ),
+                ],
+                pattern: .values(
+                    variables: ["subject", "object"],
+                    bindings: [[
+                        .iri("https://example.com/subject"),
+                        .string("object"),
+                    ]]
+                )
+            ),
+            nodeNamespace: try GraphResultNodeNamespace(
+                ByteString(repeating: 0x25, count: 32)
+            ),
+            structuralLimits: .default,
+            transaction: transaction,
+            workMeter: meter
+        )
+
+        // The second template quad is omitted because `?unbound` has no
+        // solution value. Its reifier expands into an independent
+        // `rdf:reifies` quad whose own terms are bound, so the omission must
+        // not reach that quad.
+        #expect(graph.count == 2)
+        let output = graph.promoteToOutput()
+        #expect(
+            Set(output.map { $0.predicate.iri.rawValue })
+                == [
+                    "https://example.com/retained",
+                    reifiesIRI,
+                ]
+        )
+        #expect(meter.retainedIntermediateRows == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
     @Test("DESCRIBE overlaps scan ownership with admitted graph output")
     func describePreadmitsBorrowedScanQuad() async throws {
         let quad = RDFQuad(

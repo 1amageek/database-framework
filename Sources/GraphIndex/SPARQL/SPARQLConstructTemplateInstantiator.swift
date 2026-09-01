@@ -29,6 +29,12 @@ struct SPARQLConstructTemplateInstantiator {
                 pattern,
                 binding: binding
             ) else {
+            try resolveOmittedQuad(
+                pattern,
+                binding: binding,
+                blankNodeResolver: &blankNodeResolver,
+                output: &output
+            )
             return
         }
         let footprintMeter = output.producerFootprintMeter
@@ -69,6 +75,43 @@ struct SPARQLConstructTemplateInstantiator {
         }
         guard let produced else { return }
         try output.appendProduced(produced)
+    }
+
+    /// Resolves the terms of a template quad that the solution omits.
+    ///
+    /// Omission is local to the quad whose terms are not all bound. A reifying
+    /// term expands into an independent `rdf:reifies` quad whose own terms are
+    /// bound, and `resolve` admits that quad under its own retained-footprint
+    /// reservation, so dropping the enclosing quad must not drop it. Resolving
+    /// every term in template order also keeps generated blank node
+    /// identifiers identical to the case where the enclosing quad is produced.
+    private static func resolveOmittedQuad(
+        _ pattern: TriplePattern,
+        binding: borrowing VariableBinding,
+        blankNodeResolver: inout SPARQLConstructBlankNodeResolver,
+        output: inout DatabaseRetainedRDFGraphBuilder
+    ) throws {
+        _ = try resolve(
+            pattern.subject,
+            binding: binding,
+            role: .subject,
+            blankNodeResolver: &blankNodeResolver,
+            output: &output
+        )
+        _ = try resolve(
+            pattern.predicate,
+            binding: binding,
+            role: .predicate,
+            blankNodeResolver: &blankNodeResolver,
+            output: &output
+        )
+        _ = try resolve(
+            pattern.object,
+            binding: binding,
+            role: .object,
+            blankNodeResolver: &blankNodeResolver,
+            output: &output
+        )
     }
 
     private static func resolve(

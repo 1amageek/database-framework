@@ -97,6 +97,11 @@ not provide DatabaseEngine authorization guarantees.
   ontology, SHACL, and GraphTable paths preserve their declared result and
   ordering semantics. Retained rows remain owned until the consuming output
   boundary completes.
+- A CONSTRUCT template omits a quad whose terms are not all bound by the
+  solution, and that omission is local to the omitted quad. A reifying term
+  expands into an independent `rdf:reifies` quad whose own terms are bound, so
+  that quad is still produced, under its own retained-footprint reservation,
+  when the quad enclosing the reifier is omitted.
 - `GraphQueryBuilder` and transaction-bound SPARQL builders reuse the caller's
   read transaction. The explicit low-level executor is not an authorization
   shortcut for a canonical session path.
