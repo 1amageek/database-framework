@@ -1,4 +1,4 @@
-import Database
+@_spi(DatabaseExecution) import Database
 import DatabaseKit
 import DatabaseRuntime
 import DatabaseTypes
@@ -1352,6 +1352,118 @@ struct CanonicalSQLRetainedOwnershipTests {
         #expect(!metadataBuildInvoked)
         #expect(meter.retainedIntermediateRows == 0)
         #expect(meter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("Complete staging outlives its read session and pages in bounds")
+    func completeStagingOutlivesReadSession() async throws {
+        let container = try await makeContainer()
+        defer { await container.shutdown() }
+
+        let context = container.testBaseContext()
+        for index in 0..<3 {
+            try context.insert(
+                DecodeProbeItem(id: "id-\(index)", value: "value-\(index)")
+            )
+        }
+        try await context.save()
+
+        let options = ReadExecutionOptions()
+        let workMeter = DatabaseWorkMeter(
+            budget: options.budget,
+            monotonicClock: container.monotonicClock
+        )
+        let execution = ReadExecutionContext(
+            options: options,
+            monotonicClock: container.monotonicClock,
+            workMeter: workMeter
+        )
+        let prepared = DatabasePreparedSQLSelect(
+            query: SelectQuery(
+                projection: .all,
+                source: .table(TableRef("DecodeProbeItem"))
+            ),
+            workMeter: workMeter
+        )
+
+        do {
+            let staged = try await context.indexQueryContext.withSession(
+                workMeter: workMeter
+            ) { session in
+                try await prepared.stageCompleteRows(
+                    in: session,
+                    execution: execution
+                )
+            }
+
+            #expect(staged.count == 3)
+            #expect(workMeter.retainedIntermediateRows >= 3)
+
+            let leadingPage = staged.materializePage(0..<2)
+            let trailingPage = staged.materializePage(2..<3)
+            #expect(leadingPage.count == 2)
+            #expect(trailingPage.count == 1)
+
+            var identifiers: [String] = []
+            for row in leadingPage + trailingPage {
+                guard case .string(let identifier) = row.fields["id"] else {
+                    Issue.record("Staged row is missing its identifier")
+                    continue
+                }
+                identifiers.append(identifier)
+            }
+            #expect(identifiers.sorted() == ["id-0", "id-1", "id-2"])
+            #expect(workMeter.retainedIntermediateRows >= 3)
+        }
+
+        #expect(workMeter.retainedIntermediateRows == 0)
+        #expect(workMeter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("Complete staging rejects a foreign request meter")
+    func completeStagingRejectsForeignRequestMeter() async throws {
+        let container = try await makeContainer()
+        defer { await container.shutdown() }
+
+        let options = ReadExecutionOptions()
+        let preparationMeter = DatabaseWorkMeter(
+            budget: options.budget,
+            monotonicClock: container.monotonicClock
+        )
+        let sessionMeter = DatabaseWorkMeter(
+            budget: options.budget,
+            monotonicClock: container.monotonicClock
+        )
+        let execution = ReadExecutionContext(
+            options: options,
+            monotonicClock: container.monotonicClock,
+            workMeter: sessionMeter
+        )
+        let prepared = DatabasePreparedSQLSelect(
+            query: SelectQuery(
+                projection: .all,
+                source: .table(TableRef("DecodeProbeItem"))
+            ),
+            workMeter: preparationMeter
+        )
+        let context = container.testBaseContext()
+
+        await #expect(
+            throws: DatabasePreparedSQLSelectError.workMeterMismatch
+        ) {
+            try await context.indexQueryContext.withSession(
+                workMeter: sessionMeter
+            ) { session in
+                _ = try await prepared.stageCompleteRows(
+                    in: session,
+                    execution: execution
+                )
+            }
+        }
+
+        #expect(preparationMeter.retainedIntermediateRows == 0)
+        #expect(preparationMeter.retainedIntermediateBytes == 0)
+        #expect(sessionMeter.retainedIntermediateRows == 0)
+        #expect(sessionMeter.retainedIntermediateBytes == 0)
     }
 
     private func makeContainer() async throws -> DBContainer {

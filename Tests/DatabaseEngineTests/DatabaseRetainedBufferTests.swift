@@ -868,6 +868,45 @@ struct DatabaseRetainedBufferTests {
         #expect(meter.retainedIntermediateBytes == 0)
     }
 
+    @Test("shared query rows outlive their linear owner and page in bounds")
+    func sharedQueryRowsOutliveLinearOwnerAndPageInBounds() throws {
+        let meter = makeMeter(rows: 16, bytes: 16_384, workUnits: 16)
+        let expected = (0..<4).map { identifier in
+            QueryRow(fields: ["value": .string("row-\(identifier)")])
+        }
+        do {
+            let shared: DatabaseSharedRetainedQueryRows
+            do {
+                var builder = try DatabaseRetainedQueryRowsBuilder(
+                    workMeter: meter,
+                    stage: .projection
+                )
+                for row in expected {
+                    try builder.append(row)
+                }
+                shared = try DatabaseSharedRetainedQueryRows(
+                    rows: builder.finish(),
+                    at: .resultMaterialization
+                )
+            }
+            #expect(meter.retainedIntermediateRows == 4)
+            #expect(shared.count == 4)
+            #expect(shared.workMeter === meter)
+
+            do {
+                let alias = shared
+                #expect(alias.materializePage(1..<3) == Array(expected[1..<3]))
+                #expect(alias.materializePage(0..<4) == expected)
+            }
+
+            #expect(meter.retainedIntermediateRows == 4)
+            #expect(shared.materializePage(3..<4) == [expected[3]])
+        }
+
+        #expect(meter.retainedIntermediateRows == 0)
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
     private func makeMeter(
         rows: UInt32,
         bytes: UInt64,

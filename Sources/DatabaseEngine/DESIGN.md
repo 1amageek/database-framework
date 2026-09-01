@@ -76,6 +76,15 @@ QueryExecution receive a resolved Subspace rather than a computed prefix.
   scoped element borrow, and bounded page materialization that copies only
   the requested range; the shared array backing it stays module-internal
   and never escapes whole.
+- A retained canonical row page leaves linear ownership the same way. It is
+  consumed into shared row ownership so a durable query snapshot can read the
+  complete result count and emit successive bounded pages after the read
+  snapshot that produced the rows has closed. Complete staging disables the
+  client-facing page window instead of paging, so the staged result is never
+  a silently truncated prefix; the request row budget still applies and
+  reports its own typed limit failure. The shared rows expose the element
+  count and bounded page materialization only, because no caller borrows an
+  individual row.
 
 ## Runtime Flows
 
@@ -116,6 +125,7 @@ raw entity arrays exist only at the consuming public-output boundary.
 | Bounded item path | Envelope and every chunk are observed as bounded reads. |
 | Directory binding | [Directory](Directory/DESIGN.md) owns the canonical component, tag derivation, and layout-rejection evidence. |
 | Graph shared ownership | Retained-buffer tests observe the reservation surviving the consumed linear owner, bounded page copies, and zero retained resources after the last shared owner is released. |
+| Row shared ownership | The same retained-buffer evidence covers staged rows, and complete staging is observed to carry no continuation so a durable snapshot never publishes a truncated result. |
 
 Owners: [polymorphic retained tests](../../Tests/DatabaseEngineTests/PolymorphicRetainedResourceContractTests.swift),
 [item storage tests](../../Tests/DatabaseEngineTests/ItemStorageResourceTests.swift),

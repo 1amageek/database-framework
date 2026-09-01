@@ -40,4 +40,37 @@ public struct DatabasePreparedSQLSelect: Sendable {
         )
     }
 
+    /// Executes the prepared query for the complete visible result and moves
+    /// it into shared ownership.
+    ///
+    /// Complete staging disables the client-facing page window rather than
+    /// paging, so the returned rows are the whole visible result and never a
+    /// truncated prefix. The request row budget still applies through the
+    /// shared work meter and reports its own typed limit failure. The
+    /// returned rows hold the request reservation until their last owner is
+    /// released, so a durable query snapshot may count them and emit bounded
+    /// pages after the read snapshot that produced them has closed.
+    public func stageCompleteRows(
+        in session: DatabaseReadSession,
+        execution: ReadExecutionContext,
+        graphPartitions: FieldObject = FieldObject()
+    ) async throws -> DatabaseSharedRetainedQueryRows {
+        guard execution.workMeter === workMeter else {
+            throw DatabasePreparedSQLSelectError.workMeterMismatch
+        }
+        let lifetimeOwner = retainedStorage
+        defer { withExtendedLifetime(lifetimeOwner) {} }
+        let page = try await session.retainedCanonicalPage(
+            query,
+            execution: execution.withoutExternalPageWindow(),
+            graphPartitions: graphPartitions
+        )
+        guard page.continuation == nil else {
+            throw DatabasePreparedSQLSelectError.stagedResultIsIncomplete
+        }
+        return try DatabaseSharedRetainedQueryRows(
+            rows: page.takeRows(),
+            at: .resultMaterialization
+        )
+    }
 }
