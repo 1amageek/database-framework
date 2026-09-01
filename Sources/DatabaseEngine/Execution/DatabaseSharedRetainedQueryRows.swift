@@ -9,11 +9,13 @@ import DatabaseKit
 /// the complete result count and emit successive bounded pages after the read
 /// snapshot that produced the rows has closed.
 ///
-/// The exposed surface is limited to the element count and bounded page
+/// The exposed surface is limited to the element count and page
 /// materialization. No caller borrows an individual staged row, so this type
 /// does not offer a scoped element borrow. The shared array backing the rows
-/// stays module-internal, so the full result never escapes as an ordinary
-/// Array through this type.
+/// stays module-internal, so no caller takes ownership of the retained storage
+/// or holds a view into it after the call that produced it. A materialized page
+/// is an independent copy of its range, so the range the caller asks for, not
+/// this type, decides how much of the result reaches an ordinary Array.
 @_spi(DatabaseExecution)
 public struct DatabaseSharedRetainedQueryRows: Sendable {
     private let storage: DatabaseSharedRetainedArray<QueryRow>
@@ -42,8 +44,10 @@ public struct DatabaseSharedRetainedQueryRows: Sendable {
 
     /// Copies the rows in `range` into an output page.
     ///
-    /// Only the requested range is copied; the retained storage is never
-    /// promoted whole, so repeated pages can be emitted from one shared owner.
+    /// Only the requested range is copied and the retained storage is never
+    /// promoted, so repeated pages can be emitted from one shared owner. A
+    /// range covering every element is a valid single page; the copy it returns
+    /// does not release the retained storage or its request reservation.
     public func materializePage(_ range: Range<Int>) -> [QueryRow] {
         precondition(
             range.lowerBound >= 0 && range.upperBound <= storage.count,

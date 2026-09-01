@@ -73,9 +73,10 @@ QueryExecution receive a resolved Subspace rather than a computed prefix.
   request reservation until its last owner is released, so canonical
   fingerprinting and multi-page emission may outlive the storage snapshot
   that produced the result. It exposes its element count, a Void-returning
-  scoped element borrow, and bounded page materialization that copies only
-  the requested range; the shared array backing it stays module-internal
-  and never escapes whole.
+  scoped element borrow, and page materialization that copies only the range
+  the caller requests; the shared array backing it stays module-internal, so
+  no caller takes ownership of the retained storage, and the requested range
+  decides how much of the result reaches an ordinary Array.
 - A retained canonical row page leaves linear ownership the same way. It is
   consumed into shared row ownership so a durable query snapshot can read the
   complete result count and emit successive bounded pages after the read
@@ -83,7 +84,7 @@ QueryExecution receive a resolved Subspace rather than a computed prefix.
   client-facing page window instead of paging, so the staged result is never
   a silently truncated prefix; the request row budget still applies and
   reports its own typed limit failure. The shared rows expose the element
-  count and bounded page materialization only, because no caller borrows an
+  count and the same page materialization only, because no caller borrows an
   individual row.
 
 ## Runtime Flows

@@ -10,9 +10,12 @@ import DatabaseKit
 /// the result has closed.
 ///
 /// The exposed surface is limited to the element count, a scoped element
-/// borrow that returns no value, and bounded page materialization. The shared
-/// array backing the graph stays module-internal, so the full result never
-/// escapes as an ordinary Array through this type.
+/// borrow that returns no value, and page materialization. The shared array
+/// backing the graph stays module-internal, so no caller takes ownership of the
+/// retained storage or holds a view into it after the call that produced it. A
+/// materialized page is an independent copy of its range, so the range the
+/// caller asks for, not this type, decides how much of the result reaches an
+/// ordinary Array.
 @_spi(DatabaseExecution)
 public struct DatabaseSharedRetainedRDFGraph: Sendable {
     private let storage: DatabaseSharedRetainedArray<RDFQuad>
@@ -42,8 +45,10 @@ public struct DatabaseSharedRetainedRDFGraph: Sendable {
 
     /// Copies the quads in `range` into an output page.
     ///
-    /// Only the requested range is copied; the retained storage is never
-    /// promoted whole, so repeated pages can be emitted from one shared owner.
+    /// Only the requested range is copied and the retained storage is never
+    /// promoted, so repeated pages can be emitted from one shared owner. A
+    /// range covering every element is a valid single page; the copy it returns
+    /// does not release the retained storage or its request reservation.
     public func materializePage(_ range: Range<Int>) -> [RDFQuad] {
         precondition(
             range.lowerBound >= 0 && range.upperBound <= storage.count,
