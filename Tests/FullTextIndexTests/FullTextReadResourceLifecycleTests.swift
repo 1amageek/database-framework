@@ -1,3 +1,6 @@
+// TEST_SCALE_SEMANTICS: correctness - the payload must exceed the configured
+// intermediate-byte budget so the read is rejected before decode retention.
+
 import DatabaseKit
 import StorageKit
 import TestSupport
