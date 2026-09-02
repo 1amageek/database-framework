@@ -17,24 +17,39 @@ flowchart LR
 ```
 
 `scripts/docker/versions.env` is the single reviewed artifact manifest. Every
-service image uses an OCI manifest digest. The image build compares the complete
-installed Debian package set against `scripts/docker/ubuntu-packages.lock` and
-fails on any drift. The runner also verifies a checksum-pinned Swift archive,
-FoundationDB client package, and SQLite amalgamation before use.
+service image uses an OCI manifest digest. The Debian package input is an
+immutable Ubuntu archive snapshot rather than the moving release pockets, so
+the installed package set is a property of the manifest instead of the day the
+image is built. `scripts/docker/ubuntu-packages.lock` records that set and the
+build fails on any difference from it, which makes the lock an invariant the
+snapshot already determines rather than a detector for archive drift. Moving
+the snapshot is the only way the package set can change, and it is a reviewed
+manifest edit that regenerates the lock in the same change. The runner also
+verifies a checksum-pinned Swift archive, FoundationDB client package, and
+SQLite amalgamation before use.
+
+The snapshot archive is served over TLS, and the base image has no certificate
+store because it installs `ca-certificates` from that same archive. Transport
+verification is therefore disabled for the bootstrap `apt-get` step alone and
+removed once the certificates are installed. Archive authenticity does not
+depend on it: each index is verified against
+`/usr/share/keyrings/ubuntu-archive-keyring.gpg`, and each package is verified
+against the hashes in that signed index. This is the trust model the default
+`http` Ubuntu sources already rely on, so the snapshot does not weaken it.
 
 | Component | Pinned identity | Runtime assertion |
 |---|---|---|
 | Platform | `linux/arm64` | Docker image OS and architecture |
 | Swift | 6.4 development snapshot 2026-08-14 | compiler commit |
-| Ubuntu | 24.04 | image digest, full package lock, and `/etc/os-release` |
+| Ubuntu | 24.04 at archive snapshot `20260901T000000Z` | image digest, archive snapshot, full package lock, and `/etc/os-release` |
 | SQLite | 3.53.4 | SQL runtime version |
 | PostgreSQL | 18.6 | `SHOW server_version` |
 | FoundationDB | 7.3.77 | client, server, and cluster status |
 
 The Docker engine version is recorded rather than pinned because it is the
 host execution capability. Reproducibility comes from the platform selection,
-immutable images, checksummed toolchain/client/source artifacts, and the test
-contract inside the runner.
+immutable images, the pinned archive snapshot, checksummed
+toolchain/client/source artifacts, and the test contract inside the runner.
 
 ## Topology
 

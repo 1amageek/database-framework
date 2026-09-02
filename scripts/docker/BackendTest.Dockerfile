@@ -5,6 +5,7 @@ ARG TEST_IMAGE_FINGERPRINT
 ARG SWIFT_SNAPSHOT
 ARG SWIFT_COMPILER_COMMIT
 ARG SWIFT_LINUX_TOOLCHAIN_SHA256
+ARG UBUNTU_ARCHIVE_SNAPSHOT_URL
 ARG UBUNTU_PACKAGE_LOCK_SHA256
 ARG FOUNDATIONDB_VERSION
 ARG FOUNDATIONDB_LINUX_CLIENT_URL
@@ -17,7 +18,31 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 COPY ubuntu-packages.lock /tmp/database-framework-ubuntu-packages.lock
 
-RUN apt-get update \
+# The archive is an immutable snapshot, so the package set this image installs is
+# a property of the reviewed manifest rather than of the day it is built. The
+# snapshot is served over TLS and the base image installs its certificate store
+# from that same archive, so transport verification is disabled for this
+# bootstrap step alone and removed below. Authenticity is unaffected: the index
+# is verified against the Ubuntu archive keyring and every package against the
+# hashes in that signed index.
+RUN snapshot_host="$(printf '%s' "$UBUNTU_ARCHIVE_SNAPSHOT_URL" \
+      | sed -e 's#^https\{0,1\}://##' -e 's#/.*##')" \
+    && printf 'Acquire::https::%s::Verify-Peer "false";\n' "$snapshot_host" \
+      > /etc/apt/apt.conf.d/99-database-framework-snapshot-bootstrap \
+    && printf '%s\n' \
+      'Types: deb' \
+      "URIs: $UBUNTU_ARCHIVE_SNAPSHOT_URL" \
+      'Suites: noble noble-updates noble-backports' \
+      'Components: main universe restricted multiverse' \
+      'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' \
+      '' \
+      'Types: deb' \
+      "URIs: $UBUNTU_ARCHIVE_SNAPSHOT_URL" \
+      'Suites: noble-security' \
+      'Components: main universe restricted multiverse' \
+      'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' \
+      > /etc/apt/sources.list.d/ubuntu.sources \
+    && apt-get update \
     && apt-get install -y --no-install-recommends \
       binutils \
       ca-certificates \
@@ -55,6 +80,7 @@ RUN apt-get update \
     && install -d -m 0755 /usr/local/share/database-framework \
     && install -m 0644 /tmp/database-framework-ubuntu-packages.lock \
       /usr/local/share/database-framework/ubuntu-packages.lock \
+    && rm -f /etc/apt/apt.conf.d/99-database-framework-snapshot-bootstrap \
     && rm -rf /var/lib/apt/lists/* \
       /tmp/database-framework-ubuntu-packages.actual \
       /tmp/database-framework-ubuntu-packages.lock
@@ -145,6 +171,7 @@ RUN set -eux; \
       "swift_snapshot=$SWIFT_SNAPSHOT" \
       "swift_compiler_commit=$SWIFT_COMPILER_COMMIT" \
       "swift_toolchain_sha256=$SWIFT_LINUX_TOOLCHAIN_SHA256" \
+      "ubuntu_archive_snapshot_url=$UBUNTU_ARCHIVE_SNAPSHOT_URL" \
       "ubuntu_package_lock_sha256=$UBUNTU_PACKAGE_LOCK_SHA256" \
       "foundationdb_version=$FOUNDATIONDB_VERSION" \
       "foundationdb_client_sha256=$FOUNDATIONDB_LINUX_CLIENT_SHA256" \
