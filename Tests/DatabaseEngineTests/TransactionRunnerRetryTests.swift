@@ -55,7 +55,8 @@ struct TransactionRunnerRetryTests {
                 configuration: TransactionConfiguration(
                     timeout: 10,
                     maximumAttempts: 1
-                )
+                ),
+                producing: .writeResult
             ) { _ in
                 try await Task.sleep(for: .seconds(30))
             }
@@ -82,7 +83,8 @@ struct TransactionRunnerRetryTests {
 
         do {
             let _: Void = try await runner.run(
-                configuration: TransactionConfiguration(maximumAttempts: 1)
+                configuration: TransactionConfiguration(maximumAttempts: 1),
+                producing: .writeResult
             ) { _ in
                 throw failure
             }
@@ -108,7 +110,8 @@ struct TransactionRunnerRetryTests {
 
         do {
             let _: Void = try await runner.run(
-                configuration: TransactionConfiguration(maximumAttempts: 1)
+                configuration: TransactionConfiguration(maximumAttempts: 1),
+                producing: .writeResult
             ) { _ in
                 throw StorageError.invalidOperation("Rejected body")
             }
@@ -135,7 +138,8 @@ struct TransactionRunnerRetryTests {
                 configuration: TransactionConfiguration(
                     timeout: 10,
                     maximumAttempts: 1
-                )
+                ),
+                producing: .writeResult
             ) { _ in
                 try await Task.sleep(for: .seconds(30))
             }
@@ -171,7 +175,8 @@ struct TransactionRunnerRetryTests {
 
         do {
             let _: Void = try await runner.run(
-                configuration: TransactionConfiguration(maximumAttempts: 3)
+                configuration: TransactionConfiguration(maximumAttempts: 3),
+                producing: .writeResult
             ) { _ in
                 _ = bodyAttempts.increment()
             }
@@ -194,7 +199,8 @@ struct TransactionRunnerRetryTests {
 
         do {
             let _: Void = try await runner.run(
-                configuration: TransactionConfiguration(maximumAttempts: 3)
+                configuration: TransactionConfiguration(maximumAttempts: 3),
+                producing: .writeResult
             ) { _ in }
             Issue.record("Expected commitUnknownResult")
         } catch let error as StorageError {
@@ -214,7 +220,7 @@ struct TransactionRunnerRetryTests {
         )
         let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: engine), clock: SystemStorageClock())
         let task = Task {
-            try await runner.run(configuration: .default) { _ in "committed" }
+            try await runner.run(configuration: .default, producing: .writeResult) { _ in "committed" }
         }
 
         while engine.snapshot.commits == 0 {
@@ -238,7 +244,8 @@ struct TransactionRunnerRetryTests {
             configuration: TransactionConfiguration(
                 timeout: 10,
                 maximumAttempts: 1
-            )
+            ),
+            producing: .writeResult
         ) { _ in
             "committed"
         }
@@ -261,6 +268,7 @@ struct TransactionRunnerRetryTests {
         do {
             let _: Void = try await runner.run(
                 configuration: TransactionConfiguration(maximumAttempts: 1),
+                producing: .writeResult,
                 executionDeadline: deadline
             ) { _ in
                 try await Task.sleep(for: .seconds(30))
@@ -289,6 +297,7 @@ struct TransactionRunnerRetryTests {
         do {
             let _: Void = try await runner.run(
                 configuration: TransactionConfiguration(maximumAttempts: 1),
+                producing: .writeResult,
                 executionDeadline: deadline
             ) { _ in }
             Issue.record("Expected expired inherited transaction deadline")
@@ -318,6 +327,7 @@ struct TransactionRunnerRetryTests {
                     maxRetryDelay: 0,
                     initialRetryDelay: 0
                 ),
+                producing: .writeResult,
                 executionDeadline: deadline
             ) { _ in
                 if attempts.increment() == 1 {
@@ -346,7 +356,8 @@ struct TransactionRunnerRetryTests {
                     maximumAttempts: 2,
                     maxRetryDelay: 0,
                     initialRetryDelay: 0
-                )
+                ),
+                producing: .writeResult
             ) { _ in
                 if attempts.increment() == 1 {
                     throw StorageError.transactionConflict
@@ -373,7 +384,8 @@ struct TransactionRunnerRetryTests {
                 configuration: TransactionConfiguration(
                     maximumAttempts: 1,
                     maximumMutationAggregateBytes: 18
-                )
+                ),
+                producing: .writeResult
             ) { transaction in
                 try transaction.setValue([0x01], for: key)
             }
@@ -402,7 +414,8 @@ struct TransactionRunnerRetryTests {
                 maxRetryDelay: 0,
                 initialRetryDelay: 0,
                 maximumMutationAggregateBytes: 19
-            )
+            ),
+            producing: .writeResult
         ) { transaction in
             try transaction.setValue([0x02], for: key)
             guard attempts.increment() > 1 else {
@@ -427,7 +440,8 @@ struct TransactionRunnerRetryTests {
                 configuration: TransactionConfiguration(
                     maximumAttempts: 1,
                     maximumMutationAggregateBytes: 18
-                )
+                ),
+                producing: .writeResult
             ) { transaction in
                 try await Task.detached {
                     try transaction.setValue([0x03], for: key)
@@ -449,9 +463,9 @@ struct TransactionRunnerRetryTests {
         let outer = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: engine), clock: SystemStorageClock())
         let inner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: engine), clock: SystemStorageClock())
 
-        try await outer.run(configuration: .default) { _ in
+        try await outer.run(configuration: .default, producing: .writeResult) { _ in
             do {
-                let _: Void = try await inner.run(configuration: .default) { _ in }
+                let _: Void = try await inner.run(configuration: .default, producing: .writeResult) { _ in }
                 Issue.record("Expected nested runner rejection")
             } catch let error as StorageError {
                 #expect(error.code == .invalidOperation)
@@ -469,7 +483,8 @@ struct TransactionRunnerRetryTests {
 
         do {
             let _: Void = try await runner.run(
-                configuration: TransactionConfiguration(maximumAttempts: 0)
+                configuration: TransactionConfiguration(maximumAttempts: 0),
+                producing: .writeResult
             ) { _ in }
             Issue.record("Expected invalid configuration")
         } catch let error as StorageError {
@@ -490,6 +505,7 @@ struct TransactionRunnerRetryTests {
                 maximumAttempts: 1,
                 cachePolicy: .cached
             ),
+            producing: .writeResult,
             readVersionCache: cache
         ) { _ in "ok" }
 
@@ -506,6 +522,7 @@ struct TransactionRunnerRetryTests {
 
         let result = try await runner.run(
             configuration: TransactionConfiguration(maximumAttempts: 3, maxRetryDelay: 1),
+            producing: .writeResult,
             operationDescription: "test retry success"
         ) { _ in
             let attempt = attempts.increment()
@@ -527,6 +544,7 @@ struct TransactionRunnerRetryTests {
 
         let result = try await runner.run(
             configuration: TransactionConfiguration(maximumAttempts: 3, maxRetryDelay: 1),
+            producing: .writeResult,
             operationDescription: "test create transaction retry"
         ) { transaction in
             _ = bodyAttempts.increment()
@@ -548,6 +566,7 @@ struct TransactionRunnerRetryTests {
         do {
             let _: Void = try await runner.run(
                 configuration: TransactionConfiguration(maximumAttempts: 2, maxRetryDelay: 1),
+                producing: .writeResult,
                 operationDescription: "test retry exhaustion"
             ) { _ in
                 _ = attempts.increment()
@@ -570,6 +589,7 @@ struct TransactionRunnerRetryTests {
         let task = Task {
             let _: Void = try await runner.run(
                 configuration: TransactionConfiguration(maximumAttempts: 5, maxRetryDelay: 50),
+                producing: .writeResult,
                 operationDescription: "test cancellation"
             ) { _ in
                 _ = attempts.increment()

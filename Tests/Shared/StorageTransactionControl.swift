@@ -15,6 +15,24 @@ public final class StorageTransactionControl: Sendable {
         case suspend(StorageOperationBarrier)
     }
 
+    /// The kind of commit a pending directive waits for.
+    ///
+    /// A directive matches one kind so an unrelated commit on the same
+    /// transaction cannot consume it. A read-only commit is the seam that
+    /// holds a caller between a completed read and the point where the
+    /// attempt has closed, which is where a cancelled read must still fail.
+    enum CommitKind: Sendable {
+        case mutating
+        case readOnly
+
+        fileprivate func matches(hasMutations: Bool) -> Bool {
+            switch self {
+            case .mutating: hasMutations
+            case .readOnly: !hasMutations
+            }
+        }
+    }
+
     private struct PendingValueReadBarrier: Sendable {
         let key: ByteString?
         let barrier: StorageOperationBarrier
@@ -22,6 +40,7 @@ public final class StorageTransactionControl: Sendable {
 
     private struct State: Sendable {
         var pendingCommitDirective: PendingCommitDirective?
+        var pendingCommitKind: CommitKind = .mutating
         var valueReadBarriers: [PendingValueReadBarrier] = []
         var boundedValueReadBarriers: [PendingValueReadBarrier] = []
         var rangeAdvanceBarriers: [StorageOperationBarrier] = []
@@ -50,15 +69,33 @@ public final class StorageTransactionControl: Sendable {
         state.withLock { state in
             precondition(state.pendingCommitDirective == nil)
             state.pendingCommitDirective = .fail(error)
+            state.pendingCommitKind = .mutating
         }
     }
 
     @discardableResult
     public func suspendNextMutatingCommit() -> StorageOperationBarrier {
+        suspendNextCommit(.mutating)
+    }
+
+    /// Suspends the next commit of a transaction that recorded no mutation.
+    ///
+    /// A read execution still commits its read-only transaction, so this
+    /// barrier suspends the caller after the read finished and before the
+    /// attempt closes. A mutating commit never consumes it.
+    @discardableResult
+    public func suspendNextReadOnlyCommit() -> StorageOperationBarrier {
+        suspendNextCommit(.readOnly)
+    }
+
+    private func suspendNextCommit(
+        _ kind: CommitKind
+    ) -> StorageOperationBarrier {
         let barrier = StorageOperationBarrier()
         state.withLock { state in
             precondition(state.pendingCommitDirective == nil)
             state.pendingCommitDirective = .suspend(barrier)
+            state.pendingCommitKind = kind
         }
         return barrier
     }
@@ -213,15 +250,16 @@ public final class StorageTransactionControl: Sendable {
         hasMutations: Bool,
         mutationKeys: [ByteString]
     ) -> CommitDirective {
-        guard hasMutations else {
-            return .proceed
-        }
         return state.withLock { state in
-            guard let pending = state.pendingCommitDirective else {
+            guard let pending = state.pendingCommitDirective,
+                  state.pendingCommitKind.matches(hasMutations: hasMutations)
+            else {
                 return .proceed
             }
             state.pendingCommitDirective = nil
-            state.interceptedMutationKeys = mutationKeys
+            if hasMutations {
+                state.interceptedMutationKeys = mutationKeys
+            }
             switch pending {
             case .fail(let error):
                 return .fail(error)

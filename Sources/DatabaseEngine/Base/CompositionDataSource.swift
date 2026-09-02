@@ -299,6 +299,16 @@ public struct CompositionDataSource: Sendable {
                 try await entry.transaction.commit()
                 committedCount += 1
             }
+            // The federated snapshot is closed: the vault has drained and
+            // every domain transaction committed. This family owns its own
+            // Collecting-to-Ready transition because it holds these
+            // transactions directly instead of through the transaction
+            // runner, so it makes the same post-closure cancellation check.
+            // Each transaction is read-only by construction, so no durable
+            // outcome is reported as cancelled. Throwing here reaches the
+            // cleanup below with `committedCount == owned.count`, so it
+            // cancels nothing and the cancellation is rethrown unwrapped.
+            try ensureDatabaseTaskIsActive()
             return result
         } catch {
             let operationError = error

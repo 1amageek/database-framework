@@ -1799,6 +1799,9 @@ extension DatabaseContext {
             )
             return try await runner.run(
                 configuration: configuration,
+                producing: requiredAccess == .read
+                    ? .readResult
+                    : .writeResult,
                 executionDeadline: executionDeadline,
                 readVersionCache: self.readVersionCache,
                 operationDescription: "DatabaseContext.withTransaction",
@@ -1982,6 +1985,9 @@ extension DatabaseContext {
             )
             return try await runner.run(
                 configuration: configuration,
+                producing: requiredAccess == .read
+                    ? .readResult
+                    : .writeResult,
                 executionDeadline: executionDeadline,
                 readVersionCache: restoringReadPosition == nil
                     ? self.readVersionCache
@@ -2173,6 +2179,9 @@ extension DatabaseContext {
         )
         return try await runner.run(
             configuration: configuration,
+            // Resolving a Grant only reads it, so this attempt closes
+            // with nothing durable to lose and takes the read contract.
+            producing: .readResult,
             executionDeadline: executionDeadline,
             readVersionCache: nil,
             operationDescription:

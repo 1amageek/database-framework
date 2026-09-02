@@ -17,7 +17,8 @@ struct TransactionDeadlineAndCleanupTests {
                 configuration: TransactionConfiguration(
                     timeout: 10,
                     maximumAttempts: 1
-                )
+                ),
+                producing: .writeResult
             ) { _ in
                 try await Task.sleep(for: .seconds(30))
             }
@@ -40,7 +41,8 @@ struct TransactionDeadlineAndCleanupTests {
 
         do {
             let _: Void = try await runner.run(
-                configuration: TransactionConfiguration(maximumAttempts: 1)
+                configuration: TransactionConfiguration(maximumAttempts: 1),
+                producing: .writeResult
             ) { _ in
                 throw failure
             }
@@ -67,7 +69,8 @@ struct TransactionDeadlineAndCleanupTests {
 
         do {
             let _: Void = try await runner.run(
-                configuration: TransactionConfiguration(maximumAttempts: 1)
+                configuration: TransactionConfiguration(maximumAttempts: 1),
+                producing: .writeResult
             ) { _ in
                 throw StorageError.invalidOperation("Rejected operation")
             }
@@ -94,7 +97,8 @@ struct TransactionDeadlineAndCleanupTests {
                 configuration: TransactionConfiguration(
                     timeout: 10,
                     maximumAttempts: 1
-                )
+                ),
+                producing: .writeResult
             ) { _ in
                 try await Task.sleep(for: .seconds(30))
             }
@@ -131,6 +135,7 @@ struct TransactionDeadlineAndCleanupTests {
         do {
             let _: Void = try await runner.run(
                 configuration: TransactionConfiguration(maximumAttempts: 1),
+                producing: .writeResult,
                 executionDeadline: deadline
             ) { _ in }
             Issue.record("Expected inherited deadline failure")

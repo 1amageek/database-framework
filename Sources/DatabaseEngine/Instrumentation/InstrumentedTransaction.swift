@@ -418,6 +418,9 @@ extension StorageTransactionExecutor {
 
         let result = try await runner.run(
             configuration: .default,
+            // The instrumented transaction is unattenuated, so this
+            // execution may commit durable state.
+            producing: .writeResult,
             operationDescription: "StorageEngine.withInstrumentedTransaction",
             onRetry: { _, _ in
                 retryCount.withLock { $0 += 1 }
