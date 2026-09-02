@@ -23,14 +23,14 @@ struct TransactionComprehensiveTests {
         let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
 
         // Setup: Write 50 keys
-        try await runner.run(configuration: .default, producing: .writeResult) { tx in
+        try await runner.run(configuration: .default) { tx in
             for i in 0..<50 {
                 try tx.setValue([UInt8(i)], for: [0, 1, UInt8(i)])
             }
         }
 
         // Test: Read with 10 separate getRange() calls in same transaction
-        let results = try await runner.run(configuration: .default, producing: .writeResult) { tx in
+        let results = try await runner.run(configuration: .default) { tx in
             var allResults: [[(ByteString, ByteString)]] = []
 
             // 10 separate getRange() calls
@@ -66,14 +66,14 @@ struct TransactionComprehensiveTests {
         let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
 
         // Setup: Write 100 keys
-        try await runner.run(configuration: .default, producing: .writeResult) { tx in
+        try await runner.run(configuration: .default) { tx in
             for i in 0..<100 {
                 try tx.setValue([UInt8(i % 256)], for: [0, 2, UInt8(i % 256)])
             }
         }
 
         // Test: 100 getRange() calls
-        let count = try await runner.run(configuration: .default, producing: .writeResult) { tx in
+        let count = try await runner.run(configuration: .default) { tx in
             var totalCount = 0
 
             for i in 0..<100 {
@@ -105,13 +105,13 @@ struct TransactionComprehensiveTests {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
 
-        try await runner.run(configuration: .default, producing: .writeResult) { tx in
+        try await runner.run(configuration: .default) { tx in
             for i in 0..<10 {
                 try tx.setValue([UInt8(i)], for: [0, 3, UInt8(i)])
             }
         }
 
-        let results = try await runner.run(configuration: .default, producing: .writeResult) { tx in
+        let results = try await runner.run(configuration: .default) { tx in
             let pairs = try await tx.collectRange(
                 from: .firstGreaterOrEqual([0, 3]),
                 to: .firstGreaterOrEqual([0, 4]),
@@ -129,13 +129,13 @@ struct TransactionComprehensiveTests {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
 
-        try await runner.run(configuration: .default, producing: .writeResult) { tx in
+        try await runner.run(configuration: .default) { tx in
             for i in 0..<100 {
                 try tx.setValue([UInt8(i % 256)], for: [0, 4, UInt8(i % 256)])
             }
         }
 
-        let results = try await runner.run(configuration: .default, producing: .writeResult) { tx in
+        let results = try await runner.run(configuration: .default) { tx in
             let pairs = try await tx.collectRange(
                 from: .firstGreaterOrEqual([0, 4]),
                 to: .firstGreaterOrEqual([0, 5]),
@@ -238,7 +238,7 @@ struct TransactionComprehensiveTests {
         let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
 
         // Setup: 5 groups × 10 items
-        try await runner.run(configuration: .default, producing: .writeResult) { tx in
+        try await runner.run(configuration: .default) { tx in
             for group in 0..<5 {
                 for item in 0..<10 {
                     try tx.setValue([UInt8(item)], for: [0, 9, UInt8(group), UInt8(item)])
@@ -247,7 +247,7 @@ struct TransactionComprehensiveTests {
         }
 
         // Test: Nested iteration (outer: groups, inner: items)
-        let results = try await runner.run(configuration: .default, producing: .writeResult) { tx in
+        let results = try await runner.run(configuration: .default) { tx in
             var groupCounts: [Int] = []
 
             for group in 0..<5 {
@@ -286,14 +286,14 @@ struct TransactionComprehensiveTests {
         let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
 
         // Write initial data
-        try await runner.run(configuration: .default, producing: .writeResult) { tx in
+        try await runner.run(configuration: .default) { tx in
             for i in 0..<50 {
                 try tx.setValue([UInt8(i)], for: [0, 10, UInt8(i)])
             }
         }
 
         // Execute 20 getRange() calls and verify commit succeeds
-        try await runner.run(configuration: .default, producing: .writeResult) { tx in
+        try await runner.run(configuration: .default) { tx in
             for batch in 0..<20 {
                 let start = batch * 2
                 let end = start + 3
@@ -321,7 +321,7 @@ struct TransactionComprehensiveTests {
         }
 
         // Verify the write was committed
-        let value = try await runner.run(configuration: .default, producing: .writeResult) { tx in
+        let value = try await runner.run(configuration: .default) { tx in
             try await tx.getValue(for: [0, 10, 99])
         }
 

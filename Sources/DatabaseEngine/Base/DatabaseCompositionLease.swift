@@ -33,6 +33,15 @@ package final class DatabaseCompositionLease: Sendable {
         members.first { $0.baseID == id }
     }
 
+    /// Ends every member admission lease once the federated operation's
+    /// transactions are terminal. Each member token is exactly-once, so a
+    /// caller may end the composition explicitly and still hold it.
+    package func finish() {
+        for member in members {
+            member.finish()
+        }
+    }
+
     /// Immutable placement generation for every member admitted by this
     /// execution. Remote adapters may bind durable result snapshots to these
     /// values without inventing a generation for a derived Composition.

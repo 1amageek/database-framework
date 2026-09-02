@@ -46,9 +46,6 @@ extension StorageTransactionExecutor {
         )
         return try await runner.run(
             configuration: configuration,
-            // The caller supplies an arbitrary operation on an unattenuated
-            // transaction, so this execution may commit durable state.
-            producing: .writeResult,
             executionDeadline: executionDeadline,
             operationDescription: "StorageEngine.withTransaction(configuration:)",
             operation: operation

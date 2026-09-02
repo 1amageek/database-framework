@@ -77,28 +77,34 @@ QueryExecution receive a resolved Subspace rather than a computed prefix.
   the caller requests; the shared array backing it stays module-internal, so
   no caller takes ownership of the retained storage, and the requested range
   decides how much of the result reaches an ordinary Array.
-- A read execution checks cancellation once more after its producing
-  resources close authoritatively and before its result becomes the caller's,
-  so a cancelled caller is never handed a semantic result. The check belongs
-  to the two owners that establish that closed point: the transaction runner,
-  after the commit is authoritative and the PartitionLease is released, for
-  every execution the caller declared read-only; and the composition read
-  snapshot, after the member vault drains and every domain transaction
-  commits. A write execution is deliberately exempt: the runner's tail also
-  serves committed writes, where a cancellation failure would report durable
-  data as lost. A read-only execution has no such outcome to lose, because
-  its transaction is admitted through `ReadAuthorizedTransactionAccess`,
-  which refuses every persistent mutation.
+- The post-closure cancellation check belongs to a Collecting-to-Ready
+  transition over Framework-owned resources, not to the generic transaction
+  runner. A public copyable read API returns an ordinary value, so its
+  cancellation behavior is the one its callback produced: a caller cancelled
+  while its own read-only commit is in flight still receives that value. The
+  runner therefore makes no check after its attempt closes, and states no
+  result kind, because its tail serves every copyable execution alike.
+- The composition read snapshot owns such a transition, because it holds its
+  domain transactions directly instead of delegating them to the runner. It
+  drains the member vault, brings every domain transaction to its terminal
+  state, releases the member Base leases, and only then checks cancellation
+  before the result becomes the caller's. Each transaction is read-only by
+  construction, so no durable outcome is reported as cancelled.
+- A composition member Base lease outlives every domain transaction it
+  admitted. `DatabaseBaseLeaseToken` finishes exactly once, so the snapshot
+  releases the composition lease explicitly at the package boundary after the
+  commit or cancel loop, and a deferred release covers every throwing exit;
+  neither release is reachable while a domain transaction is still open. A
+  lease that ended at an ARC release point instead would let the drain a Base
+  lifecycle transition waits on complete while a domain commit was still in
+  flight, advancing retirement, deletion, or placement movement past a
+  running transaction. The release stays `package`: no public caller ends an
+  admission lease.
 - The check runs where the closed transaction is beyond cleanup. A closed
   transaction can no longer be cancelled, so a check that could reach its
   owner's cleanup would answer a cancelled read with a cleanup failure
-  instead of the cancellation. The runner therefore leaves its attempt with
-  the closed value before checking, and the composition snapshot checks only
+  instead of the cancellation. The composition snapshot therefore checks only
   where every domain transaction is already counted as committed.
-- A read execution states that it is one. The runner takes the result kind as
-  a required argument so a new execution path cannot acquire this contract,
-  or lose it, without deciding; the data-plane callers derive it from the
-  access the caller declared.
 - A retained canonical row page leaves linear ownership the same way. It is
   consumed into shared row ownership so a durable query snapshot can read the
   complete result count and emit successive bounded pages after the read
@@ -144,7 +150,8 @@ raw entity arrays exist only at the consuming public-output boundary.
 | Point authority/meter | Regular and polymorphic denial and foreign-key-meter tests observe zero point reads. |
 | Admission, order, absence | Budget-before-read and present/missing sequence tests. |
 | Failure/cancellation/release | Later-failure and suspended-read tests end at zero retained resources. |
-| Post-closure cancellation | A read suspended at its own commit and cancelled there fails with `CancellationError` after closure; an identically suspended and cancelled write returns its committed value. |
+| Public read cancellation | A public copyable read suspended at its own commit and cancelled there still returns its callback value, as does an identically suspended and cancelled write. |
+| Composition lease lifetime | A Base lifecycle drain does not complete while a composition domain commit is suspended, and completes once that commit returns. |
 | No raw escape | Source audit rejects general borrows, raw returns, and unmarked bridges. |
 | Bounded item path | Envelope and every chunk are observed as bounded reads. |
 | Directory binding | [Directory](Directory/DESIGN.md) owns the canonical component, tag derivation, and layout-rejection evidence. |

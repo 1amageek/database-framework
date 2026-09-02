@@ -205,16 +205,12 @@ internal struct TransactionRunner: Sendable {
     ///
     /// - Parameters:
     ///   - configuration: Transaction configuration (timeout, retry, priority, weak read semantics)
-    ///   - resultKind: Whether this execution's value is a read result. A read
-    ///     result is checked for cancellation after the attempt closes; a
-    ///     write result is not, because its commit is already durable.
     ///   - readVersionCache: Optional cache for weak read semantics
     ///   - operation: The operation to execute within the transaction
     /// - Returns: The result of the operation
     /// - Throws: The operation or storage error that remains after retries
     func run<T: Sendable>(
         configuration: TransactionConfiguration,
-        producing resultKind: TransactionResultKind,
         executionDeadline: TransactionExecutionDeadline? = nil,
         readVersionCache: ReadVersionCache? = nil,
         operationDescription: String = "transaction",
@@ -257,11 +253,6 @@ internal struct TransactionRunner: Sendable {
             configuredDeadline,
             inheritedDeadline
         )
-
-        // The value of the attempt that closed. It leaves the loop rather than
-        // returning from inside it so the transition that follows runs outside
-        // the region that owns transaction cleanup.
-        var closedResult: T?
 
         for attempt in 0..<maxAttempts {
             try ensureDatabaseTaskIsActive()
@@ -387,14 +378,7 @@ internal struct TransactionRunner: Sendable {
                         ]
                     )
                 }
-                // 9. The attempt is closed: the commit is authoritative
-                //    and the Partition is released. Leaving the attempt here
-                //    rather than returning from inside it is what makes the
-                //    closure final -- a closed transaction can no longer be
-                //    cancelled, so the transition that follows must not be
-                //    able to re-enter this region's cleanup.
-                closedResult = attemptResult.value
-                break
+                return attemptResult.value
 
             } catch {
                 let operationError = error
@@ -476,18 +460,6 @@ internal struct TransactionRunner: Sendable {
 
                 throw operationError
             }
-        }
-
-        if let closedResult {
-            // 10. The attempt has closed. A read result becomes the caller's
-            //     only if the caller is still active, so a cancelled caller is
-            //     never handed one. A write result is exempt because its
-            //     commit already happened and reporting it as cancelled would
-            //     report durable data as lost.
-            if resultKind == .readResult {
-                try ensureDatabaseTaskIsActive()
-            }
-            return closedResult
         }
 
         // Should not reach here, but safety fallback

@@ -208,6 +208,12 @@ public struct CompositionDataSource: Sendable {
         // Authorization is performed exactly once against the same domain
         // transactions that provide the federated read snapshot.
         let lease = try await acquireLease()
+        // Every member lease outlives the domain transactions admitted under
+        // it. This deferred release covers each throwing exit, after the
+        // cleanup below has cancelled whatever did not commit; the success
+        // path releases explicitly before its cancellation check. The member
+        // tokens are exactly-once, so both releases together decrement once.
+        defer { lease.finish() }
         var domains: [String: DatabaseStorageDomainRuntime] = [:]
         for member in lease.members {
             domains[member.domainID] = member.generation.domain
@@ -300,13 +306,18 @@ public struct CompositionDataSource: Sendable {
                 committedCount += 1
             }
             // The federated snapshot is closed: the vault has drained and
-            // every domain transaction committed. This family owns its own
-            // Collecting-to-Ready transition because it holds these
-            // transactions directly instead of through the transaction
-            // runner, so it makes the same post-closure cancellation check.
-            // Each transaction is read-only by construction, so no durable
-            // outcome is reported as cancelled. Throwing here reaches the
-            // cleanup below with `committedCount == owned.count`, so it
+            // every domain transaction committed. Releasing the member leases
+            // here, rather than wherever the last reference happens to go,
+            // is what lets a Base lifecycle drain observe zero active leases
+            // only after these transactions are terminal.
+            lease.finish()
+            // This family owns its own Collecting-to-Ready transition because
+            // it holds these transactions directly instead of through the
+            // transaction runner, so it checks cancellation once its
+            // resources have closed and before the result becomes the
+            // caller's. Each transaction is read-only by construction, so no
+            // durable outcome is reported as cancelled. Throwing here reaches
+            // the cleanup below with `committedCount == owned.count`, so it
             // cancels nothing and the cancellation is rethrown unwrapped.
             try ensureDatabaseTaskIsActive()
             return result

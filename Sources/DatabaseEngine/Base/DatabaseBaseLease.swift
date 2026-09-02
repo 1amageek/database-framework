@@ -43,6 +43,19 @@ public final class DatabaseBaseLease: Sendable {
             generation: generation.record.placementGeneration
         )
     }
+
+    /// Ends this admission lease at a point the holder chooses.
+    ///
+    /// A holder that owns transactions directly must end its lease after those
+    /// transactions are terminal, so a Base lifecycle drain cannot complete
+    /// while one is still open. Releasing the last reference instead would end
+    /// the lease at an ARC release point the holder does not control. The
+    /// token is exactly-once, so ending here and letting the last reference go
+    /// cannot decrement twice. This is not public: no application caller ends
+    /// an admission lease.
+    package func finish() {
+        token.finish()
+    }
 }
 
 package final class DatabaseBaseLeaseToken: Sendable {

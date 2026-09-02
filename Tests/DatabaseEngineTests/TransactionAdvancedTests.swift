@@ -21,7 +21,7 @@ struct TransactionAdvancedTests {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
 
-        let count = try await runner.run(configuration: .default, producing: .writeResult) { tx in
+        let count = try await runner.run(configuration: .default) { tx in
             var itemCount = 0
             var sequence = tx.rangeCursor(
                 from: .firstGreaterOrEqual([0xFD, 0xFF, 0xFF]),
@@ -48,7 +48,7 @@ struct TransactionAdvancedTests {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
 
-        let totalCount = try await runner.run(configuration: .default, producing: .writeResult) { tx in
+        let totalCount = try await runner.run(configuration: .default) { tx in
             var total = 0
 
             // Repetition semantics need more than one call, not a scale load.
@@ -81,13 +81,13 @@ struct TransactionAdvancedTests {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
 
-        try await runner.run(configuration: .default, producing: .writeResult) { tx in
+        try await runner.run(configuration: .default) { tx in
             for i in 0..<20 {
                 try tx.setValue([UInt8(i)], for: [0x22, UInt8(i)])
             }
         }
 
-        let results = try await runner.run(configuration: .default, producing: .writeResult) { tx in
+        let results = try await runner.run(configuration: .default) { tx in
             var readValues: [ByteString] = []
 
             for i in 0..<10 {
@@ -117,12 +117,12 @@ struct TransactionAdvancedTests {
         let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
 
         // Setup: Clear the test key range first
-        try await runner.run(configuration: .default, producing: .writeResult) { tx in
+        try await runner.run(configuration: .default) { tx in
             try tx.clearRange(beginKey: [0x23], endKey: [0x24])
         }
 
         // Verify transaction can commit after mixed read/write operations
-        try await runner.run(configuration: .default, producing: .writeResult) { tx in
+        try await runner.run(configuration: .default) { tx in
             // Writes
             for i in 0..<20 {
                 try tx.setValue([UInt8(i)], for: [0x23, 0x20, UInt8(i)])
@@ -161,7 +161,7 @@ struct TransactionAdvancedTests {
         let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
 
         // Simulate Skip List: 6 levels, insert 1 item
-        let insertionResult = try await runner.run(configuration: .default, producing: .writeResult) { tx in
+        let insertionResult = try await runner.run(configuration: .default) { tx in
             var rankPerLevel: [Int] = []
 
             // Phase 1: Find insertion point at each level (like Skip List)
@@ -202,7 +202,7 @@ struct TransactionAdvancedTests {
 
         // Simulate inserting 20 items with Skip List pattern
         for item in 0..<20 {
-            try await runner.run(configuration: .default, producing: .writeResult) { tx in
+            try await runner.run(configuration: .default) { tx in
                 // Phase 1: Scan all levels (6 getRange calls)
                 for level in 0..<6 {
                     var sequence = tx.rangeCursor(
@@ -230,7 +230,7 @@ struct TransactionAdvancedTests {
         }
 
         // Verify all items were inserted
-        let count = try await runner.run(configuration: .default, producing: .writeResult) { tx in
+        let count = try await runner.run(configuration: .default) { tx in
             var total = 0
             var sequence = tx.rangeCursor(
                 from: .firstGreaterOrEqual([0x25, 0]),
@@ -258,7 +258,7 @@ struct TransactionAdvancedTests {
         let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
 
         // Setup: 3 dimensions × 5 items each = 45 total items
-        try await runner.run(configuration: .default, producing: .writeResult) { tx in
+        try await runner.run(configuration: .default) { tx in
             for x in 0..<3 {
                 for y in 0..<3 {
                     for z in 0..<5 {
@@ -269,7 +269,7 @@ struct TransactionAdvancedTests {
         }
 
         // Test: 2-level nested getRange (X → Y levels)
-        let count = try await runner.run(configuration: .default, producing: .writeResult) { tx in
+        let count = try await runner.run(configuration: .default) { tx in
             var total = 0
 
             // Outer loop: X dimension
@@ -304,14 +304,14 @@ struct TransactionAdvancedTests {
         let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
 
         // Setup initial state
-        try await runner.run(configuration: .default, producing: .writeResult) { tx in
+        try await runner.run(configuration: .default) { tx in
             for i in 0..<10 {
                 try tx.setValue([UInt8(i)], for: [0x28, UInt8(i)])
             }
         }
 
         // Read with snapshot: true multiple times in same transaction
-        let (count1, count2, count3) = try await runner.run(configuration: .default, producing: .writeResult) { tx in
+        let (count1, count2, count3) = try await runner.run(configuration: .default) { tx in
             var c1 = 0
             var c2 = 0
             var c3 = 0
@@ -363,7 +363,7 @@ struct TransactionAdvancedTests {
         let database = try await FoundationDBScenarioCoordinator.shared.makeEngine()
         let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: database), clock: TestProcessMonotonicClock())
 
-        let result = try await runner.run(configuration: .default, producing: .writeResult) { tx in
+        let result = try await runner.run(configuration: .default) { tx in
             // Write
             try tx.setValue([1], for: [0x29, 0])
             try tx.setValue([2], for: [0x29, 1])
