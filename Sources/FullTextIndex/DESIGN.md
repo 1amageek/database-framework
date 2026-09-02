@@ -272,14 +272,28 @@ canonical-row contracts requires rechecking this module and the parent
 The release benchmark contract is owned by this design and defines one test,
 two metrics, and 15 samples per metric through the real SQLite public query
 path. The executable limit source is `Benchmarks/maximum-medians.tsv`; it
-defines the exact maxima for intersection `12,068.689` microseconds and union
-`6,698.496` microseconds. `scripts/validate-benchmark-medians` enforces both
+defines the exact maxima for intersection `27,640.938` microseconds and union
+`13,793.801` microseconds. `scripts/validate-benchmark-medians` enforces both
 measurements without reinterpretation: a median above either maximum fails,
 and no reference-plus-multiplier path exists. The benchmark entry point is
 `Benchmarks/FullTextQuery/Tests/FullTextQueryPerformanceBenchmarks/`.
 Benchmark evidence does not replace focused behavioral proof, and
 package-level verification runs only after the feature boundary has
 converged.
+
+A maximum is a property of the machine that executes the gate, so both numbers
+are calibrated on that machine rather than on a developer workstation. The gate
+runs in the `Benchmark verification` job on the shared `xcode-27` arm64 runner,
+and the calibration set is the eight recorded runs of that job between
+2026-08-28 and 2026-09-01, whose intersection medians span 16,548.625 to
+22,112.750 and whose union medians span 7,994.958 to 11,035.041 microseconds.
+Each maximum is the largest median in that set multiplied by 1.25. The
+multiplier is the reviewed operating value: it places both maxima above the
+mean plus three standard deviations of the same set, so ordinary contention on
+a shared runner cannot fail the gate, while a regression beyond a quarter of
+the observed worst case still does. Recalibration is mechanical -- recollect
+the medians the gate reports on the current runner and reapply the rule -- and
+it updates this design and `Benchmarks/maximum-medians.tsv` in one change.
 
 ## Design Review Record
 

@@ -4,5 +4,5 @@ bitmap roaring.sparse.contains-missing 107.502
 bitmap roaring.sparse.intersection 984.249
 bitmap roaring.sparse.union 2905.623
 bitmap roaring.sparse.difference 2109.876
-fulltext fulltext.canonical.intersection 12068.689
-fulltext fulltext.canonical.union 6698.496
+fulltext fulltext.canonical.intersection 27640.938
+fulltext fulltext.canonical.union 13793.801
