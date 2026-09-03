@@ -385,14 +385,13 @@ package struct VectorRetainedMatches: Sendable {
     /// Canonical session reads always inject their session meter instead.
     package static func makeUnboundedWorkMeter() -> DatabaseWorkMeter {
         DatabaseWorkMeter(
-            budget: ExecutionBudget(
+            unbounded: ExecutionBudget(
                 maximumRows: UInt32.max,
                 maximumWorkUnits: UInt64.max,
                 maximumIntermediateRows: UInt32.max,
                 maximumIntermediateBytes: UInt64.max,
                 timeoutMilliseconds: UInt32.max
-            ),
-            monotonicClock: VectorIndexSystemClock()
+            )
         )
     }
 
@@ -481,52 +480,27 @@ package struct VectorSearchAccumulator: ~Copyable {
 }
 
 extension VectorRetainedMatches: DatabaseRetainedPrimaryKeyCollection {
-    package func withRetainedPrimaryKey<Failure: Error>(
+    package func withRetainedPrimaryKey(
         at position: Int,
-        _ body: (borrowing Tuple) throws(Failure) -> Void
-    ) throws(Failure) {
+        _ body: (borrowing Tuple) throws -> Void
+    ) rethrows {
         func apply(
             _ match: borrowing VectorRetainedMatch
-        ) throws(Failure) {
+        ) throws {
             try match.primaryKey.withValue(body)
         }
         try withMatch(at: position, apply)
     }
 
-    package func withRetainedPrimaryKey<Failure: Error>(
+    package func withRetainedPrimaryKey(
         at position: Int,
-        _ body: (borrowing Tuple) async throws(Failure) -> Void
-    ) async throws(Failure) {
+        _ body: (borrowing Tuple) async throws -> Void
+    ) async rethrows {
         func apply(
             _ match: borrowing VectorRetainedMatch
-        ) async throws(Failure) {
+        ) async throws {
             try await match.primaryKey.withValue(body)
         }
         try await withMatch(at: position, apply)
-    }
-}
-
-/// Process-local monotonic source for the compatibility promotion boundary.
-/// Session-owned reads provide their container clock instead.
-private struct VectorIndexSystemClock: StorageMonotonicClock {
-    private static let clock = ContinuousClock()
-    private static let origin = clock.now
-
-    var now: StorageInstant {
-        StorageInstant(
-            durationSinceReference: Self.origin.duration(to: Self.clock.now)
-        )
-    }
-
-    func sleep(
-        until deadline: StorageInstant
-    ) async throws(StorageClockError) {
-        let remaining = now.duration(to: deadline)
-        guard remaining > .zero else { return }
-        do {
-            try await Self.clock.sleep(for: remaining)
-        } catch {
-            throw .cancelled
-        }
     }
 }

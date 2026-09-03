@@ -1,4 +1,5 @@
 import DatabaseEngine
+import DatabaseKit
 import DatabaseTypes
 
 /// Request-accounted owner for scan signatures and immutable result handles.

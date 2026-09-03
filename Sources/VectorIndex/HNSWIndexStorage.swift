@@ -156,7 +156,8 @@ struct HNSWIndexStorage: Sendable {
     ) async throws -> Double {
         let vectorKey = vectorsSubspace.pack(HNSWLabelCodec.tuple(label))
         try workMeter.consume(at: .indexScan)
-        guard let vectorBytes = try await transaction.readPointValue(
+        guard let vectorBytes = try await readPointValue(
+            using: transaction,
             for: vectorKey,
             snapshot: snapshot,
             workMeter: workMeter,
@@ -446,7 +447,8 @@ struct HNSWIndexStorage: Sendable {
         workMeter: DatabaseWorkMeter
     ) async throws -> HNSWRetainedSearchSnapshot {
         try workMeter.consume(at: .indexScan)
-        if let metadataBytes = try await transaction.readPointValue(
+        if let metadataBytes = try await readPointValue(
+            using: transaction,
             for: graphMetadataKey,
             snapshot: snapshot,
             workMeter: workMeter,
@@ -785,7 +787,8 @@ struct HNSWIndexStorage: Sendable {
             let chunk: ByteString?
             if let workMeter {
                 try workMeter.consume(at: .indexScan)
-                chunk = try await transaction.readPointValue(
+                chunk = try await readPointValue(
+                    using: transaction,
                     for: chunkKey,
                     snapshot: snapshot,
                     workMeter: workMeter,

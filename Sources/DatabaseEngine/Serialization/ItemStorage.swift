@@ -105,7 +105,8 @@ public struct ItemStorage: Sendable {
         workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage
     ) async throws -> ByteString? {
-        guard let envelopeBytes = try await transaction.readPointValue(
+        guard let envelopeBytes = try await readPointValue(
+            using: transaction,
             for: key,
             snapshot: snapshot,
             workMeter: workMeter,
@@ -444,7 +445,8 @@ public struct ItemStorage: Sendable {
                 throw ItemStorageError.invalidChunkLayout
             }
             let chunkKey = blobBase.pack(Tuple([encodedIndex]))
-            guard let chunk = try await transaction.readPointValue(
+            guard let chunk = try await readPointValue(
+                using: transaction,
                 for: chunkKey,
                 snapshot: snapshot,
                 workMeter: workMeter,

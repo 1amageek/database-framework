@@ -76,25 +76,25 @@ final class RankScanResult:
         try entries.withElement(at: position, apply)
     }
 
-    package func withRetainedPrimaryKey<Failure: Error>(
+    package func withRetainedPrimaryKey(
         at position: Int,
-        _ body: (borrowing Tuple) throws(Failure) -> Void
-    ) throws(Failure) {
+        _ body: (borrowing Tuple) throws -> Void
+    ) rethrows {
         func apply(
             _ entry: borrowing RankScanEntry
-        ) throws(Failure) {
+        ) throws {
             try entry.primaryKey.withValue(body)
         }
         try entries.withElement(at: position, apply)
     }
 
-    package func withRetainedPrimaryKey<Failure: Error>(
+    package func withRetainedPrimaryKey(
         at position: Int,
-        _ body: (borrowing Tuple) async throws(Failure) -> Void
-    ) async throws(Failure) {
+        _ body: (borrowing Tuple) async throws -> Void
+    ) async rethrows {
         func apply(
             _ entry: borrowing RankScanEntry
-        ) async throws(Failure) {
+        ) async throws {
             try await entry.primaryKey.withValue(body)
         }
         try await entries.withElement(at: position, apply)

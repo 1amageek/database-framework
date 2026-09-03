@@ -386,7 +386,8 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         seen: inout SPARQLPropertyPathMatchSet,
         statistics: inout ExecutionStatistics
     ) async throws {
-        let scan = try await datasetScanner.scanRetained(
+        let scan = try await scanRetained(
+            using: datasetScanner,
             subject: inverse ? endConstraint : startConstraint,
             predicate: predicate.term,
             object: inverse ? startConstraint : endConstraint,
@@ -472,7 +473,8 @@ struct SPARQLPropertyPathEvaluator: Sendable {
         seen: inout SPARQLPropertyPathMatchSet,
         statistics: inout ExecutionStatistics
     ) async throws {
-        let scan = try await datasetScanner.scanRetained(
+        let scan = try await scanRetained(
+            using: datasetScanner,
             subject: inverse ? endConstraint : startConstraint,
             predicate: nil,
             object: inverse ? startConstraint : endConstraint,
@@ -608,7 +610,8 @@ struct SPARQLPropertyPathEvaluator: Sendable {
             )
         }
 
-        let scan = try await datasetScanner.scanRetained(
+        let scan = try await scanRetained(
+            using: datasetScanner,
             subject: nil,
             predicate: nil,
             object: nil,

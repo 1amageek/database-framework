@@ -14,7 +14,8 @@ extension SPARQLQueryExecutor {
         filter: FilterExpression? = nil,
         resultLimit: Int? = nil
     ) async throws -> EvaluationResult {
-        let scanResult = try await datasetScanner.scanRetained(
+        let scanResult = try await scanRetained(
+            using: datasetScanner,
             subject: try boundRDFTerm(pattern.subject),
             predicate: try boundRDFTerm(pattern.predicate),
             object: try boundRDFTerm(pattern.object),

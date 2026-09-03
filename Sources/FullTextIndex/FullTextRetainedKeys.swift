@@ -66,17 +66,17 @@ struct FullTextRetainedKeys: DatabaseRetainedPrimaryKeyCollection, Sendable {
 
     package var workMeter: DatabaseWorkMeter { storage.workMeter }
 
-    package func withRetainedPrimaryKey<Failure: Error>(
+    package func withRetainedPrimaryKey(
         at position: Int,
-        _ body: (borrowing Tuple) throws(Failure) -> Void
-    ) throws(Failure) {
+        _ body: (borrowing Tuple) throws -> Void
+    ) rethrows {
         try storage.withElement(at: position, body)
     }
 
-    package func withRetainedPrimaryKey<Failure: Error>(
+    package func withRetainedPrimaryKey(
         at position: Int,
-        _ body: (borrowing Tuple) async throws(Failure) -> Void
-    ) async throws(Failure) {
+        _ body: (borrowing Tuple) async throws -> Void
+    ) async rethrows {
         try await storage.withElement(at: position, body)
     }
 
@@ -133,25 +133,25 @@ struct FullTextRetainedScoredKeys: DatabaseRetainedPrimaryKeyCollection,
 
     package var workMeter: DatabaseWorkMeter { storage.workMeter }
 
-    package func withRetainedPrimaryKey<Failure: Error>(
+    package func withRetainedPrimaryKey(
         at position: Int,
-        _ body: (borrowing Tuple) throws(Failure) -> Void
-    ) throws(Failure) {
+        _ body: (borrowing Tuple) throws -> Void
+    ) rethrows {
         func apply(
             _ match: borrowing FullTextRetainedScoredKeys.Match
-        ) throws(Failure) {
+        ) throws {
             try body(match.identifier)
         }
         try storage.withElement(at: position, apply)
     }
 
-    package func withRetainedPrimaryKey<Failure: Error>(
+    package func withRetainedPrimaryKey(
         at position: Int,
-        _ body: (borrowing Tuple) async throws(Failure) -> Void
-    ) async throws(Failure) {
+        _ body: (borrowing Tuple) async throws -> Void
+    ) async rethrows {
         func apply(
             _ match: borrowing FullTextRetainedScoredKeys.Match
-        ) async throws(Failure) {
+        ) async throws {
             try await body(match.identifier)
         }
         try await storage.withElement(at: position, apply)
@@ -185,17 +185,17 @@ private struct FullTextRetainedKeySlice:
     package var count: Int { storage.count }
     package var workMeter: DatabaseWorkMeter { storage.workMeter }
 
-    package func withRetainedPrimaryKey<Failure: Error>(
+    package func withRetainedPrimaryKey(
         at position: Int,
-        _ body: (borrowing Tuple) throws(Failure) -> Void
-    ) throws(Failure) {
+        _ body: (borrowing Tuple) throws -> Void
+    ) rethrows {
         try storage.withElement(at: position, body)
     }
 
-    package func withRetainedPrimaryKey<Failure: Error>(
+    package func withRetainedPrimaryKey(
         at position: Int,
-        _ body: (borrowing Tuple) async throws(Failure) -> Void
-    ) async throws(Failure) {
+        _ body: (borrowing Tuple) async throws -> Void
+    ) async rethrows {
         try await storage.withElement(at: position, body)
     }
 }
@@ -212,25 +212,25 @@ private struct FullTextRetainedScoredKeySlice:
     package var count: Int { storage.count }
     package var workMeter: DatabaseWorkMeter { storage.workMeter }
 
-    package func withRetainedPrimaryKey<Failure: Error>(
+    package func withRetainedPrimaryKey(
         at position: Int,
-        _ body: (borrowing Tuple) throws(Failure) -> Void
-    ) throws(Failure) {
+        _ body: (borrowing Tuple) throws -> Void
+    ) rethrows {
         func apply(
             _ match: borrowing FullTextRetainedScoredKeys.Match
-        ) throws(Failure) {
+        ) throws {
             try body(match.identifier)
         }
         try storage.withElement(at: position, apply)
     }
 
-    package func withRetainedPrimaryKey<Failure: Error>(
+    package func withRetainedPrimaryKey(
         at position: Int,
-        _ body: (borrowing Tuple) async throws(Failure) -> Void
-    ) async throws(Failure) {
+        _ body: (borrowing Tuple) async throws -> Void
+    ) async rethrows {
         func apply(
             _ match: borrowing FullTextRetainedScoredKeys.Match
-        ) async throws(Failure) {
+        ) async throws {
             try await body(match.identifier)
         }
         try await storage.withElement(at: position, apply)

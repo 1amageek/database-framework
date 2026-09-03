@@ -58,7 +58,8 @@ extension SPARQLQueryExecutor {
         transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
     ) async throws -> RDFDatasetScanResult {
-        try await datasetScanner.scanRetained(
+        try await scanRetained(
+            using: datasetScanner,
             subject: nil,
             predicate: nil,
             object: nil,

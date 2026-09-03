@@ -879,7 +879,11 @@ struct FusionExecutionContractTests {
                     )
             }
 
-            let cursor = try session.subspaceCursor(entries, reverse: false)
+            let cursor = try openFusionSubspaceCursor(
+                using: session,
+                in: entries,
+                reverse: false
+            )
             #expect(try await cursor.next()?.key == key)
             try await session.invalidate()
             await #expect {

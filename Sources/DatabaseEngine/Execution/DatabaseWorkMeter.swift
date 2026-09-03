@@ -15,8 +15,8 @@ public final class DatabaseWorkMeter: Sendable {
 
     public let budget: ExecutionBudget
 
-    private let monotonicClock: any StorageMonotonicClock
-    private let deadline: StorageInstant
+    private let monotonicClock: (any StorageMonotonicClock)?
+    private let deadline: StorageInstant?
     private let state = Mutex(State())
 
     public init(
@@ -28,6 +28,15 @@ public final class DatabaseWorkMeter: Sendable {
         self.deadline = monotonicClock.now.advanced(
             by: .milliseconds(Int64(budget.timeoutMilliseconds))
         )
+    }
+
+    /// Creates a meter for an explicitly unbounded internal operation.
+    /// Cancellation and all non-time resource limits remain enforced.
+    package init(unbounded budget: ExecutionBudget) {
+        precondition(budget.timeoutMilliseconds == UInt32.max)
+        self.budget = budget
+        self.monotonicClock = nil
+        self.deadline = nil
     }
 
     public func consume(
@@ -330,6 +339,7 @@ public final class DatabaseWorkMeter: Sendable {
     }
 
     private func checkDeadline(at stage: DatabaseWorkStage) throws {
+        guard let monotonicClock, let deadline else { return }
         guard monotonicClock.now < deadline else {
             throw DatabaseWorkLimitError.deadline(stage: stage)
         }

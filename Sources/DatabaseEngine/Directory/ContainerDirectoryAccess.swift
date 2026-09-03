@@ -132,18 +132,29 @@ final class ContainerDirectoryAccess: DirectoryAccess, Sendable {
         _ transaction: any TransactionReadAccess,
         requiresMutation: Bool
     ) throws -> ContainerDirectoryTransactionBorrow {
-        guard let admitted = transaction as? any ContainerAdmittedTransaction
-        else {
-            throw StorageError.invalidOperation(
-                """
-                Directory operations require a transaction admitted by this \
-                database container (got \(type(of: transaction)))
-                """
-            )
+        if let admitted = transaction as? ReadAuthorizedTransactionAccess {
+            guard !requiresMutation else {
+                throw DatabaseReadTransactionError.mutationRequiresWriteAccess
+            }
+            return try admitted.directoryTransactionBorrow(for: lifecycle)
         }
-        guard admitted.admitsDirectoryMutation || !requiresMutation else {
-            throw DatabaseReadTransactionError.mutationRequiresWriteAccess
+        if let admitted = transaction as? DatabaseReadTransaction {
+            guard !requiresMutation else {
+                throw DatabaseReadTransactionError.mutationRequiresWriteAccess
+            }
+            return try admitted.directoryTransactionBorrow(for: lifecycle)
         }
-        return try admitted.directoryTransactionBorrow(for: lifecycle)
+        if let admitted = transaction as? ContainerTransactionAccess {
+            return try admitted.directoryTransactionBorrow(for: lifecycle)
+        }
+        if let admitted = transaction as? ContainerTransaction {
+            return try admitted.directoryTransactionBorrow(for: lifecycle)
+        }
+        throw StorageError.invalidOperation(
+            """
+            Directory operations require a transaction admitted by this \
+            database container (got \(type(of: transaction)))
+            """
+        )
     }
 }

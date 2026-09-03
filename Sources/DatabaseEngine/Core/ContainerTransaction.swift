@@ -3,8 +3,7 @@ import StorageKit
 
 /// A storage transaction that keeps its database container lifecycle active
 /// until the owned transaction is released.
-final class ContainerTransaction: Transaction, ContainerAdmittedTransaction,
-    Sendable
+final class ContainerTransaction: Transaction, Sendable
 {
     private let transaction: any Transaction
     private let operationLease: DatabaseStorageOperationLease
@@ -16,9 +15,6 @@ final class ContainerTransaction: Transaction, ContainerAdmittedTransaction,
         self.transaction = transaction
         self.operationLease = operationLease
     }
-
-    /// A write-capable transaction may create, move, and remove Directories.
-    var admitsDirectoryMutation: Bool { true }
 
     /// The backend-owned access used only when the container delegates a
     /// backend-specific Directory operation. The wrapper remains retained by

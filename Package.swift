@@ -100,7 +100,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/database-kit.git",
-            from: "26.0831.0",
+            from: "26.0831.1",
             traits: databaseKitTraits
         ),
         .package(
@@ -109,7 +109,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/storage-kit.git",
-            from: "26.0831.0"
+            from: "26.0831.1"
         ),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.7.0"),
         .package(url: "https://github.com/apple/swift-metrics.git", from: "2.7.0"),
@@ -322,7 +322,6 @@ let package = Package(
                 .product(name: "DatabaseKit", package: "database-kit"),
                 .product(name: "DatabaseTypes", package: "database-types"),
                 .product(name: "StorageKit", package: "storage-kit"),
-                .product(name: "StorageKitSystemClock", package: "storage-kit"),
             ],
             exclude: ["README.md", "DESIGN.md"]
         ),

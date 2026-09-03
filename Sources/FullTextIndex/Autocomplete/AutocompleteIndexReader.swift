@@ -42,7 +42,7 @@ struct AutocompleteIndexReader: Sendable {
         )
         do {
             while let (key, value) = try await cursor.next() {
-                try Task.checkCancellation()
+                try ensureDatabaseTaskIsActive()
                 guard prefixSubspace.contains(key) else { break }
                 let admission = try builder.prepareAppend(
                     footprint: DatabaseIntermediateFootprint(
@@ -78,7 +78,7 @@ struct AutocompleteIndexReader: Sendable {
             throw iterationError
         }
         try await cursor.finish()
-        try Task.checkCancellation()
+        try ensureDatabaseTaskIsActive()
         return promote(
             builder: consume builder,
             limit: limit
@@ -112,7 +112,7 @@ struct AutocompleteIndexReader: Sendable {
         )
         do {
             while let (key, value) = try await cursor.next() {
-                try Task.checkCancellation()
+                try ensureDatabaseTaskIsActive()
                 guard termsSubspace.contains(key) else { break }
                 let admission = try builder.prepareAppend(
                     footprint: DatabaseIntermediateFootprint(
@@ -146,7 +146,7 @@ struct AutocompleteIndexReader: Sendable {
             throw iterationError
         }
         try await cursor.finish()
-        try Task.checkCancellation()
+        try ensureDatabaseTaskIsActive()
         return promote(
             builder: consume builder,
             limit: limit

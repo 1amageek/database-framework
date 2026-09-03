@@ -60,7 +60,14 @@ private struct RankIndexContext {
 
     func getTopK(k: Int) async throws -> [(score: Int64, primaryKey: [any TupleElement])] {
         try await database.withTransaction { transaction in
-            try await maintainer.getTopK(k: k, transaction: transaction)
+            try await maintainer.getTopK(
+                k: k,
+                transaction: transaction,
+                workMeter: DatabaseWorkMeter(
+                    budget: ExecutionBudget(),
+                    monotonicClock: TestProcessMonotonicClock()
+                )
+            )
         }
     }
 
@@ -72,7 +79,13 @@ private struct RankIndexContext {
 
     func getCount() async throws -> Int64 {
         try await database.withTransaction { transaction in
-            try await maintainer.getCount(transaction: transaction)
+            try await maintainer.getCount(
+                transaction: transaction,
+                workMeter: DatabaseWorkMeter(
+                    budget: ExecutionBudget(),
+                    monotonicClock: TestProcessMonotonicClock()
+                )
+            )
         }
     }
 }

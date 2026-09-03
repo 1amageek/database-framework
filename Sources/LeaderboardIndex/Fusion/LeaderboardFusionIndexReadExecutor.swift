@@ -120,8 +120,9 @@ package struct LeaderboardFusionIndexReadExecutor: FusionIndexReadExecutor {
             request: request
         )
         defer { withExtendedLifetime(scanSubspace) {} }
-        let cursor = try request.access.subspaceCursor(
-            scanSubspace.subspace,
+        let cursor = try openFusionSubspaceCursor(
+            using: request.access,
+            in: scanSubspace.subspace,
             reverse: false
         )
         var emitted = 0
@@ -154,8 +155,9 @@ package struct LeaderboardFusionIndexReadExecutor: FusionIndexReadExecutor {
             request: request
         )
         defer { withExtendedLifetime(scanSubspace) {} }
-        let cursor = try request.access.subspaceCursor(
-            scanSubspace.subspace,
+        let cursor = try openFusionSubspaceCursor(
+            using: request.access,
+            in: scanSubspace.subspace,
             reverse: false
         )
         var topK = try LeaderboardFusionTopK(

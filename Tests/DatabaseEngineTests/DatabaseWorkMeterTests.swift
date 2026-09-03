@@ -504,7 +504,8 @@ struct DatabaseWorkMeterTests {
         )
         let first = Task {
             try await storage.withTransaction { transaction in
-                try await transaction.readPointValue(
+                try await readPointValue(
+                    using: transaction,
                     for: key,
                     snapshot: true,
                     workMeter: meter,
@@ -528,7 +529,8 @@ struct DatabaseWorkMeterTests {
         }
         let second = Task {
             try await storage.withTransaction { transaction in
-                try await transaction.readPointValue(
+                try await readPointValue(
+                    using: transaction,
                     for: nonEmptyKey,
                     snapshot: true,
                     workMeter: meter,
@@ -593,7 +595,8 @@ struct DatabaseWorkMeterTests {
 
         var value: ByteString? = try await storage.withTransaction {
             transaction in
-            try await transaction.readPointValue(
+            try await readPointValue(
+                using: transaction,
                 for: key,
                 snapshot: true,
                 workMeter: meter,
@@ -635,7 +638,8 @@ struct DatabaseWorkMeterTests {
 
         let value: ByteString? = try await storage.withTransaction {
             transaction in
-            try await transaction.readPointValue(
+            try await readPointValue(
+                using: transaction,
                 for: ByteString(utf8: "point-read-missing"),
                 snapshot: true,
                 workMeter: meter,
@@ -665,7 +669,8 @@ struct DatabaseWorkMeterTests {
 
         var failure: (any Error)?
         do {
-            _ = try await transaction.readPointValue(
+            _ = try await readPointValue(
+                using: transaction,
                 for: key,
                 snapshot: true,
                 workMeter: meter,
@@ -709,7 +714,8 @@ struct DatabaseWorkMeterTests {
         )
         let barrier = storage.control.suspendNextValueRead(for: key)
         let task = Task {
-            try await transaction.readPointValue(
+            try await readPointValue(
+                using: transaction,
                 for: key,
                 snapshot: true,
                 workMeter: meter,
@@ -767,7 +773,8 @@ struct DatabaseWorkMeterTests {
 
             var failure: (any Error)?
             do {
-                _ = try await transaction.readPointValue(
+                _ = try await readPointValue(
+                    using: transaction,
                     for: ByteString(utf8: "point-read-mismatch"),
                     snapshot: true,
                     workMeter: meter,
@@ -796,7 +803,8 @@ struct DatabaseWorkMeterTests {
 
         var failure: (any Error)?
         do {
-            _ = try await transaction.readPointValue(
+            _ = try await readPointValue(
+                using: transaction,
                 for: ByteString(utf8: "point-read-over-return"),
                 snapshot: true,
                 workMeter: meter,

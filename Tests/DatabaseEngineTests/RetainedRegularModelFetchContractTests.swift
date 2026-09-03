@@ -429,19 +429,19 @@ private final class RetainedRegularFetchPrimaryKeys:
     package var count: Int { keys.count }
     package var workMeter: DatabaseWorkMeter { reservation.workMeter }
 
-    package func withRetainedPrimaryKey<Failure: Error>(
+    package func withRetainedPrimaryKey(
         at position: Int,
-        _ body: (borrowing Tuple) throws(Failure) -> Void
-    ) throws(Failure) {
+        _ body: (borrowing Tuple) throws -> Void
+    ) rethrows {
         precondition(position >= keys.startIndex && position < keys.endIndex)
         try body(keys[position])
         withExtendedLifetime(reservation) {}
     }
 
-    package func withRetainedPrimaryKey<Failure: Error>(
+    package func withRetainedPrimaryKey(
         at position: Int,
-        _ body: (borrowing Tuple) async throws(Failure) -> Void
-    ) async throws(Failure) {
+        _ body: (borrowing Tuple) async throws -> Void
+    ) async rethrows {
         precondition(position >= keys.startIndex && position < keys.endIndex)
         defer { withExtendedLifetime(reservation) {} }
         try await body(keys[position])

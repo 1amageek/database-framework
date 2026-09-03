@@ -1247,7 +1247,8 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             for term in normalizedTerms {
                 try workMeter.consume(at: .indexScan)
                 let key = termsSubspace.subspace(term).pack(identifier)
-                guard let value = try await transaction.readPointValue(
+                guard let value = try await readPointValue(
+                    using: transaction,
                     for: key,
                     snapshot: snapshot,
                     workMeter: workMeter,
@@ -1418,7 +1419,8 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 identifier in
                 try workMeter.consume(at: .indexScan)
                 let metadataKey = documentsSubspace.pack(identifier)
-                guard let metadataValue = try await transaction.readPointValue(
+                guard let metadataValue = try await readPointValue(
+                    using: transaction,
                     for: metadataKey,
                     snapshot: snapshot,
                     workMeter: workMeter,
@@ -1441,7 +1443,8 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                         identifier
                     )
                     guard let postingValue =
-                        try await transaction.readPointValue(
+                        try await readPointValue(
+                            using: transaction,
                             for: postingKey,
                             snapshot: snapshot,
                             workMeter: workMeter,
@@ -1532,7 +1535,8 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         snapshot: Bool,
         workMeter: DatabaseWorkMeter
     ) async throws -> Int64 {
-        guard let value = try await transaction.readPointValue(
+        guard let value = try await readPointValue(
+            using: transaction,
             for: key,
             snapshot: snapshot,
             workMeter: workMeter,

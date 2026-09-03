@@ -165,7 +165,8 @@ struct IVFIndexReader: Sendable {
     ) async throws -> IVFMetadata {
         let key = subspace.pack(Tuple([IVFIndexStorageKey.metadata.rawValue]))
         try workMeter.consume(at: .indexScan)
-        guard let value = try await transaction.readPointValue(
+        guard let value = try await readPointValue(
+            using: transaction,
             for: key,
             snapshot: snapshot,
             workMeter: workMeter,

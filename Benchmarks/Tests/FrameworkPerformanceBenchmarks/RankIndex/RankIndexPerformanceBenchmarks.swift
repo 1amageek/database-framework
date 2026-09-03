@@ -11,6 +11,13 @@ import DatabaseTypes
 @testable import DatabaseEngine
 @testable import RankIndex
 
+private func makeRankBenchmarkWorkMeter() -> DatabaseWorkMeter {
+    DatabaseWorkMeter(
+        budget: ExecutionBudget(),
+        monotonicClock: BenchmarkProcessMonotonicClock()
+    )
+}
+
 // MARK: - Benchmark Context
 
 private struct BenchmarkContext {
@@ -196,7 +203,11 @@ struct RankIndexPerformanceBenchmarks {
         for k in kValues {
             let (results, durationMs) = try await measure {
                 try await ctx.database.withTransaction { transaction in
-                    try await ctx.maintainer.getTopK(k: k, transaction: transaction)
+                    try await ctx.maintainer.getTopK(
+                        k: k,
+                        transaction: transaction,
+                        workMeter: makeRankBenchmarkWorkMeter()
+                    )
                 }
             }
 
@@ -232,7 +243,11 @@ struct RankIndexPerformanceBenchmarks {
         }
 
         let top5 = try await ctx.database.withTransaction { transaction in
-            try await ctx.maintainer.getTopK(k: 5, transaction: transaction)
+            try await ctx.maintainer.getTopK(
+                k: 5,
+                transaction: transaction,
+                workMeter: makeRankBenchmarkWorkMeter()
+            )
         }
 
         // Verify descending order
@@ -331,7 +346,10 @@ struct RankIndexPerformanceBenchmarks {
         for _ in 0..<iterations {
             let (count, durationMs) = try await measure {
                 try await ctx.database.withTransaction { transaction in
-                    try await ctx.maintainer.getCount(transaction: transaction)
+                    try await ctx.maintainer.getCount(
+                        transaction: transaction,
+                        workMeter: makeRankBenchmarkWorkMeter()
+                    )
                 }
             }
             totalDuration += durationMs
@@ -382,7 +400,11 @@ struct RankIndexPerformanceBenchmarks {
         for p in percentiles {
             let (score, durationMs) = try await measure {
                 try await ctx.database.withTransaction { transaction in
-                    try await ctx.maintainer.getPercentile(p, transaction: transaction)
+                    try await ctx.maintainer.getPercentile(
+                        p,
+                        transaction: transaction,
+                        workMeter: makeRankBenchmarkWorkMeter()
+                    )
                 }
             }
 
@@ -446,7 +468,10 @@ struct RankIndexPerformanceBenchmarks {
 
         // Verify count unchanged
         let count = try await ctx.database.withTransaction { transaction in
-            try await ctx.maintainer.getCount(transaction: transaction)
+            try await ctx.maintainer.getCount(
+                transaction: transaction,
+                workMeter: makeRankBenchmarkWorkMeter()
+            )
         }
         #expect(count == Int64(players.count), "Count should be unchanged after updates")
 
@@ -496,7 +521,10 @@ struct RankIndexPerformanceBenchmarks {
 
         // Verify count is 0
         let count = try await ctx.database.withTransaction { transaction in
-            try await ctx.maintainer.getCount(transaction: transaction)
+            try await ctx.maintainer.getCount(
+                transaction: transaction,
+                workMeter: makeRankBenchmarkWorkMeter()
+            )
         }
         #expect(count == 0, "Count should be 0 after deletes")
 
@@ -533,7 +561,11 @@ struct RankIndexPerformanceBenchmarks {
         // Top-K with ties
         let (top20, durationMs) = try await measure {
             try await ctx.database.withTransaction { transaction in
-                try await ctx.maintainer.getTopK(k: 20, transaction: transaction)
+                try await ctx.maintainer.getTopK(
+                    k: 20,
+                    transaction: transaction,
+                    workMeter: makeRankBenchmarkWorkMeter()
+                )
             }
         }
 
@@ -595,7 +627,11 @@ struct RankIndexPerformanceBenchmarks {
         // Top-100 query
         let (top100, top100Duration) = try await measure {
             try await ctx.database.withTransaction { transaction in
-                try await ctx.maintainer.getTopK(k: 100, transaction: transaction)
+                try await ctx.maintainer.getTopK(
+                    k: 100,
+                    transaction: transaction,
+                    workMeter: makeRankBenchmarkWorkMeter()
+                )
             }
         }
 
@@ -605,7 +641,10 @@ struct RankIndexPerformanceBenchmarks {
         // Count query
         let (count, countDuration) = try await measure {
             try await ctx.database.withTransaction { transaction in
-                try await ctx.maintainer.getCount(transaction: transaction)
+                try await ctx.maintainer.getCount(
+                    transaction: transaction,
+                    workMeter: makeRankBenchmarkWorkMeter()
+                )
             }
         }
 

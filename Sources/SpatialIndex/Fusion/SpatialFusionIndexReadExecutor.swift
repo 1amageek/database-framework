@@ -76,8 +76,9 @@ package struct SpatialFusionIndexReadExecutor: FusionIndexReadExecutor {
         let configuration = try configuration(
             from: request.access.index.descriptor.declaration.definition
         )
-        let cursor = try request.access.subspaceCursor(
-            request.access.index.subspace,
+        let cursor = try openFusionSubspaceCursor(
+            using: request.access,
+            in: request.access.index.subspace,
             reverse: false
         )
         var topK = try SpatialFusionTopK(

@@ -159,7 +159,8 @@ extension SPARQLQueryExecutor {
             try await retainedResources.withElement(
                 at: index
             ) { resource in
-                let scan = try await datasetScanner.scanRetained(
+                let scan = try await scanRetained(
+                    using: datasetScanner,
                     subject: copy resource,
                     predicate: nil,
                     object: nil,

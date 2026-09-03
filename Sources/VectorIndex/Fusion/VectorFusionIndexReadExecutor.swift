@@ -117,8 +117,9 @@ package struct VectorFusionIndexReadExecutor: FusionIndexReadExecutor {
             )
         case .hnsw:
             let labels = root.subspace("l")
-            let cursor = try request.access.subspaceCursor(
-                labels,
+            let cursor = try openFusionSubspaceCursor(
+                using: request.access,
+                in: labels,
                 reverse: false
             )
             while let row = try await cursor.next() {
@@ -154,8 +155,9 @@ package struct VectorFusionIndexReadExecutor: FusionIndexReadExecutor {
             let assignments = root.subspace(
                 IVFIndexStorageKey.assignments.rawValue
             )
-            let cursor = try request.access.subspaceCursor(
-                assignments,
+            let cursor = try openFusionSubspaceCursor(
+                using: request.access,
+                in: assignments,
                 reverse: false
             )
             while let row = try await cursor.next() {
@@ -197,8 +199,9 @@ package struct VectorFusionIndexReadExecutor: FusionIndexReadExecutor {
         request: FusionIndexReadRequest,
         topK: inout VectorFusionTopK
     ) async throws {
-        let cursor = try request.access.subspaceCursor(
-            subspace,
+        let cursor = try openFusionSubspaceCursor(
+            using: request.access,
+            in: subspace,
             reverse: false
         )
         while let row = try await cursor.next() {
@@ -531,7 +534,7 @@ private enum VectorFusionPhysicalLayout: Sendable {
         _ names: Set<String>,
         in parameters: FieldObject
     ) throws {
-        guard Set(parameters.fields.map(\.key)) == names else {
+        guard Set(parameters.fields.map { $0.key }) == names else {
             throw FusionExecutionError.executionContractViolation
         }
         for name in names {

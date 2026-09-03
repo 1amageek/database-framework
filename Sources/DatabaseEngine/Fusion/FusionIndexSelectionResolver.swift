@@ -48,7 +48,7 @@ enum FusionIndexSelectionResolver {
                 throw FusionExecutionError.ambiguousIndexMatch(
                     entity: entity.name,
                     type: type,
-                    names: matches.map(\.name).sorted()
+                    names: matches.map { $0.name }.sorted()
                 )
             }
             return match

@@ -5,7 +5,7 @@ package struct DatabaseTransactionExecutionBinding: Sendable {
     package let transaction: any TransactionAccess
     package let container: DBContainer
     package let schemaLease: DatabaseSchemaLease
-    package let storageEngineIdentity: ObjectIdentifier
+    package let storageDomainIdentity: ObjectIdentifier
     /// Root Subspace of the bound Tenant Partition. This value identifies the
     /// Partition an admitted operation was bound to; it is never used to derive
     /// stored content.
@@ -33,7 +33,9 @@ package struct DatabaseTransactionExecutionBinding: Sendable {
         self.container = context.container
         self.schemaLease = context.container.acquireActiveSchemaLease()
         let lease = try context.requireOperationDataRoot()
-        self.storageEngineIdentity = ObjectIdentifier(lease.domain.engine)
+        self.storageDomainIdentity = ObjectIdentifier(
+            lease.domain.engine.transactionDomain
+        )
         self.partitionRoot = lease.partitionRoot
         self.partitionGeneration = lease.generation
         self.systemRoot = lease.systemRoot
@@ -52,7 +54,9 @@ package struct DatabaseTransactionExecutionBinding: Sendable {
         self.transaction = transaction
         self.container = context.container
         self.schemaLease = context.container.acquireActiveSchemaLease()
-        self.storageEngineIdentity = ObjectIdentifier(context.container.engine)
+        self.storageDomainIdentity = ObjectIdentifier(
+            context.container.engine.transactionDomain
+        )
         self.partitionRoot = context.container.defaultTenant.partitionRoot
         self.partitionGeneration = 0
         self.systemRoot = context.container.defaultTenant.systemRoot
@@ -81,7 +85,7 @@ package struct DatabaseTransactionExecutionBinding: Sendable {
         self.transaction = transaction
         self.container = binding.container
         self.schemaLease = binding.schemaLease
-        self.storageEngineIdentity = binding.storageEngineIdentity
+        self.storageDomainIdentity = binding.storageDomainIdentity
         self.partitionRoot = binding.partitionRoot
         self.partitionGeneration = binding.partitionGeneration
         self.systemRoot = binding.systemRoot
@@ -117,14 +121,18 @@ package struct DatabaseTransactionExecutionBinding: Sendable {
             )
         }
         let currentRoot = try context.requireOperationDataRoot()
-        guard storageEngineIdentity == ObjectIdentifier(currentRoot.domain.engine),
+        guard storageDomainIdentity == ObjectIdentifier(
+                  currentRoot.domain.engine.transactionDomain
+              ),
               partitionRoot == currentRoot.partitionRoot,
               partitionGeneration == currentRoot.generation
         else {
             throw DatabaseTransactionError.invalidOperationContext
         }
         #else
-        guard storageEngineIdentity == ObjectIdentifier(context.container.engine),
+        guard storageDomainIdentity == ObjectIdentifier(
+                  context.container.engine.transactionDomain
+              ),
               partitionRoot == context.container.defaultTenant.partitionRoot,
               partitionGeneration == 0 else {
             throw DatabaseTransactionError.invalidOperationContext

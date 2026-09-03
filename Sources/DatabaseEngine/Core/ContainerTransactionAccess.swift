@@ -3,8 +3,7 @@ import StorageKit
 
 /// Transaction access whose range cursors retain the container operation that
 /// admitted their underlying transaction.
-final class ContainerTransactionAccess: TransactionAccess,
-    ContainerAdmittedTransaction, Sendable
+final class ContainerTransactionAccess: TransactionAccess, Sendable
 {
     private let transaction: any TransactionAccess
     private let operationLease: DatabaseStorageOperationLease
@@ -16,9 +15,6 @@ final class ContainerTransactionAccess: TransactionAccess,
         self.transaction = transaction
         self.operationLease = operationLease
     }
-
-    /// A write-capable transaction may create, move, and remove Directories.
-    var admitsDirectoryMutation: Bool { true }
 
     /// The backend-owned access used only when the container delegates a
     /// backend-specific Directory operation. The wrapper remains retained by

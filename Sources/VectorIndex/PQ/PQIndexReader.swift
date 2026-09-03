@@ -163,7 +163,8 @@ struct PQIndexReader: Sendable {
                 contentsOf: packedPrimaryKey
             )
             try workMeter.consume(at: .indexScan)
-            guard let vectorBytes = try await transaction.readPointValue(
+            guard let vectorBytes = try await readPointValue(
+                using: transaction,
                 for: vectorKey,
                 snapshot: snapshot,
                 workMeter: workMeter,
@@ -207,7 +208,8 @@ struct PQIndexReader: Sendable {
     ) async throws -> PQMetadata {
         let key = subspace.pack(Tuple([PQIndexStorageKey.metadata.rawValue]))
         try workMeter.consume(at: .indexScan)
-        guard let value = try await transaction.readPointValue(
+        guard let value = try await readPointValue(
+            using: transaction,
             for: key,
             snapshot: snapshot,
             workMeter: workMeter,

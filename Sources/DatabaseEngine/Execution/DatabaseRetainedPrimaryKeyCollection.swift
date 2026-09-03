@@ -9,30 +9,30 @@ package protocol DatabaseRetainedPrimaryKeyCollection: Sendable {
     var count: Int { get }
     var workMeter: DatabaseWorkMeter { get }
 
-    func withRetainedPrimaryKey<Failure: Error>(
+    func withRetainedPrimaryKey(
         at position: Int,
-        _ body: (borrowing Tuple) throws(Failure) -> Void
-    ) throws(Failure)
+        _ body: (borrowing Tuple) throws -> Void
+    ) rethrows
 
-    func withRetainedPrimaryKey<Failure: Error>(
+    func withRetainedPrimaryKey(
         at position: Int,
-        _ body: (borrowing Tuple) async throws(Failure) -> Void
-    ) async throws(Failure)
+        _ body: (borrowing Tuple) async throws -> Void
+    ) async rethrows
 }
 
 extension DatabaseSharedRetainedArray:
     DatabaseRetainedPrimaryKeyCollection where Element == Tuple {
-    package func withRetainedPrimaryKey<Failure: Error>(
+    package func withRetainedPrimaryKey(
         at position: Int,
-        _ body: (borrowing Tuple) throws(Failure) -> Void
-    ) throws(Failure) {
+        _ body: (borrowing Tuple) throws -> Void
+    ) rethrows {
         try withElement(at: position, body)
     }
 
-    package func withRetainedPrimaryKey<Failure: Error>(
+    package func withRetainedPrimaryKey(
         at position: Int,
-        _ body: (borrowing Tuple) async throws(Failure) -> Void
-    ) async throws(Failure) {
+        _ body: (borrowing Tuple) async throws -> Void
+    ) async rethrows {
         try await withElement(at: position, body)
     }
 }
@@ -83,25 +83,21 @@ package final class DatabaseRetainedPrimaryKeys:
     package var count: Int { values.count }
     package var workMeter: DatabaseWorkMeter { values.workMeter }
 
-    package func withRetainedPrimaryKey<Failure: Error>(
+    package func withRetainedPrimaryKey(
         at position: Int,
-        _ body: (borrowing Tuple) throws(Failure) -> Void
-    ) throws(Failure) {
-        func apply(
-            _ retained: borrowing DatabaseRetainedPrimaryKey
-        ) throws(Failure) {
+        _ body: (borrowing Tuple) throws -> Void
+    ) rethrows {
+        func apply(_ retained: borrowing DatabaseRetainedPrimaryKey) throws {
             try retained.withValue(body)
         }
         try values.withElement(at: position, apply)
     }
 
-    package func withRetainedPrimaryKey<Failure: Error>(
+    package func withRetainedPrimaryKey(
         at position: Int,
-        _ body: (borrowing Tuple) async throws(Failure) -> Void
-    ) async throws(Failure) {
-        func apply(
-            _ retained: borrowing DatabaseRetainedPrimaryKey
-        ) async throws(Failure) {
+        _ body: (borrowing Tuple) async throws -> Void
+    ) async rethrows {
+        func apply(_ retained: borrowing DatabaseRetainedPrimaryKey) async throws {
             try await retained.withValue(body)
         }
         try await values.withElement(at: position, apply)

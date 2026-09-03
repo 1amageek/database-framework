@@ -274,7 +274,7 @@ enum FusionExecutor {
                 }
                 return InputExecutionResult(
                     candidates: try FusionCandidateDomain.make(
-                        selecting: result.matches.lazy.map(\.primaryKey),
+                        selecting: result.matches.lazy.map { $0.primaryKey },
                         from: candidatePool,
                         workMeter: execution.options.workMeter
                     ),
@@ -357,7 +357,7 @@ enum FusionExecutor {
         let domain: FusionCandidateDomain
         if let incoming {
             domain = try FusionCandidateDomain.make(
-                selecting: result.matches.lazy.map(\.primaryKey),
+                selecting: result.matches.lazy.map { $0.primaryKey },
                 from: incoming,
                 workMeter: execution.options.workMeter
             )

@@ -32,14 +32,15 @@ RankIndex does not own:
 
 - authorization policy, snapshot, or session-owned transaction creation;
 - polymorphic runtime lookup, stored-value decoding, or model retention;
-- raw entity arrays or an unmetered intermediate tuple array. The standalone
-  maintainer API creates a local meter because it has no session boundary; the
-  session executor always consumes the caller's meter.
+- raw entity arrays or an unmetered intermediate tuple array. Standalone
+  Top-K, count, and percentile reads require a caller-owned meter because they
+  have no session boundary; the session executor always consumes its meter.
 - persistence layout changes or query semantics.
 
 The DatabaseEngine `DatabaseReadSession` is the authority for authorization and
 the session-owned transaction. RankIndex consumes that capability and cannot
-open a nested transaction or supply an independent meter.
+open a nested transaction. Session-backed reads never construct an independent
+clock or meter.
 
 ## Related Designs
 

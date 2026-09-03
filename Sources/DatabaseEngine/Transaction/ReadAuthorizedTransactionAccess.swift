@@ -9,7 +9,6 @@ import StorageKit
 /// must not inherit the mutation methods of that storage protocol. This
 /// adapter preserves read behavior and rejects every persistent mutation.
 final class ReadAuthorizedTransactionAccess:
-    ContainerAdmittedTransaction,
     TransactionAccess,
     Sendable
 {
@@ -183,10 +182,6 @@ final class ReadAuthorizedTransactionAccess:
         }
     }
 
-    /// A read-authorized capability lends its snapshot to Directory reads and
-    /// refuses every Directory mutation.
-    var admitsDirectoryMutation: Bool { false }
-
     /// Borrows the admitted backend transaction for a Directory read.
     ///
     /// An attenuated scope resolves to the scope that admitted it, so the
@@ -202,24 +197,28 @@ final class ReadAuthorizedTransactionAccess:
         do {
             try validate(operation: operation)
             let transaction = try resolveTransaction()
-            precondition(
-                (transaction as? ReadAuthorizedTransactionAccess) !== self,
-                "A read scope must resolve to the scope that admitted it"
-            )
-            guard
-                let admitted = transaction as? any ContainerAdmittedTransaction
-            else {
-                throw StorageError.invalidOperation(
-                    """
-                    Directory reads require a transaction admitted by the same \
-                    database container (got \(type(of: transaction)))
-                    """
+            if let admitted = transaction as? ReadAuthorizedTransactionAccess {
+                precondition(
+                    admitted !== self,
+                    "A read scope must resolve to the scope that admitted it"
                 )
+                return try admitted.directoryTransactionBorrow(for: lifecycle)
+                    .retainingReadScope(operation)
             }
-            let borrow = try admitted.directoryTransactionBorrow(
-                for: lifecycle
+            if let admitted = transaction as? ContainerTransactionAccess {
+                return try admitted.directoryTransactionBorrow(for: lifecycle)
+                    .retainingReadScope(operation)
+            }
+            if let admitted = transaction as? ContainerTransaction {
+                return try admitted.directoryTransactionBorrow(for: lifecycle)
+                    .retainingReadScope(operation)
+            }
+            throw StorageError.invalidOperation(
+                """
+                Directory reads require a transaction admitted by the same \
+                database container (got \(type(of: transaction)))
+                """
             )
-            return borrow.retainingReadScope(operation)
         } catch {
             operation?.end()
             throw error

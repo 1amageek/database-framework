@@ -395,7 +395,7 @@ package enum DatabaseDirectoryLayout {
         return .missingReservedDirectory(
             partition: partition.address.components,
             name: name,
-            presentChildren: entries.map(\.name)
+            presentChildren: entries.map { $0.name }
         )
     }
 }

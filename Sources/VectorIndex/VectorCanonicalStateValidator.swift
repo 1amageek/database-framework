@@ -95,7 +95,8 @@ struct VectorCanonicalStateValidator: Sendable {
         case .hnsw:
             let labelsSubspace = indexSubspace.subspace("l")
             try workMeter.consume(at: .indexScan)
-            guard let packedLabel = try await transaction.readPointValue(
+            guard let packedLabel = try await readPointValue(
+                using: transaction,
                 for: labelsSubspace.pack(primaryKey),
                 snapshot: snapshot,
                 workMeter: workMeter,
@@ -108,7 +109,8 @@ struct VectorCanonicalStateValidator: Sendable {
             let label = try HNSWLabelCodec.decodePacked(packedLabel)
             let vectorsSubspace = indexSubspace.subspace("v")
             try workMeter.consume(at: .indexScan)
-            guard let value = try await transaction.readPointValue(
+            guard let value = try await readPointValue(
+                using: transaction,
                 for: vectorsSubspace.pack(HNSWLabelCodec.tuple(label)),
                 snapshot: snapshot,
                 workMeter: workMeter,
@@ -125,7 +127,8 @@ struct VectorCanonicalStateValidator: Sendable {
                 PQIndexStorageKey.vectors.rawValue
             )
             try workMeter.consume(at: .indexScan)
-            guard let value = try await transaction.readPointValue(
+            guard let value = try await readPointValue(
+                using: transaction,
                 for: vectorsSubspace.pack(primaryKey),
                 snapshot: snapshot,
                 workMeter: workMeter,

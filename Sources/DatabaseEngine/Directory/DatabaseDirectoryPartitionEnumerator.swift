@@ -100,7 +100,7 @@ package enum DatabaseDirectoryPartitionEnumerator {
                     return DatabasePartitionCatalogPage(
                         entries: entries,
                         continuation: encodeCursor(
-                            stack.map(\.name),
+                            stack.map { $0.name },
                             declaration: declaration
                         )
                     )

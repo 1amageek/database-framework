@@ -3881,7 +3881,7 @@ extension DatabaseContext {
                             at: .bindingCandidate
                         )
                     defer { nameReservation.release() }
-                    let names = columns.map(\.alias)
+                    let names = columns.map { $0.alias }
                     let footprint = try prospectiveSourceRowFootprint(
                         fieldNames: names,
                         values: scopedValues,

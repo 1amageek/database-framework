@@ -24,7 +24,7 @@ package struct FullTextFusionIndexReadExecutor: FusionIndexReadExecutor {
         let mode = try matchMode(from: request.source.parameters)
         guard request.descriptor.type == indexType,
               request.descriptor.fieldNames == [fieldName],
-              request.source.referencedFields.map(\.name) == [fieldName] else {
+              request.source.referencedFields.map({ $0.name }) == [fieldName] else {
             throw FusionExecutionError.invalidIndexInput(
                 indexType: indexType,
                 parameter: fieldName
@@ -132,8 +132,9 @@ package struct FullTextFusionIndexReadExecutor: FusionIndexReadExecutor {
                     termIndex: termIndex,
                     term: term,
                     subspace: subspace,
-                    cursor: try request.access.subspaceCursor(
-                        subspace,
+                    cursor: try openFusionSubspaceCursor(
+                        using: request.access,
+                        in: subspace,
                         reverse: false
                     )
                 )

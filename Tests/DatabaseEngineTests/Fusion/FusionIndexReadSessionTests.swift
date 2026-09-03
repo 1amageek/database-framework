@@ -63,8 +63,9 @@ struct FusionIndexReadSessionTests {
                     )
                     #expect(try await session.getValue(key: key)?.bytes == [1])
                     #expect(recording.pointMaximums == [expectedPointMaximum])
-                    let cursor = try session.subspaceCursor(
-                        entries,
+                    let cursor = try openFusionSubspaceCursor(
+                        using: session,
+                        in: entries,
                         reverse: false
                     )
                     #expect(try await cursor.next()?.key == key)
@@ -123,7 +124,11 @@ struct FusionIndexReadSessionTests {
                     workMeter: meter
                 )
                 #expect {
-                    _ = try session.subspaceCursor(entries, reverse: false)
+                    _ = try openFusionSubspaceCursor(
+                        using: session,
+                        in: entries,
+                        reverse: false
+                    )
                 } throws: { error in
                     error is DatabaseWorkLimitError
                 }
@@ -152,8 +157,9 @@ struct FusionIndexReadSessionTests {
                     workMeter: meter
                 )
                 do {
-                    let cursor = try session.subspaceCursor(
-                        session.index.subspace.subspace("entries"),
+                    let cursor = try openFusionSubspaceCursor(
+                        using: session,
+                        in: session.index.subspace.subspace("entries"),
                         reverse: false
                     )
                     do {
@@ -193,8 +199,9 @@ struct FusionIndexReadSessionTests {
                 workMeter: meter
             )
             do {
-                let cursor = try session.subspaceCursor(
-                    session.index.subspace.subspace("entries"),
+                let cursor = try openFusionSubspaceCursor(
+                    using: session,
+                    in: session.index.subspace.subspace("entries"),
                     reverse: false
                 )
                 do {
@@ -234,8 +241,9 @@ struct FusionIndexReadSessionTests {
                 workMeter: meter
             )
             do {
-                let cursor = try session.subspaceCursor(
-                    session.index.subspace.subspace("entries"),
+                let cursor = try openFusionSubspaceCursor(
+                    using: session,
+                    in: session.index.subspace.subspace("entries"),
                     reverse: false
                 )
                 do {
@@ -271,8 +279,9 @@ struct FusionIndexReadSessionTests {
             probe: probe,
             workMeter: meter
         )
-        let cursor = try session.subspaceCursor(
-            session.index.subspace.subspace("entries"),
+        let cursor = try openFusionSubspaceCursor(
+            using: session,
+            in: session.index.subspace.subspace("entries"),
             reverse: false
         )
         let advance = Task {
@@ -315,12 +324,14 @@ struct FusionIndexReadSessionTests {
                 probe: probe,
                 workMeter: meter
             )
-            let first = try session.subspaceCursor(
-                entries,
+            let first = try openFusionSubspaceCursor(
+                using: session,
+                in: entries,
                 reverse: false
             )
-            let second = try session.subspaceCursor(
-                entries,
+            let second = try openFusionSubspaceCursor(
+                using: session,
+                in: entries,
                 reverse: false
             )
             #expect(try await first.next() != nil)
@@ -352,7 +363,11 @@ struct FusionIndexReadSessionTests {
             workMeter: meter,
             finishGate: finishGate
         )
-        let cursor = try session.subspaceCursor(entries, reverse: false)
+        let cursor = try openFusionSubspaceCursor(
+            using: session,
+            in: entries,
+            reverse: false
+        )
         #expect(try await cursor.next() != nil)
 
         let first = Task {
@@ -394,7 +409,11 @@ struct FusionIndexReadSessionTests {
             probe: probe,
             workMeter: meter
         )
-        let cursor = try session.subspaceCursor(entries, reverse: false)
+        let cursor = try openFusionSubspaceCursor(
+            using: session,
+            in: entries,
+            reverse: false
+        )
 
         try await session.invalidate()
 

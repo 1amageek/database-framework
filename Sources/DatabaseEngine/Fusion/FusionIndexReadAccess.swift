@@ -1,3 +1,4 @@
+import DatabaseKit
 import DatabaseTypes
 import StorageKit
 
@@ -23,53 +24,20 @@ package protocol FusionIndexReadAccess: Sendable {
     ) throws -> FusionIndexReadCursor
 }
 
-extension FusionIndexReadAccess {
-    package func rangeCursor(
-        subspace: Subspace,
-        start: Tuple?,
-        end: Tuple?,
-        startInclusive: Bool,
-        endInclusive: Bool,
-        reverse: Bool
-    ) throws -> FusionIndexReadCursor {
-        guard index.subspace.contains(subspace.prefix) else {
-            throw FusionExecutionContractError
-                .indexReadOutsideAdmittedSubspace(
-                    index: index.descriptor.name
-                )
-        }
-        let beginKey: ByteString
-        if let start {
-            let packed = subspace.pack(start)
-            beginKey = startInclusive ? packed : try strinc(packed)
-        } else {
-            beginKey = subspace.prefix
-        }
-        let endKey: ByteString
-        if let end {
-            let packed = subspace.pack(end)
-            endKey = endInclusive ? try strinc(packed) : packed
-        } else {
-            endKey = try subspace.prefixRange().end
-        }
-        return try rangeCursor(
-            from: beginKey,
-            to: endKey,
-            reverse: reverse
-        )
+package func openFusionSubspaceCursor(
+    using access: any FusionIndexReadAccess,
+    in subspace: Subspace,
+    reverse: Bool
+) throws -> FusionIndexReadCursor {
+    guard access.index.subspace.contains(subspace.prefix) else {
+        throw FusionExecutionContractError
+            .indexReadOutsideAdmittedSubspace(
+                index: access.index.descriptor.name
+            )
     }
-
-    package func subspaceCursor(
-        _ subspace: Subspace,
-        reverse: Bool
-    ) throws -> FusionIndexReadCursor {
-        try rangeCursor(
-            subspace: subspace,
-            start: nil,
-            end: nil,
-            startInclusive: true,
-            endInclusive: false,
-            reverse: reverse
-        )
-    }
+    return try access.rangeCursor(
+        from: subspace.prefix,
+        to: subspace.prefixRange().end,
+        reverse: reverse
+    )
 }

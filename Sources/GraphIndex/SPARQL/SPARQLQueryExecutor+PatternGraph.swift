@@ -56,7 +56,8 @@ extension SPARQLQueryExecutor {
                     statistics: stats
                 )
             }
-            let discoveredGraphs = try await datasetScanner.namedGraphsRetained(
+            let discoveredGraphs = try await namedGraphsRetained(
+                using: datasetScanner,
                 limit: nil,
                 readMode: readMode,
                 transaction: transaction,

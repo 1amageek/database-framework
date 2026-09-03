@@ -80,7 +80,7 @@ enum FusionPreflight {
             }
         } visitTable: { tableRef, query in
             let commonTableNames = Set(
-                query.subqueries?.map(\.name) ?? []
+                query.subqueries?.map { $0.name } ?? []
             )
             guard !commonTableNames.contains(tableRef.table) else {
                 return
@@ -678,7 +678,7 @@ enum FusionPreflight {
                 DatabaseFieldReadAuthorizationPlan(
                     fieldsByEntity: [
                         entity.name: Set(
-                            source.referencedFields.map(\.name)
+                            source.referencedFields.map { $0.name }
                         )
                     ]
                 )

@@ -403,14 +403,13 @@ operation it:
    `StorageError.storageDomainMismatch`;
 3. forwards to the underlying access and returns its `Directory` unchanged.
 
-Admission is a contract, not a list of concrete types. Every transaction the
-container can lend to a backend Directory capability conforms to
-`ContainerAdmittedTransaction`, which owns two facts: whether the transaction
-may mutate the Directory catalog, and how to borrow the backend transaction
-while retaining every lease that keeps it valid. `ContainerDirectoryAccess`
-performs one conditional cast to that protocol, so a read path that reaches a
-Directory through any admitted capability is admitted by construction rather
-than by enumeration.
+Directory admission is closed over the four transaction owners this module
+creates. It is deliberately not an extension protocol: no backend or caller
+type may make itself container-admitted. `ContainerDirectoryAccess` recognizes
+those concrete owners, applies their fixed read or write authority, and borrows
+the backend transaction while retaining every lease that keeps it valid. This
+keeps the public StorageKit transaction boundary type-erased without requiring
+protocol downcasting in the Native, WASM, or Embedded implementation.
 
 | Admitted transaction | Directory mutation | Borrow source |
 |---|---|---|
@@ -419,9 +418,9 @@ than by enumeration.
 | `ReadAuthorizedTransactionAccess` | refused | resolved admitting scope |
 | `DatabaseReadTransaction` | refused | its `storageAccess` |
 
-A transaction that is not admitted carries no container operation lease, so a
-Directory call on it could outlive the storage lifecycle. Directory resolution
-therefore rejects a foreign or raw backend transaction with
+A transaction that is not one of those concrete owners carries no container
+operation lease, so a Directory call on it could outlive the storage lifecycle.
+Directory resolution therefore rejects a foreign or raw backend transaction with
 `StorageError.invalidOperation`, and names the offending type in the message.
 A read-only capability asked for a mutating Directory operation fails with
 `DatabaseReadTransactionError.mutationRequiresWriteAccess` before any lease is

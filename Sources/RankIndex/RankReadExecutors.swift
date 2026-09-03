@@ -286,7 +286,8 @@ private func readRankCount(
     transaction: DatabaseReadTransaction,
     workMeter: DatabaseWorkMeter
 ) async throws -> Int {
-    let bytes = try await transaction.readPointValue(
+    let bytes = try await readPointValue(
+        using: transaction,
         for: key,
         snapshot: true,
         workMeter: workMeter,

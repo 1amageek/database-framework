@@ -327,7 +327,13 @@ struct RankScannerRetainedResultTests {
             value: ByteConversion.int64ToBytes(7)
         )
 
-        let count = try await maintainer.getCount(transaction: transaction)
+        let count = try await maintainer.getCount(
+            transaction: transaction,
+            workMeter: DatabaseWorkMeter(
+                budget: ExecutionBudget(),
+                monotonicClock: TestProcessMonotonicClock()
+            )
+        )
 
         #expect(count == 7)
         #expect(transaction.maximumByteCounts == [16 * 1_024 * 1_024])

@@ -21,7 +21,8 @@ struct BitmapIndexReader: Sendable {
         workMeter: DatabaseWorkMeter
     ) async throws -> BitmapReadOwner {
         let key = dataSubspace.pack(Tuple(fieldValues))
-        guard let bytes = try await transaction.readPointValue(
+        guard let bytes = try await readPointValue(
+            using: transaction,
             for: key,
             snapshot: false,
             workMeter: workMeter,
@@ -166,7 +167,8 @@ struct BitmapIndexReader: Sendable {
             try await retainedIdentifiers.withElement(at: index) { identifier in
                 try workMeter.consume(at: .indexScan)
                 let key = idsSubspace.pack(Tuple(Int(identifier)))
-                guard let bytes = try await transaction.readPointValue(
+                guard let bytes = try await readPointValue(
+                    using: transaction,
                     for: key,
                     snapshot: false,
                     workMeter: workMeter,

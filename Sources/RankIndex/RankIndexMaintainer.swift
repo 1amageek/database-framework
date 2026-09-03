@@ -7,7 +7,6 @@ import DatabaseEngine
 import DatabaseKit
 import DatabaseTypes
 import StorageKit
-import StorageKitSystemClock
 
 /// Maintainer for RANK indexes with compile-time type safety
 ///
@@ -131,15 +130,13 @@ public struct RankIndexMaintainer<
     /// - Parameters:
     ///   - k: Number of items to return
     ///   - transaction: Storage transaction
+    ///   - workMeter: Request-owned resource meter
     /// - Returns: Array of (score, primaryKey) tuples, sorted by score descending
     public func getTopK(
         k: Int,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionReadAccess,
+        workMeter: DatabaseWorkMeter
     ) async throws -> [(score: Score, primaryKey: [any TupleElement])] {
-        let workMeter = DatabaseWorkMeter(
-            budget: ExecutionBudget(),
-            monotonicClock: SystemStorageClock()
-        )
         let scanner = RankScanner(
             scoresSubspace: scoresSubspace,
             transaction: transaction,
@@ -233,16 +230,16 @@ public struct RankIndexMaintainer<
     /// Previous implementation: O(n) full scan.
     /// Current implementation: O(1) single key read.
     ///
-    /// - Parameter transaction: Storage transaction
+    /// - Parameters:
+    ///   - transaction: Storage transaction
+    ///   - workMeter: Request-owned resource meter
     /// - Returns: Total number of entries
     public func getCount(
-        transaction: any TransactionReadAccess
+        transaction: any TransactionReadAccess,
+        workMeter: DatabaseWorkMeter
     ) async throws -> Int64 {
-        let workMeter = DatabaseWorkMeter(
-            budget: ExecutionBudget(),
-            monotonicClock: SystemStorageClock()
-        )
-        guard let bytes = try await transaction.readPointValue(
+        guard let bytes = try await readPointValue(
+            using: transaction,
             for: countKey,
             snapshot: true,
             workMeter: workMeter,
@@ -263,16 +260,21 @@ public struct RankIndexMaintainer<
     /// - Parameters:
     ///   - percentile: Percentile value (0.0 to 1.0, e.g., 0.95 for 95th percentile)
     ///   - transaction: Storage transaction
+    ///   - workMeter: Request-owned resource meter
     /// - Returns: Score at the given percentile, or nil if empty
     public func getPercentile(
         _ percentile: Double,
-        transaction: any TransactionReadAccess
+        transaction: any TransactionReadAccess,
+        workMeter: DatabaseWorkMeter
     ) async throws -> Score? {
         guard percentile >= 0.0 && percentile <= 1.0 else {
             throw RankIndexMaintenanceError.invalidPercentile(percentile)
         }
 
-        let totalCount = try await getCount(transaction: transaction)
+        let totalCount = try await getCount(
+            transaction: transaction,
+            workMeter: workMeter
+        )
         guard totalCount > 0 else { return nil }
         guard let totalCountInt = Int(exactly: totalCount) else {
             throw RankCounterError.exceedsPlatformInt(totalCount)
@@ -285,12 +287,20 @@ public struct RankIndexMaintainer<
 
         if k <= 0 {
             // 100th percentile - return highest score
-            let topOne = try await getTopK(k: 1, transaction: transaction)
+            let topOne = try await getTopK(
+                k: 1,
+                transaction: transaction,
+                workMeter: workMeter
+            )
             return topOne.first?.score
         }
 
         // Read only the prefix ending at the target rank.
-        let topK = try await getTopK(k: k, transaction: transaction)
+        let topK = try await getTopK(
+            k: k,
+            transaction: transaction,
+            workMeter: workMeter
+        )
 
         // Return the score at targetRank position (last in the top-k list)
         return topK.last?.score

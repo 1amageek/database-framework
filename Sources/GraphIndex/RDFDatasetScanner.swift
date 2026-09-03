@@ -35,51 +35,51 @@ public protocol RDFDatasetScanner: Sendable {
     ) async throws -> Bool
 }
 
-extension RDFDatasetScanner {
-    /// Reads one retained scan result and rejects an implementation that
-    /// returns ownership charged to a different request.
-    package func scanRetained(
-        subject: RDFTerm?,
-        predicate: RDFTerm?,
-        object: RDFTerm?,
-        graphTarget: RDFGraphScanTarget,
-        limit: Int?,
-        readMode: RDFDatasetReadMode,
-        transaction: any TransactionReadAccess,
-        workMeter: DatabaseWorkMeter
-    ) async throws -> RDFDatasetScanResult {
-        let result = try await scan(
-            subject: subject,
-            predicate: predicate,
-            object: object,
-            graphTarget: graphTarget,
-            limit: limit,
-            readMode: readMode,
-            transaction: transaction,
-            workMeter: workMeter
-        )
-        guard result.workMeter === workMeter else {
-            throw DatabaseIntermediateReservationError.workMeterMismatch
-        }
-        return result
+/// Reads one retained scan result and rejects an implementation that returns
+/// ownership charged to a different request.
+package func scanRetained(
+    using scanner: any RDFDatasetScanner,
+    subject: RDFTerm?,
+    predicate: RDFTerm?,
+    object: RDFTerm?,
+    graphTarget: RDFGraphScanTarget,
+    limit: Int?,
+    readMode: RDFDatasetReadMode,
+    transaction: any TransactionReadAccess,
+    workMeter: DatabaseWorkMeter
+) async throws -> RDFDatasetScanResult {
+    let result = try await scanner.scan(
+        subject: subject,
+        predicate: predicate,
+        object: object,
+        graphTarget: graphTarget,
+        limit: limit,
+        readMode: readMode,
+        transaction: transaction,
+        workMeter: workMeter
+    )
+    guard result.workMeter === workMeter else {
+        throw DatabaseIntermediateReservationError.workMeterMismatch
     }
+    return result
+}
 
-    /// Reads retained named-graph discovery output on the requesting meter.
-    package func namedGraphsRetained(
-        limit: Int?,
-        readMode: RDFDatasetReadMode,
-        transaction: any TransactionReadAccess,
-        workMeter: DatabaseWorkMeter
-    ) async throws -> RDFDatasetNamedGraphs {
-        let result = try await namedGraphs(
-            limit: limit,
-            readMode: readMode,
-            transaction: transaction,
-            workMeter: workMeter
-        )
-        guard result.workMeter === workMeter else {
-            throw DatabaseIntermediateReservationError.workMeterMismatch
-        }
-        return result
+/// Reads retained named-graph discovery output on the requesting meter.
+package func namedGraphsRetained(
+    using scanner: any RDFDatasetScanner,
+    limit: Int?,
+    readMode: RDFDatasetReadMode,
+    transaction: any TransactionReadAccess,
+    workMeter: DatabaseWorkMeter
+) async throws -> RDFDatasetNamedGraphs {
+    let result = try await scanner.namedGraphs(
+        limit: limit,
+        readMode: readMode,
+        transaction: transaction,
+        workMeter: workMeter
+    )
+    guard result.workMeter === workMeter else {
+        throw DatabaseIntermediateReservationError.workMeterMismatch
     }
+    return result
 }

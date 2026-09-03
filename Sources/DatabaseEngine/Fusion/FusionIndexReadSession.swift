@@ -1,3 +1,4 @@
+import DatabaseKit
 import DatabaseTypes
 import StorageKit
 import Synchronization
@@ -87,7 +88,8 @@ final class FusionIndexReadSession: FusionIndexReadAccess, Sendable {
             stage: .indexScan
         )
         try validatePointKey(key)
-        let value = try await transaction.readPointValue(
+        let value = try await readPointValue(
+            using: transaction,
             for: key,
             snapshot: snapshot,
             workMeter: workMeter,
