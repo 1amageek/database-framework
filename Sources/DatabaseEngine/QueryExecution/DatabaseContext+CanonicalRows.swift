@@ -1528,6 +1528,8 @@ extension DatabaseContext {
             selectQuery,
             limits: execution.queryStructuralLimits
         )
+        let ownsProducingTransaction = ActiveDatabaseTransactionContext
+            .binding == nil
         let output = try await withDataOperation { [self] in
             let resolvedFusionGraph = try FusionPreflight.resolveGraph(
                 selectQuery,
@@ -1574,7 +1576,20 @@ extension DatabaseContext {
                 }
             }
         }
-        return output.take()
+        let response = output.take()
+        // This family owns its own Collecting-to-Ready transition on the path
+        // where it opened the producing transaction: the storage access above
+        // closed that transaction and released its PartitionLease before
+        // returning, and the read session drained inside it, so nothing
+        // transaction-bound survives here. The read is read-only by
+        // construction, so no durable outcome is reported as cancelled. When a
+        // caller-owned transaction was already bound on entry, that same access
+        // ran on it and closed nothing, so the enclosing owner still holds the
+        // transition and this call must not check.
+        if ownsProducingTransaction {
+            try ensureDatabaseTaskIsActive()
+        }
+        return response
     }
 
     /// Runs a preflighted relational Fusion input on the caller-owned

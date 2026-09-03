@@ -133,6 +133,43 @@ struct PostClosureCancellationTests {
         #expect(stored == postClosureProbeValue)
     }
 
+    @Test("A canonical query that owns its transaction reports its cancellation")
+    func canonicalQueryReportsCancellationAtItsOwnCommit() async throws {
+        let (container, control) = try await makeControlledContainer()
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        try context.insert(Anchor(id: "anchor"))
+        try await context.save()
+        // Warm the query path so the measured run owns the next read-only
+        // commit rather than a catalog or plan transaction taken on first use.
+        _ = try await context.query(
+            anchorQuery,
+            execution: ReadExecutionContext(
+                monotonicClock: container.monotonicClock
+            )
+        )
+
+        let barrier = control.suspendNextReadOnlyCommit()
+        let read = Task {
+            try await context.query(
+                anchorQuery,
+                execution: ReadExecutionContext(
+                    monotonicClock: container.monotonicClock
+                )
+            )
+        }
+        await barrier.waitUntilEntered()
+        read.cancel()
+        barrier.release()
+
+        // This query opened the producing transaction, so it owns the
+        // Collecting-to-Ready transition and reports the cancellation once
+        // that transaction has closed.
+        await #expect(throws: CancellationError.self) {
+            _ = try await read.value
+        }
+    }
+
     private func makeControlledContainer() async throws -> (
         DBContainer,
         StorageTransactionControl
@@ -156,5 +193,12 @@ struct PostClosureCancellationTests {
             security: .testingDisabled
         )
         return (container, storage.control)
+    }
+
+    private var anchorQuery: SelectQuery {
+        SelectQuery(
+            projection: .all,
+            source: .table(TableRef(Anchor.persistableType))
+        )
     }
 }

@@ -105,6 +105,19 @@ QueryExecution receive a resolved Subspace rather than a computed prefix.
   owner's cleanup would answer a cancelled read with a cleanup failure
   instead of the cancellation. The composition snapshot therefore checks only
   where every domain transaction is already counted as committed.
+- The canonical retained query family owns the same transition on the path
+  where it opens its own producing transaction. That storage access closes
+  the transaction and releases its PartitionLease before returning, and the
+  read session drains inside it, so no transaction-bound resource survives
+  the boundary, and the read is read-only by construction, so no durable
+  outcome is reported as cancelled. When a caller-owned transaction is
+  already bound, the same access runs on it and closes nothing, so the
+  enclosing owner still holds the transition and the retained query makes no
+  check; a caller cancelled during that nested work learns it from the work
+  budget, which reports cancellation while the work is still charging rather
+  than at a boundary. Ownership follows whether a transaction was bound on
+  entry, not the shape of the result, so both the retained and the promoted
+  public response reach their caller through one boundary.
 - A retained canonical row page leaves linear ownership the same way. It is
   consumed into shared row ownership so a durable query snapshot can read the
   complete result count and emit successive bounded pages after the read
@@ -151,6 +164,7 @@ raw entity arrays exist only at the consuming public-output boundary.
 | Admission, order, absence | Budget-before-read and present/missing sequence tests. |
 | Failure/cancellation/release | Later-failure and suspended-read tests end at zero retained resources. |
 | Public read cancellation | A public copyable read suspended at its own commit and cancelled there still returns its callback value, as does an identically suspended and cancelled write. |
+| Retained query cancellation | A canonical query that opened its own transaction and was cancelled at that transaction's commit reports the cancellation. The nested branch has no test: a caller-owned transaction leaves no commit to suspend, and the work budget throws first, so the absence of the check is not separately observable there. |
 | Composition lease lifetime | A Base lifecycle drain does not complete while a composition domain commit is suspended, and completes once that commit returns. |
 | No raw escape | Source audit rejects general borrows, raw returns, and unmarked bridges. |
 | Bounded item path | Envelope and every chunk are observed as bounded reads. |
