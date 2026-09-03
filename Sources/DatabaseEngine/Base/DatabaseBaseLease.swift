@@ -4,13 +4,20 @@ import StorageKit
 import Synchronization
 
 /// Retains one immutable Base generation and its admission lease.
+///
+/// Construction is the authority to admit work against a Base generation, so
+/// it stays inside this module: the generation store and the Base lifecycle
+/// paths that own the admission count are the only issuers. A `package`
+/// initializer would let a sibling target read the generation off a counted
+/// lease, build an uncounted one around a no-op token, release the counted
+/// lease, and keep operating against a Base whose drain has already completed.
 public final class DatabaseBaseLease: Sendable {
     private let token: DatabaseBaseLeaseToken
-    package let generation: DatabaseBaseGeneration
+    internal let generation: DatabaseBaseGeneration
     package let permitsDataOperations: Bool
     package let permitsInactiveMaintenance: Bool
 
-    package init(
+    internal init(
         generation: DatabaseBaseGeneration,
         token: DatabaseBaseLeaseToken,
         permitsDataOperations: Bool = true,
@@ -58,15 +65,19 @@ public final class DatabaseBaseLease: Sendable {
     }
 }
 
-package final class DatabaseBaseLeaseToken: Sendable {
+/// Carries the exactly-once release of one admission count.
+///
+/// The token is the counted half of a lease, so issuing one is the same
+/// authority as issuing a lease and stays `internal` for the same reason.
+internal final class DatabaseBaseLeaseToken: Sendable {
     private let didFinish = Mutex(false)
     private let finishOperation: @Sendable () -> Void
 
-    package init(finishOperation: @escaping @Sendable () -> Void) {
+    internal init(finishOperation: @escaping @Sendable () -> Void) {
         self.finishOperation = finishOperation
     }
 
-    package func finish() {
+    internal func finish() {
         let shouldFinish = didFinish.withLock { didFinish in
             guard !didFinish else { return false }
             didFinish = true

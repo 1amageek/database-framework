@@ -100,6 +100,13 @@ QueryExecution receive a resolved Subspace rather than a computed prefix.
   flight, advancing retirement, deletion, or placement movement past a
   running transaction. Every holder is inside the module, so the release is
   `internal`: no caller outside it ends an admission lease.
+- Issuing an admission lease is module-internal for the same reason. The
+  lease initializer, the generation it retains, and the counted token are all
+  `internal`, so only the generation store and the Base lifecycle paths that
+  own the admission count create one. Package visibility would let a sibling
+  target read the generation off a counted lease, wrap it in a no-op token,
+  release the counted lease, and go on operating against a Base whose drain
+  had already completed.
 - The check runs where the closed transaction is beyond cleanup. A closed
   transaction can no longer be cancelled, so a check that could reach its
   owner's cleanup would answer a cancelled read with a cleanup failure
