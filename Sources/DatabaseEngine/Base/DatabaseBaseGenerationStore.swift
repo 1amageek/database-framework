@@ -171,6 +171,22 @@ package final class DatabaseBaseGenerationStore: Sendable {
         }
     }
 
+    /// The drain-relevant state of one Base generation.
+    ///
+    /// A lease-lifetime assertion needs a terminal state to observe rather
+    /// than a number of scheduling hops to wait: a parked drain has already
+    /// found the lease count above zero and can only complete when that count
+    /// reaches zero.
+    internal func drainState(_ id: Base.ID) -> DatabaseBaseDrainState? {
+        state.withLock { state in
+            guard let entry = state.entries[id] else { return nil }
+            return DatabaseBaseDrainState(
+                activeLeaseCount: entry.activeLeaseCount,
+                parkedDrainCount: entry.drainWaiters.count
+            )
+        }
+    }
+
     package func snapshot() -> [DatabaseBaseGeneration] {
         state.withLock { state in
             state.entries.values
@@ -202,6 +218,13 @@ package final class DatabaseBaseGenerationStore: Sendable {
             waiter.resume()
         }
     }
+}
+
+/// What a Base generation's admission leases and parked drains look like at
+/// one instant.
+internal struct DatabaseBaseDrainState: Sendable, Equatable {
+    internal let activeLeaseCount: Int
+    internal let parkedDrainCount: Int
 }
 
 #endif

@@ -24,7 +24,10 @@ struct CompositionLeaseLifetimeTests {
         var id: String = ""
     }
 
-    @Test("A Base drain does not complete while a domain commit is in flight")
+    @Test(
+        "A Base drain does not complete while a domain commit is in flight",
+        .timeLimit(.minutes(1))
+    )
     func baseDrainWaitsForDomainCommit() async throws {
         let storage = ControlledStorageEngine(base: InMemoryEngine())
         let fixture = try await makeFixture(storageEngine: storage)
@@ -62,10 +65,23 @@ struct CompositionLeaseLifetimeTests {
                 )
             }
             do {
-                // The drain has nothing left to wait for the moment the
-                // member lease ends, so it would finish within a few
-                // scheduling hops if the lease had already been released.
-                for _ in 0..<64 { await Task.yield() }
+                // The drain parks only after it observes the Base's active
+                // lease count above zero, and it can leave that parked state
+                // only when the count reaches zero. Waiting for that terminal
+                // state, rather than for a number of scheduling hops, is what
+                // makes the observation below a fact about the lease rather
+                // than about the scheduler.
+                var parked: DatabaseBaseDrainState
+                repeat {
+                    await Task.yield()
+                    parked = try #require(
+                        fixture.container.baseDrainState(fixture.baseID)
+                    )
+                } while parked.parkedDrainCount == 0
+                // The commit this snapshot task is suspended in has not
+                // returned, so the lease the drain is waiting on is the member
+                // lease that admitted it.
+                #expect(parked.activeLeaseCount > 0)
                 #expect(!probe.drainFinished)
 
                 commit.release()

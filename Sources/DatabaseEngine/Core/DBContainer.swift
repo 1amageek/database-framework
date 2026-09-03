@@ -1080,6 +1080,10 @@ public final class DBContainer: Sendable {
         try await baseGenerationStore.stopAdmissionAndDrain(id)
     }
 
+    internal func baseDrainState(_ id: Base.ID) -> DatabaseBaseDrainState? {
+        baseGenerationStore.drainState(id)
+    }
+
     package func requireActiveBaseLease() throws -> DatabaseBaseLease {
         let lease = try requireBoundBaseLease()
         guard lease.permitsDataOperations,
