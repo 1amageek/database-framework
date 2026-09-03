@@ -186,7 +186,7 @@ raw entity arrays exist only at the consuming public-output boundary.
 | Public read cancellation | A public copyable read suspended at its own commit and cancelled there still returns its callback value, as does an identically suspended and cancelled write. |
 | Retained query cancellation | A canonical query that opened its own transaction and was cancelled at that transaction's commit reports the cancellation. The nested branch has no test: a caller-owned transaction leaves no commit to suspend, and the work budget throws first, so the absence of the check is not separately observable there. |
 | Collecting-to-Ready boundary | The collecting response declares no promotion and the ready response has no reachable initializer, so promoting outside `finalizePostClosureResult` fails to compile. |
-| Composition lease lifetime | A Base lifecycle drain does not complete while a composition domain commit is suspended, and completes once that commit returns. |
+| Composition lease lifetime | A Base lifecycle drain does not complete while a composition domain commit is suspended, and completes once that commit returns while the test still holds a strong reference to the member lease, so a lease released at an ARC release point cannot satisfy it. |
 | No raw escape | Source audit rejects general borrows, raw returns, and unmarked bridges. |
 | Bounded item path | Envelope and every chunk are observed as bounded reads. |
 | Directory binding | [Directory](Directory/DESIGN.md) owns the canonical component, tag derivation, and layout-rejection evidence. |

@@ -9,7 +9,8 @@ import Testing
 @_spi(DatabaseExecution) @_spi(Testing) @testable import DatabaseEngine
 
 /// Proves that a Composition member admission lease outlives every domain
-/// transaction admitted under it.
+/// transaction admitted under it, and that the snapshot ends that lease
+/// explicitly rather than wherever its last reference happens to go.
 ///
 /// A Base lifecycle transition stops admission and then waits for the active
 /// leases of that Base to reach zero. The federated read holds its domain
@@ -39,7 +40,21 @@ struct CompositionLeaseLifetimeTests {
         let armed = StorageOperationBarrier()
 
         let snapshotTask = Task {
-            try await source.withReadSnapshot { _ in
+            try await source.withReadSnapshot { snapshot in
+                // Keeping this member lease referenced for the rest of the
+                // test is what makes the drain observation below reject an
+                // ARC-released lease. `DatabaseBaseLease` owns its counted
+                // token, so while this reference is live no release point can
+                // end the lease: the drain reaches zero active leases only if
+                // the snapshot ends the lease explicitly.
+                guard let member = snapshot.members.first else {
+                    throw CompositionLeaseLifetimeFailure.noMember
+                }
+                let access = try snapshot.vault.memberAccess(for: member)
+                probe.retain(memberLease: access.lease)
+                // The vault drain waits on its operation count, not on the
+                // lease, so this borrow ends here and only the lease is kept.
+                access.operationLease.end()
                 // The domain transactions commit after this closure returns,
                 // so arming the barrier here selects exactly the commit that
                 // the member lease must outlive. Arming it earlier would let
@@ -70,14 +85,22 @@ struct CompositionLeaseLifetimeTests {
                 // only when the count reaches zero. Waiting for that terminal
                 // state, rather than for a number of scheduling hops, is what
                 // makes the observation below a fact about the lease rather
-                // than about the scheduler.
+                // than about the scheduler. A drain that never parks means it
+                // found no active lease, so the loop also ends on that
+                // outcome instead of spinning to the suite time limit.
                 var parked: DatabaseBaseDrainState
+                let parkDeadline = ContinuousClock.now.advanced(by: .seconds(20))
                 repeat {
-                    await Task.yield()
+                    try Task.checkCancellation()
+                    try #require(
+                        ContinuousClock.now < parkDeadline,
+                        "The Base drain neither parked nor finished"
+                    )
+                    try await Task.sleep(for: .milliseconds(1))
                     parked = try #require(
                         fixture.container.baseDrainState(fixture.baseID)
                     )
-                } while parked.parkedDrainCount == 0
+                } while parked.parkedDrainCount == 0 && !probe.drainFinished
                 // The commit this snapshot task is suspended in has not
                 // returned, so the lease the drain is waiting on is the member
                 // lease that admitted it.
@@ -86,15 +109,39 @@ struct CompositionLeaseLifetimeTests {
 
                 commit.release()
                 try await snapshotTask.value
+                // The member lease is still referenced here, so nothing
+                // outside the snapshot can have ended it. An implementation
+                // that released the lease at an ARC release point instead
+                // keeps the count above zero for as long as this reference
+                // lives, so it fails on this deadline with a recorded reason
+                // rather than at the suite time limit.
+                var drained: DatabaseBaseDrainState
+                let drainDeadline = ContinuousClock.now.advanced(by: .seconds(20))
+                repeat {
+                    try Task.checkCancellation()
+                    try #require(
+                        ContinuousClock.now < drainDeadline,
+                        "The Base drain never observed an explicit member lease release"
+                    )
+                    try await Task.sleep(for: .milliseconds(1))
+                    drained = try #require(
+                        fixture.container.baseDrainState(fixture.baseID)
+                    )
+                } while drained.activeLeaseCount > 0
                 try await drainTask.value
                 #expect(probe.drainFinished)
                 await commitMonitor.value
             } catch {
                 commit.release()
-                drainTask.cancel()
-                _ = await drainTask.result
                 snapshotTask.cancel()
                 _ = await snapshotTask.result
+                // Dropping the held reference lets a lease that ends only at
+                // an ARC release point reach its token, so a parked drain
+                // still terminates when this test failed because the snapshot
+                // never released the lease explicitly.
+                probe.releaseMemberLease()
+                drainTask.cancel()
+                _ = await drainTask.result
                 await commitMonitor.value
                 throw error
             }
@@ -102,6 +149,7 @@ struct CompositionLeaseLifetimeTests {
             probe.commit?.release()
             snapshotTask.cancel()
             _ = await snapshotTask.result
+            probe.releaseMemberLease()
             await armedMonitor.value
             throw error
         }
@@ -200,9 +248,14 @@ struct CompositionLeaseLifetimeTests {
     }
 }
 
+private enum CompositionLeaseLifetimeFailure: Error {
+    case noMember
+}
+
 private final class CompositionLeaseDrainProbe: Sendable {
     private struct State: Sendable {
         var commit: StorageOperationBarrier?
+        var memberLease: DatabaseBaseLease?
         var drainFinished = false
     }
 
@@ -218,6 +271,22 @@ private final class CompositionLeaseDrainProbe: Sendable {
 
     func record(commit: StorageOperationBarrier) {
         state.withLock { $0.commit = commit }
+    }
+
+    func retain(memberLease: DatabaseBaseLease) {
+        state.withLock { $0.memberLease = memberLease }
+    }
+
+    /// Drops the held member lease outside the lock. A lease that ends at an
+    /// ARC release point finishes its token when its last reference goes away,
+    /// which resumes a parked drain, and that must not run inside this mutex.
+    func releaseMemberLease() {
+        let released = state.withLock { state -> DatabaseBaseLease? in
+            let lease = state.memberLease
+            state.memberLease = nil
+            return lease
+        }
+        withExtendedLifetime(released) {}
     }
 
     func markDrainFinished() {
