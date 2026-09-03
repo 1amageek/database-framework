@@ -1,4 +1,7 @@
 #if MultiBase
+// TEST_TIME_SEMANTICS: correctness - bounds the two drain observation loops
+// so a lease that never ends fails with its own recorded reason instead of
+// the suite time limit. No elapsed duration is measured or asserted.
 import DatabaseKit
 import DatabaseRuntime
 import DatabaseTypes
