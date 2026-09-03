@@ -8,6 +8,14 @@ import Foundation
 import StorageKit
 import FDBStorage
 
+/// The storage engine a FoundationDB scenario hands out.
+///
+/// It is the backend engine bound to the lifetime of one serialized scenario,
+/// so a container or raw transaction owner the scenario creates cannot outlive
+/// the scenario's gate.
+public typealias FoundationDBScenarioEngine =
+    ScenarioStorageEngine<FDBStorageEngine>
+
 public enum FoundationDBScenarioInitializationError: Error, LocalizedError {
     case missingClusterFile
     case clusterFileDoesNotExist(path: String)
@@ -49,6 +57,16 @@ public enum FoundationDBScenarioInitializationError: Error, LocalizedError {
 public enum FoundationDBScenarioAccessError: Error, LocalizedError, Equatable {
     case engineRequestedOutsideScenario
     case scenarioEndedDuringEngineCreation
+    /// The scenario refused storage work at its boundary.
+    ///
+    /// `underlyingFailure` carries the scenario's own failure when it had one,
+    /// so a scenario that failed and also left storage work behind reports
+    /// both rather than trading one report for the other.
+    case scenarioLeftStorageWorkOutstanding(
+        rejectedOperationCount: Int,
+        underlyingFailure: String?,
+        diagnosticDescription: String
+    )
 
     public var errorDescription: String? {
         switch self {
@@ -56,6 +74,18 @@ public enum FoundationDBScenarioAccessError: Error, LocalizedError, Equatable {
             return "FoundationDB test engines are available only inside withSerializedAccess."
         case .scenarioEndedDuringEngineCreation:
             return "The FoundationDB scenario ended while creating an engine."
+        case .scenarioLeftStorageWorkOutstanding(
+            let rejectedOperationCount,
+            let underlyingFailure,
+            let diagnosticDescription
+        ):
+            let outstanding = "The FoundationDB scenario issued storage work "
+                + "after it sealed: \(rejectedOperationCount) operation(s) were "
+                + "refused. Every container and raw transaction owner must be "
+                + "terminal before the scenario body returns. "
+                + "Operations: \(diagnosticDescription)."
+            guard let underlyingFailure else { return outstanding }
+            return outstanding + " The scenario also failed: \(underlyingFailure)."
         }
     }
 }
@@ -78,6 +108,8 @@ public actor FoundationDBScenarioCoordinator {
     public static let shared = FoundationDBScenarioCoordinator()
     @TaskLocal private static var holdsSerializedAccess = false
     @TaskLocal private static var scenarioResourceOwner: ScenarioResourceOwner?
+    @TaskLocal private static var scenarioAdmissionRecorder:
+        ScenarioAdmissionRecorder?
     private static let transactionTimeoutMs = 30_000
     private static let healthCheckAttemptTimeoutMs = 2_000
     private static let clusterReadyTimeoutMs = 10_000
@@ -326,27 +358,40 @@ public actor FoundationDBScenarioCoordinator {
         }
     }
 
-    public func makeEngine() async throws -> FDBStorageEngine {
+    public func makeEngine() async throws -> FoundationDBScenarioEngine {
         try await makeScenarioEngine(systemPriority: false)
     }
 
-    public func makeSystemPriorityEngine() async throws -> FDBStorageEngine {
+    public func makeSystemPriorityEngine() async throws
+        -> FoundationDBScenarioEngine {
         try await makeScenarioEngine(systemPriority: true)
     }
 
+    /// Hands out an engine bound to the current scenario.
+    ///
+    /// The scenario owner shuts the returned engine down at the scenario
+    /// boundary, and that shutdown is the authoritative terminal confirmation
+    /// the serialized gate waits for: it closes admission, drains the storage
+    /// operations the scenario admitted, and only then completes the backend
+    /// engine shutdown.
     private func makeScenarioEngine(
         systemPriority: Bool
-    ) async throws -> FDBStorageEngine {
+    ) async throws -> FoundationDBScenarioEngine {
         guard let owner = Self.scenarioResourceOwner else {
             throw FoundationDBScenarioAccessError.engineRequestedOutsideScenario
         }
         try await initialize()
-        let engine = try await createConfiguredEngine(systemPriority: systemPriority)
+        let engine = FoundationDBScenarioEngine(
+            base: try await createConfiguredEngine(
+                systemPriority: systemPriority
+            ),
+            recorder: Self.scenarioAdmissionRecorder
+        )
         guard await owner.register(
             engine,
-            shutdown: { engine in await engine.waitUntilShutdown() }
+            shutdown: { engine in await engine.endScenario() }
         ) else {
-            await engine.waitUntilShutdown()
+            await engine.endScenario()
             throw FoundationDBScenarioAccessError.scenarioEndedDuringEngineCreation
         }
         return engine
@@ -392,19 +437,78 @@ public actor FoundationDBScenarioCoordinator {
         return try await serializedAccess.withAccess {
             try await self.resetDatabaseConsistencyDomain()
             let resourceOwner = ScenarioResourceOwner()
+            let recorder = ScenarioAdmissionRecorder()
+            let outcome: Result<T, any Error>
             do {
-                let result = try await Self.$holdsSerializedAccess.withValue(true) {
-                    try await Self.$scenarioResourceOwner.withValue(resourceOwner) {
-                        try await operation()
+                outcome = .success(
+                    try await Self.$holdsSerializedAccess.withValue(true) {
+                        try await Self.$scenarioResourceOwner.withValue(
+                            resourceOwner
+                        ) {
+                            try await Self.$scenarioAdmissionRecorder.withValue(
+                                recorder
+                            ) {
+                                try await operation()
+                            }
+                        }
                     }
-                }
-                await resourceOwner.shutdownAll()
-                return result
+                )
             } catch {
-                await resourceOwner.shutdownAll()
+                outcome = .failure(error)
+            }
+            // Shutdown and the boundary check sit outside the scenario's own
+            // success or failure, so a failing scenario reaches the same
+            // check as a passing one and the check itself is never mistaken
+            // for the scenario's outcome.
+            await resourceOwner.shutdownAll()
+            switch outcome {
+            case .success(let value):
+                if let failure = Self.scenarioBoundaryFailure(
+                    recorder.aggregate,
+                    underlying: nil
+                ) {
+                    throw failure
+                }
+                return value
+            case .failure(let error):
+                if let failure = Self.scenarioBoundaryFailure(
+                    recorder.aggregate,
+                    underlying: error
+                ) {
+                    throw failure
+                }
                 throw error
             }
         }
+    }
+
+    /// What a scenario reports at its boundary, or `nil` when the boundary is
+    /// clean and the scenario's own outcome stands.
+    ///
+    /// The gate is released only once the ledger is quiescent, so outstanding
+    /// work is not an input here: an engine that still had backend work
+    /// running produces no report at all. What remains is refusal, which means
+    /// the scenario issued storage work after it sealed.
+    ///
+    /// A refusal counted here was raised before the owning engine reported, so
+    /// the scenario that produced it is still identifiable. A refusal raised
+    /// after that point is still blocked from the service, but belongs to no
+    /// scenario the coordinator can name.
+    ///
+    /// The decision is a pure function of the report and the scenario's own
+    /// failure so it can be verified directly. Producing the same state from a
+    /// running scenario would require a refusal to land between the ledger
+    /// closing and its report being taken, and both contend on one mutex.
+    public static func scenarioBoundaryFailure(
+        _ report: ScenarioAdmissionReport?,
+        underlying: (any Error)?
+    ) -> (any Error)? {
+        guard let report, !report.isTerminal else { return nil }
+        return FoundationDBScenarioAccessError.scenarioLeftStorageWorkOutstanding(
+            rejectedOperationCount: report.rejectedOperationCount,
+            underlyingFailure: underlying.map { String(describing: $0) },
+            diagnosticDescription: report.diagnosticDescription
+        )
     }
 }
 #endif

@@ -126,3 +126,99 @@ is complete only after the affected child contracts are reviewed and the
 integrated package path is verified once at the converged boundary. A change
 to dependency direction, runtime composition, or a child public contract
 invalidates the corresponding child and package integration evidence.
+
+### Serialized integration-scenario lifecycle
+
+Backend integration evidence is produced under one serialized scenario gate.
+The next scenario begins by clearing the whole key range, so an operation that
+outlives its scenario would reach the service while that reset, or the next
+scenario's own work, is in flight. The gate therefore releases on one
+condition:
+
+```text
+gate release iff admission is closed and no admitted operation is running
+```
+
+Surviving objects are not part of that condition. An idle transaction or cursor
+the scenario leaked holds no gate, because a sealed engine admits it nothing
+further; a running backend operation holds the gate whatever owns the object
+that issued it. What must be terminal is the service work, not the reference
+graph.
+
+```text
+scenario body
+    -> every container and raw transaction owner shuts its engine down
+        -> scenario admission closes
+        -> the ledger reaches quiescence
+        -> base engine shutdown completes
+    -> the scenario owner returns: authoritative terminal confirmation
+    -> serialized gate releases
+    -> next scenario resets the full key range
+```
+
+Terminality is owned by the engine the scenario hands out, not by per-test
+discipline. The scenario engine decorates the real backend engine and counts
+every storage operation it forwards in a balanced pair, so an operation is
+outstanding exactly while it runs and no count depends on when a reference is
+released. `createTransaction()` is the seam a container and a raw transaction
+holder both reach, because `createOwnedTransaction` defaults through it, and it
+is refused after sealing without being counted: creation returns before the
+caller issues anything, so counting the moment of creation would report
+quiescence for a transaction that had not yet read or written.
+
+`executeTransaction` is forwarded to the base engine rather than decorated,
+because a base engine may own that lifecycle itself and a decorator that
+supplied the protocol default instead would silently replace it. The forwarded
+call creates, commits, or cancels its own transaction before returning, so
+admitting the call as a whole bounds it more tightly than counting its
+individual operations would: it cannot outlive the scenario that started it.
+
+| Operation class | Scenario admission |
+|---|---|
+| Commit | Admitted and counted: a commit that landed after its scenario would write into the next scenario's keyspace |
+| Owned-transaction execution | Admitted and counted as one operation for the whole call, which the base engine owns end to end |
+| Read, key select, read version, range metadata, cursor advance, buffered mutation, Directory operation | Admitted and counted |
+| Versionstamp resolution | Admitted and counted: the value is answered only once the commit that produces it has been applied, so awaiting it is service work |
+| Transaction creation | Refused after sealing, not counted: creation is local to the base engine and issues nothing, and what the transaction goes on to do is admitted operation by operation |
+| Cancel, cursor finish | Forwarded past a closed admission and not counted: this is the work that makes a leaked transaction or cursor terminal, and it releases backend state instead of reaching the service. Any advance a finish waits on is already counted |
+| Local transaction state: capabilities, compaction, storage failure, mutation byte limit, options, conflict ranges, versionstamp request, committed version | Forwarded: no service work and no state the next scenario can observe |
+
+Sealing belongs to `endScenario()`, which only the scenario resource owner
+calls, after every container and raw transaction holder the scenario body
+created has been shut down. The `StorageEngine` shutdown methods only forward,
+because a container storage lifecycle reaches both of them for the single
+container it owns: `requestShutdown()` from `deinit`, and `waitUntilShutdown()`
+from `shutdown()`. Sealing in either one would refuse the work of a scenario
+that shut one container down and went on using the engine, turning a running
+scenario into a false failure at a boundary that is not the scenario's own.
+
+The decorated engine guarantees that operations in flight when the scenario
+seals reach zero before the base engine shuts down, and that an operation
+started after the seal never reaches the service. It does not guarantee
+attribution: a rejection can be raised after the gate has released, so a
+rejection the scenario observes fails that scenario, and a later one is a
+blocked operation whose scenario is no longer identifiable. Each count carries
+the operation kinds behind it, so one integration run identifies what it caught
+without being repeated.
+
+The wait for quiescence has no bound and no cancellation exit. A bound would
+release the gate with backend work still running, which is the state the gate
+exists to prevent, and a cancellation exit would do the same on every failing
+scenario. The external test timeout owns the case where an admitted operation
+never ends; in practice the backend bounds it first, because the coordinator
+configures a FoundationDB transaction timeout, so an operation that cannot
+finish fails rather than running forever. A wait that has to block names the
+operations it is waiting on once, as a report that nothing reads.
+
+The boundary check runs on the failing path as well as the succeeding one, so a
+scenario that failed and also reached the service after sealing reports both:
+the refusal failure carries the scenario's own failure rather than replacing
+it.
+
+Owners: [scenario admission quiescence tests](Tests/DatabaseEngineTests/ScenarioAdmissionQuiescenceTests.swift)
+prove the release condition itself, including that neither cancellation nor an
+open admission releases it, and
+[FoundationDB scenario lifecycle tests](Tests/DatabaseEngineTests/FoundationDBScenarioLifecycleTests.swift)
+prove the boundary over
+[the scenario engine](Tests/Shared/ScenarioStorageEngine.swift) and
+[the scenario coordinator](Tests/Shared/FoundationDBScenarioCoordinator.swift).
