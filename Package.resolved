@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/fdb-swift-bindings.git",
       "state" : {
-        "revision" : "592c60157e0f5a073f7a84ea853a230382e908c8",
-        "version" : "0.4.0"
+        "revision" : "1b980cd76cbfe35e9d71f5ce12e1bac7c3286de3",
+        "version" : "0.4.1"
       }
     },
     {
