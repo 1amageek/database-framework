@@ -118,6 +118,26 @@ QueryExecution receive a resolved Subspace rather than a computed prefix.
   than at a boundary. Ownership follows whether a transaction was bound on
   entry, not the shape of the result, so both the retained and the promoted
   public response reach their caller through one boundary.
+- Collecting and Ready are distinct types, so the transition is rejectable
+  rather than merely described. A canonical query result produced inside an
+  active transaction is a collecting response: it exposes borrowed row views
+  and its metadata, and it has no promotion at all. Only the ready response
+  promotes to a public response or to caller-owned retained rows, and its
+  construction requires a `PostClosureResultAdmission` whose initializer is
+  file-private to the canonical row implementation. `finalizePostClosureResult`
+  is the sole producer of that admission: it applies the ownership-scoped
+  cancellation check and then performs the consuming move. An active
+  transaction callback therefore cannot construct a ready result, and no
+  promotion can bypass the check, because neither the admission nor the
+  consuming finalizer is reachable from outside that one transition.
+- `withPostClosureReadSnapshot` is the scope that owns the transition end to
+  end. Its body returns the collecting result inside the read result box, so
+  the noncopyable value crosses the closure boundary without being promotable
+  inside it; the scope then takes the value out of the box after every
+  session, transaction, and lease inside the body has closed, and finalizes.
+  Callers that run on a caller-owned transaction finalize with ownership
+  false: the enclosing owner still holds the check, and the transition only
+  records that this scope did not perform it.
 - A retained canonical row page leaves linear ownership the same way. It is
   consumed into shared row ownership so a durable query snapshot can read the
   complete result count and emit successive bounded pages after the read
@@ -165,6 +185,7 @@ raw entity arrays exist only at the consuming public-output boundary.
 | Failure/cancellation/release | Later-failure and suspended-read tests end at zero retained resources. |
 | Public read cancellation | A public copyable read suspended at its own commit and cancelled there still returns its callback value, as does an identically suspended and cancelled write. |
 | Retained query cancellation | A canonical query that opened its own transaction and was cancelled at that transaction's commit reports the cancellation. The nested branch has no test: a caller-owned transaction leaves no commit to suspend, and the work budget throws first, so the absence of the check is not separately observable there. |
+| Collecting-to-Ready boundary | The collecting response declares no promotion and the ready response has no reachable initializer, so promoting outside `finalizePostClosureResult` fails to compile. |
 | Composition lease lifetime | A Base lifecycle drain does not complete while a composition domain commit is suspended, and completes once that commit returns. |
 | No raw escape | Source audit rejects general borrows, raw returns, and unmarked bridges. |
 | Bounded item path | Envelope and every chunk are observed as bounded reads. |

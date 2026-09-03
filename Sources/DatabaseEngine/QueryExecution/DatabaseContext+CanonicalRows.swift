@@ -1271,6 +1271,13 @@ private func preadmitExpressionPayload(
     return rootAdmission
 }
 
+/// A canonical query result that is still collecting inside the session,
+/// transaction, and lease that produce it.
+///
+/// It exposes only borrowed views and copyable descriptors. It has no
+/// promotion: reaching a caller requires the Collecting-to-Ready transition in
+/// `finalizePostClosureResult`, so an active transaction callback cannot hand
+/// a promotable result to anyone.
 struct CanonicalRetainedQueryResponse: ~Copyable, Sendable {
     let rows: CanonicalRetainedQueryRows
     let visibleRange: Range<Int>
@@ -1286,6 +1293,70 @@ struct CanonicalRetainedQueryResponse: ~Copyable, Sendable {
         metadata: [String: FieldValue],
         affectedRows: Int?,
         metadataReservation: DatabaseIntermediateReservation? = nil
+    ) {
+        self.rows = rows
+        self.visibleRange = visibleRange
+        self.continuation = continuation
+        self.metadata = metadata
+        self.affectedRows = affectedRows
+        self.metadataReservation = metadataReservation
+    }
+
+    var visibleRows: CanonicalRetainedQueryRowView {
+        CanonicalRetainedQueryRowView(owner: rows, range: visibleRange)
+    }
+
+    /// Moves this collecting result into its ready form.
+    ///
+    /// File-private, and gated on an admission that only
+    /// `finalizePostClosureResult` can create, so this is the single edge
+    /// between the two states.
+    fileprivate consuming func admit(
+        _ admission: PostClosureResultAdmission
+    ) -> CanonicalReadyQueryResponse {
+        CanonicalReadyQueryResponse(
+            admission: admission,
+            rows: rows,
+            visibleRange: visibleRange,
+            continuation: continuation,
+            metadata: metadata,
+            affectedRows: affectedRows,
+            metadataReservation: metadataReservation
+        )
+    }
+}
+
+/// Proof that every session, transaction, and lease that produced a canonical
+/// query result has closed, and that the ownership-scoped post-closure
+/// cancellation rule has been applied to it.
+///
+/// The initializer is file-private, so no caller outside this transition can
+/// admit a result.
+struct PostClosureResultAdmission: Sendable {
+    fileprivate init() {}
+}
+
+/// A canonical query result that has left every producing resource scope and
+/// passed post-closure admission.
+///
+/// Promotion to a public response or to caller-owned retained rows exists only
+/// on this form.
+struct CanonicalReadyQueryResponse: ~Copyable, Sendable {
+    let rows: CanonicalRetainedQueryRows
+    let visibleRange: Range<Int>
+    let continuation: QueryContinuation?
+    let metadata: [String: FieldValue]
+    let affectedRows: Int?
+    let metadataReservation: DatabaseIntermediateReservation?
+
+    fileprivate init(
+        admission: PostClosureResultAdmission,
+        rows: CanonicalRetainedQueryRows,
+        visibleRange: Range<Int>,
+        continuation: QueryContinuation?,
+        metadata: [String: FieldValue],
+        affectedRows: Int?,
+        metadataReservation: DatabaseIntermediateReservation?
     ) {
         self.rows = rows
         self.visibleRange = visibleRange
@@ -1337,6 +1408,42 @@ struct CanonicalRetainedQueryResponse: ~Copyable, Sendable {
         )
         return retainedRows
     }
+}
+
+/// Performs the single Collecting-to-Ready transition.
+///
+/// `ownsProducingTransaction` states whether the calling scope opened and
+/// closed the transaction that produced this result. Only then does the scope
+/// own the post-closure cancellation check; on a caller-owned transaction the
+/// enclosing owner still holds it, and checking here would answer a cancelled
+/// read before that transaction reached its terminal state.
+func finalizePostClosureResult(
+    _ collecting: consuming CanonicalRetainedQueryResponse,
+    ownsProducingTransaction: Bool
+) throws -> CanonicalReadyQueryResponse {
+    if ownsProducingTransaction {
+        try ensureDatabaseTaskIsActive()
+    }
+    return collecting.admit(PostClosureResultAdmission())
+}
+
+/// Runs a producing read scope and admits its result only after the scope has
+/// closed.
+///
+/// `body` returns the collecting result inside the read result box, so the
+/// noncopyable value crosses the closure boundary without being promotable
+/// inside it. Every session, transaction, and lease opened by `body` is closed
+/// once it returns, so the value is taken out of the box and finalized here.
+func withPostClosureReadSnapshot(
+    ownsProducingTransaction: Bool,
+    _ body: () async throws
+        -> DatabaseReadResultBox<CanonicalRetainedQueryResponse>
+) async throws -> CanonicalReadyQueryResponse {
+    let boxed = try await body()
+    return try finalizePostClosureResult(
+        boxed.take(),
+        ownsProducingTransaction: ownsProducingTransaction
+    )
 }
 
 private struct CanonicalRelation: Sendable {
@@ -1507,7 +1614,7 @@ extension DatabaseContext {
         _ selectQuery: SelectQuery,
         execution: ReadExecutionContext,
         graphPartitions: FieldObject = FieldObject()
-    ) async throws -> CanonicalRetainedQueryResponse {
+    ) async throws -> CanonicalReadyQueryResponse {
         do {
             return try await queryRetainedUnmapped(
                 selectQuery,
@@ -1523,73 +1630,72 @@ extension DatabaseContext {
         _ selectQuery: SelectQuery,
         execution: ReadExecutionContext,
         graphPartitions: FieldObject
-    ) async throws -> CanonicalRetainedQueryResponse {
+    ) async throws -> CanonicalReadyQueryResponse {
         try QueryStructuralValidator.validate(
             selectQuery,
             limits: execution.queryStructuralLimits
         )
+        // This family owns its own Collecting-to-Ready transition on the path
+        // where it opens the producing transaction: the storage access below
+        // closes that transaction and releases its PartitionLease before
+        // returning, and the read session drains inside it, so nothing
+        // transaction-bound survives the scope. The read is read-only by
+        // construction, so no durable outcome is reported as cancelled. When a
+        // caller-owned transaction is already bound on entry, that same access
+        // runs on it and closes nothing, so the enclosing owner still holds
+        // the transition and this scope admits without checking.
         let ownsProducingTransaction = ActiveDatabaseTransactionContext
             .binding == nil
-        let output = try await withDataOperation { [self] in
-            let resolvedFusionGraph = try FusionPreflight.resolveGraph(
-                selectQuery,
-                context: self,
-                workMeter: execution.workMeter
-            )
-            let readExecution = CanonicalReadExecution.resolve(
-                requested: execution.consistency,
-                default: .serializable
-            )
-            let authorizationPlan = resolvedFusionGraph.authorizationPlan
-            return try await withFieldReadAuthorization(
-                authorizationPlan,
-                listRequirements: resolvedFusionGraph
-                    .listAuthorizationRequirements
-            ) { authorization in
-                let preparedFusionGraph = try FusionPreflight.prepareGraph(
-                    resolvedFusionGraph,
-                    authorization: authorization,
+        return try await withPostClosureReadSnapshot(
+            ownsProducingTransaction: ownsProducingTransaction
+        ) { [self] in
+            try await withDataOperation { [self] in
+                let resolvedFusionGraph = try FusionPreflight.resolveGraph(
+                    selectQuery,
                     context: self,
                     workMeter: execution.workMeter
                 )
-                return try await withStorageAccess(
-                    requiredAccess: .read,
-                    configuration: readExecution.transactionConfiguration
-                ) { [self] _ in
-                    let response = try await DatabaseReadSession.withSession(
+                let readExecution = CanonicalReadExecution.resolve(
+                    requested: execution.consistency,
+                    default: .serializable
+                )
+                let authorizationPlan = resolvedFusionGraph.authorizationPlan
+                return try await withFieldReadAuthorization(
+                    authorizationPlan,
+                    listRequirements: resolvedFusionGraph
+                        .listAuthorizationRequirements
+                ) { authorization in
+                    let preparedFusionGraph = try FusionPreflight.prepareGraph(
+                        resolvedFusionGraph,
+                        authorization: authorization,
                         context: self,
                         workMeter: execution.workMeter
-                    ) { session in
-                        let authorizedSession = try session
-                            .authorizedSession(authorization)
-                        return try await queryCanonical(
-                            selectQuery,
-                            options: execution,
-                            partitionValues: graphPartitions,
-                            partitionMode: .strict,
-                            transaction: authorizedSession.transaction,
-                            preparedFusionGraph: preparedFusionGraph,
-                            fusionSession: authorizedSession
-                        )
+                    )
+                    return try await withStorageAccess(
+                        requiredAccess: .read,
+                        configuration: readExecution.transactionConfiguration
+                    ) { [self] _ in
+                        let response = try await DatabaseReadSession.withSession(
+                            context: self,
+                            workMeter: execution.workMeter
+                        ) { session in
+                            let authorizedSession = try session
+                                .authorizedSession(authorization)
+                            return try await queryCanonical(
+                                selectQuery,
+                                options: execution,
+                                partitionValues: graphPartitions,
+                                partitionMode: .strict,
+                                transaction: authorizedSession.transaction,
+                                preparedFusionGraph: preparedFusionGraph,
+                                fusionSession: authorizedSession
+                            )
+                        }
+                        return DatabaseReadResultBox(consume response)
                     }
-                    return DatabaseReadResultBox(consume response)
                 }
             }
         }
-        let response = output.take()
-        // This family owns its own Collecting-to-Ready transition on the path
-        // where it opened the producing transaction: the storage access above
-        // closed that transaction and released its PartitionLease before
-        // returning, and the read session drained inside it, so nothing
-        // transaction-bound survives here. The read is read-only by
-        // construction, so no durable outcome is reported as cancelled. When a
-        // caller-owned transaction was already bound on entry, that same access
-        // ran on it and closed nothing, so the enclosing owner still holds the
-        // transition and this call must not check.
-        if ownsProducingTransaction {
-            try ensureDatabaseTaskIsActive()
-        }
-        return response
     }
 
     /// Runs a preflighted relational Fusion input on the caller-owned
@@ -1734,11 +1840,17 @@ extension DatabaseContext {
         session: DatabaseReadSession
     ) async throws -> QueryResponse {
         do {
-            let response = try await querySessionBoundRetainedUnmapped(
+            let collecting = try await querySessionBoundRetainedUnmapped(
                 selectQuery,
                 execution: execution,
                 graphPartitions: graphPartitions,
                 session: session
+            )
+            // The caller owns the session and its transaction, which are both
+            // still open here, so the enclosing owner holds the check.
+            let response = try finalizePostClosureResult(
+                consume collecting,
+                ownsProducingTransaction: false
             )
             return response.promoteToPublicResponse()
         } catch {
@@ -1753,11 +1865,17 @@ extension DatabaseContext {
         session: DatabaseReadSession
     ) async throws -> DatabaseRetainedQueryPage {
         do {
-            let response = try await querySessionBoundRetainedUnmapped(
+            let collecting = try await querySessionBoundRetainedUnmapped(
                 selectQuery,
                 execution: execution,
                 graphPartitions: graphPartitions,
                 session: session
+            )
+            // The caller owns the session and its transaction, which are both
+            // still open here, so the enclosing owner holds the check.
+            let response = try finalizePostClosureResult(
+                consume collecting,
+                ownsProducingTransaction: false
             )
             let continuation = response.continuation
             let rows = response.retainVisibleRows()
@@ -2824,13 +2942,19 @@ extension DatabaseContext {
             condition: join.condition,
             workMeter: options.workMeter
         )
-        let response = try await finalizeRelationalRows(
+        let collecting = try await finalizeRelationalRows(
             selectQuery,
             sourceRows: joined.rows,
             sourceSchema: joined.schema,
             residualFilter: selectQuery.filter,
             residualOrderBy: selectQuery.orderBy,
             options: options
+        )
+        // The Composition read snapshot that planned this join still holds its
+        // member transactions and Base leases, so it owns the check.
+        let response = try finalizePostClosureResult(
+            consume collecting,
+            ownsProducingTransaction: false
         )
         return response.promoteToPublicResponse()
     }

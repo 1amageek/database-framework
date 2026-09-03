@@ -1295,7 +1295,11 @@ struct CanonicalSQLRetainedOwnershipTests {
         indexResult = nil
 
         #expect(meter.retainedIntermediateBytes > 0)
-        let response = retained.promoteToPublicResponse()
+        let ready = try finalizePostClosureResult(
+            consume retained,
+            ownsProducingTransaction: false
+        )
+        let response = ready.promoteToPublicResponse()
         #expect(response.metadata == expectedMetadata)
         #expect(meter.retainedIntermediateRows == 0)
         #expect(meter.retainedIntermediateBytes == 0)
