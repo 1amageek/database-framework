@@ -51,9 +51,9 @@ public final class DatabaseBaseLease: Sendable {
     /// while one is still open. Releasing the last reference instead would end
     /// the lease at an ARC release point the holder does not control. The
     /// token is exactly-once, so ending here and letting the last reference go
-    /// cannot decrement twice. This is not public: no application caller ends
-    /// an admission lease.
-    package func finish() {
+    /// cannot decrement twice. Every holder is inside this module, so the
+    /// release stays `internal`: no caller outside it ends an admission lease.
+    internal func finish() {
         token.finish()
     }
 }

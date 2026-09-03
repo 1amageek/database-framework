@@ -35,8 +35,9 @@ package final class DatabaseCompositionLease: Sendable {
 
     /// Ends every member admission lease once the federated operation's
     /// transactions are terminal. Each member token is exactly-once, so a
-    /// caller may end the composition explicitly and still hold it.
-    package func finish() {
+    /// caller may end the composition explicitly and still hold it. It carries
+    /// the same `internal` release as a member lease.
+    internal func finish() {
         for member in members {
             member.finish()
         }

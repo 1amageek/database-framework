@@ -98,8 +98,8 @@ QueryExecution receive a resolved Subspace rather than a computed prefix.
   lease that ended at an ARC release point instead would let the drain a Base
   lifecycle transition waits on complete while a domain commit was still in
   flight, advancing retirement, deletion, or placement movement past a
-  running transaction. The release stays `package`: no public caller ends an
-  admission lease.
+  running transaction. Every holder is inside the module, so the release is
+  `internal`: no caller outside it ends an admission lease.
 - The check runs where the closed transaction is beyond cleanup. A closed
   transaction can no longer be cancelled, so a check that could reach its
   owner's cleanup would answer a cancelled read with a cleanup failure
