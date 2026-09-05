@@ -150,10 +150,13 @@ final class ContainerDirectoryAccess: DirectoryAccess, Sendable {
         if let admitted = transaction as? ContainerTransaction {
             return try admitted.directoryTransactionBorrow(for: lifecycle)
         }
+        // The rejected transaction type is not reported: `type(of:)` on an
+        // existential requires runtime type metadata, which Embedded Swift
+        // does not provide. Naming it here breaks the Embedded WASM runtime.
         throw StorageError.invalidOperation(
             """
             Directory operations require a transaction admitted by this \
-            database container (got \(type(of: transaction)))
+            database container
             """
         )
     }

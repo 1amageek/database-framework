@@ -213,10 +213,14 @@ final class ReadAuthorizedTransactionAccess:
                 return try admitted.directoryTransactionBorrow(for: lifecycle)
                     .retainingReadScope(operation)
             }
+            // The rejected transaction type is not reported: `type(of:)` on
+            // an existential requires runtime type metadata, which Embedded
+            // Swift does not provide. Naming it here breaks the Embedded
+            // WASM runtime.
             throw StorageError.invalidOperation(
                 """
                 Directory reads require a transaction admitted by the same \
-                database container (got \(type(of: transaction)))
+                database container
                 """
             )
         } catch {
