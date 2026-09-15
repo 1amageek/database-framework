@@ -203,3 +203,30 @@ raw entity arrays exist only at the consuming public-output boundary.
 Owners: [polymorphic retained tests](../../Tests/DatabaseEngineTests/PolymorphicRetainedResourceContractTests.swift),
 [item storage tests](../../Tests/DatabaseEngineTests/ItemStorageResourceTests.swift),
 and [authorization tests](../../Tests/DatabaseEngineTests/ReadAuthorizationCapabilityTests.swift).
+
+## Schema-driven Authorization
+
+`AuthorizationPolicyHandler(schemaDriven:permits:)` binds an immutable schema
+entity to a caller-supplied operation/context decision. It reuses
+the schema runtime’s canonical `EntityRuntimeDefinition.identity(for:entity:)` for canonical identifier and dynamic
+Partition validation. Entity mismatch and invalid identities throw; no missing
+policy becomes permission. The existing request delegate still evaluates field
+security after entity authorization. All captured state is immutable and
+Sendable, with no platform-dependent isolation changes.
+
+```text
+Schema entity + operation/context decision
+  -> AuthorizationPolicyHandler -> canonical identity validation
+  -> RequestSecurityPolicyDelegate -> field policy -> existing transaction
+```
+
+The server owns configuration and role selection. Framework tests must exercise
+allow, deny, entity mismatch, malformed identity, and dynamic Partition identity;
+server integration must exercise actual persisted CRUD and rejected credentials.
+
+Verification: `Tests/DatabaseEngineTests/SchemaAuthorizationTests.swift` exercises
+operation/context decisions, default-deny, invalid entity/identifier/Partition,
+and canonical resource identity. The complete `DatabaseEngineTests` target also
+covers existing request authorization and field restrictions. Native verification
+uses the identity-checked 2026-09-04 toolchain; this change adds immutable captures
+only and introduces no target-specific storage or synchronization branch.

@@ -83,6 +83,46 @@ public struct AuthorizationPolicyHandler: Sendable {
         }
     }
 
+    /// Binds an operation policy to a schema entity without a compiled model.
+    /// Field policies and Partition authorization remain separate checks.
+    public init(
+        schemaDriven entity: Schema.Entity,
+        permits: @escaping @Sendable (SecurityError.Operation, AuthorizationContext) -> Bool
+    ) {
+        self.entityName = entity.name
+        self.queryDecision = { _, context in permits(.list, context) }
+        self.readDecision = { resource, context in
+            try Self.schemaDecision(resource, entity: entity,
+                                    isPermitted: permits(.get, context))
+        }
+        self.createDecision = { resource, context in
+            try Self.schemaDecision(resource, entity: entity,
+                                    isPermitted: permits(.create, context))
+        }
+        self.updateDecision = { original, updated, context in
+            try Self.validateEntity(of: original, expected: entity.name)
+            _ = try EntityRuntimeDefinition.identity(for: copy original, entity: entity)
+            return try Self.schemaDecision(updated, entity: entity,
+                                           isPermitted: permits(.update, context))
+        }
+        self.deleteDecision = { resource, context in
+            try Self.schemaDecision(resource, entity: entity,
+                                    isPermitted: permits(.delete, context))
+        }
+    }
+
+    private static func schemaDecision(
+        _ resource: borrowing PersistedModel,
+        entity: Schema.Entity,
+        isPermitted: Bool
+    ) throws -> AuthorizationResourceDecision {
+        try validateEntity(of: resource, expected: entity.name)
+        return AuthorizationResourceDecision(
+            isPermitted: isPermitted,
+            identity: try EntityRuntimeDefinition.identity(for: copy resource, entity: entity)
+        )
+    }
+
     private static func validateEntity(
         of resource: borrowing PersistedModel,
         expected entity: String
@@ -135,6 +175,11 @@ public struct AuthorizationPolicyHandler: Sendable {
 struct AuthorizationResourceDecision: Sendable {
     let isPermitted: Bool
     let resource: EntityReference
+
+    init(isPermitted: Bool, identity: EntityReference) {
+        self.isPermitted = isPermitted
+        self.resource = identity
+    }
 
     init<Model: Persistable>(
         isPermitted: Bool,

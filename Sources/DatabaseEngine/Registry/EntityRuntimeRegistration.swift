@@ -783,7 +783,7 @@ public struct EntityRuntimeDefinition: Sendable {
         }
     }
 
-    private static func identity(
+    static func identity(
         for model: PersistedModel,
         entity: Schema.Entity
     ) throws -> EntityReference {

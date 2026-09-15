@@ -8,7 +8,7 @@ TRAITS=""
 EXPECTED_TEST_COUNT=""
 EXPECTED_TARGET_COUNTS=()
 EXPECTED_TARGET_COUNT_SIZE=0
-TOOLCHAIN_IDENTIFIER="org.swift.64202608141a"
+TOOLCHAIN_IDENTIFIER="org.swift.64202609041a"
 XCODE_TOOLCHAIN_IDENTIFIER="com.apple.dt.toolchain.XcodeDefault"
 REQUIRE_ZERO_SKIPS=false
 REQUIRE_ZERO_EXPECTED_FAILURES=false
@@ -507,7 +507,7 @@ write_build_input_state() {
     return 1
   fi
 
-  base_object_directory="$(git -C "$repository_root" rev-parse --git-path objects)"
+  base_object_directory="$(git -C "$repository_root" rev-parse --path-format=absolute --git-path objects)"
   index_path="$scratch_root/build-input-index.$$"
   object_directory="$(mktemp -d "$scratch_root/build-input-objects.XXXXXX")"
   if ! env \
@@ -614,6 +614,17 @@ if (( EXPECTED_TARGET_COUNT_SIZE > 0 )) \
 fi
 
 PINNED_SWIFTC="$(xcrun --toolchain "$TOOLCHAIN_IDENTIFIER" --find swiftc)"
+resolved_toolchain_root="$(cd "$(dirname "$PINNED_SWIFTC")/../.." && pwd -P)"
+if ! resolved_toolchain_identifier="$(plutil -extract CFBundleIdentifier raw -o - "$resolved_toolchain_root/Info.plist" 2>/dev/null)"; then
+  echo "error: selected compiler has no verifiable toolchain identity ($PINNED_SWIFTC)" >&2
+  exit 1
+fi
+if [[ "$resolved_toolchain_identifier" != "$TOOLCHAIN_IDENTIFIER" ]]; then
+  echo "error: requested $TOOLCHAIN_IDENTIFIER but xcrun selected $resolved_toolchain_identifier ($PINNED_SWIFTC)" >&2
+  exit 1
+fi
+printf 'verified-toolchain=%s compiler=%s\n' "$resolved_toolchain_identifier" "$PINNED_SWIFTC"
+
 
 traits_literal="$(trait_literal "$TRAITS")"
 if [[ -n "$REUSE_WORK_ROOT" ]]; then
@@ -861,6 +872,9 @@ build_arguments=(
   # interactive macro approval UI.
   -skipMacroValidation
 )
+for identifier in "${ONLY_TESTING[@]}"; do
+  build_arguments+=("-only-testing:$identifier")
+done
 if [[ -n "${FDB_CLUSTER_FILE:-}" ]]; then
   fdb_include_directory="${FDB_CLIENT_INCLUDE_DIRECTORY:-/usr/local/include}"
   fdb_library_directory="${FDB_CLIENT_LIBRARY_DIRECTORY:-/usr/local/lib}"

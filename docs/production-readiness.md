@@ -75,7 +75,7 @@ scripts/docker-test-harness sqlite --multi-base
 scripts/docker-test-harness postgresql
 scripts/docker-test-harness foundationdb
 
-export TOOLCHAINS=org.swift.64202608141a
+export TOOLCHAINS=org.swift.64202609041a
 
 for product in Database; do
   swift build \
