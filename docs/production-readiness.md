@@ -75,7 +75,7 @@ scripts/docker-test-harness sqlite --multi-base
 scripts/docker-test-harness postgresql
 scripts/docker-test-harness foundationdb
 
-export TOOLCHAINS=org.swift.64202609041a
+export TOOLCHAINS=org.swift.64202608141a
 
 for product in Database; do
   swift build \
@@ -118,6 +118,9 @@ contract, and evidence requirements in
 execute in the pinned Linux Docker runner. The separate macOS SQLite Xcode lane
 is required platform-parity evidence.
 
+The native Xcode harness uses the identity-checked September 4, 2026 Swift
+snapshot. The WASM commands above retain their separately paired compiler/SDK.
+
 The Xcode harness keeps the source manifest unchanged, selects traits in an
 isolated copy, injects the pinned snapshot's testing runtime and backend
 environment into `.xctestrun`, preserves build/test logs, and rejects internal
@@ -128,7 +131,7 @@ the harness proves that the resolved macro dependency revisions match the
 tracked release pins.
 
 The backend-independent unit gate selects `GraphIndexes` and executes exactly
-753 `DatabaseEngineTests`, 902 `GraphIndexTests`, and 18
+754 `DatabaseEngineTests`, 902 `GraphIndexTests`, and 18
 `DatabaseRuntimeTests`. These target-level counts prevent a hidden test group
 from being offset by an unrelated target's additions or removals.
 
