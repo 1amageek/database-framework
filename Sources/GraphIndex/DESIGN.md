@@ -45,6 +45,7 @@ The primary physical paths are [GraphQuery](GraphQuery.swift),
 |---|---|---|---|---|
 | [database-framework](../../DESIGN.md) | parent | Package composition and dependency direction | Places graph execution beside the DatabaseEngine and specialized features. | Keep graph physical details out of the package index. |
 | [DatabaseEngine](../DatabaseEngine/DESIGN.md) | depends on | Session-owned read transaction, authorization, snapshot, meter, and retained output | Supplies the canonical admission and lifecycle boundary. | GraphIndex must not open a nested transaction on a session path. |
+| [Base Composition](../DatabaseEngine/Base/DESIGN.md) | depends on | Prebound columns, positional member pages and provenance | Supplies MultiBase global merging for SPARQL. | Bind primitive RDF metadata before rows and retain it on empty pages; SQL typing does not redefine RDF identity. |
 | [Serialization/RDF](../DatabaseEngine/Serialization/RDF/DESIGN.md) | depends on | Role-aware canonical RDF term bytes, validation, limits, and scoped views | Supplies the term representation used in graph keys and identity storage. | GraphIndex owns key layout and graph meaning, not term encoding. |
 | [Database](../Database/DESIGN.md) | used by | SQL-facing SPARQL entry adaptation into transaction-bound execution | Routes SQL-embedded calls to this module's graph-facing executor. | SQL expression rewriting remains a Database responsibility. |
 
@@ -71,6 +72,10 @@ Canonical DatabaseContext and builder paths use a session-owned
 not provide DatabaseEngine authorization guarantees.
 
 ## Contracts and Invariants
+
+The typed direct GRAPH_TABLE adapter projects descriptor-owned raw columns by
+their unqualified names. A property graph name resolves the index; it does not
+create a SQL relation qualifier for those raw columns.
 
 - Canonical session execution validates sealed authorization before readable
   index resolution or storage disclosure and uses the supplied session
@@ -105,6 +110,22 @@ not provide DatabaseEngine authorization guarantees.
 - `GraphQueryBuilder` and transaction-bound SPARQL builders reuse the caller's
   read transaction. The explicit low-level executor is not an authorization
   shortcut for a canonical session path.
+- GRAPH_TABLE derives raw binding columns from validated graph index field
+  descriptors and MATCH variables before reading an index. Endpoints, node IDs
+  and labels are primitive strings; included properties retain their declared
+  primitive storage type and optionality. An empty result carries the same
+  columns. Graph-owned match bindings remain internal until the final admitted
+  positional `QueryRow` boundary; SQL COLUMNS expressions remain execution-owner
+  work rather than graph row type inference.
+- A `Literal.queryValue(.primitive(value))` delegates through DatabaseKit's
+  lossless `FieldValue.queryLiteral` conversion into the existing RDF literal
+  validation, evaluation, and CONSTRUCT footprint paths. Unsupported primitive
+  conversions retain their typed conversion error.
+- SQL-specific numeric, JSON, JSONB, array, and interval query values have no
+  implicit RDF representation. SPARQL compilation rejects them as unsupported
+  expressions, and literal/CONSTRUCT conversion reports
+  `SPARQLLiteralConversionError.queryLiteralConversion(.unsupportedSPARQLLiteral)`.
+  No primitive surrogate or descriptive text is returned as a successful term.
 - GraphIndex has no dependency on the `Database` entry module, so SQL
   adaptation cannot flow back into graph physical execution.
 
@@ -153,7 +174,9 @@ with authenticated DatabaseEngine session execution.
 | Authorization order and read budget | [GraphDirectReadAuthorizationTests](../../Tests/GraphIndexTests/GraphDirectReadAuthorizationTests.swift), [GraphPhysicalReadBudgetTests](../../Tests/GraphIndexTests/GraphPhysicalReadBudgetTests.swift) |
 | RDF physical keys, ranges, and store/catalog mutation | [RDFQuadIndexPhysicalCodecTests](../../Tests/GraphIndexTests/RDFQuadIndexPhysicalCodecTests.swift), [CanonicalRDFGraphStoreTests](../../Tests/GraphIndexTests/CanonicalRDFGraphStoreTests.swift), [RDFQuadIndexMaintainerTests](../../Tests/GraphIndexTests/RDFQuadIndexMaintainerTests.swift) |
 | Dataset source, reservation, malformed, and identity behavior | [RDFDatasetReadModeTests](../../Tests/GraphIndexTests/RDFDatasetReadModeTests.swift), [RDFDatasetScanReservationTests](../../Tests/GraphIndexTests/RDFDatasetScanReservationTests.swift), [MalformedRDFGraphIndexTests](../../Tests/GraphIndexTests/MalformedRDFGraphIndexTests.swift), [RDFGraphIdentityStorageSharingTests](../../Tests/GraphIndexTests/RDFGraphIdentityStorageSharingTests.swift) |
+| Query literal RDF conversion, compilation, evaluation, and CONSTRUCT footprint | [LiteralSPARQLTests](../../Tests/GraphIndexTests/LiteralSPARQLTests.swift) |
 | SPARQL, named graphs, and property paths | [SPARQLIntegrationTests](../../Tests/GraphIndexTests/SPARQLIntegrationTests.swift), [NamedGraphSPARQLTests](../../Tests/GraphIndexTests/NamedGraphSPARQLTests.swift), [SPARQLPropertyPathRuntimeSemanticsTests](../../Tests/GraphIndexTests/SPARQLPropertyPathRuntimeSemanticsTests.swift) |
+| Composition authorization and retained event lifetime | [CompositionSPARQLAuthorizationTests](../../Tests/GraphIndexTests/CompositionSPARQLAuthorizationTests.swift) requires live claims while a consumer retains result events, then zero rows and bytes after its final owner releases them. |
 | SHACL, algorithms, ontology, and GraphTable | [SHACLValidationTests](../../Tests/GraphIndexTests/SHACLValidationTests.swift), [GraphAlgorithmTests](../../Tests/GraphIndexTests/GraphAlgorithmTests.swift), [OntologyPersistenceTests](../../Tests/GraphIndexTests/OntologyPersistenceTests.swift), [GraphTableCanonicalContractTests](../../Tests/GraphIndexTests/GraphTableCanonicalContractTests.swift) |
 
 Changes to the DatabaseEngine session or retained-row contract require a

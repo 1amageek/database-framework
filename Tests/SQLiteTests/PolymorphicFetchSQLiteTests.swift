@@ -583,7 +583,7 @@ struct PolymorphicFetchSQLiteTests {
             .pageSize(2)
             .executePage()
 
-        #expect(firstPage.results.map { $0.fields["title"]?.stringValue } == ["Alpha", "Beta"])
+        #expect(try firstPage.results.map { try $0.primitiveFields()["title"]?.stringValue } == ["Alpha", "Beta"])
         #expect(try firstPage.results.first?.decodedModel(as: SQLitePolymorphicReport.self)?.id == alpha.id)
         #expect(try firstPage.results.dropFirst().first?.decodedModel(as: SQLitePolymorphicArticle.self)?.id == beta.id)
         #expect(firstPage.continuation != nil)
@@ -594,7 +594,7 @@ struct PolymorphicFetchSQLiteTests {
             .continuing(from: firstPage.continuation)
             .executePage()
 
-        #expect(secondPage.results.map { $0.fields["title"]?.stringValue } == ["Gamma"])
+        #expect(try secondPage.results.map { try $0.primitiveFields()["title"]?.stringValue } == ["Gamma"])
         #expect(try secondPage.results.first?.decodedModel(as: SQLitePolymorphicArticle.self)?.id == gamma.id)
         #expect(secondPage.continuation == nil)
     }

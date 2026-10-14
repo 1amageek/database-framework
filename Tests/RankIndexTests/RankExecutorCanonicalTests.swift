@@ -131,7 +131,7 @@ struct RankExecutorCanonicalTests {
             workMeter: meter
         )
 
-        #expect(response.rows.map { $0.fields["id"]?.stringValue } == [
+        #expect(try response.rows.map { try $0.primitiveFields(columns: response.columns)["id"]?.stringValue } == [
             "high", "middle", "low",
         ])
         #expect(response.rows.map { $0.annotations["rank"]?.int64Value } == [
@@ -299,7 +299,7 @@ struct RankExecutorCanonicalTests {
             workMeter: meter
         )
 
-        #expect(response.rows.map { $0.fields["id"]?.stringValue } == [
+        #expect(try response.rows.map { try $0.primitiveFields(columns: response.columns)["id"]?.stringValue } == [
             "report", "article-middle", "article",
         ])
         #expect(response.rows.map { $0.annotations["rank"]?.int64Value } == [

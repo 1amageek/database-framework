@@ -3,8 +3,11 @@ import Testing
 import Foundation
 import Database
 import DatabaseRuntime
+import DatabaseTypes
+import DatabaseWire
 import TestSupport
 import TestHeartbeat
+@testable import DatabaseEngine
 
 @Persistable
 struct SQLiteStoredItem {
@@ -29,6 +32,18 @@ struct SQLiteStoredNote {
     var body: String = ""
 }
 
+@Persistable
+struct SQLiteStoredRichItem {
+    #Directory<SQLiteStoredRichItem>("test", "sqlite_storage", "rich_items")
+
+    var id: String
+    var exactAmount: QueryNumericValue
+    var lexicalDocument: QueryJSONValue
+    var binaryDocument: QueryJSONBValue
+    var durationValue: QueryIntervalValue
+    var integerValues: QueryArray<Int32>
+}
+
 @Suite("SQLite Storage Tests", .serialized, .heartbeat)
 struct SQLiteStorageTests {
 
@@ -45,6 +60,117 @@ struct SQLiteStorageTests {
             ),
             security: .testingDisabled
         )
+    }
+
+    @Test("Declared rich values survive SQLite save, update and restart", .timeLimit(.minutes(2)))
+    func richValuesSurviveSQLiteRestart() async throws {
+        let database = try SQLiteTestDatabase(prefix: "sqlite-rich-values")
+        defer { database.remove() }
+        let schema = try Schema(entities: [try SQLiteStoredRichItem.schemaEntity],
+                                version: Schema.Version(1, 0, 0))
+        let declaredEntity = try #require(schema.entities.first)
+        let catalogEntity = try SchemaEntityEntryCodec.decode(SchemaEntityEntryCodec.encode(declaredEntity))
+        #expect(catalogEntity.fieldMapByName == declaredEntity.fieldMapByName)
+        #expect(catalogEntity.fields.filter { $0.queryType != nil }.count == 5)
+        #expect(try SchemaManifest(schema: Schema(entities: [catalogEntity], version: schema.version)).fingerprint()
+            == SchemaManifest(schema: schema).fingerprint())
+        let runtime = try DatabaseFrameworkRuntime.configuration(
+            executionIdentity: DatabaseExecutionRuntimeIdentity(identifier: "database-tests", revision: 1),
+            entityRuntimes: [try DatabaseFrameworkRuntime.entity(SQLiteStoredRichItem.self)]
+        )
+        let first = try await DBContainer.sqlite(for: schema, path: database.path,
+            runtimeConfiguration: runtime, security: .testingDisabled)
+        defer { await first.shutdown() }
+
+        let original = try makeRichItem(updated: false)
+        let writer = first.testBaseContext()
+        try writer.insert(original)
+        try await writer.save()
+        let inserted = try await first.testBaseContext().fetch(SQLiteStoredRichItem.self)
+            .cachePolicy(.server).execute()
+        #expect(inserted.count == 1)
+        let reloaded = try #require(inserted.first)
+        #expect(richValues(reloaded) == richValues(original))
+        #expect(reloaded.exactAmount.displayScale == 6)
+        #expect(reloaded.lexicalDocument.bytes == original.lexicalDocument.bytes)
+        #expect(reloaded.integerValues.arrayValue.dimensions[0].lowerBound == -2)
+
+        let updated = try makeRichItem(updated: true)
+        let updater = first.testBaseContext()
+        try updater.update(updated)
+        try await updater.save()
+        await first.shutdown()
+
+        let reopened = try await DBContainer.sqlite(for: schema, path: database.path,
+            runtimeConfiguration: runtime, security: .testingDisabled)
+        defer { await reopened.shutdown() }
+        let context = reopened.testBaseContext()
+        let persisted = try await context.fetch(SQLiteStoredRichItem.self).cachePolicy(.server).execute()
+        #expect(persisted.count == 1)
+        let restored = try #require(persisted.first)
+        let expected = richValues(updated)
+        #expect(richValues(restored) == expected)
+        #expect(restored.exactAmount.displayScale == 8)
+        #expect(restored.lexicalDocument.bytes == updated.lexicalDocument.bytes)
+        #expect(restored.integerValues.arrayValue.dimensions[0].lowerBound == 3)
+
+        let projection = "SELECT exactAmount, lexicalDocument, binaryDocument, durationValue, integerValues FROM SQLiteStoredRichItem"
+        let selected = try await context.executeSQL(projection)
+        #expect(selected.rows.count == 1)
+        #expect(selected.rows[0].values == expected)
+        let types: [QueryColumnType] = [.sql(.decimal(precision: nil, scale: nil)), .sql(.json),
+            .sql(.jsonb), .sql(.interval), .sql(.array(.integer))]
+        #expect(selected.columns.map(\.type) == types)
+        #expect(selected.columns.allSatisfy { !$0.isNullable })
+        let empty = try await context.executeSQL(projection + " WHERE FALSE")
+        #expect(empty.rows.isEmpty)
+        #expect(empty.columns == selected.columns)
+
+        let names = ["exactAmount", "lexicalDocument", "binaryDocument", "durationValue", "integerValues"]
+        let literalQuery = SelectQuery(projection: .items(expected.indices.map { index in
+            ProjectionItem(.literal(.queryValue(expected[index], type: types[index])), alias: names[index])
+        }), source: .values([[]], columnNames: []))
+        let literals = try await context.query(literalQuery)
+        #expect(literals.rows.count == 1)
+        #expect(literals.rows[0].values == expected)
+        #expect(literals.columns == selected.columns)
+
+        var parameters = expected.indices.map { index in
+            QueryParameter(position: UInt32(index + 1), name: names[index],
+                           value: expected[index], type: types[index])
+        }
+        parameters.append(QueryParameter(position: 6, name: "absent", value: .primitive(.null), type: .sql(.json)))
+        let parameterSQL = "SELECT :exactAmount AS exactAmount, :lexicalDocument AS lexicalDocument, :binaryDocument AS binaryDocument, :durationValue AS durationValue, :integerValues AS integerValues, :absent AS absent"
+        let bound = try await context.executeSQL(parameterSQL, parameters: parameters)
+        #expect(bound.rows.count == 1)
+        #expect(bound.rows[0].values == expected + [.primitive(.null)])
+        #expect(bound.columns.map(\.type) == types + [.sql(.json)])
+        #expect(bound.columns[5].isNullable)
+        let emptyBound = try await context.executeSQL(parameterSQL + " WHERE FALSE", parameters: parameters)
+        #expect(emptyBound.rows.isEmpty)
+        #expect(emptyBound.columns == bound.columns)
+    }
+
+    private func richValues(_ item: SQLiteStoredRichItem) -> [QueryValue] {
+        [.numeric(item.exactAmount), .json(item.lexicalDocument), .jsonb(item.binaryDocument),
+         .interval(item.durationValue), .array(item.integerValues.arrayValue)]
+    }
+
+    private func makeRichItem(updated: Bool) throws -> SQLiteStoredRichItem {
+        let limits = QueryValueLimits(maximumRetainedBytes: 16_384, maximumTotalNodes: 1_024,
+                                     maximumNestingDepth: 32, maximumCollectionElements: 256)
+        let text = updated ? " {\"b\":3.50, \"a\":[true,null], \"b\":4} " : " {\"b\":1.00, \"a\":null, \"b\":2} "
+        let json = try QueryJSONValue(bytes: ByteString(utf8: text), limits: limits)
+        return try SQLiteStoredRichItem(id: "rich",
+            exactAmount: QueryNumericValue(value: ExactDecimal(coefficient: updated ? 456 : 123, scale: 2),
+                                       displayScale: updated ? 8 : 6),
+            lexicalDocument: json, binaryDocument: QueryJSONBValue(json: json, limits: limits),
+            durationValue: QueryIntervalValue(period: CalendarPeriod(months: updated ? 4 : -2, days: updated ? -5 : 3),
+                                         time: TimeSpan(seconds: updated ? 2 : -1, nanoseconds: 500_000_000)),
+            integerValues: QueryArray(arrayValue: QueryArrayValue(elementType: .integer,
+                dimensions: [QueryArrayDimension(lowerBound: updated ? 3 : -2, length: 2)],
+                elements: [.primitive(.int32(updated ? 7 : 1)), .primitive(.int32(updated ? 9 : 2))],
+                limits: limits), limits: limits))
     }
 
     // MARK: - Container Creation

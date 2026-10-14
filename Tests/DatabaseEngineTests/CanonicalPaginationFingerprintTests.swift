@@ -13,7 +13,8 @@ struct CanonicalPaginationFingerprintTests {
         let query = selectQuery()
         let scope = ByteString([9, 8, 7, 6])
         let page = try CanonicalQueryPagination.window(
-            rows: rows(2),
+            rows: try rows(2),
+            columns: try paginationColumns(),
             selectQuery: query,
             options: execution(
                 budget: unlimitedBudget(),
@@ -53,7 +54,8 @@ struct CanonicalPaginationFingerprintTests {
 
         do {
             _ = try CanonicalQueryPagination.window(
-                rows: rows(2),
+                rows: try rows(2),
+                columns: try paginationColumns(),
                 selectQuery: selectQuery(),
                 options: execution(budget: budget, workMeter: meter)
             )
@@ -92,7 +94,8 @@ struct CanonicalPaginationFingerprintTests {
 
         #expect(throws: DatabaseWorkLimitError.self) {
             _ = try CanonicalQueryPagination.window(
-                rows: rows(2),
+                rows: try rows(2),
+                columns: try paginationColumns(),
                 selectQuery: selectQuery(),
                 options: execution(budget: budget, workMeter: meter)
             )
@@ -118,7 +121,8 @@ struct CanonicalPaginationFingerprintTests {
         try QueryStructuralValidator.validate(query, limits: structuralLimits)
 
         let page = try CanonicalQueryPagination.window(
-            rows: rows(2),
+            rows: try rows(2),
+            columns: try paginationColumns(),
             selectQuery: query,
             options: execution(
                 budget: unlimitedBudget(),
@@ -139,10 +143,14 @@ struct CanonicalPaginationFingerprintTests {
         )
     }
 
-    private func rows(_ count: Int) -> [DatabaseEngine.QueryRow] {
-        (0..<count).map {
-            DatabaseEngine.QueryRow(
-                fields: ["id": .int64(Int64($0))]
+    private func paginationColumns() throws -> [QueryColumn] {
+        try [QueryColumn(number: 1, name: "id", type: .primitive(.int64), isNullable: false)]
+    }
+
+    private func rows(_ count: Int) throws -> [DatabaseEngine.QueryRow] {
+        try (0..<count).map {
+            try DatabaseEngine.QueryRow(
+                values: [.primitive(.int64(Int64($0)))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.int64), isNullable: false)]
             )
         }
     }

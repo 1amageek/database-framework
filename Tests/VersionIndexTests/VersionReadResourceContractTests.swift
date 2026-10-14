@@ -328,7 +328,7 @@ struct VersionReadResourceContractTests {
         ).query(accessPath: .index(indexScan))
         #expect(response.rows.count == 1)
         let row = try #require(response.rows.first)
-        #expect(row.fields["title"] == .string("article"))
+        #expect(try row.primitiveFields(columns: response.columns)["title"] == .string("article"))
         #expect(
             row.annotations[PolymorphicRowAnnotation.typeName]
                 == .string(VersionCanonicalArticle.persistableType)

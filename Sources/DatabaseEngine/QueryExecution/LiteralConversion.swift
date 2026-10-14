@@ -86,6 +86,33 @@ extension Literal {
     /// Convert a query literal into the canonical database value model.
     public func toFieldValue() throws(LiteralConversionError) -> FieldValue {
         switch self {
+        case .queryValue(let value, let declaredType):
+            if case .primitive(let primitive) = value { return primitive }
+            let type: QueryColumnType
+            if let declaredType {
+                type = declaredType
+            } else {
+                switch value {
+                case .numeric:
+                    type = .sql(.decimal(precision: nil, scale: nil))
+                case .json:
+                    type = .sql(.json)
+                case .jsonb:
+                    type = .sql(.jsonb)
+                case .array(let array):
+                    type = .sql(.array(array.elementType))
+                case .interval:
+                    type = .sql(.interval)
+                case .primitive:
+                    throw .fieldValueConversionInvariantViolation
+                }
+            }
+            do throws(QueryValueError) {
+                let limits = try QueryFieldStorageAdapter.inferredLimits(for: value, type: type)
+                return try QueryFieldStorageAdapter.encode(value, type: type, limits: limits)
+            } catch {
+                throw .queryValue(error)
+            }
         case .null:
             return .null
         case .bool(let value):

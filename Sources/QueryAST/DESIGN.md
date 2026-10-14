@@ -89,3 +89,13 @@ not establish compatibility. Changes to syntax representation revalidate
 DatabaseKit validation/codecs, Builder serialization, Database entry and
 QueryExecution binding. Implementation sprints update the owned tests and
 exact executable count with intentional coverage changes.
+
+### S01 rich-value text boundary
+
+S01 admits rich semantic literals and bound parameters without adding their
+SQL lexical syntax. Builder's [throwing generation boundary](Builder/DESIGN.md#s01-rich-literal-generation-boundary)
+rejects unsupported rich emission explicitly before output. Parser continues
+accepting its current syntax and does not consume diagnostic
+Literal.description. Full rich lexical forms and canonical serializer
+consolidation belong to S02; S01 typed carriage is not evidence those text
+forms are supported.

@@ -25,9 +25,10 @@ enum FusionExecutor {
             var stageCandidates: FusionCandidateDomain?
             for input in stage.inputs {
                 let result: InputExecutionResult
-                if incoming?.isEmpty == true {
+                if let incoming, incoming.isEmpty {
                     result = try emptyResult(
                         for: input,
+                        candidates: incoming,
                         workMeter: execution.options.workMeter
                     )
                 } else {
@@ -143,12 +144,10 @@ enum FusionExecutor {
             )
             do {
                 let visibleRows = response.visibleRows
+                let identitySlot = try FusionCandidateDomain.identitySlot(columns: visibleRows.columns)
                 for position in 0..<visibleRows.count {
                     try visibleRows.withElement(at: position) { row in
-                        guard let identity = row.fields["id"] else {
-                            throw FusionExecutionContractError
-                                .missingIdentity(field: "id")
-                        }
+                        let identity = try FusionCandidateDomain.identity(in: row, slot: identitySlot)
                         let primaryKey = try PersistableIdentifierKeyCodec
                             .tuple(forPersistedIdentifier: identity)
                         try sink.submit(
@@ -374,9 +373,9 @@ enum FusionExecutor {
 
     private static func emptyResult(
         for input: FusionPreparedPlan.Input,
+        candidates domain: FusionCandidateDomain,
         workMeter: DatabaseWorkMeter
     ) throws -> InputExecutionResult {
-        let domain = try FusionCandidateDomain.empty(workMeter: workMeter)
         guard let scoring = input.scoring else {
             return InputExecutionResult(candidates: domain, scored: nil)
         }

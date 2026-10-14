@@ -135,7 +135,7 @@ struct FullTextReadContractTests {
             Issue.record("The canonical full-text search returned no rows")
             return
         }
-        #expect(row.fields["id"]?.stringValue == "regular-article")
+        #expect(try row.primitiveFields(columns: response.columns)["id"]?.stringValue == "regular-article")
         #expect(execution.workMeter.retainedIntermediateRows == 0)
         #expect(execution.workMeter.retainedIntermediateBytes == 0)
         #expect(!storage.control.boundedValueReadMaximums.isEmpty)
@@ -220,8 +220,8 @@ struct FullTextReadContractTests {
                 execution: unboundedExecution
             )
             #expect(unboundedResponse.rows.count > 1)
-            guard let expectedID = unboundedResponse.rows.first?
-                .fields["id"]?.stringValue else {
+            guard let expectedID = try unboundedResponse.rows.first?
+                .primitiveFields(columns: unboundedResponse.columns)["id"]?.stringValue else {
                 Issue.record("The unbounded regular search returned no rows")
                 continue
             }
@@ -242,7 +242,7 @@ struct FullTextReadContractTests {
 
             #expect(response.rows.count == 1)
             #expect(
-                response.rows.first?.fields["id"]?.stringValue == expectedID
+                try response.rows.first?.primitiveFields(columns: response.columns)["id"]?.stringValue == expectedID
             )
             #expect(
                 storage.control.openedRangeCursorCount > cursorCountBefore
@@ -344,8 +344,8 @@ struct FullTextReadContractTests {
             #expect(limited.results.count == 1)
             #expect(limited.results.first?.typeName == first.typeName)
             #expect(
-                limited.results.first?.fields["id"]?.stringValue
-                    == first.fields["id"]?.stringValue
+                try limited.results.first?.primitiveFields()["id"]?.stringValue
+                    == first.primitiveFields()["id"]?.stringValue
             )
             #expect(
                 storage.control.openedRangeCursorCount > cursorCountBefore

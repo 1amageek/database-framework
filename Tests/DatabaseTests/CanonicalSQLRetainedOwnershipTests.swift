@@ -50,8 +50,8 @@ struct CanonicalSQLRetainedOwnershipTests {
         )
 
         #expect(response.rows.count == 1)
-        #expect(response.rows[0].fields["id"] == .string("one"))
-        #expect(response.rows[0].fields["value"] == .string("canonical"))
+        #expect((try response.rows[0].primitiveFields(columns: response.columns))["id"] == .string("one"))
+        #expect((try response.rows[0].primitiveFields(columns: response.columns))["value"] == .string("canonical"))
         #expect(DecodeProbeItem.decodeCount == decodeCountAfterWrite)
     }
 
@@ -73,7 +73,7 @@ struct CanonicalSQLRetainedOwnershipTests {
                 offset: 1
             )
         )
-        #expect(windowed.rows.map { $0.fields["id"] } == [.string("b")])
+        #expect(try windowed.rows.map { try $0.primitiveFields(columns: windowed.columns)["id"] } == [.string("b")])
 
         let empty = try await context.query(
             SelectQuery(
@@ -117,7 +117,7 @@ struct CanonicalSQLRetainedOwnershipTests {
         #expect(response.rows.count == 1)
         #expect(response.continuation == nil)
         guard case .rdfTerm(.literal(let literal))? =
-                response.rows[0].fields["label"] else {
+                (try response.rows[0].primitiveFields(columns: response.columns))["label"] else {
             Issue.record("Expected a canonical language literal")
             return
         }
@@ -145,17 +145,30 @@ struct CanonicalSQLRetainedOwnershipTests {
             timeoutMilliseconds: 30_000
         )
 
-        let bounded = try await container.testBaseContext().query(
-            SelectQuery(
-                projection: .all,
-                source: .table(TableRef(DecodeProbeItem.persistableType)),
-                limit: 1_000_000,
-                offset: 1_000_000
-            ),
-            options: ReadExecutionOptions(budget: budget)
-        )
+        // The tiny work allowance still caps the physical cursor, but S01's
+        // mandatory typed schema can exhaust it before an empty result publishes.
+        do {
+            _ = try await container.testBaseContext().query(
+                SelectQuery(
+                    projection: .all,
+                    source: .table(TableRef(DecodeProbeItem.persistableType)),
+                    limit: 1_000_000,
+                    offset: 1_000_000
+                ),
+                options: ReadExecutionOptions(budget: budget)
+            )
+            Issue.record("Expected the tiny work budget to reject typed schema construction")
+        } catch let error as DatabaseWorkLimitError {
+            guard case .maximumWorkUnits(let stage, let consumed, let requested, let maximum) = error else {
+                Issue.record("Unexpected physical window failure: \(error)")
+                return
+            }
+            #expect(stage == .bindingCandidate)
+            #expect(maximum == budget.maximumWorkUnits)
+            #expect(consumed <= maximum)
+            #expect(requested > maximum - consumed)
+        }
 
-        #expect(bounded.rows.isEmpty)
         let boundedLimits = Array(
             control.rangeCursorLimits.dropFirst(recordedBefore)
         )
@@ -236,9 +249,10 @@ struct CanonicalSQLRetainedOwnershipTests {
         )
         let first = try CanonicalQueryPagination.window(
             rows: [
-                DatabaseEngine.QueryRow(fields: ["id": .string("first")]),
-                DatabaseEngine.QueryRow(fields: ["id": .string("second")]),
+                try DatabaseEngine.QueryRow(values: [.primitive(.string("first"))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false)]),
+                try DatabaseEngine.QueryRow(values: [.primitive(.string("second"))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false)]),
             ],
+            columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false)],
             selectQuery: query,
             options: firstExecution
         )
@@ -648,10 +662,10 @@ struct CanonicalSQLRetainedOwnershipTests {
         #expect(meter.retainedIntermediateRows > 0)
         #expect(meter.retainedIntermediateBytes > 0)
 
-        let response = retained.promoteToPublicResponse()
+        let response = try retained.promoteToPublicResponse()
         #expect(response.rows.count == 1)
-        #expect(response.rows[0].fields["outer_value"] == .string("outer"))
-        #expect(response.rows[0].fields["nested_value"] == .string("outer"))
+        #expect((try response.rows[0].primitiveFields(columns: response.columns))["outer_value"] == .string("outer"))
+        #expect((try response.rows[0].primitiveFields(columns: response.columns))["nested_value"] == .string("outer"))
         #expect(meter.retainedIntermediateRows == 0)
         #expect(meter.retainedIntermediateBytes == 0)
     }
@@ -701,10 +715,10 @@ struct CanonicalSQLRetainedOwnershipTests {
         )
         #expect(meter.retainedIntermediateRows > 0)
         #expect(meter.retainedIntermediateBytes > 0)
-        let response = retained.promoteToPublicResponse()
+        let response = try retained.promoteToPublicResponse()
         #expect(response.rows.count == 1)
-        #expect(response.rows[0].fields["lower_value"] == .string("mixed"))
-        #expect(response.rows[0].fields["upper_value"] == .string("MIXED"))
+        #expect((try response.rows[0].primitiveFields(columns: response.columns))["lower_value"] == .string("mixed"))
+        #expect((try response.rows[0].primitiveFields(columns: response.columns))["upper_value"] == .string("MIXED"))
         #expect(meter.retainedIntermediateRows == 0)
         #expect(meter.retainedIntermediateBytes == 0)
     }
@@ -937,9 +951,9 @@ struct CanonicalSQLRetainedOwnershipTests {
         )
         #expect(meter.retainedIntermediateRows > 0)
         #expect(meter.retainedIntermediateBytes > 0)
-        let response = retained.promoteToPublicResponse()
+        let response = try retained.promoteToPublicResponse()
         #expect(response.rows.count == 1)
-        guard let value = response.rows[0].fields["label"] else {
+        guard let value = (try response.rows[0].primitiveFields(columns: response.columns))["label"] else {
             Issue.record("Expected a canonical language literal")
             return
         }
@@ -949,7 +963,7 @@ struct CanonicalSQLRetainedOwnershipTests {
         }
         #expect(literal.lexicalForm == "Hello")
         #expect(literal.languageTag?.rawValue == "en-us")
-        guard let directedValue = response.rows[0].fields["directed_label"],
+        guard let directedValue = (try response.rows[0].primitiveFields(columns: response.columns))["directed_label"],
               case .rdfTerm(.literal(let directedLiteral)) = directedValue else {
             Issue.record("Expected a directed RDF language literal")
             return
@@ -1009,13 +1023,13 @@ struct CanonicalSQLRetainedOwnershipTests {
         )
         #expect(meter.retainedIntermediateRows > 0)
         #expect(meter.retainedIntermediateBytes > 0)
-        let response = retained.promoteToPublicResponse()
+        let response = try retained.promoteToPublicResponse()
         #expect(response.rows.count == 1)
         #expect(
-            response.rows[0].fields["values"]
+            (try response.rows[0].primitiveFields(columns: response.columns))["values"]
                 == .array([.string("first"), .string("second")])
         )
-        #expect(response.rows[0].fields["joined"] == .string("first|second"))
+        #expect((try response.rows[0].primitiveFields(columns: response.columns))["joined"] == .string("first|second"))
         #expect(meter.retainedIntermediateRows == 0)
         #expect(meter.retainedIntermediateBytes == 0)
     }
@@ -1062,9 +1076,9 @@ struct CanonicalSQLRetainedOwnershipTests {
         #expect(retained.visibleRows.count == 1)
         #expect(meter.retainedIntermediateRows > 0)
         #expect(meter.retainedIntermediateBytes > 0)
-        let response = retained.promoteToPublicResponse()
+        let response = try retained.promoteToPublicResponse()
         #expect(response.rows.count == 1)
-        #expect(response.rows[0].fields["value"] == .int64(2))
+        #expect((try response.rows[0].primitiveFields(columns: response.columns))["value"] == .int64(2))
         #expect(meter.retainedIntermediateRows == 0)
         #expect(meter.retainedIntermediateBytes == 0)
     }
@@ -1078,22 +1092,13 @@ struct CanonicalSQLRetainedOwnershipTests {
             maximumIntermediateRows: 64,
             maximumIntermediateBytes: UInt64.max
         )
-        var valuesFootprint = try CanonicalRelationalFootprintMeter
-            .sourceRowFootprint(
-                fields: [:],
-                sourceName: nil,
-                annotations: [:],
-                version: nil,
-                workMeter: measurementMeter,
-                stage: .bindingCandidate
-            )
-        valuesFootprint = try valuesFootprint.adding(
-            CanonicalRelationalFootprintMeter.fieldEntryFootprint(
-                nameUTF8Count: fieldName.utf8.count,
-                value: fieldValue,
-                workMeter: measurementMeter,
-                stage: .bindingCandidate
-            )
+        let schemaFootprint = try CanonicalRelationalFootprintMeter.sourceLayoutFootprint(
+            fieldNames: [fieldName], sourceName: nil,
+            workMeter: measurementMeter, stage: .bindingCandidate
+        )
+        let valuesFootprint = try CanonicalRelationalFootprintMeter.positionalRowFootprint(
+            values: [.primitive(fieldValue)], annotations: [:], version: nil,
+            workMeter: measurementMeter, stage: .bindingCandidate
         )
         let layout = try DatabaseRetainedArrayLayout.forElement(
             CanonicalSourceRow.self
@@ -1103,7 +1108,7 @@ struct CanonicalSQLRetainedOwnershipTests {
             + initialGrowth.additionalByteCount
         let retainedBeforeAppendBytes = DatabaseReadSession
             .scopeCursorRegistryContainerByteCount
-            + initialBuilderBytes
+            + initialBuilderBytes + schemaFootprint.bytes
         let appendRequestBytes = valuesFootprint.bytes
             + layout.appendAdmissionByteCount
         let maximumBytes = retainedBeforeAppendBytes + appendRequestBytes - 1
@@ -1184,10 +1189,10 @@ struct CanonicalSQLRetainedOwnershipTests {
         #expect(meter.retainedIntermediateRows > 0)
         #expect(meter.retainedIntermediateBytes > 0)
 
-        let response = retained.promoteToPublicResponse()
+        let response = try retained.promoteToPublicResponse()
         #expect(response.rows.count == 1)
-        #expect(response.rows[0].fields["first_value"] == .string("first"))
-        #expect(response.rows[0].fields["second_value"] == .string("second"))
+        #expect((try response.rows[0].primitiveFields(columns: response.columns))["first_value"] == .string("first"))
+        #expect((try response.rows[0].primitiveFields(columns: response.columns))["second_value"] == .string("second"))
         #expect(meter.retainedIntermediateRows == 0)
         #expect(meter.retainedIntermediateBytes == 0)
     }
@@ -1256,8 +1261,8 @@ struct CanonicalSQLRetainedOwnershipTests {
             "facet": .string("books"),
         ]
         let metadataFootprint = try CanonicalRelationalFootprintMeter.footprint(
-            of: DatabaseEngine.QueryRow(
-                fields: [:],
+            of: try DatabaseEngine.QueryRow(
+                values: [], columns: [],
                 annotations: expectedMetadata
             ),
             workMeter: meter,
@@ -1299,7 +1304,7 @@ struct CanonicalSQLRetainedOwnershipTests {
             consume retained,
             ownsProducingTransaction: false
         )
-        let response = ready.promoteToPublicResponse()
+        let response = try ready.promoteToPublicResponse()
         #expect(response.metadata == expectedMetadata)
         #expect(meter.retainedIntermediateRows == 0)
         #expect(meter.retainedIntermediateBytes == 0)
@@ -1316,7 +1321,7 @@ struct CanonicalSQLRetainedOwnershipTests {
             maximumIntermediateBytes: UInt64.max
         )
         let metadataFootprint = try CanonicalRelationalFootprintMeter.footprint(
-            of: DatabaseEngine.QueryRow(fields: [:], annotations: metadata),
+            of: try DatabaseEngine.QueryRow(values: [], columns: [], annotations: metadata),
             workMeter: measurementMeter,
             stage: .indexScan
         )
@@ -1409,7 +1414,7 @@ struct CanonicalSQLRetainedOwnershipTests {
 
             var identifiers: [String] = []
             for row in leadingPage + trailingPage {
-                guard case .string(let identifier) = row.fields["id"] else {
+                guard case .primitive(.string(let identifier)) = row.values[0] else {
                     Issue.record("Staged row is missing its identifier")
                     continue
                 }
@@ -1558,7 +1563,7 @@ struct CanonicalSQLRetainedOwnershipTests {
 
     private func makeEmptyCanonicalRows(
         workMeter: DatabaseWorkMeter
-    ) throws -> DatabaseSharedRetainedArray<DatabaseEngine.QueryRow> {
+    ) throws -> DatabaseSharedRetainedQueryRows {
         let builder = try DatabaseRetainedArrayBuilder<DatabaseEngine.QueryRow>(
             workMeter: workMeter,
             stage: .projection,
@@ -1566,7 +1571,9 @@ struct CanonicalSQLRetainedOwnershipTests {
                 DatabaseEngine.QueryRow.self
             )
         )
-        return try builder.finish().moveToSharedOwnership(at: .projection)
+        return DatabaseSharedRetainedQueryRows(
+            storage: try builder.finish().moveToSharedOwnership(at: .projection), columns: []
+        )
     }
 }
 

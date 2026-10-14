@@ -8,8 +8,7 @@ package struct DatabaseSharedRetainedArray<Element: Sendable>:
     RandomAccessCollection {
     fileprivate final class Storage: Sendable {
         let elements: [Element]
-        let elementReservation: DatabaseIntermediateReservation
-        let ownerReservation: DatabaseIntermediateReservation
+        let payloadLease: DatabaseQueryPayloadLease
 
         init(
             elements: consuming [Element],
@@ -17,8 +16,7 @@ package struct DatabaseSharedRetainedArray<Element: Sendable>:
             ownerReservation: DatabaseIntermediateReservation
         ) {
             self.elements = elements
-            self.elementReservation = elementReservation
-            self.ownerReservation = ownerReservation
+            self.payloadLease = DatabaseQueryPayloadLease(retaining: elementReservation, and: ownerReservation)
         }
     }
 
@@ -56,8 +54,11 @@ package struct DatabaseSharedRetainedArray<Element: Sendable>:
     package var count: Int { storage.elements.count }
     package var isEmpty: Bool { storage.elements.isEmpty }
     package var workMeter: DatabaseWorkMeter {
-        storage.elementReservation.workMeter
+        storage.payloadLease.workMeter
     }
+    /// Retains both aggregate claims without exposing release authority.
+    package var payloadLease: DatabaseQueryPayloadLease { storage.payloadLease }
+
     package var startIndex: Int { storage.elements.startIndex }
     package var endIndex: Int { storage.elements.endIndex }
 

@@ -4,16 +4,15 @@ import DatabaseTypes
 
 /// Produces the canonical row fingerprint directly from a variable binding.
 ///
-/// A binding uses the same canonical fingerprint contract as an unannotated
-/// query row. Constructing the row preserves the dictionary's copy-on-write
-/// storage and does not materialize its fields.
+/// RDF bindings preserve their named-value fingerprint domain independently
+/// of the positional query row fingerprint contract.
 enum CanonicalBindingFingerprint {
     static func compute(
         _ fields: [String: FieldValue],
         workMeter: DatabaseWorkMeter
     ) throws -> ByteString {
         try CanonicalRowFingerprint.compute(
-            DatabaseEngine.QueryRow(fields: fields),
+            fields: fields,
             workMeter: workMeter
         )
     }

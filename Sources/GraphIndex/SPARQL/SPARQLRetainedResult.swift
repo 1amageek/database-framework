@@ -89,37 +89,29 @@ package struct SPARQLRetainedResult: ~Copyable, Sendable {
         guard self.workMeter === workMeter else {
             throw SPARQLRetainedResultError.workMeterMismatch
         }
+        let columns = try projectedVariables.enumerated().map { index, variable in
+            try QueryColumn(number: UInt32(index + 1), name: outputName(variable),
+                            type: .primitive(.rdfTerm), isNullable: true)
+        }
         var rows = try DatabaseRetainedQueryRowsBuilder(
-            workMeter: workMeter,
-            stage: .resultMaterialization,
-            expectedCount: count
+            columns: columns, workMeter: workMeter,
+            stage: .resultMaterialization, expectedCount: count
         )
         for index in 0..<count {
             try bindings.withElement(at: index) { binding in
-                var footprint = CanonicalRelationalFootprintMeter
-                    .queryRowBaseFootprint()
-                var boundFieldCount = 0
-                for variable in projectedVariables {
-                    guard let value = binding[variable] else { continue }
-                    boundFieldCount += 1
-                    footprint = try footprint.adding(
-                        try CanonicalRelationalFootprintMeter
-                            .fieldEntryFootprint(
-                                nameUTF8Count: outputNameUTF8Count(variable),
-                                value: value,
-                                workMeter: workMeter,
-                                stage: .resultMaterialization
-                            )
-                    )
-                }
+                let footprint = try CanonicalRelationalFootprintMeter.positionalValueArrayFootprint(
+                    count: projectedVariables.count,
+                    valueAt: { .primitive(binding[projectedVariables[$0]] ?? .null) },
+                    annotations: [:], version: nil,
+                    workMeter: workMeter, stage: .resultMaterialization
+                )
                 try rows.append(footprint: footprint) {
-                    var fields: [String: FieldValue] = [:]
-                    fields.reserveCapacity(boundFieldCount)
+                    var values: [QueryValue] = []
+                    values.reserveCapacity(projectedVariables.count)
                     for variable in projectedVariables {
-                        guard let value = binding[variable] else { continue }
-                        fields[outputName(variable)] = value
+                        values.append(.primitive(binding[variable] ?? .null))
                     }
-                    return QueryRow(fields: fields)
+                    return try QueryRow(values: values, columns: columns)
                 }
             }
         }
@@ -139,13 +131,6 @@ package struct SPARQLRetainedResult: ~Copyable, Sendable {
             limitReason: limitReason,
             statistics: statistics
         )
-    }
-
-    private func outputNameUTF8Count(_ variable: String) -> Int {
-        if variable.hasPrefix("?") || variable.hasPrefix("$") {
-            return variable.utf8.count - 1
-        }
-        return variable.utf8.count
     }
 
     private func outputName(_ variable: String) -> String {

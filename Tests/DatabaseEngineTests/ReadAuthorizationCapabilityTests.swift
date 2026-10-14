@@ -289,6 +289,13 @@ private struct ReadIndexAuthorizationProbe: SecurityPolicy {
 private struct ReadCapabilityProbeGraphTableExecutor:
     GraphTableSourceExecutor
 {
+    func columns(graphTableSource: GraphTableSource, schema: Schema) throws -> [QueryColumn] {
+        try ["source", "target", "edgeLabel", "source.id", "target.id"].enumerated().map { index, name in
+            try QueryColumn(number: UInt32(index + 1), name: name,
+                            type: .primitive(.string), isNullable: false)
+        }
+    }
+
     func executeInTransaction(
         session: DatabaseReadSession,
         graphTableSource: GraphTableSource,
@@ -389,6 +396,7 @@ private struct ForeignMeterSPARQLExecutor: SPARQLSourceExecutor {
         partitions: FieldObject
     ) async throws -> DatabaseRetainedQueryRows {
         let rows = try DatabaseRetainedQueryRowsBuilder(
+            columns: [],
             workMeter: workMeter,
             stage: .resultMaterialization
         )
@@ -1546,7 +1554,8 @@ struct ReadAuthorizationCapabilityTests {
         )
 
         #expect(response.rows.count == 1)
-        #expect(response.rows[0].fields == ["title": .string("Visible")])
+        #expect(response.columns.map(\.name) == ["title"])
+        #expect(response.rows[0].values == [.primitive(.string("Visible"))])
     }
 
     @Test("Batch materialization retains one schema generation")

@@ -90,14 +90,20 @@ struct PersistedFieldAccessTests {
             embedding: [1, 0.5, 0]
         )
 
-        let row = try QueryRowCodec.encode(entity)
+        let columns = try ValueAccessEntity.fieldSchemas.enumerated().map { index, field in
+            try QueryColumn(number: UInt32(index + 1), name: field.name,
+                            type: field.queryType ?? .primitive(field.type, isArray: field.isArray),
+                            isNullable: field.isOptional)
+        }
+        let row = try QueryRowCodec.encode(entity, columns: columns)
         let decoded = try QueryRowCodec.decode(
             row,
+            columns: columns,
             as: ValueAccessEntity.self
         )
 
         #expect(
-            row.fields["embedding"]
+            try row.primitiveFields(columns: columns)["embedding"]
                 == .array([.float32(1), .float32(0.5), .float32(0)])
         )
         #expect(decoded.id == entity.id)

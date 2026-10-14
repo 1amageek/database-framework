@@ -101,18 +101,22 @@ struct SPARQLRetainedResultTests {
                 )
             }
             let rows = try result.retainedQueryRows(workMeter: meter)
-            rows.withElement(at: 0) { row in
-                #expect(row.fields.count == 1)
-                #expect(row.fields["value"] == values.withSpan { $0[0] })
-                #expect(row.fields["?value"] == nil)
+            let columns = rows.columns
+            try rows.withElement(at: 0) { row in
+                let fields = try row.primitiveFields(columns: columns)
+                #expect(fields.count == 2)
+                #expect(fields["value"] == values.withSpan { $0[0] })
+                #expect(fields["missing"] == .null)
+                #expect(fields["?value"] == nil)
             }
 
             await Task.yield()
 
             #expect(result.count == 1)
             #expect(values.withSpan { $0.count } == 1)
-            rows.withElement(at: 0) { row in
-                #expect(row.fields["value"] != nil)
+            try rows.withElement(at: 0) { row in
+                let fields = try row.primitiveFields(columns: columns)
+                #expect(fields["value"] != nil)
             }
             withExtendedLifetime(values) {
                 withExtendedLifetime(rows) {
@@ -172,7 +176,7 @@ struct SPARQLRetainedResultTests {
         )
         #expect(firstPage.rows.count == 1)
         #expect(
-            firstPage.rows[0].fields["value"]
+            try firstPage.rows[0].primitiveFields(columns: firstPage.columns)["value"]
                 == .rdfTerm(
                     .literal(
                         RDFLiteral(
@@ -182,7 +186,7 @@ struct SPARQLRetainedResultTests {
                     )
                 )
         )
-        #expect(firstPage.rows[0].fields["missing"] == nil)
+        #expect(try firstPage.rows[0].primitiveFields(columns: firstPage.columns)["missing"] == .null)
         let continuation = try #require(firstPage.continuation)
         let secondPage = try await context.query(
             pagedQuery,
@@ -194,7 +198,7 @@ struct SPARQLRetainedResultTests {
         )
         #expect(secondPage.rows.count == 1)
         #expect(
-            secondPage.rows[0].fields["value"]
+            try secondPage.rows[0].primitiveFields(columns: secondPage.columns)["value"]
                 == .rdfTerm(
                     .literal(
                         RDFLiteral(
@@ -204,7 +208,7 @@ struct SPARQLRetainedResultTests {
                     )
                 )
         )
-        #expect(secondPage.rows[0].fields["missing"] == nil)
+        #expect(try secondPage.rows[0].primitiveFields(columns: secondPage.columns)["missing"] == .null)
         #expect(secondPage.continuation == nil)
 
         let capacityQuery = SelectQuery(
@@ -292,10 +296,14 @@ struct SPARQLRetainedResultTests {
             let rows = try result.retainedQueryRows(workMeter: exactMeter)
             exactRowPeak = exactMeter.peakIntermediateBytes
             #expect(exactRowPeak > sourcePeak)
-            rows.withElement(at: 0) { row in
-                #expect(row.fields.count == 1)
-                #expect(row.fields["value"] != nil)
-                #expect(row.fields["missing"] == nil)
+            let columns = rows.columns
+            #expect(columns.map(\.name) == ["value", "missing"])
+            #expect(columns.allSatisfy { $0.type == .primitive(.rdfTerm) && $0.isNullable })
+            try rows.withElement(at: 0) { row in
+                let fields = try row.primitiveFields(columns: columns)
+                #expect(fields.count == 2)
+                #expect(fields["value"] != nil)
+                #expect(fields["missing"] == .null)
             }
             withExtendedLifetime(rows) {
                 #expect(exactMeter.retainedIntermediateRows == 2)
@@ -305,7 +313,7 @@ struct SPARQLRetainedResultTests {
         }
         #expect(exactMeter.retainedIntermediateRows == 0)
         #expect(exactMeter.retainedIntermediateBytes == 0)
-        #expect(exactRowPeak == boundOnlyPeak)
+        #expect(exactRowPeak > boundOnlyPeak)
         guard exactRowPeak > 0 else {
             Issue.record("Retained query-row peak must be nonzero")
             return

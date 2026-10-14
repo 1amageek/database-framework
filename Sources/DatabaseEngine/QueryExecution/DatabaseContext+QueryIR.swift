@@ -154,7 +154,7 @@ extension DatabaseContext {
             as: type,
             options: options
         )
-        return try response.rows.map { try QueryRowCodec.decode($0, as: type) }
+        return try response.rows.map { try QueryRowCodec.decode($0, columns: response.columns, as: type) }
     }
 
     private func validateTypedSelectQuery<T: Persistable>(

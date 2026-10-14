@@ -162,7 +162,7 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
         )
 
         return try response.rows.map { row in
-            try QueryRowCodec.decode(row, as: T.self)
+            try QueryRowCodec.decode(row, columns: response.columns, as: T.self)
         }
     }
 

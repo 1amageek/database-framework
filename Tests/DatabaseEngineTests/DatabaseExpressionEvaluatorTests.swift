@@ -220,4 +220,32 @@ struct DatabaseExpressionEvaluatorTests {
         #expect(leftOwner.borrowCount == 1)
         #expect(rightOwner.borrowCount == 1)
     }
+    @Test("Primitive query wrappers evaluate while rich operations fail explicitly")
+    func queryLiteralEvaluationPreservesPrimitiveBoundary() throws {
+        let evaluator = DatabaseExpressionEvaluator(fields: [:])
+        #expect(
+            try evaluator.evaluate(.add(
+                .literal(.queryValue(.primitive(.int64(40)))),
+                .literal(.queryValue(.primitive(.int64(2))))
+            )) == .int64(42)
+        )
+        let literal = Literal.queryValue(.numeric(try QueryNumericValue(
+            value: ExactDecimal(coefficient: 123, scale: 2), displayScale: 3
+        )))
+        #expect(
+            throws: DatabaseExpressionEvaluationError.unsupportedExpression(
+                "Rich query value requires query-scoped evaluation"
+            )
+        ) {
+            _ = try evaluator.evaluate(.add(.literal(literal), .literal(.int(1))))
+        }
+        #expect(
+            throws: DatabaseExpressionEvaluationError.unsupportedExpression(
+                "Rich query value requires query-scoped evaluation"
+            )
+        ) {
+            _ = try evaluator.evaluate(.cast(.literal(literal), targetType: .text))
+        }
+    }
+
 }

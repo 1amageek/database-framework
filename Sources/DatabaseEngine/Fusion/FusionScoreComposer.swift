@@ -110,7 +110,7 @@ enum FusionScoreComposer {
                     let scoreValue = FieldValue.float64(entry.score)
                     let footprint = try CanonicalRelationalFootprintMeter
                         .footprint(
-                            entry.candidate.rowFootprint,
+                            try candidates.indexRowFootprint(for: entry.candidate.row, workMeter: workMeter),
                             appendingAnnotationNamed:
                                 FusionExecutor.scoreAnnotation,
                             value: scoreValue,
@@ -120,7 +120,7 @@ enum FusionScoreComposer {
                         var annotations = entry.candidate.row.annotations
                         annotations[FusionExecutor.scoreAnnotation] = scoreValue
                         return IndexReadRow(
-                            fields: entry.candidate.row.fields,
+                            fields: try candidates.indexFields(for: entry.candidate.row),
                             annotations: annotations,
                             version: entry.candidate.row.version
                         )
@@ -154,7 +154,7 @@ enum FusionScoreComposer {
                 ScoredEntry(candidate: candidate, score: score)
             )
         }
-        return try topK.finish(workMeter: workMeter)
+        return try topK.finish(candidates: candidates, workMeter: workMeter)
     }
 
     private static func accumulateScores(
@@ -305,6 +305,7 @@ enum FusionScoreComposer {
         }
 
         mutating func finish(
+            candidates: FusionCandidateDomain,
             workMeter: DatabaseWorkMeter
         ) throws -> IndexReadResult {
             if entries.count > 1 {
@@ -329,7 +330,7 @@ enum FusionScoreComposer {
                     let scoreValue = FieldValue.float64(entry.score)
                     let footprint = try CanonicalRelationalFootprintMeter
                         .footprint(
-                            entry.candidate.rowFootprint,
+                            try candidates.indexRowFootprint(for: entry.candidate.row, workMeter: workMeter),
                             appendingAnnotationNamed:
                                 FusionExecutor.scoreAnnotation,
                             value: scoreValue,
@@ -339,7 +340,7 @@ enum FusionScoreComposer {
                         var annotations = entry.candidate.row.annotations
                         annotations[FusionExecutor.scoreAnnotation] = scoreValue
                         return IndexReadRow(
-                            fields: entry.candidate.row.fields,
+                            fields: try candidates.indexFields(for: entry.candidate.row),
                             annotations: annotations,
                             version: entry.candidate.row.version
                         )

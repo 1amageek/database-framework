@@ -165,6 +165,7 @@ struct EntityIndexSliceResult: Sendable {
 
 struct EntityTableRows: Sendable {
     let rows: DatabaseSharedRetainedArray<CanonicalSourceRow>
+    let sourceLayout: CanonicalSourceLayout
     let residualFilter: DatabaseKit.Expression?
     let residualOrderBy: [SortKey]?
     let limitPushed: Bool
@@ -255,6 +256,23 @@ public struct EntityRuntimeDefinition: Sendable {
             authorizationRequirement,
             options,
             transaction in
+            guard let admittedFieldNames = transaction.authorization?.admittedFieldNames(forEntityName: entity.name) else {
+                throw DatabaseReadSessionError.authorizationMismatch
+            }
+            // Storage predicates and sort descriptors compare persisted primitives;
+            // declared rich expressions must reach the canonical evaluator first.
+            if try Self.requiresCanonicalRichEvaluation(selectQuery, entity: entity) {
+                guard selectQuery.accessPath == nil else {
+                    throw CanonicalReadError.unsupportedAccessPath(
+                        "Explicit index access cannot evaluate declared rich expressions"
+                    )
+                }
+                return try await Self.fetchSchemaDrivenRows(
+                    entity: entity, context: context, sourceName: sourceName,
+                    selectQuery: selectQuery, authorizationRequirement: authorizationRequirement,
+                    options: options, transaction: transaction
+                )
+            }
             let plan = try SelectQueryPlanner.plan(
                 selectQuery,
                 as: Model.self,
@@ -269,6 +287,8 @@ public struct EntityRuntimeDefinition: Sendable {
             )
             let rows = try Self.canonicalTableRows(
                 from: models,
+                entity: entity,
+                admittedFieldNames: admittedFieldNames,
                 sourceName: sourceName,
                 workMeter: options.workMeter
             )
@@ -300,7 +320,8 @@ public struct EntityRuntimeDefinition: Sendable {
                 continuationPosition = nil
             }
             return EntityTableRows(
-                rows: rows,
+                rows: rows.rows,
+                sourceLayout: rows.layout,
                 residualFilter: plan.residualFilter,
                 residualOrderBy: plan.residualOrderBy,
                 limitPushed: plan.limitPushed,
@@ -887,6 +908,35 @@ public struct EntityRuntimeDefinition: Sendable {
         }
     }
 
+    private static func requiresCanonicalRichEvaluation(
+        _ query: SelectQuery,
+        entity: Schema.Entity
+    ) throws -> Bool {
+        // Identity projections preserve rich values without primitive evaluation.
+        let computedItems: [ProjectionItem]
+        switch query.projection {
+        case .all, .allFrom:
+            computedItems = []
+        case .items(let items), .distinctItems(let items):
+            computedItems = items.filter {
+                if case .column = $0.expression { return false }
+                return true
+            }
+        }
+        let evaluationQuery = query.replacing(projection: .items(computedItems))
+        let usesRichExpression = evaluationQuery.referencedColumns.contains {
+            entity.fieldMapByName[$0.column]?.queryType != nil
+        }
+        if case .index(let scan) = query.accessPath,
+           let index = entity.indexDescriptors.first(where: { $0.name == scan.indexName }),
+           index.keyFieldSchemas.contains(where: { $0.queryType != nil }) {
+            throw CanonicalReadError.unsupportedAccessPath(
+                "Explicit index access on declared rich keys is unsupported"
+            )
+        }
+        return usesRichExpression
+    }
+
     private static func fetchSchemaDrivenRows(
         entity: Schema.Entity,
         context: DatabaseContext,
@@ -901,6 +951,9 @@ public struct EntityRuntimeDefinition: Sendable {
             throw CanonicalReadError.unsupportedSource(
                 "Schema-driven runtime expected table '\(entity.name)'"
             )
+        }
+        guard let admittedFieldNames = transaction.authorization?.admittedFieldNames(forEntityName: entity.name) else {
+            throw DatabaseReadSessionError.authorizationMismatch
         }
         let stablePagePlan = try schemaDrivenStablePagePlan(
             selectQuery: selectQuery,
@@ -927,6 +980,8 @@ public struct EntityRuntimeDefinition: Sendable {
         )
         let rows = try canonicalTableRows(
             from: models,
+            entity: entity,
+            admittedFieldNames: admittedFieldNames,
             sourceName: sourceName,
             workMeter: options.workMeter
         )
@@ -955,7 +1010,8 @@ public struct EntityRuntimeDefinition: Sendable {
             continuationPosition = nil
         }
         return EntityTableRows(
-            rows: rows,
+            rows: rows.rows,
+            sourceLayout: rows.layout,
             residualFilter: stablePageWindow == nil ? selectQuery.filter : nil,
             residualOrderBy: stablePageWindow == nil ? selectQuery.orderBy : nil,
             limitPushed: false,
@@ -969,12 +1025,31 @@ public struct EntityRuntimeDefinition: Sendable {
 
     private static func canonicalTableRows(
         from models: DatabaseRetainedPersistedModels,
+        entity: Schema.Entity,
+        admittedFieldNames: Set<String>,
         sourceName: String,
         workMeter: DatabaseWorkMeter
-    ) throws -> DatabaseSharedRetainedArray<CanonicalSourceRow> {
+    ) throws -> (rows: DatabaseSharedRetainedArray<CanonicalSourceRow>, layout: CanonicalSourceLayout) {
         guard models.workMeter === workMeter else {
             throw DatabaseIntermediateReservationError.workMeterMismatch
         }
+        guard admittedFieldNames.allSatisfy({ entity.fieldMapByName[$0] != nil }) else {
+            throw DatabaseReadSessionError.authorizationMismatch
+        }
+        let fields = entity.fields.lazy.filter { admittedFieldNames.contains($0.name) }
+        let schemaFootprint = try CanonicalRelationalFootprintMeter.sourceLayoutFootprint(
+            fieldNames: fields.map(\.name), sourceName: sourceName,
+            workMeter: workMeter, stage: .resultMaterialization
+        )
+        let schemaReservation = try workMeter.reserveIntermediate(
+            bytes: schemaFootprint.bytes, at: .resultMaterialization
+        )
+        let layout = CanonicalSourceLayout(
+            slots: fields.map { .init(name: $0.name, scope: sourceName) },
+            scopes: [sourceName], reservation: schemaReservation,
+            types: fields.map { $0.queryType ?? .primitive($0.type, isArray: $0.isArray) },
+            nullability: fields.map(\.isOptional)
+        )
         var retainedRows = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
             workMeter: workMeter,
             stage: .resultMaterialization,
@@ -992,30 +1067,112 @@ public struct EntityRuntimeDefinition: Sendable {
                     )
                 }
                 try entry.withModel { model in
-                    try retainedRows.append(
-                        footprint: try CanonicalRelationalFootprintMeter
-                            .sourceRowFootprint(
-                                of: model,
-                                sourceName: sourceName,
-                                workMeter: workMeter,
-                                stage: .resultMaterialization
-                            ),
-                        make: {
-                            let row = try QueryRowCodec.encode(model)
-                            return CanonicalSourceRow.fromBaseFields(
-                                row.fields,
-                                sourceName: sourceName,
-                                annotations: row.annotations,
-                                version: row.version
-                            )
-                        }
+                    let prospective = try CanonicalRelationalFootprintMeter.sourceRowFootprint(
+                        of: model, entity: entity, layout: layout,
+                        workMeter: workMeter, stage: .resultMaterialization
                     )
+                    try retainedRows.append(footprint: prospective) {
+                        let values = try Self.canonicalSourceValues(
+                            model, entity: entity, layout: layout,
+                            workMeter: workMeter, stage: .resultMaterialization
+                        )
+                        let version = try PersistableVersionTokenCodec.token(for: model.fields)
+                        var payloadLeases = [try entry.canonicalPayloadLease(workMeter: workMeter)]
+                        let actual = try CanonicalRelationalFootprintMeter.decodedRowStructureFootprint(
+                            values: values, annotations: [:], version: version, payloadLeaseCount: 2,
+                            workMeter: workMeter, stage: .resultMaterialization
+                        )
+                        if actual.bytes > prospective.bytes {
+                            let delta = try workMeter.reserveIntermediate(
+                                bytes: actual.bytes - prospective.bytes, at: .resultMaterialization
+                            )
+                            payloadLeases.append(DatabaseQueryPayloadLease(retaining: delta))
+                        }
+                        return CanonicalSourceRow(values: values, layout: layout,
+                                                  version: version, payloadLeases: payloadLeases)
+                    }
                 }
             }
         }
-        return try retainedRows.finish().moveToSharedOwnership(
-            at: .resultMaterialization
-        )
+        return (try retainedRows.finish().moveToSharedOwnership(at: .resultMaterialization), layout)
+    }
+
+    /// The source schema has already been admitted; values are created only
+    /// inside the destination row's append admission.
+    static func canonicalSourceValues(
+        _ model: borrowing PersistedModel,
+        entity: Schema.Entity,
+        layout: CanonicalSourceLayout,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> [QueryValue] {
+        var values: [QueryValue] = []
+        values.reserveCapacity(layout.slots.count)
+        for (index, slot) in layout.slots.enumerated() {
+            try workMeter.checkpoint(at: stage)
+            // Union slots absent from this member have declared nullable cells.
+            guard let schema = entity.fieldMapByName[slot.name] else {
+                guard layout.nullability[index] else { throw QueryValueError.incompatibleType }
+                values.append(.primitive(.null))
+                continue
+            }
+            let payload = try canonicalSourceField(model, schema: schema)
+            let value: QueryValue
+            if let descriptor = schema.queryType {
+                value = try QueryFieldStorageAdapter.decode(
+                    payload, type: descriptor,
+                    limits: QueryValueLimits(
+                        maximumRetainedBytes: workMeter.budget.maximumIntermediateBytes,
+                        maximumTotalNodes: workMeter.budget.maximumWorkUnits,
+                        maximumNestingDepth: workMeter.budget.maximumWorkUnits,
+                        maximumCollectionElements: workMeter.budget.maximumWorkUnits
+                    )
+                )
+            } else {
+                value = .primitive(payload)
+            }
+            guard let type = layout.types[index] else { throw QueryValueError.incompatibleType }
+            values.append(try CanonicalQueryTypeBinder.normalize(value, to: type))
+        }
+        return values
+    }
+
+    static func validateCanonicalSourceModel(
+        _ model: borrowing PersistedModel,
+        entity: Schema.Entity
+    ) throws {
+        guard model.entity == entity.name else {
+            throw SchemaDrivenEntityRuntimeError.entityMismatch(expected: entity.name, actual: model.entity)
+        }
+        for field in model.fields {
+            guard let schema = entity.fieldMapByName[field.name] else {
+                throw SchemaDrivenEntityRuntimeError.unknownField(entity: entity.name, field: field.name)
+            }
+            guard let number = UInt32(exactly: schema.fieldNumber), number > 0 else {
+                throw SchemaDrivenEntityRuntimeError.invalidFieldNumber(entity: entity.name, field: field.name, number: schema.fieldNumber)
+            }
+            guard number == field.number else {
+                throw SchemaDrivenEntityRuntimeError.fieldIdentityMismatch(
+                    entity: entity.name, field: field.name, expectedNumber: number, actualNumber: field.number
+                )
+            }
+        }
+    }
+
+    static func canonicalSourceField(
+        _ model: borrowing PersistedModel,
+        schema: FieldSchema
+    ) throws -> FieldValue {
+        guard let value = model.value(forFieldNamed: schema.name) else {
+            guard schema.isOptional else {
+                throw SchemaDrivenEntityRuntimeError.missingRequiredField(entity: model.entity, field: schema.name)
+            }
+            return .null
+        }
+        guard schema.isOptional || value != .null else {
+            throw SchemaDrivenEntityRuntimeError.nullRequiredField(entity: model.entity, field: schema.name)
+        }
+        return value
     }
 
     private struct SchemaDrivenStablePageWindow {

@@ -140,7 +140,8 @@ struct SPARQLRuntimeDependencyInjectionTests {
                     options: transactionalExecution,
                     partitions: FieldObject()
                 )
-                return QueryResponse(rows: rows.promoteToOutput())
+                let columns = rows.columns
+                return try QueryResponse(columns: columns, rows: rows.promoteToOutput())
             }
         }
 
@@ -149,15 +150,15 @@ struct SPARQLRuntimeDependencyInjectionTests {
             uncommittedSubject
         )
         #expect(ordinary.rows.count == 1)
-        #expect(ordinary.rows[0].fields["subject"] == expectedSubject)
-        #expect(ordinary.rows[0].fields["identity"] == expectedSubject)
+        #expect(try ordinary.rows[0].primitiveFields(columns: ordinary.columns)["subject"] == expectedSubject)
+        #expect(try ordinary.rows[0].primitiveFields(columns: ordinary.columns)["identity"] == expectedSubject)
         #expect(transactional.rows.count == 2)
         #expect(
-            Set(transactional.rows.compactMap { $0.fields["subject"] })
+            Set(try transactional.rows.compactMap { try $0.primitiveFields(columns: transactional.columns)["subject"] })
                 == Set([expectedSubject, expectedUncommittedSubject])
         )
         #expect(
-            Set(transactional.rows.compactMap { $0.fields["identity"] })
+            Set(try transactional.rows.compactMap { try $0.primitiveFields(columns: transactional.columns)["identity"] })
                 == Set([expectedSubject, expectedUncommittedSubject])
         )
     }

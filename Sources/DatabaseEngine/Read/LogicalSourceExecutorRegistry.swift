@@ -3,6 +3,9 @@ import DatabaseKit
 import StorageKit
 
 public protocol GraphTableSourceExecutor: Sendable {
+    /// Declares raw graph binding columns without reading an index or a row.
+    func columns(graphTableSource: GraphTableSource, schema: Schema) throws -> [QueryColumn]
+
     func executeInTransaction(
         session: DatabaseReadSession,
         graphTableSource: GraphTableSource,

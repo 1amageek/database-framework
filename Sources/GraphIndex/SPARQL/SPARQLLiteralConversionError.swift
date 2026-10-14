@@ -1,4 +1,7 @@
+import DatabaseKit
+
 public enum SPARQLLiteralConversionError: Error, Sendable, Equatable {
+    case queryLiteralConversion(QueryLiteralConversionError)
     case nullTermUnsupported
     case arrayTermUnsupported
     case invalidLexicalForm(value: String, datatype: String)

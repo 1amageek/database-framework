@@ -76,3 +76,45 @@ regressions. Non-SQL constructs must fail explicitly. Database tests compare
 builder execution and emitted SQL execution, including error behavior and
 empty typed results. Semantic model changes require Parser, DatabaseKit
 validator/codecs, serializer callers, and QueryExecution revalidation.
+
+### S01 rich-literal generation boundary
+
+Actual current SQL generation is SQLQueryBuilder.toSQL -> expression.toSQL ->
+DatabaseKit Query/SQL/MatchPattern.swift Literal.toSQL. Literal.description
+is a separate nonthrowing CustomStringConvertible diagnostic path; it is not
+an executable SQL representation. S01 does not require a rich value to pass
+through SQL text to be projected: semantic literals and bound parameters use
+the direct query execution path.
+
+Before S02 consolidation, existing generation entry points become throwing
+and preflight the complete emitted semantic tree. Rich Literal.queryValue
+syntax unsupported by the current serializer throws Kit's
+QueryLiteralConversionError.unsupportedSQLLiteral before any SQL text is
+constructed. The five rich alternatives are rejected recursively, including
+inside arrays/expressions. Literal.queryValue(.primitive(value)) explicitly
+delegates to the existing lossless FieldValue-to-Literal conversion and
+primitive SQL emission; unsupported primitive conversion retains its existing
+typed failure. Rich values never use metadata-dropping delegation. Recursive
+toSQL callers propagate that typed failure; no
+placeholder, description interpolation or conversion to a primitive
+surrogate can produce successful SQL. Kit remains independent of Framework;
+its existing generation code is the temporary physical owner, while this
+component is the target semantic owner. Full ownership migration and grammar
+expansion remain S02.
+
+S01-C04–C08 syntax-boundary tests require rich semantic literal/parameter
+execution success and SQL text generation failure for unsupported rich
+syntax. Existing primitive SQL emission remains unchanged. Diagnostic
+Literal.description can describe kind/metadata but is never passed into the
+parser or used as a persistence/wire encoding. Required callers migrate to
+throws in the same source change; aliases and parallel unchecked generation
+APIs are not retained.
+
+### S01 SPARQL generation failure propagation
+
+SPARQLQueryBuilder.toSPARQL propagates QueryLiteralConversionError from the
+Kit graph serializer. Primitive RDF generation preserves its existing text;
+unsupported wrapped rich values fail explicitly rather than reaching a
+nonthrowing builder or diagnostic Literal.description. Direct generator
+callers handle the typed failure. PropertyPath-only generation remains pure
+and nonthrowing because it contains no query literal.

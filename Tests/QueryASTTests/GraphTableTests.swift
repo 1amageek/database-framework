@@ -184,7 +184,7 @@ struct GraphTableSourceTests {
             ]
         )
 
-        let sql = source.toSQL()
+        let sql = try source.toSQL()
         #expect(sql.contains("GRAPH_TABLE(social"))
         #expect(sql.contains("MATCH"))
         #expect(sql.contains("COLUMNS"))

@@ -147,10 +147,14 @@ struct FusionExecution: Sendable {
                 snapshot: snapshot,
                 authorization: authorization
             )
+        guard let admittedFieldNames = authorization.admittedFieldNames(forEntityName: plan.entity.name) else {
+            throw DatabaseReadSessionError.authorizationMismatch
+        }
         return try FusionCandidateDomain.make(
             models: models,
             primaryKeys: primaryKeys,
             entity: plan.entity,
+            admittedFieldNames: admittedFieldNames,
             workMeter: options.workMeter
         )
     }

@@ -52,7 +52,7 @@ extension DatabaseContext {
                 }
                 results.append(
                     ScoredResult(
-                        item: try QueryRowCodec.decode(row, as: Item.self),
+                        item: try QueryRowCodec.decode(row, columns: visibleRows.columns, as: Item.self),
                         score: score
                     )
                 )

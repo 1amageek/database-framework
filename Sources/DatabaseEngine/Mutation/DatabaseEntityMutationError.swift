@@ -1,4 +1,5 @@
 import DatabaseTypes
+import DatabaseKit
 
 @_spi(DatabaseExecution)
 public enum DatabaseEntityMutationError:
@@ -21,6 +22,7 @@ public enum DatabaseEntityMutationError:
     case entityAlreadyExists(EntityReference)
     case entityNotFound(EntityReference)
     case entityVersionMismatch(EntityReference)
+    case invalidQueryValue(entity: String, cause: QueryValueError)
     case fieldNotRepresentable(entity: String, field: String)
     case fieldValueNotRepresentable(entity: String, type: String, reason: String)
     case invalidCompiledSchema(entity: String, reason: String)
@@ -60,6 +62,8 @@ public enum DatabaseEntityMutationError:
             return "Entity '\(identity)' does not exist"
         case .entityVersionMismatch(let identity):
             return "Entity '\(identity)' changed after the supplied version was read"
+        case .invalidQueryValue(let entity, let cause):
+            return "Entity \(entity) contains an invalid query value: \(cause)"
         case .fieldNotRepresentable(let entity, let field):
             return "Entity '\(entity)' field '\(field)' cannot be represented by the canonical field model"
         case .fieldValueNotRepresentable(let entity, let type, let reason):

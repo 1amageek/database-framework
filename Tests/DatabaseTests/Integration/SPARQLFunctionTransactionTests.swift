@@ -273,7 +273,7 @@ struct SPARQLFunctionTransactionTests {
                     structuralLimits: .default
             )
             #expect(
-                workMeter.retainedIntermediateRows > sessionBaselineRows
+                workMeter.retainedIntermediateRows == sessionBaselineRows
             )
             #expect(
                 workMeter.retainedIntermediateBytes > sessionBaselineBytes
@@ -295,15 +295,20 @@ struct SPARQLFunctionTransactionTests {
                 )
             }
             #expect(
-                workMeter.retainedIntermediateRows > sessionBaselineRows
+                workMeter.retainedIntermediateRows == sessionBaselineRows
             )
             #expect(
                 workMeter.retainedIntermediateBytes > sessionBaselineBytes
             )
-            return try await prepared.execute(
+            let response = try await prepared.execute(
                 in: session,
                 execution: execution
             )
+            withExtendedLifetime(prepared) {
+                #expect(workMeter.retainedIntermediateRows == sessionBaselineRows)
+                #expect(workMeter.retainedIntermediateBytes > sessionBaselineBytes)
+            }
+            return response
         }
 
         #expect(response.rows.count == 1)
@@ -334,10 +339,28 @@ struct SPARQLFunctionTransactionTests {
         try context.insert(statement)
         try await context.save()
 
+        do {
+            _ = try await context.executeSQL(
+                """
+                SELECT * FROM SPARQLTransactionUser
+                WHERE id IN (
+                    SPARQL(
+                        SPARQLTransactionStatement,
+                        'SELECT ?s WHERE { ?s <urn:predicate:active> "true" }'
+                    )
+                )
+                """,
+                as: SPARQLTransactionUser.self
+            )
+            Issue.record("Expected an incompatible SQL string and RDF term comparison to fail")
+        } catch CanonicalReadError.expressionEvaluation(let error) {
+            #expect(error == .typeMismatch(operation: "common result type"))
+        }
+
         let users = try await context.executeSQL(
             """
             SELECT * FROM SPARQLTransactionUser
-            WHERE id IN (
+            WHERE resource IN (
                 SPARQL(
                     SPARQLTransactionStatement,
                     'SELECT ?s WHERE { ?s <urn:predicate:active> "true" }'
@@ -346,8 +369,8 @@ struct SPARQLFunctionTransactionTests {
             """,
             as: SPARQLTransactionUser.self
         )
-
-        #expect(users.isEmpty)
+        #expect(users.map(\.id) == [user.id])
+        #expect(users.first?.resource == .iri(userIRI))
     }
 
     private func makeScenario() async throws -> (

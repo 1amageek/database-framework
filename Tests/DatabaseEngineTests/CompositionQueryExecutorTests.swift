@@ -31,6 +31,13 @@ struct CompositionQueryExecutorTests {
         }
     }
 
+    private actor PublicationEventProbe {
+        private var count = 0
+
+        func receive() { count += 1 }
+        func receivedCount() -> Int { count }
+    }
+
     private actor CompositionRowProbe {
         private var values: [CompositionQueryRow] = []
 
@@ -108,6 +115,8 @@ struct CompositionQueryExecutorTests {
             return true
         }
 
+        func removeAll() { values.removeAll() }
+
         func result() -> (
             values: [CompositionQueryRow],
             rows: UInt64?,
@@ -147,9 +156,51 @@ struct CompositionQueryExecutorTests {
 
     private struct DistinctEntryLayoutProbe: Sendable {
         let fingerprint: ByteString
-        let identity: ByteString
         let ownedRow: DatabaseQueryScopedQueryRowOwner
         var contributors: [Base.ID]
+    }
+
+    @Test("Composition binds duplicate output columns before fetching empty members")
+    func emptyMembersRetainBoundColumns() async throws {
+        let fixture = try await makeFixture(readerCanReadSecondary: true)
+        defer { await fixture.container.shutdown() }
+        let source = fixture.container.session(
+            authorization: fixture.readerAuthorization
+        ).composition(fixture.compositionID)
+        let query = SelectQuery(
+            projection: .items([
+                ProjectionItem(.cast(.literal(.null), targetType: .bigint), alias: "same"),
+                ProjectionItem(.column(ColumnRef("rank")), alias: "same"),
+            ]),
+            source: .table(TableRef(Item.persistableType))
+        )
+        let empty = try await source.execute(query)
+        #expect(empty.rows.isEmpty)
+        #expect(empty.columns.map(\.number) == [1, 2])
+        #expect(empty.columns.map(\.name) == ["same", "same"])
+        #expect(empty.columns[0].type == .sql(.bigint))
+        #expect(empty.columns.map(\.isNullable) == [true, false])
+        try await insert([("first", 7)], baseID: fixture.primaryBaseID, fixture: fixture)
+        let populated = try await source.execute(query)
+        #expect(populated.columns == empty.columns)
+        #expect(populated.rows.count == 1)
+        #expect(populated.rows[0].value.values == [.primitive(.null), .primitive(.int64(7))])
+    }
+
+    @Test("Materialized Composition response rejects a row that violates its declared schema")
+    func materializedResponseValidatesRows() throws {
+        let base = try Base.ID("response-shape")
+        let composition = try CompositionResolution.derived([base])
+        let columns = try [QueryColumn(number: 1, name: "value", type: .sql(.bigint), isNullable: false)]
+        let malformed = QueryRow(validatedValues: [.primitive(.string("wrong"))])
+        #expect(throws: QueryRowCodecError.self) {
+            try CompositionQueryResponse(columns: columns, rows: [
+                CompositionResult(composition: composition, origin: .source(base), value: malformed),
+            ])
+        }
+        let empty = try CompositionQueryResponse(columns: columns, rows: [])
+        #expect(empty.columns == columns)
+        #expect(empty.rows.isEmpty)
     }
 
     @Test("Global ordering, windowing, and provenance span domains")
@@ -231,7 +282,7 @@ struct CompositionQueryExecutorTests {
                 budget: ExecutionBudget(
                     maximumRows: 100,
                     maximumWorkUnits: 100_000,
-                    maximumIntermediateRows: 4,
+                    maximumIntermediateRows: 5,
                     maximumIntermediateBytes: 4 * 1_024 * 1_024,
                     timeoutMilliseconds: 30_000
                 )
@@ -254,14 +305,14 @@ struct CompositionQueryExecutorTests {
                 workMeter: calibrationContext.workMeter
             )
         }
-        let aggregateEmission = await aggregateProbe.result()
-        let extrema = aggregateEmission.values
+        var aggregateEmission = await aggregateProbe.result()
+        var extrema = aggregateEmission.values
         #expect(extrema.count == 1)
         #expect(
-            extrema[0].row.fields["minimum"]
-                == .string("paged-primary-0")
+            extrema[0].row.values[0]
+                == .primitive(.string("paged-primary-0"))
         )
-        #expect(extrema[0].row.fields["maximum"] == .string("shared"))
+        #expect(extrema[0].row.values[1] == .primitive(.string("shared")))
         #expect(
             extrema[0].origin == .derived(
                 contributors: [
@@ -274,6 +325,11 @@ struct CompositionQueryExecutorTests {
         #expect((aggregateEmission.bytes ?? 0) > 0)
         let aggregatePeak = calibrationContext.workMeter.peakIntermediateBytes
         #expect(aggregatePeak > 0)
+        #expect(calibrationContext.workMeter.retainedIntermediateRows == 1)
+        #expect(calibrationContext.workMeter.retainedIntermediateBytes > 0)
+        extrema.removeAll()
+        aggregateEmission.values.removeAll()
+        await aggregateProbe.removeAll()
         #expect(calibrationContext.workMeter.retainedIntermediateRows == 0)
         #expect(calibrationContext.workMeter.retainedIntermediateBytes == 0)
 
@@ -283,7 +339,7 @@ struct CompositionQueryExecutorTests {
                 budget: ExecutionBudget(
                     maximumRows: 100,
                     maximumWorkUnits: 100_000,
-                    maximumIntermediateRows: 3,
+                    maximumIntermediateRows: 4,
                     maximumIntermediateBytes: 4 * 1_024 * 1_024,
                     timeoutMilliseconds: 30_000
                 )
@@ -302,7 +358,7 @@ struct CompositionQueryExecutorTests {
                     readContext: insufficientRowContext
                 )
             ) { _ in true }
-            Issue.record("Expected aggregate row admission to reject a maximum of three")
+            Issue.record("Expected aggregate row admission to reject a maximum of four")
         } catch {
             insufficientRowFailure = error
         }
@@ -321,12 +377,12 @@ struct CompositionQueryExecutorTests {
         }
         #expect(insufficientRowStage == .aggregateInput)
         #expect(insufficientRowConsumed == 0)
-        #expect(insufficientRowRequested == 4)
-        #expect(insufficientRowMaximum == 3)
+        #expect(insufficientRowRequested == 5)
+        #expect(insufficientRowMaximum == 4)
         #expect(insufficientRowContext.workMeter.retainedIntermediateRows == 0)
         #expect(insufficientRowContext.workMeter.retainedIntermediateBytes == 0)
 
-        let stateProbeContext = ReadExecutionContext(
+        let bufferProbeContext = ReadExecutionContext(
             options: ReadExecutionOptions(
                 pageSize: 8,
                 budget: ExecutionBudget(
@@ -339,43 +395,43 @@ struct CompositionQueryExecutorTests {
             ),
             monotonicClock: fixture.container.monotonicClock
         )
-        var stateProbeFailure: Error?
+        var bufferProbeFailure: Error?
         do {
             try await CompositionQueryPlanner(
-                structuralLimits: stateProbeContext.queryStructuralLimits
+                structuralLimits: bufferProbeContext.queryStructuralLimits
             ).execute(
                 aggregateQuery,
                 source: aggregateSource,
                 options: CompositionQueryExecutionOptions(
                     pageSize: 8,
-                    readContext: stateProbeContext
+                    readContext: bufferProbeContext
                 )
             ) { _ in true }
-            Issue.record("Expected aggregate state admission to reject zero bytes")
+            Issue.record("Expected Ready buffer admission to reject zero bytes")
         } catch {
-            stateProbeFailure = error
+            bufferProbeFailure = error
         }
-        guard let stateWorkLimit = stateProbeFailure as? DatabaseWorkLimitError,
+        guard let bufferWorkLimit = bufferProbeFailure as? DatabaseWorkLimitError,
               case .maximumIntermediateBytes(
-                let stateStage,
-                let stateConsumed,
-                let stateRequested,
-                let stateMaximum
-              ) = stateWorkLimit else {
+                let bufferStage,
+                let bufferConsumed,
+                let bufferRequested,
+                let bufferMaximum
+              ) = bufferWorkLimit else {
             Issue.record(
-                "Expected aggregate state byte-limit failure, got \(String(describing: stateProbeFailure))"
+                "Expected Ready buffer byte-limit failure, got \(String(describing: bufferProbeFailure))"
             )
             return
         }
-        #expect(stateStage == .aggregateInput)
-        #expect(stateConsumed == 0)
-        #expect(stateMaximum == 0)
-        guard stateRequested > 0 else {
-            Issue.record("Aggregate state footprint must be nonzero")
+        #expect(bufferStage == .resultMaterialization)
+        #expect(bufferConsumed == 0)
+        #expect(bufferMaximum == 0)
+        guard bufferRequested > 0 else {
+            Issue.record("Ready buffer footprint must be nonzero")
             return
         }
-        #expect(stateProbeContext.workMeter.retainedIntermediateRows == 0)
-        #expect(stateProbeContext.workMeter.retainedIntermediateBytes == 0)
+        #expect(bufferProbeContext.workMeter.retainedIntermediateRows == 0)
+        #expect(bufferProbeContext.workMeter.retainedIntermediateBytes == 0)
 
         let oneByteShortContext = ReadExecutionContext(
             options: ReadExecutionOptions(
@@ -384,7 +440,7 @@ struct CompositionQueryExecutorTests {
                     maximumRows: 100,
                     maximumWorkUnits: 100_000,
                     maximumIntermediateRows: 100,
-                    maximumIntermediateBytes: stateRequested - 1,
+                    maximumIntermediateBytes: bufferRequested - 1,
                     timeoutMilliseconds: 30_000
                 )
             ),
@@ -402,7 +458,7 @@ struct CompositionQueryExecutorTests {
                     readContext: oneByteShortContext
                 )
             ) { _ in true }
-            Issue.record("Expected aggregate state admission one byte short")
+            Issue.record("Expected Ready buffer admission one byte short")
         } catch {
             oneByteShortFailure = error
         }
@@ -415,14 +471,14 @@ struct CompositionQueryExecutorTests {
                 let shortMaximum
               ) = oneByteShortLimit else {
             Issue.record(
-                "Expected one-byte-short state failure, got \(String(describing: oneByteShortFailure))"
+                "Expected one-byte-short Ready buffer failure, got \(String(describing: oneByteShortFailure))"
             )
             return
         }
-        #expect(shortStage == .aggregateInput)
+        #expect(shortStage == .resultMaterialization)
         #expect(shortConsumed == 0)
-        #expect(shortRequested == stateRequested)
-        #expect(shortMaximum == stateRequested - 1)
+        #expect(shortRequested == bufferRequested)
+        #expect(shortMaximum == bufferRequested - 1)
         #expect(oneByteShortContext.workMeter.retainedIntermediateRows == 0)
         #expect(oneByteShortContext.workMeter.retainedIntermediateBytes == 0)
 
@@ -469,11 +525,10 @@ struct CompositionQueryExecutorTests {
         } catch {
             failingAggregateError = error
         }
-        guard let failingAggregate = failingAggregateError
-                as? CompositionQueryError,
-              case .aggregateFailure = failingAggregate else {
+        guard let failingAggregate = failingAggregateError as? CanonicalReadError,
+              case .expressionEvaluation(.typeMismatch(operation: "numeric expression")) = failingAggregate else {
             Issue.record(
-                "Expected aggregate failure, got \(String(describing: failingAggregateError))"
+                "Expected bound numeric type failure, got \(String(describing: failingAggregateError))"
             )
             return
         }
@@ -501,7 +556,7 @@ struct CompositionQueryExecutorTests {
                 )
             )
         )
-        #expect(streamedRows.count == 2)
+        #expect(streamedRows.rows.count == 2)
     }
 
     @Test("Composition validates structure before opening a read snapshot")
@@ -541,6 +596,50 @@ struct CompositionQueryExecutorTests {
         #expect(readContext.workMeter.consumedRows == 0)
         #expect(readContext.workMeter.retainedIntermediateRows == 0)
         #expect(readContext.workMeter.retainedIntermediateBytes == 0)
+    }
+
+    @Test("Composition publishes retained events only after all producer leases close")
+    func eventsFollowAuthoritativeSnapshotClose() async throws {
+        let fixture = try await makeFixture(readerCanReadSecondary: true)
+        defer { await fixture.container.shutdown() }
+        try await insert([("first", 1)], baseID: fixture.primaryBaseID, fixture: fixture)
+        try await insert([("second", 2)], baseID: fixture.secondaryBaseID, fixture: fixture)
+        let source = fixture.container.session(authorization: fixture.readerAuthorization)
+            .composition(fixture.compositionID)
+        let context = ReadExecutionContext(options: .default,
+            monotonicClock: fixture.container.monotonicClock)
+        let planner = CompositionQueryPlanner(structuralLimits: context.queryStructuralLimits)
+        let query = SelectQuery(projection: .all,
+            source: .table(TableRef(Item.persistableType)))
+        let received = PublicationEventProbe()
+        try await planner.execute(query, source: source,
+            options: CompositionQueryExecutionOptions(pageSize: 1, readContext: context)) { _ in
+            #expect(fixture.container.baseDrainState(fixture.primaryBaseID)?.activeLeaseCount == 0)
+            #expect(fixture.container.baseDrainState(fixture.secondaryBaseID)?.activeLeaseCount == 0)
+            #expect(context.workMeter.retainedIntermediateRows > 0)
+            #expect(context.workMeter.retainedIntermediateBytes > 0)
+            await received.receive()
+            await Task.yield()
+            return true
+        }
+        let receivedCount = await received.receivedCount()
+        #expect(receivedCount == 3)
+        #expect(context.workMeter.retainedIntermediateRows == 0)
+        #expect(context.workMeter.retainedIntermediateBytes == 0)
+
+        let cancelled = ReadExecutionContext(options: .default,
+            monotonicClock: fixture.container.monotonicClock)
+        await #expect(throws: CancellationError.self) {
+            try await planner.execute(query, source: source,
+                options: CompositionQueryExecutionOptions(pageSize: 1, readContext: cancelled)) { event in
+                #expect(fixture.container.baseDrainState(fixture.primaryBaseID)?.activeLeaseCount == 0)
+                #expect(fixture.container.baseDrainState(fixture.secondaryBaseID)?.activeLeaseCount == 0)
+                if case .row = event { throw CancellationError() }
+                return true
+            }
+        }
+        #expect(cancelled.workMeter.retainedIntermediateRows == 0)
+        #expect(cancelled.workMeter.retainedIntermediateBytes == 0)
     }
 
     @Test("Equal logical IDs remain Base-qualified")
@@ -750,8 +849,8 @@ struct CompositionQueryExecutorTests {
         )
         #expect(result.first?.composition.kind == .derived)
         #expect(result.count == 1)
-        #expect(result[0].value.fields["worldRank"] == .int64(1))
-        #expect(result[0].value.fields["tenantRank"] == .int64(2))
+        #expect(result[0].value.values[0] == .primitive(.int64(1)))
+        #expect(result[0].value.values[1] == .primitive(.int64(2)))
         #expect(
             result[0].origin == .derived(
                 contributors: [
@@ -852,7 +951,7 @@ struct CompositionQueryExecutorTests {
             ) { row }
         }
 
-        let identityRow = QueryRow(fields: ["priority": .int64(1)])
+        let identityRow = try priorityRow(1)
         let identityCalibrationMeter = meter()
         let frameConstructionProbe = IdentityFingerprintProbe()
         let identityCalibrationWorkspace = CompositionDistinctWorkspace.create(
@@ -918,8 +1017,7 @@ struct CompositionQueryExecutorTests {
 
         do {
             try await workspace.insert(
-                try owned(QueryRow(
-                    fields: ["priority": .int64(1)],
+                try owned(try priorityRow(1,
                     annotations: ["representative": .string("first")],
                     version: PersistableVersionToken("version-1")
                 ), workMeter: workMeter),
@@ -931,8 +1029,7 @@ struct CompositionQueryExecutorTests {
             #expect(retainedRowsAfterNewEntry == 1)
             #expect(retainedBytesAfterNewEntry > 0)
             try await workspace.insert(
-                try owned(QueryRow(
-                    fields: ["priority": .int64(1)],
+                try owned(try priorityRow(1,
                     annotations: ["representative": .string("duplicate")]
                 ), workMeter: workMeter),
                 origin: .source(fixture.primaryBaseID),
@@ -946,7 +1043,7 @@ struct CompositionQueryExecutorTests {
             )
             try await workspace.insert(
                 try owned(
-                    QueryRow(fields: ["priority": .int64(2)]),
+                    try priorityRow(2),
                     workMeter: workMeter
                 ),
                 origin: .source(fixture.secondaryBaseID),
@@ -982,8 +1079,7 @@ struct CompositionQueryExecutorTests {
                 workMeter.peakIntermediateBytes >= expectedPeak.partialValue
             )
             try await workspace.insert(
-                try owned(QueryRow(
-                    fields: ["priority": .int64(1)],
+                try owned(try priorityRow(1,
                     annotations: ["representative": .string("later")],
                     version: PersistableVersionToken("version-2")
                 ), workMeter: workMeter),
@@ -994,22 +1090,24 @@ struct CompositionQueryExecutorTests {
                 output.withLock { $0.append(result) }
                 return true
             }
+            let retainedWithResults = workMeter.retainedIntermediateBytes
             await workspace.removeAll()
+            #expect(workMeter.retainedIntermediateBytes == retainedWithResults)
         } catch {
             let operationError = error
             await workspace.removeAll()
             throw operationError
         }
 
-        let results = output.withLock { $0 }
+        var results = output.withLock { $0 }
         // The duplicate candidate remains admitted until exact identity
         // comparison completes against both published entries.
         #expect(workMeter.peakIntermediateRows == 3)
         #expect(workMeter.peakIntermediateBytes > 0)
-        #expect(workMeter.retainedIntermediateRows == 0)
-        #expect(workMeter.retainedIntermediateBytes == 0)
+        #expect(workMeter.retainedIntermediateRows == 2)
+        #expect(workMeter.retainedIntermediateBytes > 0)
         #expect(results.count == 2)
-        #expect(results[0].row.fields["priority"] == .int64(1))
+        #expect(results[0].row.values[0] == .primitive(.int64(1)))
         #expect(
             results[0].origin == .derived(
                 contributors: [
@@ -1022,20 +1120,22 @@ struct CompositionQueryExecutorTests {
             results[0].row.annotations["representative"] == .string("first")
         )
         #expect(results[0].row.version?.value == "version-1")
-        #expect(results[1].row.fields["priority"] == .int64(2))
+        #expect(results[1].row.values[0] == .primitive(.int64(2)))
+        results.removeAll()
+        output.withLock { $0.removeAll() }
+        #expect(workMeter.retainedIntermediateRows == 0)
+        #expect(workMeter.retainedIntermediateBytes == 0)
     }
 
     @Test("DISTINCT contributor replacement is admitted before publication")
     func distinctContributorReplacementAdmissionIsAtomic() async throws {
         let firstBaseID = try Base.ID("contributor-a")
         let secondBaseID = try Base.ID("contributor-b")
-        let representativeRow = QueryRow(
-            fields: ["priority": .int64(1)],
+        let representativeRow = try priorityRow(1,
             annotations: ["representative": .string("first")],
             version: PersistableVersionToken("version-1")
         )
-        let duplicateRow = QueryRow(
-            fields: ["priority": .int64(1)],
+        let duplicateRow = try priorityRow(1,
             annotations: ["representative": .string("later")],
             version: PersistableVersionToken("version-2")
         )
@@ -1092,7 +1192,7 @@ struct CompositionQueryExecutorTests {
             calibrationOutput.withLock { $0.append(result) }
             return true
         }
-        let calibrationResults = calibrationOutput.withLock { $0 }
+        var calibrationResults = calibrationOutput.withLock { $0 }
         #expect(calibrationResults.count == 1)
         #expect(
             calibrationResults.first?.origin == .derived(
@@ -1104,8 +1204,15 @@ struct CompositionQueryExecutorTests {
                 == .string("first")
         )
         #expect(calibrationResults.first?.row.version?.value == "version-1")
+        let retainedWithCalibrationResults = calibrationMeter.retainedIntermediateBytes
         await calibrationWorkspace.removeAll()
+        #expect(calibrationMeter.retainedIntermediateBytes == retainedWithCalibrationResults)
         #expect(successfulPeak > 0)
+        #expect(calibrationMeter.retainedIntermediateRows == 1)
+        #expect(calibrationMeter.retainedIntermediateBytes > 0)
+        calibrationResults.removeAll()
+        calibrationOutput.withLock { $0.removeAll() }
+        #expect(calibrationMeter.retainedIntermediateRows == 0)
         #expect(calibrationMeter.retainedIntermediateBytes == 0)
 
         let constrainedMeter = meter(maximumBytes: successfulPeak - 1)
@@ -1130,7 +1237,7 @@ struct CompositionQueryExecutorTests {
             output.withLock { $0.append(result) }
             return true
         }
-        let results = output.withLock { $0 }
+        var results = output.withLock { $0 }
         #expect(results.count == 1)
         #expect(results.first?.origin == .source(firstBaseID))
         #expect(
@@ -1138,7 +1245,13 @@ struct CompositionQueryExecutorTests {
                 == .string("first")
         )
         #expect(results.first?.row.version?.value == "version-1")
+        let retainedWithConstrainedResults = constrainedMeter.retainedIntermediateBytes
         await constrainedWorkspace.removeAll()
+        #expect(constrainedMeter.retainedIntermediateBytes == retainedWithConstrainedResults)
+        #expect(constrainedMeter.retainedIntermediateRows == 1)
+        #expect(constrainedMeter.retainedIntermediateBytes > 0)
+        results.removeAll()
+        output.withLock { $0.removeAll() }
         #expect(constrainedMeter.retainedIntermediateRows == 0)
         #expect(constrainedMeter.retainedIntermediateBytes == 0)
     }
@@ -1268,6 +1381,15 @@ struct CompositionQueryExecutorTests {
         let ownerAuthorization: AuthorizationContext
         let readerAuthorization: AuthorizationContext
         let secondaryEngine: InMemoryEngine
+    }
+
+    private func priorityRow(
+        _ value: Int64, annotations: [String: FieldValue] = [:],
+        version: PersistableVersionToken? = nil
+    ) throws -> QueryRow {
+        try QueryRow(values: [.primitive(.int64(value))], columns: [
+            QueryColumn(number: 1, name: "priority", type: .primitive(.int64), isNullable: false),
+        ], annotations: annotations, version: version)
     }
 
     private func makeFixture(
@@ -1504,7 +1626,7 @@ struct CompositionQueryExecutorTests {
         return try await source.execute(
             query,
             options: readOptions
-        )
+        ).rows
     }
 }
 #endif

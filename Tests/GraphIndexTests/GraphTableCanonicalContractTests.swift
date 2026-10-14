@@ -33,6 +33,28 @@ private struct GraphTableContractEdge {
 
 @Suite("GRAPH_TABLE canonical contract")
 struct GraphTableCanonicalContractTests {
+    @Test("Empty graph expansion preserves descriptor-derived binding columns")
+    func emptyGraphExpansionPreservesColumns() async throws {
+        let descriptor = try #require(try GraphTableContractEdge.indexDescriptors.first)
+        let source = Self.source(path: Self.linearPath())
+        let columns = try GraphTableExecutor.columns(indexDescriptor: descriptor, graphTableSource: source)
+        let transaction = try InMemoryEngine().createTransaction()
+        let rows = try await GraphTableExecutor(
+            indexDescriptor: descriptor, indexSubspace: Subspace(), graphTableSource: source
+        ).execute(
+            transaction: transaction,
+            workMeter: DatabaseWorkMeter(
+                budget: ExecutionBudget(), monotonicClock: TestProcessMonotonicClock()
+            )
+        )
+        let isEmpty = rows.isEmpty
+        #expect(isEmpty)
+        #expect(rows.columns == columns)
+        #expect(columns.first(where: { $0.name == "weight" })?.type == .primitive(.int64))
+        #expect(columns.first(where: { $0.name == "source" })?.type == .primitive(.string))
+        #expect(columns.allSatisfy { !$0.isNullable })
+    }
+
     @Test("Direct graph reads reject an unresolved graph source")
     func directGraphReadsRejectUnresolvedGraphSource() async throws {
         let scenario = try await Self.makeScenario(edgeCount: 1)
@@ -188,11 +210,11 @@ struct GraphTableCanonicalContractTests {
 
         #expect(response.rows.count == 1)
         #expect(
-            response.rows[0].fields["source_id"]
+            try response.rows[0].primitiveFields(columns: response.columns)["source_id"]
                 == .string("uncommitted-source")
         )
         #expect(
-            response.rows[0].fields["target_id"]
+            try response.rows[0].primitiveFields(columns: response.columns)["target_id"]
                 == .string("uncommitted-target")
         )
     }

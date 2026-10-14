@@ -172,3 +172,23 @@ rejected by the read-only entry; same-name columns and empty typed results
 retained; DML RETURNING held through commit; blocks publish nothing early;
 SQL-embedded SPARQL retains parent authority. Tests run through the real
 Framework backend path, with wire/CLI publication verified by their owners.
+
+### S01 typed SELECT response adaptation
+
+S01 keeps the read-only SELECT entry and adds typed carriage for its existing
+syntax rather than exposing later statement/block capabilities early.
+Database passes QueryResponse.columns with every positional QueryRow through
+its caller-facing response. Typed executeSQL(as:) explicitly calls the
+Read-owned codec with those columns; duplicate-name or incompatible rich-value
+model projection throws. It never recreates schema from the first row or
+accesses an implicit fields dictionary. Rich parameters become bound
+Literal.queryValue with their optional explicit QueryColumnType preserved;
+public SQL projection of a rich parameter does not serialize it back to text.
+
+[Read](../DatabaseEngine/Read/DESIGN.md#s01-frozen-public-result-and-projection-boundary)
+owns the exact API and final public transfer boundary.
+[QueryExecution](../DatabaseEngine/QueryExecution/DESIGN.md#s01-frozen-positional-execution-contract)
+owns relation slots and metadata binding.
+DatabaseTests owns real public-entry S01-C01–C08 and C10 evidence; failures
+must retain typed causes. Existing SQL/SPARQL parameter meaning and the parent
+transaction/meter path remain intact (C13).

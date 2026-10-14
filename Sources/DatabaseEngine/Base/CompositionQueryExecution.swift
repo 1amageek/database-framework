@@ -46,17 +46,20 @@ public struct CompositionQueryMetadata: Sendable {
     public let basePlacementGenerations: [Base.ID: UInt64]
     public let schemaGeneration: UInt64
     public let consistency: DatabaseKit.DatabaseReadConsistency
+    public let columns: [QueryColumn]
 
     public init(
         composition: CompositionResolution,
         basePlacementGenerations: [Base.ID: UInt64],
         schemaGeneration: UInt64,
-        consistency: DatabaseKit.DatabaseReadConsistency
+        consistency: DatabaseKit.DatabaseReadConsistency,
+        columns: [QueryColumn]
     ) {
         self.composition = composition
         self.basePlacementGenerations = basePlacementGenerations
         self.schemaGeneration = schemaGeneration
         self.consistency = consistency
+        self.columns = columns
     }
 }
 
@@ -65,10 +68,47 @@ public struct CompositionQueryMetadata: Sendable {
 public struct CompositionQueryRow: Sendable {
     public let row: QueryRow
     public let origin: CompositionOrigin
+    package let payloadLeases: [DatabaseQueryPayloadLease]?
 
     public init(row: QueryRow, origin: CompositionOrigin) {
         self.row = row
         self.origin = origin
+        self.payloadLeases = nil
+    }
+
+    package init(ownedRow: DatabaseQueryScopedQueryRowOwner, origin: CompositionOrigin) {
+        self.row = ownedRow.withRow { copy $0 }
+        self.origin = origin
+        self.payloadLeases = ownedRow.payloadLeases
+    }
+
+    package init(row: QueryRow, origin: CompositionOrigin, payloadLeases: [DatabaseQueryPayloadLease]) {
+        self.row = row
+        self.origin = origin
+        self.payloadLeases = payloadLeases
+    }
+
+    /// Measures destination storage while this event retains its known producer
+    /// claims. The consumer must keep the event alive until final output transfer.
+    @_spi(DatabaseExecution)
+    public func retainedTransferFootprint(
+        workMeter: DatabaseWorkMeter
+    ) throws -> (rows: UInt64, bytes: UInt64) {
+        let footprint: DatabaseIntermediateFootprint
+        if let payloadLeases {
+            guard !payloadLeases.isEmpty,
+                  payloadLeases.allSatisfy({ $0.workMeter === workMeter }) else {
+                throw DatabaseIntermediateReservationError.workMeterMismatch
+            }
+            footprint = try CanonicalRelationalFootprintMeter.positionalValueArrayFootprint(
+                count: row.values.count, valueAt: { _ in .primitive(.null) },
+                annotations: row.annotations, version: row.version,
+                workMeter: workMeter, stage: .resultMaterialization)
+        } else {
+            footprint = try CanonicalRelationalFootprintMeter.footprint(
+                of: row, workMeter: workMeter, stage: .resultMaterialization)
+        }
+        return (rows: footprint.rows, bytes: footprint.bytes)
     }
 }
 

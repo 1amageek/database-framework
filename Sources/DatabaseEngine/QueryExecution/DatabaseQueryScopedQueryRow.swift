@@ -14,20 +14,29 @@ package struct DatabaseQueryScopedQueryRow: ~Copyable, Sendable {
         exactFootprint: DatabaseIntermediateFootprint,
         workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage,
+        retaining sourcePayloadLeases: [DatabaseQueryPayloadLease] = [],
+        measuring measure: ((borrowing QueryRow) throws -> DatabaseIntermediateFootprint)? = nil,
         _ makeRow: () throws -> QueryRow
     ) throws -> Self {
+        guard sourcePayloadLeases.allSatisfy({ $0.workMeter === workMeter }) else {
+            throw DatabaseIntermediateReservationError.workMeterMismatch
+        }
+        let admittedFootprint = sourcePayloadLeases.isEmpty ? exactFootprint
+            : try exactFootprint.adding(DatabaseIntermediateCollectionMeter.arrayFootprint(
+                count: sourcePayloadLeases.count, element: DatabaseQueryPayloadLease.self))
         let reservation = try workMeter.reserveIntermediate(
-            rows: exactFootprint.rows,
-            bytes: exactFootprint.bytes,
+            rows: admittedFootprint.rows,
+            bytes: admittedFootprint.bytes,
             at: stage
         )
         do {
             let row = try makeRow()
-            let observed = try CanonicalRelationalFootprintMeter.footprint(
-                of: row,
-                workMeter: workMeter,
-                stage: stage
-            )
+            let observed: DatabaseIntermediateFootprint
+            if let measure { observed = try measure(row) }
+            else {
+                observed = try CanonicalRelationalFootprintMeter.footprint(
+                    of: row, workMeter: workMeter, stage: stage)
+            }
             guard observed == exactFootprint else {
                 throw DatabaseQueryScopedQueryRowError
                     .payloadFootprintMismatch(
@@ -40,8 +49,9 @@ package struct DatabaseQueryScopedQueryRow: ~Copyable, Sendable {
             return Self(
                 owner: DatabaseQueryScopedQueryRowOwner(
                     row: row,
-                    footprint: exactFootprint,
-                    reservation: reservation
+                    footprint: admittedFootprint,
+                    reservation: reservation,
+                    sourcePayloadLeases: sourcePayloadLeases
                 )
             )
         } catch {

@@ -100,6 +100,7 @@ if [[ "$compiler_version" != *"Swift version 6.4-dev"* \
 fi
 
 backend_identity=""
+test_scheduling="parallel"
 case "$BACKEND" in
   sqlite)
     runtime_version="$(sqlite3 ':memory:' 'select sqlite_version();')"
@@ -132,6 +133,7 @@ case "$BACKEND" in
     backend_identity="postgresql=$POSTGRESQL_VERSION;server_version_num=$server_version_number"
     ;;
   foundationdb)
+    test_scheduling="serial-cases"
     if [[ -z "${FDB_CLUSTER_FILE:-}" || ! -f "$FDB_CLUSTER_FILE" ]]; then
       echo "error: FDB_CLUSTER_FILE is required for FoundationDB integration" >&2
       exit 1
@@ -176,6 +178,7 @@ environment_path="$RESULT_DIRECTORY/$name.environment"
   printf 'backend=%s\n' "$BACKEND"
   printf 'backend-identity=%s\n' "$backend_identity"
   printf 'traits=%s\n' "$TRAITS"
+  printf 'test-scheduling=%s\n' "$test_scheduling"
   printf 'filter=%s\n' "${TEST_FILTER:-<all>}"
   printf 'target=%s\n' "$(uname -m)-unknown-linux-gnu"
 } | tee "$environment_path"
@@ -188,6 +191,11 @@ test_arguments=(
   --xunit-output "$xunit_output_path"
   --only-use-versions-from-resolved-file
 )
+if [[ "$BACKEND" == foundationdb ]]; then
+  # One isolated server is shared by all cases; explicit concurrency within
+  # each case remains active under the pinned Swift Testing runner.
+  test_arguments+=(--no-parallel)
+fi
 if [[ -n "$TEST_FILTER" ]]; then
   test_arguments+=(--filter "$TEST_FILTER")
 fi

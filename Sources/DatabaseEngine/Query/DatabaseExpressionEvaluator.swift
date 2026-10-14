@@ -127,6 +127,16 @@ package struct DatabaseExpressionEvaluator: Sendable {
 
     private func value(_ literal: Literal) throws -> FieldValue {
         switch literal {
+        // FIXME(INCOMPLETE_IMPLEMENTATION): Rich expression evaluation remains pending S04/S07.
+        // Direct rich projection bypasses this primitive-only evaluator; arithmetic
+        // and casts must fail until their typed numeric and conversion contracts are proven.
+        case .queryValue(let queryValue, _):
+            guard case .primitive(let primitive) = queryValue else {
+                throw DatabaseExpressionEvaluationError.unsupportedExpression(
+                    "Rich query value requires query-scoped evaluation"
+                )
+            }
+            return primitive
         case .null: return .null
         case .bool(let value): return .bool(value)
         case .int(let value): return .int64(value)
@@ -557,19 +567,28 @@ package struct DatabaseExpressionEvaluator: Sendable {
             guard case .bool = value else { throw invalidCast(target) }
             return value
         case .smallint, .integer, .bigint:
-            if let signed = signedInteger(value) {
-                return .int64(signed)
+            let integer: Int64
+            if let signed = signedInteger(value) { integer = signed }
+            else if let unsigned = unsignedInteger(value), let signed = Int64(exactly: unsigned) { integer = signed }
+            else { throw invalidCast(target) }
+            switch target {
+            case .smallint:
+                guard let narrowed = Int16(exactly: integer) else { throw DatabaseExpressionEvaluationError.numericOverflow }
+                return .int16(narrowed)
+            case .integer:
+                guard let narrowed = Int32(exactly: integer) else { throw DatabaseExpressionEvaluationError.numericOverflow }
+                return .int32(narrowed)
+            default: return .int64(integer)
             }
-            if let scalar = unsignedInteger(value),
-               let signed = Int64(exactly: scalar) {
-                return .int64(signed)
-            }
-            throw invalidCast(target)
         case .real, .doublePrecision:
-            guard value.isNumeric, !value.isDecimal else {
-                throw invalidCast(target)
+            guard value.isNumeric, !value.isDecimal else { throw invalidCast(target) }
+            let floating = try floatingPointOperand(value)
+            if case .real = target {
+                let rounded = Float(floating)
+                guard rounded.isFinite else { throw DatabaseExpressionEvaluationError.numericOverflow }
+                return .float32(rounded)
             }
-            return .float64(try floatingPointOperand(value))
+            return .float64(floating)
         case .char, .varchar, .text:
             guard case .string = value else { throw invalidCast(target) }
             return value

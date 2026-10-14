@@ -28,8 +28,9 @@ private actor CompositionRowResultCollector {
         }
     }
 
-    func result() -> [CompositionResult<QueryRow>] {
-        values
+    func result() throws -> CompositionQueryResponse {
+        guard let metadata else { throw CompositionQueryError.workspaceCorrupted }
+        return try CompositionQueryResponse(columns: metadata.columns, rows: values)
     }
 }
 
@@ -65,7 +66,7 @@ public struct CompositionDataSource: Sendable {
     public func execute(
         _ query: SelectQuery,
         options: ReadExecutionOptions = .default
-    ) async throws -> [CompositionResult<QueryRow>] {
+    ) async throws -> CompositionQueryResponse {
         let execution = ReadExecutionContext(
             options: options,
             monotonicClock: container.monotonicClock
@@ -87,7 +88,7 @@ public struct CompositionDataSource: Sendable {
             )
             return true
         }
-        return await collector.result()
+        return try await collector.result()
     }
 
     /// Acquires the immutable Composition definition and every member Base

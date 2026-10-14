@@ -7,18 +7,25 @@ package final class DatabaseQueryScopedQueryRowOwner: Sendable {
     private let row: QueryRow
     package let footprint: DatabaseIntermediateFootprint
     private let reservation: DatabaseIntermediateReservation
+    private let sourcePayloadLeases: [DatabaseQueryPayloadLease]
 
     init(
         row: QueryRow,
         footprint: DatabaseIntermediateFootprint,
-        reservation: DatabaseIntermediateReservation
+        reservation: DatabaseIntermediateReservation,
+        sourcePayloadLeases: [DatabaseQueryPayloadLease] = []
     ) {
         self.row = row
         self.footprint = footprint
         self.reservation = reservation
+        self.sourcePayloadLeases = sourcePayloadLeases
     }
 
     package var workMeter: DatabaseWorkMeter { reservation.workMeter }
+
+    package var payloadLeases: [DatabaseQueryPayloadLease] {
+        sourcePayloadLeases + [DatabaseQueryPayloadLease(retaining: reservation)]
+    }
 
     package func withRow<Result, Failure: Error>(
         _ body: (borrowing QueryRow) throws(Failure) -> Result

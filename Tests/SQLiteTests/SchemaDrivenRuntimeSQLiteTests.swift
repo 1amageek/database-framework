@@ -226,7 +226,7 @@ struct SchemaDrivenRuntimeSQLiteTests {
         #expect(compiledStablePage.rows.count == 2)
         #expect(compiledStablePage.continuation == nil)
         guard case .rdfTerm(.literal(let literal))? =
-                compiledStablePage.rows[0].fields["label"] else {
+                try compiledStablePage.rows[0].primitiveFields(columns: compiledStablePage.columns)["label"] else {
             Issue.record("Expected a canonical language literal")
             return
         }
@@ -298,7 +298,7 @@ struct SchemaDrivenRuntimeSQLiteTests {
         expectEqual(compiledRows, schemaDrivenRows)
         #expect(compiledRows.rows.count == 1)
         #expect(
-            compiledRows.rows.first?.fields["email"]
+            try compiledRows.rows.first?.primitiveFields(columns: compiledRows.columns)["email"]
                 == .string("alice+updated@example.com")
         )
     }
@@ -451,7 +451,7 @@ struct SchemaDrivenRuntimeSQLiteTests {
         )
         #expect(response.rows.count == 1)
         #expect(
-            response.rows.first?.fields["id"]
+            try response.rows.first?.primitiveFields(columns: response.columns)["id"]
                 == .string("persisted-across-restart")
         )
     }

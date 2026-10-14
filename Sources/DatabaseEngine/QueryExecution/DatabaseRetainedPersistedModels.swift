@@ -9,7 +9,7 @@ package final class DatabaseRetainedPersistedModels:
         private let model: PersistedModel
         package let retainedModelFootprint: DatabaseIntermediateFootprint
         package let queryRowFootprint: DatabaseIntermediateFootprint
-        private let reservation: DatabaseIntermediateReservation
+        private let payloadLease: DatabaseQueryPayloadLease
 
         package init(
             model: consuming PersistedModel,
@@ -20,25 +20,37 @@ package final class DatabaseRetainedPersistedModels:
             self.model = model
             self.retainedModelFootprint = retainedModelFootprint
             self.queryRowFootprint = queryRowFootprint
-            self.reservation = reservation
+            self.payloadLease = DatabaseQueryPayloadLease(retaining: reservation)
         }
 
         package var workMeter: DatabaseWorkMeter {
-            reservation.workMeter
+            payloadLease.workMeter
         }
+
+        /// Retains the producer-known payload claim without charging its byte
+        /// allocation again when a canonical projection aliases the model.
+        package func canonicalPayloadLease(
+            workMeter: DatabaseWorkMeter
+        ) throws -> DatabaseQueryPayloadLease {
+            guard self.workMeter === workMeter else {
+                throw DatabaseIntermediateReservationError.workMeterMismatch
+            }
+            return payloadLease
+        }
+
 
         package func withModel<Failure: Error>(
             _ body: (borrowing PersistedModel) throws(Failure) -> Void
         ) throws(Failure) {
             try body(model)
-            withExtendedLifetime(reservation) {}
+            withExtendedLifetime(payloadLease) {}
         }
 
         package func withModel<Failure: Error>(
             _ body: (borrowing PersistedModel) async throws(Failure) -> Void
         ) async throws(Failure) {
             try await body(model)
-            withExtendedLifetime(reservation) {}
+            withExtendedLifetime(payloadLease) {}
         }
 
         /// Borrows one vector field without exposing the Copyable model or
@@ -49,10 +61,10 @@ package final class DatabaseRetainedPersistedModels:
             _ body: (borrowing DatabaseRetainedVectorFieldView) throws
                 -> Result
         ) throws -> Result {
-            guard reservation.workMeter === workMeter else {
+            guard payloadLease.workMeter === workMeter else {
                 throw DatabaseIntermediateReservationError.workMeterMismatch
             }
-            defer { withExtendedLifetime(reservation) {} }
+            defer { withExtendedLifetime(payloadLease) {} }
             let value = try DataAccess.extractFieldValue(
                 from: model,
                 keyPath: keyPath

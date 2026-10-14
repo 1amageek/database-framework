@@ -489,7 +489,11 @@ struct SPARQLFunctionIntegrationTests {
         )
         let response = try await executeRewritten(executableQuery)
         #expect(response.rows.count == 1)
-        #expect(response.rows[0].fields["name"] == .string("Alice"))
+        let nameSlot = try #require(response.columns.firstIndex { $0.name == "name" })
+        #expect(response.columns[nameSlot].number == UInt32(nameSlot + 1))
+        #expect(response.columns[nameSlot].type == .primitive(.string))
+        #expect(!response.columns[nameSlot].isNullable)
+        #expect(response.rows[0].values[nameSlot] == .primitive(.string("Alice")))
     }
 
     // MARK: - Test 11: Integration with ORDER BY and LIMIT

@@ -1,3 +1,5 @@
+import DatabaseKit
+
 public enum LiteralConversionError: Error, Sendable, Equatable,
     CustomStringConvertible
 {
@@ -13,6 +15,7 @@ public enum LiteralConversionError: Error, Sendable, Equatable,
         case vector
     }
 
+    case queryValue(QueryValueError)
     case invalidRDFLiteral(datatype: String)
     case invalidLanguageTag(String)
     case invalidBaseDirection(String)
@@ -21,6 +24,8 @@ public enum LiteralConversionError: Error, Sendable, Equatable,
 
     public var description: String {
         switch self {
+        case .queryValue(let error):
+            return "Query literal persistence conversion failed: \(error)"
         case .invalidRDFLiteral(let datatype):
             return "Invalid RDF literal datatype: \(datatype)"
         case .invalidLanguageTag(let language):

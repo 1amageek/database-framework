@@ -100,7 +100,7 @@ extension DatabaseContext {
             structuralLimits: structuralLimits
         )
         return try response.rows.map { row in
-            try QueryRowCodec.decode(row, as: type)
+            try QueryRowCodec.decode(row, columns: response.columns, as: type)
         }
     }
 

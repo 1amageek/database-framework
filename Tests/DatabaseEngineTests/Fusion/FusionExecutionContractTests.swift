@@ -140,9 +140,10 @@ struct FusionExecutionContractTests {
         let entity = try FusionExecutionContractItem.schemaEntity
         let domain = try FusionCandidateDomain.make(
             rows: [
-                QueryRow(fields: ["id": .string("b"), "value": .int64(2)]),
-                QueryRow(fields: ["id": .string("a"), "value": .int64(1)]),
+                try QueryRow(values: [.primitive(.string("b")), .primitive(.int64(2))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
+                try QueryRow(values: [.primitive(.string("a")), .primitive(.int64(1))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
             ],
+            columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)],
             entity: entity,
             workMeter: meter
         )
@@ -205,8 +206,8 @@ struct FusionExecutionContractTests {
     func rawFixtureAndScopedPageShareCandidateValidation() throws {
         let entity = try FusionExecutionContractItem.schemaEntity
         let orderedRows = [
-            QueryRow(fields: ["id": .string("b"), "value": .int64(2)]),
-            QueryRow(fields: ["id": .string("a"), "value": .int64(1)]),
+            try QueryRow(values: [.primitive(.string("b")), .primitive(.int64(2))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
+            try QueryRow(values: [.primitive(.string("a")), .primitive(.int64(1))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
         ]
         let keyA = try primaryKey("a")
         let keyB = try primaryKey("b")
@@ -215,6 +216,7 @@ struct FusionExecutionContractTests {
             let meter = makeMeter()
             let domain = try FusionCandidateDomain.make(
                 rows: orderedRows,
+                columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)],
                 entity: entity,
                 workMeter: meter
             )
@@ -226,6 +228,7 @@ struct FusionExecutionContractTests {
             let meter = makeMeter()
             let page = try makeScopedRowPage(
                 rows: orderedRows,
+                columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)],
                 workMeter: meter
             )
             let domain = try FusionCandidateDomain.make(
@@ -238,13 +241,14 @@ struct FusionExecutionContractTests {
         }
 
         let missingIdentityRows = [
-            QueryRow(fields: ["value": .int64(1)]),
+            try QueryRow(values: [.primitive(.int64(1))], columns: [QueryColumn(number: 1, name: "value", type: .primitive(.int64), isNullable: false)]),
         ]
         do {
             let meter = makeMeter()
             #expect {
                 try FusionCandidateDomain.make(
                     rows: missingIdentityRows,
+                    columns: [QueryColumn(number: 1, name: "value", type: .primitive(.int64), isNullable: false)],
                     entity: entity,
                     workMeter: meter
                 )
@@ -258,6 +262,7 @@ struct FusionExecutionContractTests {
             let meter = makeMeter()
             let page = try makeScopedRowPage(
                 rows: missingIdentityRows,
+                columns: [QueryColumn(number: 1, name: "value", type: .primitive(.int64), isNullable: false)],
                 workMeter: meter
             )
             #expect {
@@ -273,14 +278,15 @@ struct FusionExecutionContractTests {
         }
 
         let duplicateIdentityRows = [
-            QueryRow(fields: ["id": .string("a"), "value": .int64(1)]),
-            QueryRow(fields: ["id": .string("a"), "value": .int64(2)]),
+            try QueryRow(values: [.primitive(.string("a")), .primitive(.int64(1))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
+            try QueryRow(values: [.primitive(.string("a")), .primitive(.int64(2))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
         ]
         do {
             let meter = makeMeter()
             #expect {
                 try FusionCandidateDomain.make(
                     rows: duplicateIdentityRows,
+                    columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)],
                     entity: entity,
                     workMeter: meter
                 )
@@ -294,6 +300,7 @@ struct FusionExecutionContractTests {
             let meter = makeMeter()
             let page = try makeScopedRowPage(
                 rows: duplicateIdentityRows,
+                columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)],
                 workMeter: meter
             )
             #expect {
@@ -313,8 +320,8 @@ struct FusionExecutionContractTests {
     func scopedCandidatesAdmitDestinationBeforeConstruction() throws {
         let entity = try FusionExecutionContractItem.schemaEntity
         let rows = [
-            QueryRow(
-                fields: ["id": .string("candidate"), "value": .int64(1)]
+            try QueryRow(
+                values: [.primitive(.string("candidate")), .primitive(.int64(1))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]
             )
         ]
 
@@ -322,6 +329,7 @@ struct FusionExecutionContractTests {
         do {
             let page = try makeScopedRowPage(
                 rows: rows,
+                columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)],
                 workMeter: measurementMeter
             )
             _ = try FusionCandidateDomain.make(
@@ -336,7 +344,7 @@ struct FusionExecutionContractTests {
         let meter = makeMeter(maximumIntermediateBytes: oneByteShort)
         var failure: (any Error)?
         do {
-            let page = try makeScopedRowPage(rows: rows, workMeter: meter)
+            let page = try makeScopedRowPage(rows: rows, columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)], workMeter: meter)
             let sourceBytes = meter.retainedIntermediateBytes
             do {
                 _ = try FusionCandidateDomain.make(
@@ -1071,17 +1079,19 @@ struct FusionExecutionContractTests {
         let entity = try FusionExecutionContractItem.schemaEntity
         let left = try FusionCandidateDomain.make(
             rows: [
-                QueryRow(fields: ["id": .string("c"), "value": .int64(3)]),
-                QueryRow(fields: ["id": .string("a"), "value": .int64(1)]),
+                try QueryRow(values: [.primitive(.string("c")), .primitive(.int64(3))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
+                try QueryRow(values: [.primitive(.string("a")), .primitive(.int64(1))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
             ],
+            columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)],
             entity: entity,
             workMeter: meter
         )
         let right = try FusionCandidateDomain.make(
             rows: [
-                QueryRow(fields: ["id": .string("b"), "value": .int64(2)]),
-                QueryRow(fields: ["id": .string("c"), "value": .int64(3)]),
+                try QueryRow(values: [.primitive(.string("b")), .primitive(.int64(2))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
+                try QueryRow(values: [.primitive(.string("c")), .primitive(.int64(3))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
             ],
+            columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)],
             entity: entity,
             workMeter: meter
         )
@@ -1101,8 +1111,9 @@ struct FusionExecutionContractTests {
 
         let inconsistent = try FusionCandidateDomain.make(
             rows: [
-                QueryRow(fields: ["id": .string("c"), "value": .int64(30)])
+                try QueryRow(values: [.primitive(.string("c")), .primitive(.int64(30))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)])
             ],
+            columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)],
             entity: entity,
             workMeter: meter
         )
@@ -1120,9 +1131,10 @@ struct FusionExecutionContractTests {
         let entity = try FusionExecutionContractItem.schemaEntity
         let candidates = try FusionCandidateDomain.make(
             rows: [
-                QueryRow(fields: ["id": .string("a"), "value": .int64(1)]),
-                QueryRow(fields: ["id": .string("b"), "value": .int64(2)]),
+                try QueryRow(values: [.primitive(.string("a")), .primitive(.int64(1))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
+                try QueryRow(values: [.primitive(.string("b")), .primitive(.int64(2))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
             ],
+            columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)],
             entity: entity,
             workMeter: meter
         )
@@ -1193,17 +1205,22 @@ struct FusionExecutionContractTests {
             ),
             monotonicClock: TestProcessMonotonicClock()
         )
-        let entity = try FusionExecutionContractItem.schemaEntity
+        let entity = try Schema.Entity(
+            name: "FusionScorePayload",
+            identifierType: .string,
+            fields: [
+                FieldSchema(name: "id", fieldNumber: 1, type: .string),
+                FieldSchema(name: "value", fieldNumber: 2, type: .int64),
+                FieldSchema(name: "payload", fieldNumber: 3, type: .string),
+            ]
+        )
         let payload = String(repeating: "x", count: 4_096)
-        let rows = (0..<64).map { index in
-            QueryRow(fields: [
-                "id": .string(paddedIdentity(index)),
-                "value": .int64(Int64(index)),
-                "payload": .string(payload),
-            ])
+        let rows = try (0..<64).map { index in
+            try QueryRow(values: [.primitive(.string(paddedIdentity(index))), .primitive(.int64(Int64(index))), .primitive(.string(payload))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false), QueryColumn(number: 3, name: "payload", type: .primitive(.string), isNullable: false)])
         }
         let candidates = try FusionCandidateDomain.make(
             rows: rows,
+            columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false), QueryColumn(number: 3, name: "payload", type: .primitive(.string), isNullable: false)],
             entity: entity,
             workMeter: meter
         )
@@ -1245,9 +1262,10 @@ struct FusionExecutionContractTests {
         let setupMeter = makeMeter()
         let candidates = try FusionCandidateDomain.make(
             rows: [
-                QueryRow(fields: ["id": .string("a")]),
-                QueryRow(fields: ["id": .string("b")]),
+                try QueryRow(values: [.primitive(.string("a"))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false)]),
+                try QueryRow(values: [.primitive(.string("b"))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false)]),
             ],
+            columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false)],
             entity: try FusionExecutionContractItem.schemaEntity,
             workMeter: setupMeter
         )
@@ -1571,39 +1589,51 @@ struct FusionExecutionContractTests {
         )
         try await context.save()
 
-        let response = try await context.query(
-            SelectQuery(
-                projection: .items([
-                    ProjectionItem(
-                        .column(ColumnRef(column: "value"))
-                    )
-                ]),
-                source: .table(
-                    TableRef(FusionProjectedAuthorizationItem.persistableType)
-                ),
-                accessPath: .fusion(
-                    FusionSource(stages: [
-                        FusionStageSource(inputs: [
-                            FusionInput(
-                                operation: .index(
-                                    FusionIndexSource(
-                                        selection: .named(
-                                            name:
-                                                "fusion_projected_authorization_value",
-                                            type: .ordered
-                                        )
-                                    )
-                                ),
-                                scoring: .position
-                            ),
-                        ]),
-                    ])
+        let query = SelectQuery(
+            projection: .items([
+                ProjectionItem(
+                    .column(ColumnRef(column: "value"))
                 )
+            ]),
+            source: .table(
+                TableRef(FusionProjectedAuthorizationItem.persistableType)
+            ),
+            accessPath: .fusion(
+                FusionSource(stages: [
+                    FusionStageSource(inputs: [
+                        FusionInput(
+                            operation: .index(
+                                FusionIndexSource(
+                                    selection: .named(
+                                        name:
+                                            "fusion_projected_authorization_value",
+                                        type: .ordered
+                                    )
+                                )
+                            ),
+                            scoring: .position
+                        ),
+                    ]),
+                ])
             )
         )
+        let response = try await context.query(query)
 
         #expect(response.rows.count == 1)
-        #expect(response.rows[0].fields == ["value": .int64(42)])
+        #expect(response.rows[0].values == [.primitive(.int64(42))])
+        #expect(response.columns.map(\.name) == ["value"])
+
+        do {
+            _ = try await context.query(query.replacing(projection: .items([
+                ProjectionItem(.column(ColumnRef(column: "id"))),
+            ])))
+            Issue.record("Expected the restricted identifier projection to fail")
+        } catch let error as FieldSecurityError {
+            #expect(error == .readNotAllowed(
+                type: FusionProjectedAuthorizationItem.persistableType,
+                fields: ["id"]
+            ))
+        }
     }
 
     @Test("Missing Fusion entities are disclosed only after list authorization")
@@ -1780,7 +1810,7 @@ struct FusionExecutionContractTests {
 
         let response = try await context.query(query)
 
-        #expect(response.rows.map { $0.fields["id"] } == [.string("one")])
+        #expect(response.rows.map { $0.values[0] } == [.primitive(.string("one"))])
         #expect(
             FusionAuthorizationCountingItem.queryDecisionCount.withLock { $0 }
                 == 1
@@ -1878,8 +1908,8 @@ struct FusionExecutionContractTests {
         )
 
         #expect(response.rows.count == 1)
-        #expect(response.rows[0].fields["first"] == .bool(true))
-        #expect(response.rows[0].fields["second"] == .bool(true))
+        #expect(response.rows[0].values[0] == .primitive(.bool(true)))
+        #expect(response.rows[0].values[1] == .primitive(.bool(true)))
     }
 
     @Test("Authorization evidence cannot cross principals")
@@ -2065,13 +2095,20 @@ struct FusionExecutionContractTests {
 
     private func makeScopedRowPage(
         rows: [QueryRow],
+        columns: [QueryColumn],
         workMeter: DatabaseWorkMeter
     ) throws -> CanonicalRetainedQueryRowView {
-        let ownerRows = [
-            QueryRow(fields: ["id": .string("page-prefix")]),
-        ] + rows + [
-            QueryRow(fields: ["id": .string("page-suffix")]),
-        ]
+        func paddingRow(_ identity: String) throws -> QueryRow {
+            let values = try columns.map { column -> QueryValue in
+                switch column.name {
+                case "id": return .primitive(.string(identity))
+                case "value": return .primitive(.int64(0))
+                default: throw QueryRowCodecError.unknownField(type: "Fusion fixture", field: column.name)
+                }
+            }
+            return try QueryRow(values: values, columns: columns)
+        }
+        let ownerRows = [try paddingRow("page-prefix")] + rows + [try paddingRow("page-suffix")]
         var builder = try DatabaseRetainedArrayBuilder<QueryRow>(
             workMeter: workMeter,
             stage: .bindingCandidate,
@@ -2088,8 +2125,9 @@ struct FusionExecutionContractTests {
                 make: { row }
             )
         }
-        let owner = try builder.finish().moveToSharedOwnership(
-            at: .bindingCandidate
+        let owner = DatabaseSharedRetainedQueryRows(
+            storage: try builder.finish().moveToSharedOwnership(at: .bindingCandidate),
+            columns: columns
         )
         return CanonicalRetainedQueryRowView(
             owner: owner,
@@ -2162,7 +2200,7 @@ struct FusionExecutionContractTests {
         composed.reserveCapacity(result.count)
         for index in 0..<result.count {
             try result.withRow(at: index) { row in
-                guard case .string(let identity) = row.fields["id"],
+                guard case .string(let identity)? = row.fields["id"],
                       let score = row.annotations[
                         FusionExecutor.scoreAnnotation
                       ]?.float64Value else {

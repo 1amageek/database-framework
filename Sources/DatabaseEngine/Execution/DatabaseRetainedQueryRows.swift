@@ -1,42 +1,48 @@
-/// Linear ownership for request-accounted logical-source rows.
-///
-/// A logical source keeps its row storage admitted until the canonical
-/// dispatcher either consumes each row or promotes the final public output.
-/// This prevents extension-point implementations from returning an
-/// unaccounted Array between source execution and relational materialization.
+import DatabaseKit
+
+/// Linear row, schema and source-payload ownership until final output transfer.
 public struct DatabaseRetainedQueryRows: ~Copyable, Sendable {
     private enum Storage: ~Copyable, Sendable {
         case unique(DatabaseRetainedBuffer<QueryRow>)
-        case shared(DatabaseSharedRetainedArrayView<QueryRow>)
+        case shared(DatabaseSharedRetainedQueryRows.View)
     }
 
     private var storage: Storage
+    public let columns: [QueryColumn]
+    package let payloadLeases: [DatabaseQueryPayloadLease]
+    package let schemaLeases: [DatabaseIntermediateReservation]
 
+    /// The producing owner has admitted schema/payload and validated rows.
     package init(
-        storage: consuming DatabaseRetainedBuffer<QueryRow>
+        storage: consuming DatabaseRetainedBuffer<QueryRow>,
+        columns: [QueryColumn],
+        payloadLeases: [DatabaseQueryPayloadLease] = [],
+        schemaLeases: [DatabaseIntermediateReservation] = []
     ) {
         self.storage = .unique(consume storage)
+        self.columns = columns
+        self.payloadLeases = payloadLeases
+        self.schemaLeases = schemaLeases
     }
 
-    init(sharedStorage: DatabaseSharedRetainedArrayView<QueryRow>) {
+    package init(sharedStorage: DatabaseSharedRetainedQueryRows.View) {
         self.storage = .shared(sharedStorage)
+        self.columns = sharedStorage.columns
+        self.payloadLeases = sharedStorage.payloadLeases
+        self.schemaLeases = sharedStorage.schemaLeases
     }
 
     public var count: Int {
         switch storage {
-        case .unique(let storage):
-            return storage.count
-        case .shared(let storage):
-            return storage.count
+        case .unique(let storage): return storage.count
+        case .shared(let storage): return storage.count
         }
     }
     public var isEmpty: Bool { count == 0 }
     package var workMeter: DatabaseWorkMeter {
         switch storage {
-        case .unique(let storage):
-            return storage.workMeter
-        case .shared(let storage):
-            return storage.workMeter
+        case .unique(let storage): return storage.workMeter
+        case .shared(let storage): return storage.workMeter
         }
     }
 
@@ -44,11 +50,13 @@ public struct DatabaseRetainedQueryRows: ~Copyable, Sendable {
         at index: Int,
         _ body: (borrowing QueryRow) throws(Failure) -> Void
     ) throws(Failure) {
+        defer {
+            withExtendedLifetime(payloadLeases) {}
+            withExtendedLifetime(schemaLeases) {}
+        }
         switch storage {
-        case .unique(let storage):
-            try storage.withElement(at: index, body)
-        case .shared(let storage):
-            try storage.withElement(at: index, body)
+        case .unique(let storage): try storage.withElement(at: index, body)
+        case .shared(let storage): try storage.withElement(at: index, body)
         }
     }
 
@@ -56,55 +64,61 @@ public struct DatabaseRetainedQueryRows: ~Copyable, Sendable {
         at index: Int,
         _ body: (borrowing QueryRow) async throws(Failure) -> Void
     ) async throws(Failure) {
+        defer {
+            withExtendedLifetime(payloadLeases) {}
+            withExtendedLifetime(schemaLeases) {}
+        }
         switch storage {
-        case .unique(let storage):
-            try await storage.withElement(at: index, body)
-        case .shared(let storage):
-            try await storage.withElement(at: index, body)
+        case .unique(let storage): try await storage.withElement(at: index, body)
+        case .shared(let storage): try await storage.withElement(at: index, body)
         }
     }
 
     package borrowing func withSpan<Result, Failure: Error>(
         _ body: (Span<QueryRow>) throws(Failure) -> Result
     ) throws(Failure) -> Result {
+        defer {
+            withExtendedLifetime(payloadLeases) {}
+            withExtendedLifetime(schemaLeases) {}
+        }
         switch storage {
-        case .unique(let storage):
-            return try storage.withSpan(body)
-        case .shared(let storage):
-            return try storage.withSpan(body)
+        case .unique(let storage): return try storage.withSpan(body)
+        case .shared(let storage): return try storage.withSpan(body)
         }
     }
 
     public consuming func promoteToOutput() -> [QueryRow] {
+        let retainedPayload = payloadLeases
+        let retainedSchema = schemaLeases
+        defer {
+            withExtendedLifetime(retainedPayload) {}
+            withExtendedLifetime(retainedSchema) {}
+        }
         switch consume storage {
-        case .unique(let storage):
-            return storage.promoteToOutput()
-        case .shared(let storage):
-            return Array(storage)
+        case .unique(let storage): return storage.promoteToOutput()
+        case .shared(let storage): return storage.owner.materializePage(storage.range)
         }
     }
 
-    /// Moves the complete logical row sequence into canonical shared
-    /// ownership. The normal unique producer path transfers its COW Array
-    /// buffer without materializing a second relation. A bounded shared view
-    /// is rebuilt only because it cannot expose rows outside its visible
-    /// range through the returned full-range owner.
     package consuming func moveToSharedOwnership(
         at stage: DatabaseWorkStage
-    ) throws -> DatabaseSharedRetainedArray<QueryRow> {
+    ) throws -> DatabaseSharedRetainedQueryRows {
         switch consume storage {
         case .unique(let storage):
-            return try storage.moveToSharedOwnership(at: stage)
+            return DatabaseSharedRetainedQueryRows(
+                storage: try storage.moveToSharedOwnership(at: stage), columns: columns,
+                payloadLeases: payloadLeases, schemaLeases: schemaLeases
+            )
         case .shared(let storage):
+            if storage.range == storage.owner.startIndex..<storage.owner.endIndex {
+                return storage.owner
+            }
             var rebuilt = try DatabaseRetainedQueryRowsBuilder(
-                workMeter: storage.workMeter,
-                stage: stage,
-                expectedCount: storage.count
+                columns: columns, workMeter: storage.workMeter, stage: stage,
+                expectedCount: storage.count, payloadLeases: payloadLeases, schemaLeases: schemaLeases
             )
             for index in 0..<storage.count {
-                try storage.withElement(at: index) { row in
-                    try rebuilt.append(row)
-                }
+                try storage.withElement(at: index) { try rebuilt.append(copy $0) }
             }
             return try rebuilt.finish().moveToSharedOwnership(at: stage)
         }
@@ -112,13 +126,15 @@ public struct DatabaseRetainedQueryRows: ~Copyable, Sendable {
 
     package consuming func moveToSharedView(
         at stage: DatabaseWorkStage
-    ) throws -> DatabaseSharedRetainedArrayView<QueryRow> {
+    ) throws -> DatabaseSharedRetainedQueryRows.View {
         switch consume storage {
         case .unique(let storage):
-            let shared = try storage.moveToSharedOwnership(at: stage)
+            let shared = DatabaseSharedRetainedQueryRows(
+                storage: try storage.moveToSharedOwnership(at: stage), columns: columns,
+                payloadLeases: payloadLeases, schemaLeases: schemaLeases
+            )
             return shared.boundedView(shared.startIndex..<shared.endIndex)
-        case .shared(let storage):
-            return storage
+        case .shared(let storage): return storage
         }
     }
 }

@@ -13,12 +13,17 @@ enum CompositionRDFIdentity {
 
     static func qualifyBlankNodes(
         in row: DatabaseEngine.QueryRow,
+        columns: [QueryColumn],
         baseID: Base.ID
     ) throws -> DatabaseEngine.QueryRow {
-        DatabaseEngine.QueryRow(
-            fields: try row.fields.mapValues {
-                try qualifyBlankNodes(in: $0, baseID: baseID)
+        try DatabaseEngine.QueryRow(
+            values: try row.values.map { value in
+                if case .primitive(let primitive) = value {
+                    return .primitive(try qualifyBlankNodes(in: primitive, baseID: baseID))
+                }
+                return value
             },
+            columns: columns,
             annotations: try row.annotations.mapValues {
                 try qualifyBlankNodes(in: $0, baseID: baseID)
             },

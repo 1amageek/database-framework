@@ -127,7 +127,7 @@ let query = SelectQuery(
 )
 
 // Convert to SQL
-print(query.toSQL())
+print(try query.toSQL())
 ```
 
 ### Parsing SPARQL Queries
@@ -161,7 +161,7 @@ let graphQuery = GraphTableSource.match(
     (.column(ColumnRef(table: "p2", column: "name")), "friend")
 ])
 
-print(graphQuery.toSQL())
+print(try graphQuery.toSQL())
 // GRAPH_TABLE(social_network,
 //   MATCH (p1:Person)-[f:FRIEND]->(p2:Person)
 //   COLUMNS (p1.name AS person, p2.name AS friend)

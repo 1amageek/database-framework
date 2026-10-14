@@ -257,12 +257,13 @@ package struct DatabaseRetainedPolymorphicEntities: ~Copyable, Sendable {
         return isPresent
     }
 
-    /// Builds one canonical source row directly inside its admitted
-    /// destination. No QueryRow or flattened intermediate is created.
+    /// Builds one canonical source row inside its admitted destination,
+    /// preserving the shared union layout and its concrete member descriptor.
     @discardableResult
     borrowing func appendCanonicalSourceRow(
         at index: Int,
-        sourceName: String,
+        entities: [String: Schema.Entity],
+        layout: CanonicalSourceLayout,
         to rows: inout DatabaseRetainedArrayBuilder<CanonicalSourceRow>,
         stage: DatabaseWorkStage
     ) throws -> Bool {
@@ -273,48 +274,44 @@ package struct DatabaseRetainedPolymorphicEntities: ~Copyable, Sendable {
         try storage.withElement(at: index) { entry in
             let entry = copy entry
             guard let entry else { return }
+            guard let entity = entities[entry.typeName] else {
+                throw CanonicalReadError.unsupportedSource("Polymorphic member '\(entry.typeName)' is not admitted")
+            }
             isPresent = true
             try entry.model.withModel { model in
                 try workMeter.consume(at: stage)
                 let typeName = FieldValue.string(entry.typeName)
                 let typeCode = FieldValue.int64(entry.typeCode)
-                var footprint = try CanonicalRelationalFootprintMeter
-                    .sourceRowFootprint(
-                        of: model,
-                        sourceName: sourceName,
-                        workMeter: workMeter,
-                        stage: stage
+                var footprint = try CanonicalRelationalFootprintMeter.sourceRowFootprint(
+                    of: model, entity: entity, layout: layout, workMeter: workMeter, stage: stage
+                )
+                footprint = try CanonicalRelationalFootprintMeter.footprint(
+                    footprint, appendingAnnotationNamed: PolymorphicRowAnnotation.typeName,
+                    value: typeName, workMeter: workMeter
+                )
+                footprint = try CanonicalRelationalFootprintMeter.footprint(
+                    footprint, appendingAnnotationNamed: PolymorphicRowAnnotation.typeCode,
+                    value: typeCode, workMeter: workMeter
+                )
+                let prospective = footprint
+                try rows.append(footprint: prospective, at: stage) {
+                    let values = try EntityRuntimeDefinition.canonicalSourceValues(
+                        model, entity: entity, layout: layout, workMeter: workMeter, stage: stage
                     )
-                footprint = try CanonicalRelationalFootprintMeter.footprint(
-                    footprint,
-                    appendingAnnotationNamed: PolymorphicRowAnnotation.typeName,
-                    value: typeName,
-                    workMeter: workMeter
-                )
-                footprint = try CanonicalRelationalFootprintMeter.footprint(
-                    footprint,
-                    appendingAnnotationNamed: PolymorphicRowAnnotation.typeCode,
-                    value: typeCode,
-                    workMeter: workMeter
-                )
-                try rows.append(footprint: footprint, at: stage) {
-                    var fields: [String: FieldValue] = [:]
-                    fields.reserveCapacity(model.fields.count)
-                    for field in model.fields {
-                        fields[field.name] = field.value
+                    let annotations = [PolymorphicRowAnnotation.typeName: typeName,
+                                       PolymorphicRowAnnotation.typeCode: typeCode]
+                    let version = try PersistableVersionTokenCodec.token(for: model.fields)
+                    var payloadLeases = [try entry.model.canonicalPayloadLease(workMeter: workMeter)]
+                    let actual = try CanonicalRelationalFootprintMeter.decodedRowStructureFootprint(
+                        values: values, annotations: annotations, version: version, payloadLeaseCount: 2,
+                        workMeter: workMeter, stage: stage
+                    )
+                    if actual.bytes > prospective.bytes {
+                        let delta = try workMeter.reserveIntermediate(bytes: actual.bytes - prospective.bytes, at: stage)
+                        payloadLeases.append(DatabaseQueryPayloadLease(retaining: delta))
                     }
-                    let version = try PersistableVersionTokenCodec.token(
-                        for: fields
-                    )
-                    return CanonicalSourceRow.fromBaseFields(
-                        fields,
-                        sourceName: sourceName,
-                        annotations: [
-                            PolymorphicRowAnnotation.typeName: typeName,
-                            PolymorphicRowAnnotation.typeCode: typeCode,
-                        ],
-                        version: version
-                    )
+                    return CanonicalSourceRow(values: values, layout: layout, annotations: annotations,
+                                              version: version, payloadLeases: payloadLeases)
                 }
             }
         }

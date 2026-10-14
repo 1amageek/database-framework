@@ -7,20 +7,29 @@ public struct PolymorphicQueryResult: Sendable {
     public let typeName: String
     public let typeCode: Int64
     public let row: QueryRow
+    public let columns: [QueryColumn]
 
     public init(
         model: PersistedModel,
         typeName: String,
         typeCode: Int64,
-        row: QueryRow
-    ) {
+        row: QueryRow,
+        columns: [QueryColumn]
+    ) throws {
+        try row.validate(columns: columns)
+        guard model.entity == typeName else {
+            throw QueryRowCodecError.entityMismatch(expected: typeName, actual: model.entity)
+        }
+        self.columns = columns
         self.model = model
         self.typeName = typeName
         self.typeCode = typeCode
         self.row = row
     }
 
-    public var fields: [String: FieldValue] { row.fields }
+    public var values: [QueryValue] { row.values }
+    public func namedValues() throws -> [String: QueryValue] { try row.namedValues(columns: columns) }
+    public func primitiveFields() throws -> [String: FieldValue] { try row.primitiveFields(columns: columns) }
     public var annotations: [String: FieldValue] { row.annotations }
 
     public func decode<Concrete: Persistable>(
@@ -46,15 +55,22 @@ public struct PolymorphicQueryResult: Sendable {
 
 /// A decoded page returned from a polymorphic query execution.
 public struct PolymorphicQueryPage: Sendable {
+    public let columns: [QueryColumn]
     public let results: [PolymorphicQueryResult]
     public let continuation: QueryContinuation?
     public let metadata: [String: FieldValue]
 
     public init(
+        columns: [QueryColumn],
         results: [PolymorphicQueryResult],
         continuation: QueryContinuation?,
         metadata: [String: FieldValue]
-    ) {
+    ) throws {
+        try QueryColumn.validate(columns)
+        guard results.allSatisfy({ $0.columns == columns }) else {
+            throw QueryValueError.incompatibleType
+        }
+        self.columns = columns
         self.results = results
         self.continuation = continuation
         self.metadata = metadata
@@ -213,6 +229,12 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
         )
     }
 
+    /// Resolves declared output columns without executing the logical query.
+    @_spi(PolymorphicRuntime)
+    public func boundColumns() throws -> [QueryColumn] {
+        try context.boundQueryColumns(makeSelectQuery())
+    }
+
     /// Execute the logical query and return canonical rows.
     public func query() async throws -> QueryResponse {
         try await query(accessPath: nil)
@@ -270,9 +292,10 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
         from response: QueryResponse,
         schema: Schema
     ) throws -> PolymorphicQueryPage {
-        PolymorphicQueryPage(
+        try PolymorphicQueryPage(
+            columns: response.columns,
             results: try response.rows.map {
-                try decodeResult(from: $0, schema: schema)
+                try decodeResult(from: $0, columns: response.columns, schema: schema)
             },
             continuation: response.continuation,
             metadata: response.metadata
@@ -281,6 +304,7 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
 
     private func decodeResult(
         from row: QueryRow,
+        columns: [QueryColumn],
         schema: Schema
     ) throws -> PolymorphicQueryResult {
         guard let typeName = row.annotations[PolymorphicRowAnnotation.typeName]?.stringValue else {
@@ -291,18 +315,36 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
             throw PolymorphicQueryError.unknownType(typeName)
         }
 
-        let model = try QueryRowCodec.persistedModel(
-            from: row,
-            entity: entity
-        )
+        try row.validate(columns: columns)
+        // A union source contains nullable slots declared by other members.
+        // Only this concrete entity's fields cross its model destination.
+        var modelColumns: [QueryColumn] = []
+        var modelValues: [QueryValue] = []
+        modelColumns.reserveCapacity(entity.fields.count)
+        modelValues.reserveCapacity(entity.fields.count)
+        for (column, value) in zip(columns, row.values) {
+            guard entity.fieldMapByName[column.name] != nil else {
+                guard value.isNull else {
+                    throw QueryRowCodecError.unknownField(type: entity.name, field: column.name)
+                }
+                continue
+            }
+            guard let number = UInt32(exactly: modelColumns.count + 1) else { throw QueryValueError.arithmeticOverflow }
+            modelColumns.append(try QueryColumn(number: number, name: column.name, type: column.type,
+                                                isNullable: column.isNullable))
+            modelValues.append(value)
+        }
+        let modelRow = try QueryRow(values: modelValues, columns: modelColumns)
+        let model = try QueryRowCodec.persistedModel(from: modelRow, columns: modelColumns, entity: entity)
         let typeCode = row.annotations[PolymorphicRowAnnotation.typeCode]?.int64Value
             ?? Member.typeCode(for: typeName)
 
-        return PolymorphicQueryResult(
+        return try PolymorphicQueryResult(
             model: model,
             typeName: typeName,
             typeCode: typeCode,
-            row: row
+            row: row,
+            columns: columns
         )
     }
 

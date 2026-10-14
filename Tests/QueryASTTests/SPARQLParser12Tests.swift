@@ -814,7 +814,7 @@ struct LateralJoinTests {
             Issue.record("Expected graphPattern")
             return
         }
-        let sparql = pattern.toSPARQL()
+        let sparql = try pattern.toSPARQL()
         #expect(sparql.contains("LATERAL"))
     }
 

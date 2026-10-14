@@ -7,7 +7,7 @@ import StorageKit
 /// This is an engine storage format, not the client/server wire protocol.
 enum SchemaEntityEntryCodec {
     private static let magic: UInt32 = 0x4353_4244
-    private static let version: UInt16 = 4
+    private static let version: UInt16 = 5
 
     static func encode(
         _ entity: Schema.Entity,
@@ -166,12 +166,94 @@ enum SchemaEntityEntryCodec {
         writer.writeBool(field.isOptional)
         writer.writeBool(field.isArray)
         try writer.writeOptionalString(field.referenceTargetEntity)
+        writer.writeBool(field.queryType != nil)
+        if let queryType = field.queryType {
+            try writeQueryType(queryType, into: &writer)
+        }
         writer.writeBool(field.defaultValue != nil)
         if let defaultValue = field.defaultValue {
             try writer.writeLengthPrefixed {
                 writer throws(StorageFrameError) in
                 try StorageValueEncoder.write(defaultValue, into: &writer)
             }
+        }
+    }
+
+    private static func writeQueryType(
+        _ type: QueryColumnType,
+        into writer: inout StorageFrameEncoder
+    ) throws(StorageFrameError) {
+        guard QueryValueValidator.accepts(.primitive(.null), type: type) else { throw .invalidValue }
+        switch type {
+        case .primitive(let primitive, let isArray):
+            writer.writeUInt8(0)
+            try writer.writeString(primitive.rawValue)
+            writer.writeBool(isArray)
+        case .sql(let sql):
+            writer.writeUInt8(1)
+            try writeDataType(sql, into: &writer)
+        }
+    }
+
+    private static func writeDataType(
+        _ type: DataType,
+        into writer: inout StorageFrameEncoder
+    ) throws(StorageFrameError) {
+        switch type {
+        case .boolean: writer.writeUInt8(0)
+        case .smallint: writer.writeUInt8(1)
+        case .integer: writer.writeUInt8(2)
+        case .bigint: writer.writeUInt8(3)
+        case .real: writer.writeUInt8(4)
+        case .doublePrecision: writer.writeUInt8(5)
+        case .decimal(let precision, let scale):
+            writer.writeUInt8(6)
+            try writeOptionalInt(precision, into: &writer)
+            try writeOptionalInt(scale, into: &writer)
+        case .char(let length):
+            writer.writeUInt8(7)
+            try writeOptionalInt(length, into: &writer)
+        case .varchar(let length):
+            writer.writeUInt8(8)
+            try writeOptionalInt(length, into: &writer)
+        case .text: writer.writeUInt8(9)
+        case .date: writer.writeUInt8(10)
+        case .time(let withTimeZone):
+            writer.writeUInt8(11)
+            writer.writeBool(withTimeZone)
+        case .timestamp(let withTimeZone):
+            writer.writeUInt8(12)
+            writer.writeBool(withTimeZone)
+        case .interval: writer.writeUInt8(13)
+        case .binary(let length):
+            writer.writeUInt8(14)
+            try writeOptionalInt(length, into: &writer)
+        case .varbinary(let length):
+            writer.writeUInt8(15)
+            try writeOptionalInt(length, into: &writer)
+        case .blob: writer.writeUInt8(16)
+        case .json: writer.writeUInt8(17)
+        case .jsonb: writer.writeUInt8(18)
+        case .uuid: writer.writeUInt8(19)
+        case .array(let element):
+            writer.writeUInt8(20)
+            try writer.writeLengthPrefixed { writer throws(StorageFrameError) in
+                try writeDataType(element, into: &writer)
+            }
+        case .custom(let name):
+            writer.writeUInt8(21)
+            try writer.writeString(name)
+        }
+    }
+
+    private static func writeOptionalInt(
+        _ value: Int?,
+        into writer: inout StorageFrameEncoder
+    ) throws(StorageFrameError) {
+        writer.writeBool(value != nil)
+        if let value {
+            guard let encoded = Int64(exactly: value) else { throw .integerOutOfRange }
+            writer.writeInt64(encoded)
         }
     }
 
@@ -701,6 +783,7 @@ enum SchemaEntityEntryCodec {
         let isOptional = try reader.readBool()
         let isArray = try reader.readBool()
         let referenceTargetEntity = try reader.readOptionalString()
+        let queryType = try reader.readBool() ? readQueryType(from: &reader) : nil
         let defaultValue: FieldValue?
         if try reader.readBool() {
             defaultValue = try reader.readLengthPrefixed {
@@ -717,8 +800,73 @@ enum SchemaEntityEntryCodec {
             isOptional: isOptional,
             isArray: isArray,
             referenceTargetEntity: referenceTargetEntity,
-            defaultValue: defaultValue
+            defaultValue: defaultValue,
+            queryType: queryType
         )
+    }
+
+    private static func readQueryType(
+        from reader: inout StorageFrameDecoder
+    ) throws -> QueryColumnType {
+        let type: QueryColumnType
+        switch try reader.readUInt8() {
+        case 0:
+            let raw = try reader.readString()
+            guard let primitive = FieldSchemaType(rawValue: raw) else {
+                throw SchemaEntityEntryCodecError.invalidEnum(type: "FieldSchemaType", value: raw)
+            }
+            type = .primitive(primitive, isArray: try reader.readBool())
+        case 1:
+            type = .sql(try readDataType(from: &reader))
+        case let tag:
+            throw SchemaEntityEntryCodecError.invalidMetadataTag(tag)
+        }
+        guard QueryValueValidator.accepts(.primitive(.null), type: type) else {
+            throw SchemaEntityEntryCodecError.invalidDefinition("Invalid query field type")
+        }
+        return type
+    }
+
+    private static func readDataType(
+        from reader: inout StorageFrameDecoder
+    ) throws(StorageFrameError) -> DataType {
+        switch try reader.readUInt8() {
+        case 0: return .boolean
+        case 1: return .smallint
+        case 2: return .integer
+        case 3: return .bigint
+        case 4: return .real
+        case 5: return .doublePrecision
+        case 6:
+            return .decimal(precision: try readOptionalInt(from: &reader), scale: try readOptionalInt(from: &reader))
+        case 7: return .char(length: try readOptionalInt(from: &reader))
+        case 8: return .varchar(length: try readOptionalInt(from: &reader))
+        case 9: return .text
+        case 10: return .date
+        case 11: return .time(withTimeZone: try reader.readBool())
+        case 12: return .timestamp(withTimeZone: try reader.readBool())
+        case 13: return .interval
+        case 14: return .binary(length: try readOptionalInt(from: &reader))
+        case 15: return .varbinary(length: try readOptionalInt(from: &reader))
+        case 16: return .blob
+        case 17: return .json
+        case 18: return .jsonb
+        case 19: return .uuid
+        case 20:
+            return .array(try reader.readLengthPrefixed { reader throws(StorageFrameError) in
+                try readDataType(from: &reader)
+            })
+        case 21: return .custom(try reader.readString())
+        case let tag: throw .invalidValueTag(tag)
+        }
+    }
+
+    private static func readOptionalInt(
+        from reader: inout StorageFrameDecoder
+    ) throws(StorageFrameError) -> Int? {
+        guard try reader.readBool() else { return nil }
+        guard let value = Int(exactly: try reader.readInt64()) else { throw .integerOutOfRange }
+        return value
     }
 
     private static func readIndex(

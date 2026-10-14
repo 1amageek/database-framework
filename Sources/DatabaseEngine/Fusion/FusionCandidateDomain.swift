@@ -6,6 +6,9 @@ import StorageKit
 /// candidate construction to one physical row owner.
 private protocol FusionCandidateRowInput {
     var count: Int { get }
+    var columns: [QueryColumn] { get }
+    var payloadLeases: [DatabaseQueryPayloadLease] { get }
+    var schemaLeases: [DatabaseIntermediateReservation] { get }
 
     func forEachRow(
         _ body: (borrowing QueryRow) throws -> Void
@@ -16,6 +19,9 @@ private struct FusionCandidateCollectionRowInput<Rows: Collection>:
     FusionCandidateRowInput
 where Rows.Element == QueryRow {
     let rows: Rows
+    let columns: [QueryColumn]
+    var payloadLeases: [DatabaseQueryPayloadLease] { [] }
+    var schemaLeases: [DatabaseIntermediateReservation] { [] }
 
     var count: Int { rows.count }
 
@@ -30,6 +36,9 @@ where Rows.Element == QueryRow {
 
 private struct FusionCandidateScopedRowInput: FusionCandidateRowInput {
     let rows: CanonicalRetainedQueryRowView
+    var columns: [QueryColumn] { rows.columns }
+    var payloadLeases: [DatabaseQueryPayloadLease] { rows.originPayloadLeases }
+    var schemaLeases: [DatabaseIntermediateReservation] { rows.schemaLeases }
 
     var count: Int { rows.count }
 
@@ -55,16 +64,37 @@ package struct FusionCandidateDomain: Sendable {
         let row: QueryRow
         let rowFootprint: DatabaseIntermediateFootprint
         let retainedFootprint: DatabaseIntermediateFootprint
+        let payloadLeases: [DatabaseQueryPayloadLease]
     }
 
     private let entries: DatabaseSharedRetainedArray<Entry>
+    let columns: [QueryColumn]
+    private let entity: Schema.Entity
+    private let payloadLeases: [DatabaseQueryPayloadLease]
+    private let schemaLeases: [DatabaseIntermediateReservation]
 
-    init(entries: DatabaseSharedRetainedArray<Entry>) {
+    private init(
+        entries: DatabaseSharedRetainedArray<Entry>, columns: [QueryColumn], entity: Schema.Entity,
+        payloadLeases: [DatabaseQueryPayloadLease], schemaLeases: [DatabaseIntermediateReservation]
+    ) {
         self.entries = entries
+        self.columns = columns
+        self.entity = entity
+        self.payloadLeases = payloadLeases
+        self.schemaLeases = schemaLeases
+    }
+
+    private init(entries: DatabaseSharedRetainedArray<Entry>, source: FusionCandidateDomain) {
+        self.init(entries: entries, columns: source.columns, entity: source.entity,
+                  payloadLeases: source.payloadLeases, schemaLeases: source.schemaLeases)
     }
 
     package var count: Int { entries.count }
     package var isEmpty: Bool { entries.isEmpty }
+
+    var originPayloadLeases: [DatabaseQueryPayloadLease] {
+        payloadLeases + [entries.payloadLease] + schemaLeases.map { DatabaseQueryPayloadLease(retaining: $0) }
+    }
 
     package func primaryKey(at index: Int) -> ByteString {
         entries[index].packedPrimaryKey
@@ -85,21 +115,6 @@ package struct FusionCandidateDomain: Sendable {
             for: primaryKey,
             workMeter: workMeter
         ).match != nil
-    }
-
-    static func empty(
-        workMeter: DatabaseWorkMeter
-    ) throws -> FusionCandidateDomain {
-        let builder = try DatabaseRetainedArrayBuilder<Entry>(
-            workMeter: workMeter,
-            stage: .bindingCandidate,
-            layout: try DatabaseRetainedArrayLayout.forElement(Entry.self)
-        )
-        return FusionCandidateDomain(
-            entries: try builder.finish().moveToSharedOwnership(
-                at: .bindingCandidate
-            )
-        )
     }
 
     func entry(
@@ -134,12 +149,13 @@ package struct FusionCandidateDomain: Sendable {
 
     static func make<Rows: Collection>(
         rows: Rows,
+        columns: [QueryColumn],
         entity: Schema.Entity,
         workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage = .bindingCandidate
     ) throws -> FusionCandidateDomain where Rows.Element == QueryRow {
         try make(
-            input: FusionCandidateCollectionRowInput(rows: rows),
+            input: FusionCandidateCollectionRowInput(rows: rows, columns: columns),
             entity: entity,
             workMeter: workMeter,
             stage: stage
@@ -152,7 +168,10 @@ package struct FusionCandidateDomain: Sendable {
         workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage = .bindingCandidate
     ) throws -> FusionCandidateDomain {
-        try make(
+        guard rows.workMeter === workMeter else {
+            throw DatabaseIntermediateReservationError.workMeterMismatch
+        }
+        return try make(
             input: FusionCandidateScopedRowInput(rows: rows),
             entity: entity,
             workMeter: workMeter,
@@ -166,6 +185,12 @@ package struct FusionCandidateDomain: Sendable {
         workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage
     ) throws -> FusionCandidateDomain {
+        let columns = input.columns
+        let schemaLeases = input.schemaLeases.isEmpty
+            ? [try admitColumns(columns, workMeter: workMeter, stage: stage)] : input.schemaLeases
+        try validateColumns(columns)
+        let identitySlot = try identitySlot(columns: columns)
+        let payloadLeases = input.payloadLeases
         var builder = try DatabaseRetainedArrayBuilder<Entry>(
             workMeter: workMeter,
             stage: stage,
@@ -174,9 +199,8 @@ package struct FusionCandidateDomain: Sendable {
         )
         try input.forEachRow { row in
             try workMeter.consume(at: stage)
-            guard let identity = row.fields["id"], identity != .null else {
-                throw FusionExecutionContractError.missingIdentity(field: "id")
-            }
+            try row.validate(columns: columns)
+            let identity = try identity(in: row, slot: identitySlot)
             let primaryKey = try PersistableIdentifierKeyCodec
                 .tuple(forPersistedIdentifier: identity)
             _ = try PersistableIdentifierKeyCodec.value(
@@ -204,7 +228,8 @@ package struct FusionCandidateDomain: Sendable {
                     packedPrimaryKey: packedPrimaryKey,
                     row: row,
                     rowFootprint: rowFootprint,
-                    retainedFootprint: footprint
+                    retainedFootprint: footprint,
+                    payloadLeases: []
                 )
             }
         }
@@ -242,7 +267,8 @@ package struct FusionCandidateDomain: Sendable {
             }
         }
         return FusionCandidateDomain(
-            entries: try sorted.moveToSharedOwnership(at: stage)
+            entries: try sorted.moveToSharedOwnership(at: stage), columns: columns, entity: entity,
+            payloadLeases: payloadLeases, schemaLeases: schemaLeases
         )
     }
 
@@ -283,13 +309,14 @@ package struct FusionCandidateDomain: Sendable {
         }
         return FusionCandidateDomain(entries: try sorted.moveToSharedOwnership(
             at: stage
-        ))
+        ), source: source)
     }
 
     static func make(
         models: DatabaseRetainedPersistedModels,
         primaryKeys: any DatabaseRetainedPrimaryKeyCollection,
         entity: Schema.Entity,
+        admittedFieldNames: Set<String>? = nil,
         workMeter: DatabaseWorkMeter
     ) throws -> FusionCandidateDomain {
         guard models.count == primaryKeys.count else {
@@ -298,6 +325,31 @@ package struct FusionCandidateDomain: Sendable {
                 actual: models.count
             )
         }
+        guard models.workMeter === workMeter else {
+            throw DatabaseIntermediateReservationError.workMeterMismatch
+        }
+        if let admittedFieldNames, !admittedFieldNames.allSatisfy({ entity.fieldMapByName[$0] != nil }) {
+            throw FusionExecutionContractError.executionContractViolation
+        }
+        let declaredFields = entity.fields.lazy.filter { admittedFieldNames?.contains($0.name) ?? true }
+        let schemaFootprint = try CanonicalRelationalFootprintMeter.sourceLayoutFootprint(
+            fieldNames: declaredFields.map(\.name), sourceName: nil,
+            workMeter: workMeter, stage: .storageRow
+        )
+        let columnBytes = try DatabaseIntermediateFootprint(bytes: UInt64(MemoryLayout<QueryColumn>.stride))
+            .multiplied(by: UInt64(declaredFields.count))
+        let schemaReservation = try workMeter.reserveIntermediate(
+            bytes: schemaFootprint.adding(columnBytes).bytes, at: .storageRow
+        )
+        let columns = try declaredFields.enumerated().map { index, field in
+            try QueryColumn(number: UInt32(index + 1), name: field.name,
+                            type: field.queryType ?? .primitive(field.type, isArray: field.isArray),
+                            isNullable: field.isOptional)
+        }
+        let layout = CanonicalSourceLayout(
+            slots: declaredFields.map { .init(name: $0.name, scope: nil) }, reservation: schemaReservation,
+            types: columns.map(\.type), nullability: columns.map(\.isNullable)
+        )
         var builder = try DatabaseRetainedArrayBuilder<Entry>(
             workMeter: workMeter,
             stage: .storageRow,
@@ -314,11 +366,15 @@ package struct FusionCandidateDomain: Sendable {
                             primaryKey.pack()
                         )
                     }
-                    let footprint = try retained.queryRowFootprint.adding(
-                        DatabaseIntermediateFootprint(
-                            bytes: UInt64(packedPrimaryKeyByteCount) + 64
+                    var rowFootprint = DatabaseIntermediateFootprint()
+                    try retained.withModel { model in
+                        rowFootprint = try CanonicalRelationalFootprintMeter.sourceRowFootprint(
+                            of: model, entity: entity, layout: layout, workMeter: workMeter, stage: .storageRow
                         )
-                    )
+                    }
+                    let footprint = try rowFootprint.adding(DatabaseIntermediateFootprint(
+                        bytes: UInt64(packedPrimaryKeyByteCount) + 64
+                    ))
                     try builder.append(footprint: footprint) {
                         let packedPrimaryKey = primaryKey.pack()
                         precondition(
@@ -326,8 +382,14 @@ package struct FusionCandidateDomain: Sendable {
                         )
                         var candidate: Entry?
                         try retained.withModel { model in
-                            let row = try QueryRowCodec.encode(model)
-                            guard let identity = row.fields["id"],
+                            let values = try EntityRuntimeDefinition.canonicalSourceValues(
+                                model, entity: entity, layout: layout, workMeter: workMeter, stage: .storageRow
+                            )
+                            let row = QueryRow(validatedValues: values,
+                                               version: try PersistableVersionTokenCodec.token(for: model.fields))
+                            // Internal candidate routing does not require an
+                            // identifier slot in the authorized projection.
+                            guard let identity = model.value(forFieldNamed: "id"),
                                   identity != .null else {
                                 throw FusionExecutionContractError
                                     .missingIdentity(field: "id")
@@ -350,8 +412,9 @@ package struct FusionCandidateDomain: Sendable {
                                 identity: identity,
                                 packedPrimaryKey: packedPrimaryKey,
                                 row: row,
-                                rowFootprint: retained.queryRowFootprint,
-                                retainedFootprint: footprint
+                                rowFootprint: rowFootprint,
+                                retainedFootprint: footprint,
+                                payloadLeases: [try retained.canonicalPayloadLease(workMeter: workMeter)]
                             )
                         }
                         guard let candidate else {
@@ -375,13 +438,16 @@ package struct FusionCandidateDomain: Sendable {
         }
         return FusionCandidateDomain(entries: try sorted.moveToSharedOwnership(
             at: .storageRow
-        ))
+        ), columns: columns, entity: entity, payloadLeases: [], schemaLeases: [schemaReservation])
     }
 
     func union(
         _ other: FusionCandidateDomain,
         workMeter: DatabaseWorkMeter
     ) throws -> FusionCandidateDomain {
+        guard entity.name == other.entity.name, columns == other.columns else {
+            throw FusionExecutionContractError.executionContractViolation
+        }
         var builder = try DatabaseRetainedArrayBuilder<Entry>(
             workMeter: workMeter,
             stage: .bindingCandidate,
@@ -433,7 +499,9 @@ package struct FusionCandidateDomain: Sendable {
         return FusionCandidateDomain(
             entries: try builder.finish().moveToSharedOwnership(
                 at: .bindingCandidate
-            )
+            ), columns: columns, entity: entity,
+            payloadLeases: payloadLeases + other.payloadLeases + [entries.payloadLease, other.entries.payloadLease],
+            schemaLeases: schemaLeases + other.schemaLeases
         )
     }
 
@@ -441,6 +509,9 @@ package struct FusionCandidateDomain: Sendable {
         _ other: FusionCandidateDomain,
         workMeter: DatabaseWorkMeter
     ) throws -> FusionCandidateDomain {
+        guard entity.name == other.entity.name, columns == other.columns else {
+            throw FusionExecutionContractError.executionContractViolation
+        }
         var builder = try DatabaseRetainedArrayBuilder<Entry>(
             workMeter: workMeter,
             stage: .bindingCandidate,
@@ -480,8 +551,103 @@ package struct FusionCandidateDomain: Sendable {
         return FusionCandidateDomain(
             entries: try builder.finish().moveToSharedOwnership(
                 at: .bindingCandidate
-            )
+            ), columns: columns, entity: entity,
+            payloadLeases: payloadLeases + other.payloadLeases + [entries.payloadLease, other.entries.payloadLease],
+            schemaLeases: schemaLeases + other.schemaLeases
         )
+    }
+
+    static func identitySlot(columns: [QueryColumn]) throws -> Int {
+        guard let slot = columns.firstIndex(where: { $0.name == "id" }) else {
+            throw FusionExecutionContractError.missingIdentity(field: "id")
+        }
+        guard columns.dropFirst(slot + 1).allSatisfy({ $0.name != "id" }) else {
+            throw QueryRowCodecError.duplicateColumn("id")
+        }
+        return slot
+    }
+
+    static func identity(in row: borrowing QueryRow, slot: Int) throws -> FieldValue {
+        guard row.values.indices.contains(slot), case .primitive(let identity) = row.values[slot], identity != .null else {
+            throw FusionExecutionContractError.missingIdentity(field: "id")
+        }
+        return identity
+    }
+
+    /// This is the explicit primitive persistence destination for a partial
+    /// Fusion projection; fields outside its admitted columns are not added.
+    func indexFields(for row: borrowing QueryRow) throws -> [String: FieldValue] {
+        try row.validate(columns: columns)
+        var fields: [String: FieldValue] = [:]
+        fields.reserveCapacity(columns.count)
+        for (column, value) in zip(columns, row.values) {
+            let descriptor = try persistenceDescriptor(for: column)
+            fields[column.name] = try QueryFieldStorageAdapter.encode(
+                value, type: descriptor,
+                limits: QueryFieldStorageAdapter.inferredLimits(for: value, type: descriptor)
+            )
+        }
+        return fields
+    }
+
+    func indexRowFootprint(for row: borrowing QueryRow, workMeter: DatabaseWorkMeter) throws -> DatabaseIntermediateFootprint {
+        var footprint = CanonicalRelationalFootprintMeter.queryRowBaseFootprint()
+        for (column, value) in zip(columns, row.values) {
+            let descriptor = try persistenceDescriptor(for: column)
+            let counts = try QueryFieldStorageAdapter.measure(value, type: descriptor)
+            let retained = try QueryValueValidator.measure(value)
+            let nodes = try DatabaseIntermediateFootprint(bytes: UInt64(MemoryLayout<FieldValue>.stride + 32))
+                .multiplied(by: counts.valueNodes)
+            let objectEntries = try DatabaseIntermediateFootprint(bytes: UInt64(MemoryLayout<FieldValue>.stride + 64))
+                .multiplied(by: counts.objectEntries).multiplied(by: 2)
+            let arrayEntries = try DatabaseIntermediateFootprint(bytes: UInt64(MemoryLayout<FieldValue>.stride + 64))
+                .multiplied(by: counts.arrayElements).multiplied(by: 2)
+            footprint = try footprint.adding(nodes).adding(objectEntries).adding(arrayEntries)
+                .adding(DatabaseIntermediateFootprint(bytes: 32 + UInt64(column.name.utf8.count)))
+                .adding(DatabaseIntermediateFootprint(bytes: counts.newUTF8Bytes))
+                .adding(DatabaseIntermediateFootprint(bytes: retained.retainedByteCount))
+            try workMeter.consume(counts.valueNodes, at: .projection)
+        }
+        for (name, value) in row.annotations {
+            footprint = try footprint.adding(CanonicalRelationalFootprintMeter.fieldEntryFootprint(
+                nameUTF8Count: name.utf8.count, value: value, workMeter: workMeter, stage: .projection
+            ))
+        }
+        if let version = row.version {
+            footprint = try footprint.adding(DatabaseIntermediateFootprint(bytes: UInt64(version.value.utf8.count)))
+        }
+        return footprint
+    }
+
+    private func persistenceDescriptor(for column: QueryColumn) throws -> QueryColumnType {
+        guard let field = entity.fieldMapByName[column.name] else {
+            throw QueryRowCodecError.unknownField(type: entity.name, field: column.name)
+        }
+        if let descriptor = field.queryType {
+            guard descriptor == column.type else {
+                throw QueryRowCodecError.incompatibleField(type: entity.name, field: field.name)
+            }
+            return descriptor
+        }
+        try QueryFieldStorageAdapter.validateDescriptor(column.type, fieldType: field.type, isArray: field.isArray)
+        return .primitive(field.type, isArray: field.isArray)
+    }
+
+    private static func validateColumns(_ columns: [QueryColumn]) throws {
+        try QueryColumn.validate(columns)
+        var names = Set<String>()
+        for column in columns {
+            guard names.insert(column.name).inserted else { throw QueryRowCodecError.duplicateColumn(column.name) }
+        }
+    }
+
+    private static func admitColumns(_ columns: [QueryColumn], workMeter: DatabaseWorkMeter,
+                                     stage: DatabaseWorkStage) throws -> DatabaseIntermediateReservation {
+        var bytes = try DatabaseIntermediateFootprint(bytes: UInt64(MemoryLayout<QueryColumn>.stride))
+            .multiplied(by: UInt64(columns.capacity))
+            .adding(DatabaseIntermediateFootprint(bytes: 64 + UInt64(MemoryLayout<[QueryColumn]>.stride)))
+        for column in columns { bytes = try bytes.adding(DatabaseIntermediateFootprint(bytes: UInt64(column.name.utf8.count))) }
+        return try workMeter.reserveIntermediate(bytes: bytes.bytes, at: stage)
     }
 
     private func checkedCombinedCount(
@@ -563,7 +729,7 @@ package struct FusionCandidateDomain: Sendable {
             stage: .bindingCandidate
         )
         guard lhs.identity == rhs.identity,
-              lhs.row.fields == rhs.row.fields,
+              lhs.row.values == rhs.row.values,
               lhs.row.annotations == rhs.row.annotations,
               lhs.row.version == rhs.row.version else {
             throw FusionExecutionContractError.inconsistentPayload(

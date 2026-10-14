@@ -130,6 +130,11 @@ integrated package path is verified once at the converged boundary. A change
 to dependency direction, runtime composition, or a child public contract
 invalidates the corresponding child and package integration evidence.
 
+Mutable expected test counts are owned by the executable configuration:
+[backend lanes](scripts/docker/versions.env) and
+[GraphIndexes target lanes](.github/workflows/ci.yml). Verification guides link
+to those owners; intentional test additions update the corresponding owner.
+
 The Docker harness's `postgresql-run` entry executes reference SQL against its
 pinned isolated server and owns identity checks, logs, authoritative stop,
 negative readiness, and state removal. Its external timeout keeps a supervisor
@@ -138,6 +143,28 @@ five seconds to exit, then sends KILL and reaps the command before returning
 124. This remains effective when a command changes its own signal handlers.
 Command failure remains failure after cleanup; cleanup failure also rejects an
 otherwise successful run.
+
+The FoundationDB package lane admits one Swift Testing case at a time through
+`swift test --no-parallel`. All cases share one isolated server; unbounded
+case admission produced backend GRV rate-limit errors (1051) and transaction
+timeouts (1031), while the same affected cases passed in isolation. This is a
+harness scheduling contract, not a production retry or error-conversion policy.
+Compilation remains parallel and each case's explicit concurrent tasks still
+run concurrently. The pinned [SwiftPM command](https://github.com/swiftlang/swift-package-manager/blob/83ce3b6fc4f7c8ed23d60fcba598e9103a08a44e/Sources/Commands/SwiftTestCommand.swift)
+forwards the flag to the pinned [Testing entry point](https://github.com/swiftlang/swift-testing/blob/f5f1b3154107af3f188ab513a375cc796f8e8c8f/Sources/Testing/ABI/EntryPoints/EntryPoint.swift),
+whose [runner](https://github.com/swiftlang/swift-testing/blob/f5f1b3154107af3f188ab513a375cc796f8e8c8f/Sources/Testing/Running/Runner.swift)
+serializes case-body admission. Changes to this scheduling rule require the
+complete exact-count real-service lane, including explicit concurrency tests,
+zero backend failures and authoritative teardown. Other backend lanes retain
+their existing case scheduling.
+
+The user deferred the full FoundationDB regression to S18. The serial-case
+lane's first startup executed zero cases before the Docker runtime stalled;
+its scheduling change has no successful full-lane runtime evidence yet.
+Previously affected cases passed in the focused real-service lane. Native,
+SQLite and PostgreSQL evidence remains local to its recorded snapshots.
+The deferred lane must still satisfy exact counts and authoritative teardown
+before the overall SQL task is complete.
 
 ### Serialized integration-scenario lifecycle
 

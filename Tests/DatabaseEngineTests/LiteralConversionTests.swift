@@ -192,6 +192,41 @@ struct LiteralConversionTests {
         }
     }
 
+    @Test("Query values use lossless declared persistence without metadata reduction")
+    func queryValuesPreservePersistenceMetadata() throws {
+        let limits = QueryValueLimits(
+            maximumRetainedBytes: 4096, maximumTotalNodes: 32,
+            maximumNestingDepth: 8, maximumCollectionElements: 32
+        )
+        let fixtures: [(QueryValue, QueryColumnType)] = [
+            (.numeric(try QueryNumericValue(
+                value: ExactDecimal(coefficient: 123, scale: 2), displayScale: 3
+            )), .sql(.decimal(precision: nil, scale: nil))),
+            (.json(try QueryJSONValue(bytes: ByteString(utf8: " null "), limits: limits)), .sql(.json)),
+            (.jsonb(try QueryJSONBValue(root: .null, limits: limits)), .sql(.jsonb)),
+            (.array(try QueryArrayValue(
+                elementType: .integer,
+                dimensions: [QueryArrayDimension(lowerBound: -2, length: 1)],
+                elements: [.primitive(.int32(42))], limits: limits
+            )), .sql(.array(.integer))),
+            (.interval(try QueryIntervalValue(
+                period: CalendarPeriod(months: 2, days: 3), time: TimeSpan(seconds: 4)
+            )), .sql(.interval)),
+        ]
+        for (value, type) in fixtures {
+            let inferred = try Literal.queryValue(value).toFieldValue()
+            let declared = try Literal.queryValue(value, type: type).toFieldValue()
+            #expect(inferred == declared)
+            let limits = try QueryFieldStorageAdapter.inferredLimits(for: declared, type: type)
+            #expect(try QueryFieldStorageAdapter.decode(declared, type: type, limits: limits) == value)
+            #expect(throws: LiteralConversionError.queryValue(.incompatibleType)) {
+                _ = try Literal.queryValue(value, type: .sql(.text)).toFieldValue()
+            }
+        }
+        let primitive = FieldValue.object(FieldObject())
+        #expect(try Literal.queryValue(.primitive(primitive)).toFieldValue() == primitive)
+    }
+
     @Test("Malformed RDF literals report stable typed failures")
     func malformedRDFReportsTypedFailures() {
         #expect(throws: LiteralConversionError.invalidRDFLiteral(datatype: "")) {

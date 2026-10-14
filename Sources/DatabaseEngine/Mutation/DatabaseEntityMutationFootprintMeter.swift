@@ -17,12 +17,9 @@ package enum DatabaseEntityMutationFootprintMeter {
         of identity: EntityReference,
         workMeter: DatabaseWorkMeter
     ) throws -> DatabaseIntermediateFootprint {
-        try CanonicalRelationalFootprintMeter.footprint(
-            of: QueryRow(
-                fields: ["identity": .reference(identity)]
-            ),
-            workMeter: workMeter
-        )
+        try CanonicalRelationalFootprintMeter.sourceRowFootprint(
+            fields: ["identity": .reference(identity)], sourceName: nil, annotations: [:],
+            version: nil, workMeter: workMeter)
     }
 
     package static func footprint(
@@ -31,15 +28,9 @@ package enum DatabaseEntityMutationFootprintMeter {
     ) throws -> DatabaseIntermediateFootprint {
         switch precondition {
         case .expectedVersion(let identity, let version):
-            return try CanonicalRelationalFootprintMeter.footprint(
-                of: QueryRow(
-                    fields: [
-                        "identity": .reference(identity),
-                        "version": .bytes(version),
-                    ]
-                ),
-                workMeter: workMeter
-            )
+            return try CanonicalRelationalFootprintMeter.sourceRowFootprint(
+                fields: ["identity": .reference(identity), "version": .bytes(version)],
+                sourceName: nil, annotations: [:], version: nil, workMeter: workMeter)
         case .mustExist(let identity), .mustNotExist(let identity):
             return try footprint(of: identity, workMeter: workMeter)
         }
@@ -77,16 +68,9 @@ package enum DatabaseEntityMutationFootprintMeter {
         of model: PersistedModel,
         workMeter: DatabaseWorkMeter
     ) throws -> DatabaseIntermediateFootprint {
-        try CanonicalRelationalFootprintMeter.footprint(
-            of: QueryRow(
-                fields: [
-                    "model": .object(
-                        try DatabaseEntityProjection.fieldObject(for: model)
-                    )
-                ]
-            ),
-            workMeter: workMeter
-        )
+        try CanonicalRelationalFootprintMeter.sourceRowFootprint(
+            fields: ["model": .object(try DatabaseEntityProjection.fieldObject(for: model))],
+            sourceName: nil, annotations: [:], version: nil, workMeter: workMeter)
     }
 
     private static func footprint(
@@ -94,14 +78,8 @@ package enum DatabaseEntityMutationFootprintMeter {
         fields: FieldObject,
         workMeter: DatabaseWorkMeter
     ) throws -> DatabaseIntermediateFootprint {
-        try CanonicalRelationalFootprintMeter.footprint(
-            of: QueryRow(
-                fields: [
-                    "identity": .reference(identity),
-                    "fields": .object(fields),
-                ]
-            ),
-            workMeter: workMeter
-        )
+        try CanonicalRelationalFootprintMeter.sourceRowFootprint(
+            fields: ["identity": .reference(identity), "fields": .object(fields)],
+            sourceName: nil, annotations: [:], version: nil, workMeter: workMeter)
     }
 }

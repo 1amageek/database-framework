@@ -133,8 +133,8 @@ struct SchemaDeclaredIndexBehaviorTests {
             )
         #expect(canonicalResponse.rows.count == 2)
         #expect(
-            Set(canonicalResponse.rows.compactMap {
-                $0.fields["id"]?.stringValue
+            Set(canonicalResponse.rows.compactMap { row in
+                if case .primitive(.string(let value)) = row.values[0] { return value }; return nil
             }) == Set([first.id, second.id])
         )
 
@@ -187,7 +187,7 @@ struct SchemaDeclaredIndexBehaviorTests {
                 limit: 1
             )
         )
-        #expect(countLimitedToOne.rows.first?.fields["total"] == .int64(3))
+        #expect(countLimitedToOne.rows.first?.values[0] == .primitive(.int64(3)))
 
         let countOffsetPastAggregate = try await context.query(
             SelectQuery(
@@ -211,8 +211,8 @@ struct SchemaDeclaredIndexBehaviorTests {
             )
         )
         #expect(
-            Set(distinctResponse.rows.compactMap {
-                $0.fields["category"]?.stringValue
+            Set(distinctResponse.rows.compactMap { row in
+                if case .primitive(.string(let value)) = row.values[0] { return value }; return nil
             }) == Set(["books", "music"])
         )
 
@@ -224,8 +224,8 @@ struct SchemaDeclaredIndexBehaviorTests {
             )
         )
         #expect(
-            Set(distinctItemsResponse.rows.compactMap {
-                $0.fields["category"]?.stringValue
+            Set(distinctItemsResponse.rows.compactMap { row in
+                if case .primitive(.string(let value)) = row.values[0] { return value }; return nil
             }) == Set(["books", "music"])
         )
     }
@@ -304,14 +304,14 @@ struct SchemaDeclaredIndexBehaviorTests {
                 )
             )
         )
-        #expect(scalarProjection.rows.first?.fields["sum"] == .int64(5))
+        #expect(scalarProjection.rows.first?.values[0] == .primitive(.int64(5)))
         #expect(
-            scalarProjection.rows.first?.fields["classification"]
-                == .string("matched")
+            scalarProjection.rows.first?.values[1]
+                == .primitive(.string("matched"))
         )
         #expect(
-            scalarProjection.rows.first?.fields["lowerTitle"]
-                == .string("first")
+            scalarProjection.rows.first?.values[2]
+                == .primitive(.string("first"))
         )
 
         do {
@@ -380,8 +380,8 @@ struct SchemaDeclaredIndexBehaviorTests {
 
         #expect(response.rows.count == 1)
         #expect(
-            response.rows[0].fields["identifier"]
-                == .string("uncommitted")
+            response.rows[0].values[0]
+                == .primitive(.string("uncommitted"))
         )
     }
 
@@ -488,10 +488,10 @@ struct SchemaDeclaredIndexBehaviorTests {
         )
 
         #expect(response.rows.count == 1)
-        #expect(response.rows[0].fields["available.id"] == .string("first"))
-        #expect(response.rows[0].fields["missing.id"] == .null)
-        #expect(response.rows[0].fields["missing.category"] == .null)
-        #expect(response.rows[0].fields["missing.title"] == .null)
+        #expect(response.rows[0].values[0] == .primitive(.string("first")))
+        #expect(response.rows[0].values[3] == .primitive(.null))
+        #expect(response.rows[0].values[4] == .primitive(.null))
+        #expect(response.rows[0].values[5] == .primitive(.null))
     }
 
     @Test("Set operations validate and align columns by position")
@@ -514,11 +514,11 @@ struct SchemaDeclaredIndexBehaviorTests {
                 ])
             )
         )
-        #expect(aligned.rows.map { $0.fields["identifier"] } == [
-            .string("first"),
-            .string("second"),
+        #expect(aligned.rows.map { $0.values[0] } == [
+            .primitive(.string("first")),
+            .primitive(.string("second")),
         ])
-        #expect(aligned.rows.map { $0.fields["rank"] } == [.int64(1), .int64(2)])
+        #expect(aligned.rows.map { $0.values[1] } == [.primitive(.int64(1)), .primitive(.int64(2))])
 
         await #expect(throws: CanonicalReadError.self) {
             _ = try await context.query(
@@ -624,9 +624,9 @@ struct SchemaDeclaredIndexBehaviorTests {
         )
 
         #expect(response.rows.count == 1)
-        #expect(response.rows[0].fields["coalesced_identifier"] == .int64(1))
-        #expect(response.rows[0].fields["left_identifier"] == .int64(1))
-        #expect(response.rows[0].fields["right_identifier"] == .int64(1))
+        #expect(response.rows[0].values[0] == .primitive(.int64(1)))
+        #expect(response.rows[0].values[1] == .primitive(.int64(1)))
+        #expect(response.rows[0].values[2] == .primitive(.int64(1)))
 
         let wildcard = try await context.query(
             SelectQuery(
@@ -641,7 +641,7 @@ struct SchemaDeclaredIndexBehaviorTests {
                 )
             )
         )
-        #expect(Set(wildcard.rows[0].fields.keys) == ["identifier"])
+        #expect(Set(wildcard.columns.map(\.name)) == ["identifier"])
     }
 
     @Test("Decimal aggregates remain exact across integer inputs")
@@ -678,12 +678,12 @@ struct SchemaDeclaredIndexBehaviorTests {
         )
 
         #expect(
-            response.rows[0].fields["total"]
-                == .decimal(ExactDecimal(coefficient: 325, scale: 2))
+            response.rows[0].values[0]
+                == .primitive(.decimal(ExactDecimal(coefficient: 325, scale: 2)))
         )
         #expect(
-            response.rows[0].fields["average"]
-                == .decimal(ExactDecimal(coefficient: 1_625, scale: 3))
+            response.rows[0].values[1]
+                == .primitive(.decimal(ExactDecimal(coefficient: 1_625, scale: 3)))
         )
     }
 

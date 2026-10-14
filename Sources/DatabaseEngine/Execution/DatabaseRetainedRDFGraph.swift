@@ -19,6 +19,7 @@ public struct DatabaseRetainedRDFGraph: ~Copyable, Sendable {
     public var count: Int { storage.count }
     public var isEmpty: Bool { storage.isEmpty }
     package var workMeter: DatabaseWorkMeter { storage.workMeter }
+    package var payloadLease: DatabaseQueryPayloadLease { storage.payloadLease }
 
     package borrowing func withElement<Failure: Error>(
         at index: Int,

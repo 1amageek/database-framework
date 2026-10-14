@@ -18,6 +18,9 @@ public struct DatabaseRetainedQueryPage: ~Copyable, Sendable {
         self.continuation = continuation
     }
 
+    public var columns: [QueryColumn] { rows.columns }
+    package var payloadLeases: [DatabaseQueryPayloadLease] { rows.payloadLeases }
+    package var schemaLeases: [DatabaseIntermediateReservation] { rows.schemaLeases }
     package var count: Int { rows.count }
     package var isEmpty: Bool { rows.isEmpty }
     package var workMeter: DatabaseWorkMeter { rows.workMeter }

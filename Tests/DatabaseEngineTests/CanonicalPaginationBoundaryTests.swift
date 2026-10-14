@@ -4,26 +4,35 @@ import DatabaseWire
 import DatabaseKit
 import StorageKitSystemClock
 import Testing
-@testable import DatabaseEngine
+@_spi(DatabaseExecution) @testable import DatabaseEngine
 
 @Suite("Canonical pagination boundaries")
 struct CanonicalPaginationBoundaryTests {
     @Test("Logical limit does not produce an unreachable continuation")
     func logicalLimitDoesNotProduceContinuation() throws {
         let page = try CanonicalQueryPagination.window(
-            rows: rows(3),
+            rows: try rows(3),
+            columns: try paginationColumns(),
             selectQuery: selectQuery(limit: 2),
             options: execution(pageSize: 2)
         )
 
         #expect(page.items.count == 2)
         #expect(page.continuation == nil)
+        #expect(try page.columns == paginationColumns())
+        let empty = try CanonicalQueryPagination.window(
+            rows: [], columns: paginationColumns(),
+            selectQuery: selectQuery(), options: execution(pageSize: 2)
+        )
+        #expect(empty.items.isEmpty)
+        #expect(empty.columns == page.columns)
     }
 
     @Test("Maximum page size does not overflow lookahead arithmetic")
     func maximumPageSizeDoesNotOverflow() throws {
         let page = try CanonicalQueryPagination.window(
-            rows: rows(2),
+            rows: try rows(2),
+            columns: try paginationColumns(),
             selectQuery: selectQuery(),
             options: execution(pageSize: Int.max)
         )
@@ -35,7 +44,8 @@ struct CanonicalPaginationBoundaryTests {
     @Test("Cursor offsets outside platform capacity are rejected")
     func oversizedCursorOffsetIsRejected() throws {
         let first = try CanonicalQueryPagination.window(
-            rows: rows(3),
+            rows: try rows(3),
+            columns: try paginationColumns(),
             selectQuery: selectQuery(),
             options: execution(pageSize: 1)
         )
@@ -49,7 +59,8 @@ struct CanonicalPaginationBoundaryTests {
 
         #expect(throws: CanonicalReadError.self) {
             _ = try CanonicalQueryPagination.window(
-                rows: rows(3),
+                rows: try rows(3),
+                columns: try paginationColumns(),
                 selectQuery: selectQuery(),
                 options: execution(
                     pageSize: 1,
@@ -62,7 +73,8 @@ struct CanonicalPaginationBoundaryTests {
     @Test("Continuation is bound to the canonical query")
     func continuationRejectsDifferentQuery() throws {
         let first = try CanonicalQueryPagination.window(
-            rows: rows(3),
+            rows: try rows(3),
+            columns: try paginationColumns(),
             selectQuery: selectQuery(),
             options: execution(pageSize: 1)
         )
@@ -70,7 +82,8 @@ struct CanonicalPaginationBoundaryTests {
 
         #expect(throws: CanonicalReadError.self) {
             _ = try CanonicalQueryPagination.window(
-                rows: rows(3),
+                rows: try rows(3),
+                columns: try paginationColumns(),
                 selectQuery: selectQuery(table: "OtherEntity"),
                 options: execution(
                     pageSize: 1,
@@ -83,17 +96,19 @@ struct CanonicalPaginationBoundaryTests {
     @Test("Continuation rejects a changed result snapshot")
     func continuationRejectsChangedResult() throws {
         let first = try CanonicalQueryPagination.window(
-            rows: rows(3),
+            rows: try rows(3),
+            columns: try paginationColumns(),
             selectQuery: selectQuery(),
             options: execution(pageSize: 1)
         )
         let continuation = try #require(first.continuation)
-        var changed = rows(3)
-        changed[1] = QueryRow(fields: ["id": .string("changed")])
+        var changed = try rows(3)
+        changed[1] = try QueryRow(values: [.primitive(.int64(99))], columns: try paginationColumns())
 
         #expect(throws: CanonicalReadError.self) {
             _ = try CanonicalQueryPagination.window(
                 rows: changed,
+                columns: try paginationColumns(),
                 selectQuery: selectQuery(),
                 options: execution(
                     pageSize: 1,
@@ -105,13 +120,14 @@ struct CanonicalPaginationBoundaryTests {
 
     @Test("Pagination narrows a consumed result buffer without reallocating")
     func paginationReusesOwnedBuffer() throws {
-        let source = rows(6)
+        let source = try rows(6)
         let sourceAddress = source.withUnsafeBufferPointer { buffer in
             buffer.baseAddress.map(UInt.init(bitPattern:))
         }
 
         let page = try CanonicalQueryPagination.window(
             rows: consume source,
+            columns: try paginationColumns(),
             selectQuery: selectQuery(offset: 2),
             options: execution(pageSize: 2)
         )
@@ -120,7 +136,7 @@ struct CanonicalPaginationBoundaryTests {
         }
 
         #expect(page.items.count == 2)
-        #expect(page.items[0].fields["id"] == .int64(2))
+        #expect(page.items[0].values[0] == .primitive(.int64(2)))
         #expect(sourceAddress == pageAddress)
     }
 
@@ -134,7 +150,7 @@ struct CanonicalPaginationBoundaryTests {
                 layout: try DatabaseRetainedArrayLayout.forElement(DatabaseEngine.QueryRow.self),
                 expectedCount: 4
             )
-            for row in rows(4) {
+            for row in try rows(4) {
                 try builder.append(
                     footprint: try CanonicalRelationalFootprintMeter.footprint(
                         of: row,
@@ -143,8 +159,9 @@ struct CanonicalPaginationBoundaryTests {
                     make: { row }
                 )
             }
-            let retained = try builder.finish().moveToSharedOwnership(
-                at: .resultMaterialization
+            let retained = DatabaseSharedRetainedQueryRows(
+                storage: try builder.finish().moveToSharedOwnership(at: .resultMaterialization),
+                columns: try paginationColumns()
             )
             let page = try CanonicalQueryPagination.retainedWindow(
                 rows: retained,
@@ -153,7 +170,12 @@ struct CanonicalPaginationBoundaryTests {
             )
             let visible = retained.boundedView(page.range)
 
-            #expect(visible.map { $0.fields["id"] } == [.int64(1), .int64(2)])
+            var visibleValues: [QueryValue] = []
+            for index in 0..<visible.count {
+                visible.withElement(at: index) { visibleValues.append($0.values[0]) }
+            }
+            #expect(visibleValues == [.primitive(.int64(1)), .primitive(.int64(2))])
+            #expect(page.columns == retained.columns)
             #expect(execution.workMeter.retainedIntermediateRows == 4)
             #expect(page.continuation != nil)
         }
@@ -174,10 +196,14 @@ struct CanonicalPaginationBoundaryTests {
         )
     }
 
-    private func rows(_ count: Int) -> [DatabaseEngine.QueryRow] {
-        (0..<count).map {
-            DatabaseEngine.QueryRow(
-                fields: ["id": .int64(Int64($0))]
+    private func paginationColumns() throws -> [QueryColumn] {
+        try [QueryColumn(number: 1, name: "id", type: .primitive(.int64), isNullable: false)]
+    }
+
+    private func rows(_ count: Int) throws -> [DatabaseEngine.QueryRow] {
+        try (0..<count).map {
+            try DatabaseEngine.QueryRow(
+                values: [.primitive(.int64(Int64($0)))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.int64), isNullable: false)]
             )
         }
     }

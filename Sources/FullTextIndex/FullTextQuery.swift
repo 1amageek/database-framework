@@ -156,7 +156,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         )
 
         return try response.rows.map { row in
-            try QueryRowCodec.decode(row, as: T.self)
+            try QueryRowCodec.decode(row, columns: response.columns, as: T.self)
         }
     }
 
@@ -197,7 +197,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         )
 
         let items: [T] = try response.rows.map { row in
-            try QueryRowCodec.decode(row, as: T.self)
+            try QueryRowCodec.decode(row, columns: response.columns, as: T.self)
         }
 
         guard let encodedTotalCount = response.metadata[
@@ -246,7 +246,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         )
 
         return try response.rows.map { row in
-            let item = try QueryRowCodec.decode(row, as: T.self)
+            let item = try QueryRowCodec.decode(row, columns: response.columns, as: T.self)
             guard let score = row.annotations["score"]?.float64Value else {
                 throw CanonicalReadError.missingAnnotation("score")
             }
@@ -472,7 +472,7 @@ public struct PolymorphicFullTextQueryBuilder<Member: Persistable & Polymorphabl
     /// Execute the polymorphic full-text search and return page metadata.
     public func executePage() async throws -> PolymorphicQueryPage {
         guard !searchTerms.isEmpty else {
-            return PolymorphicQueryPage(results: [], continuation: nil, metadata: [:])
+            return try PolymorphicQueryPage(columns: base.boundColumns(), results: [], continuation: nil, metadata: [:])
         }
 
         return try await base.executePage { schema in

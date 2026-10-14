@@ -564,7 +564,7 @@ struct GraphTableExecutionTests {
             (.column(ColumnRef(table: "b", column: "name")), "target_name")
         ])
 
-        let sql = source.toSQL()
+        let sql = try source.toSQL()
 
         #expect(sql.contains("GRAPH_TABLE(social"))
         #expect(sql.contains("MATCH"))

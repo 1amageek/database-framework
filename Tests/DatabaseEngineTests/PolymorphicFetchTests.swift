@@ -459,7 +459,7 @@ struct PolymorphicFetchTests {
             }
             #expect(response.rows.count == 1)
             #expect(
-                response.rows[0].fields["title"]
+                try response.rows[0].primitiveFields(columns: response.columns)["title"]
                     == .string("Read your writes")
             )
         }
@@ -582,7 +582,7 @@ struct PolymorphicFetchTests {
             .pageSize(2)
             .executePage()
 
-        #expect(firstPage.results.map { $0.fields["title"]?.stringValue } == ["Alpha", "Beta"])
+        #expect(try firstPage.results.map { try $0.primitiveFields()["title"]?.stringValue } == ["Alpha", "Beta"])
         #expect(try firstPage.results.first?.decodedModel(as: PolymorphicFetchReport.self)?.id == alpha.id)
         #expect(try firstPage.results.dropFirst().first?.decodedModel(as: PolymorphicFetchArticle.self)?
                 .id == beta.id)
@@ -594,7 +594,7 @@ struct PolymorphicFetchTests {
             .continuing(from: firstPage.continuation)
             .executePage()
 
-        #expect(secondPage.results.map { $0.fields["title"]?.stringValue } == ["Gamma"])
+        #expect(try secondPage.results.map { try $0.primitiveFields()["title"]?.stringValue } == ["Gamma"])
         #expect(try secondPage.results.first?.decodedModel(as: PolymorphicFetchArticle.self)?.id == gamma.id)
         #expect(secondPage.continuation == nil)
     }

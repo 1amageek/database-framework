@@ -11,6 +11,20 @@ public enum PersistableVersionTokenCodec {
         )
     }
 
+    public static func token(
+        for fields: [PersistableField]
+    ) throws -> PersistableVersionToken {
+        PersistableVersionToken(DatabaseTextFormatting.lowercaseHex(try digest(fields: fields)))
+    }
+
+    /// Streams the canonical primitive contribution without constructing fields.
+    package static func update(
+        _ value: FieldValue,
+        hasher: inout SHA256Accumulator
+    ) throws {
+        try appendValue(value, to: &hasher)
+    }
+
     public static func digest(
         fields: [String: FieldValue]
     ) throws -> ByteString {
@@ -28,14 +42,18 @@ public enum PersistableVersionTokenCodec {
     public static func digest(
         fields: [PersistableField]
     ) throws -> ByteString {
-        var valuesByName: [String: FieldValue] = [:]
-        valuesByName.reserveCapacity(fields.count)
-        for field in fields {
-            guard valuesByName.updateValue(field.value, forKey: field.name) == nil else {
+        var hasher = SHA256Accumulator()
+        let ordered = fields.sorted { $0.name < $1.name }
+        var previousName: String?
+        for field in ordered {
+            guard previousName != field.name else {
                 throw PersistableVersionTokenCodecError.duplicateField(field.name)
             }
+            previousName = field.name
+            appendString(field.name, to: &hasher)
+            try appendValue(field.value, to: &hasher)
         }
-        return try digest(fields: valuesByName)
+        return hasher.finalize()
     }
 
     public static func digest(from token: PersistableVersionToken) throws -> ByteString {

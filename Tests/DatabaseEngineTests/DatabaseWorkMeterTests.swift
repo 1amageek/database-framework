@@ -146,7 +146,7 @@ struct DatabaseWorkMeterTests {
             )
         )
         let footprint = try CanonicalRelationalFootprintMeter.footprint(
-            of: QueryRow(fields: ["value": .string("payload")]),
+            of: try QueryRow(values: [.primitive(.string("payload"))], columns: [QueryColumn(number: 1, name: "value", type: .primitive(.string), isNullable: false)]),
             workMeter: meter
         )
 

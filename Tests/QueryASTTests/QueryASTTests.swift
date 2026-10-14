@@ -225,13 +225,13 @@ struct QueryASTTests {
     @Test("SPARQLTerm SPARQL serialization")
     func testSPARQLTermSerialization() throws {
         let variable = SPARQLTerm.variable("x")
-        #expect(variable.toSPARQL() == "?x")
+        #expect(try variable.toSPARQL() == "?x")
 
         let iri = SPARQLTerm.iri("http://example.org/p")
-        #expect(iri.toSPARQL() == "<http://example.org/p>")
+        #expect(try iri.toSPARQL() == "<http://example.org/p>")
 
         let literal = SPARQLTerm.literal(.string("hello"))
-        #expect(literal.toSPARQL() == "\"hello\"")
+        #expect(try literal.toSPARQL() == "\"hello\"")
     }
 
     // MARK: - TriplePattern Tests
@@ -377,7 +377,7 @@ struct QueryASTTests {
                 object: .variable("name")
             ))
 
-        let sparql = builder.toSPARQL()
+        let sparql = try builder.toSPARQL()
         #expect(sparql.contains("SELECT *"))
         #expect(sparql.contains("WHERE"))
     }

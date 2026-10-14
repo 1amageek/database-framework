@@ -30,6 +30,7 @@ copyable and could escape without their reservation.
 | Design | Relationship | Contract Used | Summary | Cautions |
 |---|---|---|---|---|
 | [DatabaseEngine](../DESIGN.md) | parent | Aggregate role in the retained flow | Defines cross-component assumptions and outputs. | Any new output must be an explicit destination boundary. |
+| [DatabaseKit Query](../../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md) | depends on | `DataSource.usesSPARQLSemantics` | Supplies SELECT source language applicability for execution dispatch. | Classifies the top-level source; it does not prove executor availability or recursively classify descendants. |
 | [DatabaseKit SQL](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md) | depends on | SQL profile and typed semantic model | Supplies statements, values and ordered column contracts. | Type/equality changes invalidate every relational consumer. |
 | [QueryAST](../../QueryAST/DESIGN.md) | depends on | Text-to-semantic syntax contract | Canonical execution receives semantic input from the entry layer. | This is a contract relationship, not permission for an engine-to-parser import. |
 | [Core](../Core/DESIGN.md) | used by | Pre-admitted builder append | Produces present and missing entries. | Runtime metadata is validated before append. |
@@ -60,6 +61,9 @@ Fusion sealed projection + retained primary-key source
 
 ## Contracts and Invariants
 
+- SELECT execution dispatch consumes Kit's source language applicability
+  contract through `DataSource.usesSPARQLSemantics`. Executor capability and
+  Read admission remain Framework checks after that semantic classification.
 - The aggregate is noncopyable and owns one retained array whose entries keep
   every identifier/model reservation alive.
 - Builder append requires identifier, decoded model, and aggregate storage to
@@ -246,3 +250,246 @@ Type/collation/equality changes invalidate all comparison consumers and index
 pushdown assumptions. Retained representation changes invalidate canonical
 destinations and public entry/wire adaptation. Transaction or readiness
 changes belong to the parent operation owner and require its verification.
+
+### S01 frozen positional execution contract
+
+This section is the implementation boundary for S01 only. It consumes the
+frozen [Query](../../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md),
+[SQL values and case IDs](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s01-frozen-value-and-persistence-interfaces),
+[Model](../../../../database-kit/Sources/DatabaseKit/Model/DESIGN.md) and
+[Schema](../../../../database-kit/Sources/DatabaseKit/Schema/DESIGN.md)
+contracts. S01 changes carriage, declared persistence adaptation and typing
+of already-admitted expressions; later grammar, arithmetic compatibility,
+functions, DDL and block execution are not prerequisites for this boundary.
+Names below are planned internal contracts unless already present in source.
+
+#### Implementable representation and lookup map
+
+| Declaration/operation | Exact responsibility and caller |
+|---|---|
+| `CanonicalRelationSlot` | Immutable column declaration, optional source qualifier and optional persisted field number. Slot index is its offset in the shared schema; persisted field number never doubles as output ordinal. |
+| `CanonicalRelationSchema` | Ordered slots, ordered wildcard slot selection and name-to-matching-slot-index lookup. Owns immutable type/nullability declarations and scope visibility once for the relation. |
+| `resolve(ColumnRef)` | Returns one slot or typed missing/ambiguous error. Qualified names can be ambiguous when a derived relation exposes duplicate labels. Zero local matches may resolve in an outer schema; multiple local matches never fall back. |
+| `wildcardSlots(scope:)` | Returns bound slot indices in declared order. Ordinary JOIN concatenates left then right without renaming duplicate output labels. USING/NATURAL emits merged keys in USING/left-declaration order, then remaining left/right visible slots; qualified side slots remain addressable. |
+| `CanonicalSourceRow` | Positional `[QueryValue]`, primitive annotations and version only. No per-row name/scope/flattened/coalescing value dictionaries. Row arity equals its relation schema slot count. |
+| `CanonicalRelation` | Shared admitted schema plus retained source-row storage using the exact same meter. Alias creates a schema view, not per-row copies; derived/set alignment moves cells by position. |
+| `CanonicalBoundExpression` | Resolved column/outer-slot references, output QueryColumnType/nullability, and checked operation signature for an existing Expression. Evaluation never infers type from a row. |
+| `CanonicalQueryTypeBinder` | Consumes admitted entity metadata, parameters and relation scopes; binds projection/filter/join/group/order/aggregate/CASE/subquery before fetching source rows. S03 extends this same binder. |
+
+The schema contains internal addressable slots separately from its visible
+wildcard indices so USING/NATURAL can retain both qualified input keys while
+emitting one unqualified merged key from only the key slots of that JOIN.
+Visibility belongs to slot indices,
+not a relation-wide set of labels: an ordinary chained JOIN preserves each
+input's visible slots in left-to-right order, including a later same-name
+column that makes unqualified lookup ambiguous. Layout cloning and NULL
+extension preserve those indices; scoped wildcard lookup retains hidden keys.
+A null-extended side creates the exact
+number of primitive NULL cells, preserving schema and slot addressing; it
+never calls Dictionary(uniqueKeysWithValues:). A projected derived relation
+has exactly its projected slots; duplicate labels survive alias application.
+A scoped row is always a row/schema pair. Schema references are retained
+through grouping representatives and correlated subqueries without copying
+label maps into each row.
+LATERAL right-source binding receives the left schema followed by enclosing
+schemas in both validation and execution. Canonical binding wraps expression
+failures in CanonicalReadError. Scalar cardinality failure reports the row
+count before testing the one-column contract.
+Primitive numeric VALUES carriers normalize to their bound common type without
+entering the rich-value evaluator. Exact and floating relation inputs use an
+exact decimal common type only when checked conversion succeeds; arithmetic
+overloads remain separately bound. DISTINCT and set identity compare an exact
+SQL numeric payload through the primitive numeric identity owner, while general
+rich numeric expression operators remain unsupported. Canonical rich values
+retain display scale and SQL type metadata.
+LEFT LATERAL marks the right output nullable before projection binding. Scalar
+subquery projection overlays its enclosing frame before the nested await, with
+the same admitted ownership used by other correlated expression evaluation.
+
+Output QueryColumn numbers are consecutive one-based ordinals. Internal
+source slots remain zero-based storage indices and do not become public
+field identity. Output labels can be duplicate or empty. Scope names must
+still be unique in one visible binding frame: permitting duplicate columns
+is not permission to accept duplicate table aliases.
+
+#### Existing-syntax output typing
+
+The binder is total over currently executable literal, parameter, column,
+CAST, arithmetic/comparison/logical, function, CASE/COALESCE/NULLIF,
+aggregate and subquery forms. It produces the same schema on empty and
+nonempty inputs. A bare NULL acquires a contextual type, or text at a final
+SQL output with no stronger context; explicit typed NULL retains its CAST or
+parameter declaration. Column metadata comes from admitted FieldSchema,
+never persisted object shape. Outer joins widen nullability. Scalar
+subqueries retain their sole declared output type and become nullable;
+multiple output columns fail before execution and multiple rows fail at
+execution. COUNT is nonnullable; other aggregate nullability includes empty
+input. CASE checks all branch types while evaluating only its selected
+branch.
+
+Result signatures must describe actual evaluator results for every row.
+Existing operations with value-dependent primitive representations must
+normalize to their bound common result type through a checked explicit
+conversion; they cannot pick a first-row type or publish a guessed type.
+This normalization does not claim S04 PostgreSQL arithmetic/rounding parity.
+Unsupported rich arithmetic/functions remain typed unsupported operations,
+while rich literal/parameter/column projection and declared persistence work
+in S01. Primitive-only non-SQL outputs use QueryColumnType.primitive,
+including the array flag, rather than a fabricated SQL type. SQL-specific
+binding is language-qualified; SPARQL term identity, unbound/error behavior,
+and equality do not adopt SQL rules.
+
+#### Admission and direct model conversion
+
+```text
+Read admitted schema lease + exact meter
+  -> bind shared slots/name lookup/output columns
+  -> measure and admit schema once
+  -> borrow retained PersistedModel
+  -> read admitted fields in schema slot order
+  -> validate descriptor and measure QueryValue destination
+  -> append(footprint: make:)
+       -> decode declared rich envelope or wrap primitive
+       -> create positional row directly
+  -> retained relation -> collecting response -> existing Ready transition
+```
+
+Registry's regular-table path and retained-polymorphic source append use one
+purpose-limited canonical-slot append operation. It borrows the model only
+inside the existing retained entry, measures directly from its fields and
+admitted descriptor, and builds the destination inside the admitted append
+closure. It does not construct an intermediate QueryRow, field dictionary,
+public model array, or permissive generic model borrow. Field ordering is
+schema order, not model field iteration. Missing required fields fail;
+optional absence maps to NULL only where the admitted schema permits it.
+The sealed admitted field set selects source slots before decode and binding,
+including regular tables, polymorphic members and index/Fusion candidates.
+Unadmitted required fields are omitted from that source schema; they are never
+filled with NULL. A Fusion candidate's internal routing identity is validated
+from its retained model against the retained primary key independently of its
+admitted output slots. A restricted identifier is never added to those slots
+to satisfy internal matching. Fusion execution contract tests require the
+authorized projection to succeed and the identifier projection to remain denied;
+score-payload fixtures declare every payload field in their candidate schema.
+Physical predicate/order pushdown cannot evaluate declared
+rich storage envelopes as primitive objects. Unsupported rich operations
+remain explicit failures on the canonical semantic path.
+
+CanonicalRelationalFootprintMeter combines Kit's bounded value/storage
+footprints with existing runtime layout/capacity measurement.
+It accounts once for shared slots, labels, scope/name lookup and column
+metadata; per row it accounts for value-array capacity, retained rich
+payloads, annotations and version. Borrowing a primitive ByteString/lexical
+JSON retains its owner and charge without materializing bytes. Typed-array
+shape, JSONB flat backing storage and numeric display metadata are included.
+Logical node, collection and depth limits reject growth before it occurs,
+and known source-byte retention is pre-admitted. Framework selects a bounded
+layout/capacity allowance before decoded destination assembly, then reconciles
+actual whole-owner array capacities and UTF-8 content before publication.
+Reconciliation failure releases the unpublished value and its claims. Array
+counts are not a guarantee about allocator internals or total physical peak.
+Exact/one-past tests distinguish logical pre-growth rejection from actual-owner
+pre-publication reconciliation. Projection/group/derived operators share
+schema ownership; new schema metadata receives its own admission. Rollback
+cannot refund consumed work; destruction releases retained claims only when
+their last owner ends.
+
+#### Rich literal, parameter and persistence route
+
+`Literal.queryValue(value, type:)` retains the QueryValue and explicit
+QueryParameter.type after address replacement. A declared FieldSchema
+queryType selects QueryFieldStorageAdapter.decode; absent metadata wraps the
+unchanged FieldValue as primitive, even when object/bytes resemble an
+envelope. Declared rich writes measure and admit the exact adapter envelope,
+then encode before existing PersistedModel storage. Model insert/reload and
+selected-field update use the same descriptor/adaptation. No read-time
+shape inference, special object fallback or runtime metatype registry exists.
+
+#### S01 acceptance ownership
+
+The SQL child owns case meaning. This table assigns Framework evidence only;
+Kit, Wire and transport owners retain their own stages of the same case.
+
+| Cases | Framework test owner and concrete evidence |
+|---|---|
+| S01-C01–C03 | DatabaseTests SQLRowExecutionTests and DatabaseEngineTests positional relation tests: ordered duplicate projections, empty typed schema, JOIN/derived ambiguity, outer scope and null extension. |
+| S01-C04–C08 | DatabaseTests generated rich-model SQL round-trip tests: literal and parameter projection, model insert/reload/update and nonlossy metadata. |
+| S01-C09 | DatabaseEngineTests registry/schema adaptation tests: descriptor-based reads/defaults/update, malformed envelopes, no inference for primitive lookalikes. |
+| S01-C10 | DatabaseTests CanonicalPaginationBoundaryTests plus server/client/CLI owners: first/continuation/zero-row schemas identical, no first-row reconstruction. |
+| S01-C11 | Wire owns malformed/golden/lazy-frame cases; Framework bridge tests preserve typed cells/columns without eager all-page decode. |
+| S01-C12 | DatabaseTests CanonicalSQLRetainedOwnershipTests and DatabaseEngineTests retained model/resource tests: exact/one-past schema/row admission, failure/cancel release, shared last-owner release. |
+| S01-C13 | Existing primitive persistence, graph/SPARQL and MultiBase tests for affected shared paths; SQL comparator never replaces RDF identity. |
+
+The file-backed SQLite lane traces S01-C02 and C04–C09 to
+[`SQLiteStorageTests.richValuesSurviveSQLiteRestart()`](../../../Tests/SQLiteTests/SQLiteStorageTests.swift):
+model insert/reload/update, authoritative shutdown/reopen, ordered rich SQL
+projection, explicit rich AST literals and parameters, and identical typed
+columns for empty results. It complements the focused in-memory and codec
+fixtures with the actual SQLite persistence and restart boundary.
+
+These tests must execute the real admitted backend path. Structural or
+compile-only evidence cannot mark these cases complete. Existing SQL tests
+that expect dictionary fields migrate to positional assertions, with separate
+explicit ambiguity tests for name projection; removing an assertion is not
+coverage migration.
+
+#### S01 reservation terminal boundary
+
+The existing consuming final-output contract remains: claims stay live
+through pre-admitted construction, producing-resource closure and retained
+Ready/page ownership. Retained results share both schema and rows until the
+last retained owner is released. Explicit consuming public promotion moves
+complete arrays and byte owners into caller-owned QueryResponse storage and
+ends runtime reservations. No runtime token is inserted into QueryValue or
+QueryColumn. Intermediate array extraction is not final output; in particular
+server encoding/persistence completes under the retained owner's claims.
+This is the precise Framework interpretation of S01-C12; Wire's encoded-frame
+ownership is a separately verified terminal boundary.
+
+#### S01 byte-retention provenance and measurement
+
+Kit footprint counts describe representation and conservative per-reference
+known retained capacity, not unique physical allocation. Framework does not
+introduce a primitive owner-identity API or attempt universal alias detection.
+
+A producer-known frame/model/source origin carries one shared payload lease
+with its reservation. All positional aliases/projections retain that lease;
+new destinations charge their new structures, not the source payload again.
+Retaining the complete source owner truthfully retains and charges its full
+capacity, including portions outside a visible byte slice. Partial projection
+cannot release that claim while any surviving alias retains the owner.
+
+Independent raw parameter/value roots use a documented conservative bound:
+each reference contributes its known retained capacity. Equal bytes and equal
+capacity do not establish shared ownership. This sum is never labeled unique
+physical memory. Unknown capacity is a typed resource-admission failure or
+crosses an explicitly pre-admitted copying/detachment boundary; visible count
+is never substituted for unknown retained capacity. Byte validation/work
+consumption remains separate from allocation/reservation accounting.
+
+S01-C12 distinguishes: a producer-known 4 MiB frame shared by two slices pays
+one source lease plus new views/containers; arbitrary caller-supplied aliases
+may conservatively pay both known capacities; unknown-capacity input fails
+before unadmitted retention. Both cases retain their claims through Ready and
+retained output, release after last owner or final consuming transfer, and
+release partial destinations on failure/cancel. Wire's known frame admission
+and its view/new-UTF8/node ledgers remain Wire-owned; Framework consumes its
+explicit provenance rather than deducing it from QueryValue equality.
+
+#### S01 scoped expression admission consistency
+
+Primitive expression producers and their retained scoped values use the same
+Framework structural-count formula over Kit value footprints. Prospective
+scalar, string and array bounds include the same per-node and collection
+allowances as the actual known-capacity measurement; changing the retained
+representation cannot leave an older FieldValue-only maximum at the producer.
+The scoped owner still rejects a producer exceeding its declared maximum and
+releases its whole claim on producer or validation failure. Shared payload
+provenance remains separate from independent derived-value admission.
+
+VALUES metadata is admitted once in its shared positional layout. Its row
+producer reserves slot-array capacity and value payloads, without charging
+column labels as per-row dictionary entries. Exact/one-byte-short tests include
+that schema claim before the append boundary. Tiny work budgets may reject
+mandatory schema construction even for zero rows; physical cursor bounds and
+stable LIMIT 0 no-read behavior remain separate observable contracts.

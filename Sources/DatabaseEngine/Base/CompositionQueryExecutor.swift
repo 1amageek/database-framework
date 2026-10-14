@@ -67,14 +67,15 @@ public struct CompositionQueryExecutor<Model: Persistable>: Sendable {
         options: ReadExecutionOptions = .default
     ) async throws -> [CompositionResult<Model>] {
         let selectQuery = try query.toSelectQuery()
-        return try await source.execute(
+        let response = try await source.execute(
             selectQuery,
             options: options
-        ).map { result in
+        )
+        return try response.rows.map { result in
             CompositionResult(
                 composition: result.composition,
                 origin: result.origin,
-                value: try QueryRowCodec.decode(result.value, as: Model.self)
+                value: try QueryRowCodec.decode(result.value, columns: response.columns, as: Model.self)
             )
         }
     }
@@ -103,12 +104,13 @@ public struct CompositionQueryExecutor<Model: Persistable>: Sendable {
             reduced: false,
             dataset: selected.dataset
         )
-        let results = try await source.execute(
+        let response = try await source.execute(
             aggregate,
             options: options
         )
-        guard results.count == 1,
-              case .int64(let value)? = results[0].value.fields["count"],
+        guard response.rows.count == 1,
+              response.columns.count == 1,
+              case .primitive(.int64(let value))? = response.rows[0].value.values.first,
               value >= 0,
               let total = Int(exactly: value) else {
             throw CompositionQueryError.aggregateFailure(

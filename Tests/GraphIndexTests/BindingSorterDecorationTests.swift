@@ -48,7 +48,7 @@ struct BindingSorterDecorationTests {
 
         let direct = try binding.canonicalFingerprint(workMeter: directMeter)
         let canonical = try CanonicalRowFingerprint.compute(
-            QueryRow(fields: fields),
+            fields: fields,
             workMeter: canonicalMeter
         )
 

@@ -4,15 +4,19 @@ import DatabaseKit
 
 public struct CanonicalPageWindow<Item: Sendable>: Sendable {
     public let items: [Item]
+    public let columns: [QueryColumn]
     public let continuation: QueryContinuation?
 
-    public init(items: [Item], continuation: QueryContinuation?) {
+    public init(items: [Item], columns: [QueryColumn], continuation: QueryContinuation?) throws {
+        try QueryColumn.validate(columns)
         self.items = items
+        self.columns = columns
         self.continuation = continuation
     }
 }
 
 package struct CanonicalRetainedPageWindow: Sendable {
+    package let columns: [QueryColumn]
     package let range: Range<Int>
     package let continuation: QueryContinuation?
 }
@@ -98,6 +102,7 @@ public enum CanonicalQueryPagination {
 
     public static func window(
         rows: consuming [QueryRow],
+        columns: [QueryColumn],
         selectQuery: SelectQuery,
         options: ReadExecutionContext,
         rowsAreContinuationRelative: Bool = false,
@@ -105,15 +110,18 @@ public enum CanonicalQueryPagination {
         prevalidatedQueryFingerprint: ByteString? = nil
     ) throws -> CanonicalPageWindow<QueryRow> {
         let selection = try retainedWindowSelection(
-            rows: rows,
+            rowCount: rows.count,
+            columns: columns,
+            withRow: { index, body in try body(rows[index]) },
             selectQuery: selectQuery,
             options: options,
             rowsAreContinuationRelative: rowsAreContinuationRelative,
             continuationPosition: continuationPosition,
             prevalidatedQueryFingerprint: prevalidatedQueryFingerprint
         )
-        return CanonicalPageWindow(
+        return try CanonicalPageWindow(
             items: trimOwnedRows(consume rows, to: selection.range),
+            columns: columns,
             continuation: selection.continuation
         )
     }
@@ -122,7 +130,7 @@ public enum CanonicalQueryPagination {
     /// Internal query composition uses the returned range as a zero-copy view;
     /// only a public result boundary promotes the backing Array.
     package static func retainedWindow(
-        rows: DatabaseSharedRetainedArray<QueryRow>,
+        rows: DatabaseSharedRetainedQueryRows,
         selectQuery: SelectQuery,
         options: ReadExecutionContext,
         rowsAreLogicalQueryRelative: Bool = false,
@@ -131,7 +139,9 @@ public enum CanonicalQueryPagination {
         prevalidatedQueryFingerprint: ByteString? = nil
     ) throws -> CanonicalRetainedPageWindow {
         try retainedWindowSelection(
-            rows: rows,
+            rowCount: rows.count,
+            columns: rows.columns,
+            withRow: { index, body in try rows.withElement(at: index, body) },
             selectQuery: selectQuery,
             options: options,
             rowsAreLogicalQueryRelative: rowsAreLogicalQueryRelative,
@@ -141,16 +151,19 @@ public enum CanonicalQueryPagination {
         )
     }
 
-    private static func retainedWindowSelection<Rows: RandomAccessCollection>(
-        rows: Rows,
+    private static func retainedWindowSelection(
+        rowCount: Int,
+        columns: [QueryColumn],
+        withRow: (Int, (borrowing QueryRow) throws -> Void) throws -> Void,
         selectQuery: SelectQuery,
         options: ReadExecutionContext,
         rowsAreLogicalQueryRelative: Bool = false,
         rowsAreContinuationRelative: Bool,
         continuationPosition: ByteString?,
         prevalidatedQueryFingerprint: ByteString?
-    ) throws -> CanonicalRetainedPageWindow
-    where Rows.Element == QueryRow, Rows.Index == Int {
+    ) throws -> CanonicalRetainedPageWindow {
+        try QueryColumn.validate(columns)
+        for index in 0..<rowCount { try withRow(index) { try $0.validate(columns: columns) } }
         // Pagination can be reached from native and graph execution paths, so
         // it performs its own bounded admission before internal wire limits are
         // relaxed for canonical streaming.
@@ -188,7 +201,7 @@ public enum CanonicalQueryPagination {
                 throw CanonicalReadError.invalidContinuation
             }
             let visible = trimOwnedRows(
-                totalCount: rows.count,
+                totalCount: rowCount,
                 offset: rowsAreLogicalQueryRelative ? 0 : queryOffset,
                 count: rowsAreLogicalQueryRelative ? nil : logicalLimit
             )
@@ -197,6 +210,7 @@ public enum CanonicalQueryPagination {
                 at: .resultMaterialization
             )
             return CanonicalRetainedPageWindow(
+                columns: columns,
                 range: visible,
                 continuation: nil
             )
@@ -220,7 +234,7 @@ public enum CanonicalQueryPagination {
                 .continuationSnapshotIsStable
                 ? nil
                 : try Self.resultFingerprint(
-                    rows,
+                    rowCount: rowCount, columns: columns, withRow: withRow,
                     workMeter: options.workMeter
                 )
             guard cursor.queryFingerprint == queryFingerprint,
@@ -254,7 +268,8 @@ public enum CanonicalQueryPagination {
         }
         guard remainingLimit != 0 else {
             return CanonicalRetainedPageWindow(
-                range: rows.startIndex..<rows.startIndex,
+                columns: columns,
+                range: 0..<0,
                 continuation: nil
             )
         }
@@ -264,7 +279,7 @@ public enum CanonicalQueryPagination {
         )
         guard let effectivePageSize else {
             let visible = trimOwnedRows(
-                totalCount: rows.count,
+                totalCount: rowCount,
                 offset: baseOffset,
                 count: nil
             )
@@ -273,6 +288,7 @@ public enum CanonicalQueryPagination {
                 at: .resultMaterialization
             )
             return CanonicalRetainedPageWindow(
+                columns: columns,
                 range: visible,
                 continuation: nil
             )
@@ -280,9 +296,9 @@ public enum CanonicalQueryPagination {
 
         let (lookaheadCount, lookaheadOverflow) = effectivePageSize
             .addingReportingOverflow(1)
-        let availableCount = baseOffset >= rows.count
+        let availableCount = baseOffset >= rowCount
             ? 0
-            : rows.count - baseOffset
+            : rowCount - baseOffset
         let inspectedCount = min(
             availableCount,
             lookaheadOverflow ? Int.max : lookaheadCount
@@ -319,7 +335,7 @@ public enum CanonicalQueryPagination {
                 resultFingerprint = validatedResultFingerprint
             } else {
                 resultFingerprint = try Self.resultFingerprint(
-                    rows,
+                    rowCount: rowCount, columns: columns, withRow: withRow,
                     workMeter: options.workMeter
                 )
             }
@@ -337,11 +353,12 @@ public enum CanonicalQueryPagination {
             at: .resultMaterialization
         )
         let visible = trimOwnedRows(
-            totalCount: rows.count,
+            totalCount: rowCount,
             offset: baseOffset,
             count: visibleCount
         )
         return CanonicalRetainedPageWindow(
+            columns: columns,
             range: visible,
             continuation: continuation
         )
@@ -550,18 +567,19 @@ public enum CanonicalQueryPagination {
         try workMeter.consume(totalBytes, at: .resultMaterialization)
     }
 
-    private static func resultFingerprint<Rows: Sequence>(
-        _ rows: Rows,
+    private static func resultFingerprint(
+        rowCount: Int,
+        columns: [QueryColumn],
+        withRow: (Int, (borrowing QueryRow) throws -> Void) throws -> Void,
         workMeter: DatabaseWorkMeter
-    ) throws -> ByteString where Rows.Element == QueryRow {
+    ) throws -> ByteString {
         var hasher = SHA256Accumulator()
         updateDomain(0x0150_4244, hasher: &hasher)
-        for row in rows {
-            let fingerprint = try CanonicalRowFingerprint.compute(
-                row,
-                workMeter: workMeter
-            )
-            hasher.update(fingerprint)
+        for index in 0..<rowCount {
+            try withRow(index) { row in
+                let fingerprint = try CanonicalRowFingerprint.compute(row, columns: columns, workMeter: workMeter)
+                hasher.update(fingerprint)
+            }
         }
         return hasher.finalize()
     }

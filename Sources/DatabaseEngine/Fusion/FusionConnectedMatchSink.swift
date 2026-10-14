@@ -15,6 +15,7 @@ package final class FusionConnectedMatchSink: Sendable {
 
     private let candidates: FusionCandidateDomain
     private let resultFieldName: String
+    private let resultSlot: Int
     private let workMeter: DatabaseWorkMeter
     private let state: Mutex<State>
 
@@ -26,6 +27,10 @@ package final class FusionConnectedMatchSink: Sendable {
     ) throws {
         self.candidates = candidates
         self.resultFieldName = resultFieldName
+        guard let resultSlot = candidates.columns.firstIndex(where: { $0.name == resultFieldName }) else {
+            throw FusionExecutionContractError.missingConnectedResultField(field: resultFieldName)
+        }
+        self.resultSlot = resultSlot
         self.workMeter = workMeter
         self.state = Mutex(
             State(topK: try TopK(
@@ -53,17 +58,16 @@ package final class FusionConnectedMatchSink: Sendable {
                 let matches = try candidates.withEntry(
                     at: candidateIndex
                 ) { candidate in
-                    guard let value = candidate.row.fields[resultFieldName]
-                    else {
+                    guard candidate.row.values.indices.contains(resultSlot) else {
                         throw FusionExecutionContractError
                             .missingConnectedResultField(
                                 field: resultFieldName
                             )
                     }
-                    switch value {
-                    case .null:
+                    switch candidate.row.values[resultSlot] {
+                    case .primitive(.null):
                         return false
-                    case .string(let value):
+                    case .primitive(.string(let value)):
                         try DatabaseByteProcessingMeter.consume(
                             byteCount: max(
                                 value.utf8.count,

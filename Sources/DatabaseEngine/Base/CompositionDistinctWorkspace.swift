@@ -8,19 +8,14 @@ package actor CompositionDistinctWorkspace {
     package struct Result: Sendable {
         package let row: QueryRow
         package let origin: CompositionOrigin
+        package let ownedRow: DatabaseQueryScopedQueryRowOwner
+        package let workspacePayloadLease: DatabaseQueryPayloadLease
     }
 
     private struct Entry: Sendable {
         let fingerprint: ByteString
-        let identity: ByteString
         let ownedRow: DatabaseQueryScopedQueryRowOwner
         var contributors: [Base.ID]
-    }
-
-    private struct FieldFramePlan: Sendable {
-        let fields: [PersistableField]
-        let encodedByteCount: UInt64
-        let scratchReservation: DatabaseIntermediateReservation
     }
 
     private enum ContributorInput: Sendable {
@@ -64,9 +59,6 @@ package actor CompositionDistinctWorkspace {
         case removed
     }
 
-    private static let identityMagic: [UInt8] = [0x44, 0x43, 0x44, 0x52]
-    private static let identityVersion: UInt16 = 1
-    private static let identityEntity = "composition-distinct-row"
     private static let maximumDigestCollisionRecords = 1_024
     private static let fingerprintByteCount: UInt64 = 32
     private static let initialSlotCapacity = 8
@@ -132,19 +124,7 @@ package actor CompositionDistinctWorkspace {
 
         try workMeter.consume(at: .deduplication)
         let contributorInput = try Self.validatedContributorInput(origin)
-        let framePlan = try ownedRow.withRow { row in
-            try Self.makeFieldFramePlan(
-                row.fields,
-                entity: Self.identityEntity,
-                workMeter: workMeter
-            )
-        }
-        defer { framePlan.scratchReservation.release() }
-
-        let identityClaimBytes = try Self.adding(
-            framePlan.encodedByteCount,
-            Self.fingerprintByteCount
-        )
+        let identityClaimBytes = Self.fingerprintByteCount
         let identityReservation = try workMeter.reserveIntermediate(
             bytes: identityClaimBytes,
             at: .deduplication
@@ -156,24 +136,36 @@ package actor CompositionDistinctWorkspace {
             }
         }
 
-        let identity = try PersistableFieldFrameCodec.encode(
-            magic: Self.identityMagic,
-            version: Self.identityVersion,
-            entity: Self.identityEntity,
-            fields: framePlan.fields
+        let fingerprintScratch = try workMeter.reserveIntermediate(
+            bytes: UInt64(MemoryLayout<Int>.size), at: .deduplication
         )
-        guard UInt64(identity.count) == framePlan.encodedByteCount else {
-            throw CompositionQueryError.workspaceCorrupted
+        defer { fingerprintScratch.release() }
+        // Hash buckets are process-local; retained positional values are the
+        // authoritative collision check and never need an encoded copy.
+        let fingerprint = try ownedRow.withRow { row in
+            var hasher = Hasher()
+            hasher.combine(row.values.count)
+            for value in row.values {
+                let footprint = try QueryValueValidator.measure(value)
+                try workMeter.consume(footprint.nodeCount, at: .deduplication)
+                try DatabaseByteProcessingMeter.consume(
+                    byteCount: footprint.retainedByteCount,
+                    workMeter: workMeter, stage: .deduplication
+                )
+                hasher.combine(value)
+            }
+            var hash = hasher.finalize().littleEndian
+            // The injected bucket function consumes an owned byte value;
+            // copy only the fixed-size scalar at that explicit boundary.
+            let bytes = ByteString.copying(count: MemoryLayout<Int>.size) { destination in
+                withUnsafeBytes(of: &hash) { destination.copyMemory(from: $0) }
+            }
+            return identityFingerprint(bytes)
         }
-        let fingerprint = identityFingerprint(identity)
         guard UInt64(fingerprint.count) == Self.fingerprintByteCount else {
             throw CompositionQueryError.workspaceCorrupted
         }
-
-        let lookup = try findEntry(
-            fingerprint: fingerprint,
-            identity: identity
-        )
+        let lookup = try findEntry(fingerprint: fingerprint, candidate: ownedRow)
         if let index = lookup.index {
             guard let reservation else {
                 throw CompositionQueryError.workspaceCorrupted
@@ -314,7 +306,6 @@ package actor CompositionDistinctWorkspace {
         }
         let entry = Entry(
             fingerprint: fingerprint,
-            identity: identity,
             ownedRow: ownedRow,
             contributors: contributors
         )
@@ -356,6 +347,13 @@ package actor CompositionDistinctWorkspace {
               let activeReservation = reservation else {
             throw CompositionQueryError.workspaceCorrupted
         }
+        try activeReservation.reserveAdditional(
+            bytes: DatabaseIntermediateCollectionMeter.arrayFootprint(
+                count: 1, element: DatabaseIntermediateReservation.self
+            ).bytes,
+            at: .resultMaterialization
+        )
+        let workspacePayloadLease = DatabaseQueryPayloadLease(retaining: activeReservation)
         state = .reading
         defer { withExtendedLifetime(activeReservation) {} }
         var index = 0
@@ -368,7 +366,8 @@ package actor CompositionDistinctWorkspace {
                 ? .source(entry.contributors[0])
                 : .derived(contributors: entry.contributors)
             let result = entry.ownedRow.withRow {
-                Result(row: $0, origin: origin)
+                Result(row: $0, origin: origin, ownedRow: entry.ownedRow,
+                       workspacePayloadLease: workspacePayloadLease)
             }
             guard try await body(result) else { return }
             index += 1
@@ -392,7 +391,7 @@ package actor CompositionDistinctWorkspace {
 
     private func findEntry(
         fingerprint: ByteString,
-        identity: ByteString
+        candidate: DatabaseQueryScopedQueryRowOwner
     ) throws -> (index: Int?, collisionCount: Int) {
         guard !slots.isEmpty else { return (nil, 0) }
         var slot = Self.slotIndex(for: fingerprint, capacity: slots.count)
@@ -406,9 +405,10 @@ package actor CompositionDistinctWorkspace {
             }
             let entry = entries[entryIndex]
             if entry.fingerprint == fingerprint {
-                if entry.identity == identity {
-                    return (entryIndex, collisionCount)
+                let equal = candidate.withRow { incoming in
+                    entry.ownedRow.withRow { retained in retained.values == incoming.values }
                 }
+                if equal { return (entryIndex, collisionCount) }
                 collisionCount += 1
             }
             slot = (slot + 1) & (slots.count - 1)
@@ -548,65 +548,6 @@ package actor CompositionDistinctWorkspace {
             from: 0,
             toFit: capacity
         ).additionalByteCount
-    }
-
-    private static func makeFieldFramePlan(
-        _ values: [String: FieldValue],
-        entity: String,
-        workMeter: DatabaseWorkMeter
-    ) throws -> FieldFramePlan {
-        let layout = try DatabaseRetainedArrayLayout.forElement(
-            PersistableField.self
-        )
-        let growth = try layout.growth(from: 0, toFit: values.count)
-        let scratchBytes = try adding(
-            layout.containerByteCount,
-            growth.additionalByteCount
-        )
-        let scratchReservation = try workMeter.reserveIntermediate(
-            bytes: scratchBytes,
-            at: .deduplication
-        )
-        do {
-            var fields: [PersistableField] = []
-            fields.reserveCapacity(growth.capacity)
-            for (name, value) in values {
-                fields.append(
-                    try PersistableField(number: 1, name: name, value: value)
-                )
-            }
-            fields.sort { $0.name < $1.name }
-            for index in fields.indices {
-                guard let number = UInt32(exactly: index + 1) else {
-                    throw CompositionQueryError.workspaceCorrupted
-                }
-                let field = fields[index]
-                fields[index] = try PersistableField(
-                    number: number,
-                    name: field.name,
-                    value: field.value
-                )
-            }
-            let encodedByteCount = try PersistableFieldFrameCodec
-                .encodedByteCount(
-                    magic: identityMagic,
-                    version: identityVersion,
-                    entity: entity,
-                    fields: fields
-                )
-            guard let encodedByteCount = UInt64(exactly: encodedByteCount)
-            else {
-                throw CompositionQueryError.workspaceCorrupted
-            }
-            return FieldFramePlan(
-                fields: fields,
-                encodedByteCount: encodedByteCount,
-                scratchReservation: scratchReservation
-            )
-        } catch {
-            scratchReservation.release()
-            throw error
-        }
     }
 
     private static func fingerprint(_ identity: ByteString) -> ByteString {

@@ -213,8 +213,8 @@ struct BitmapReadExecutionContractTests {
         let response = try await context.query(query)
         let row = try #require(response.rows.first)
         #expect(response.rows.count == 1)
-        #expect(row.fields["id"] == .string("poly-active"))
-        #expect(row.fields["status"] == .string("active"))
+        #expect(try row.primitiveFields(columns: response.columns)["id"] == .string("poly-active"))
+        #expect(try row.primitiveFields(columns: response.columns)["status"] == .string("active"))
         #expect(storage.control.dataReadOperationCount > readsBefore)
     }
 

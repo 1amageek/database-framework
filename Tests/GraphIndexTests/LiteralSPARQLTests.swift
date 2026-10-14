@@ -136,6 +136,111 @@ struct LiteralSPARQLTests {
         }
     }
 
+    @Test("query primitive wrappers retain RDF evaluation and footprint semantics")
+    func primitiveQueryValuesDelegate() throws {
+        let values: [FieldValue] = [
+            .bool(true), .int64(42), .uint64(.max),
+            .decimal(ExactDecimal(coefficient: 123, scale: 2)),
+            .string("hello"),
+            .rdfTerm(try .iri(validating: "https://example.invalid/resource")),
+        ]
+        for value in values {
+            let wrapped = Literal.queryValue(.primitive(value))
+            let original = try value.queryLiteral
+            let expected = try original.toSPARQLFieldValue()
+            #expect(try wrapped.toSPARQLFieldValue() == expected)
+            try SPARQLExpressionValidator.validate(.literal(wrapped))
+            #expect(
+                try ExpressionEvaluator.evaluate(
+                    .literal(wrapped), binding: VariableBinding()
+                ) == expected
+            )
+            #expect(
+                try SPARQLConstructFootprintPlanner.maximumQuadFootprint(
+                    template(object: wrapped), binding: VariableBinding()
+                ) == SPARQLConstructFootprintPlanner.maximumQuadFootprint(
+                    template(object: original), binding: VariableBinding()
+                )
+            )
+        }
+        #expect(
+            throws: SPARQLLiteralConversionError.queryLiteralConversion(
+                .unsupportedFieldValue
+            )
+        ) {
+            _ = try Literal.queryValue(.primitive(.object(FieldObject())))
+                .toSPARQLFieldValue()
+        }
+        #expect(throws: SPARQLLiteralConversionError.nullTermUnsupported) {
+            _ = try Literal.queryValue(.primitive(.null)).toSPARQLFieldValue()
+        }
+        #expect(throws: SPARQLLiteralConversionError.arrayTermUnsupported) {
+            _ = try Literal.queryValue(.primitive(.array([]))).toSPARQLFieldValue()
+        }
+    }
+
+    @Test("SQL query values fail before SPARQL execution or construction")
+    func richQueryValuesAreUnsupported() throws {
+        for value in try richQueryValues() {
+            let literal = Literal.queryValue(value)
+            #expect(
+                throws: SPARQLLiteralConversionError.queryLiteralConversion(
+                    .unsupportedSPARQLLiteral
+                )
+            ) {
+                _ = try literal.toSPARQLFieldValue()
+            }
+            #expect(
+                throws: SPARQLExpressionCompilationError
+                    .unsupportedExpression("literal")
+            ) {
+                try SPARQLExpressionValidator.validate(.literal(literal))
+            }
+            #expect(throws: SPARQLExpressionEvaluationError.self) {
+                _ = try ExpressionEvaluator.evaluate(
+                    .literal(literal), binding: VariableBinding()
+                )
+            }
+            #expect(
+                throws: SPARQLLiteralConversionError.queryLiteralConversion(
+                    .unsupportedSPARQLLiteral
+                )
+            ) {
+                _ = try SPARQLConstructFootprintPlanner.maximumQuadFootprint(
+                    template(object: literal), binding: VariableBinding()
+                )
+            }
+        }
+    }
+
+    private func template(object: Literal) -> TriplePattern {
+        TriplePattern(
+            subject: .iri("https://example.invalid/subject"),
+            predicate: .iri("https://example.invalid/predicate"),
+            object: .literal(object)
+        )
+    }
+
+    private func richQueryValues() throws -> [QueryValue] {
+        let limits = QueryValueLimits(
+            maximumRetainedBytes: 4096, maximumTotalNodes: 32,
+            maximumNestingDepth: 8, maximumCollectionElements: 32
+        )
+        return [
+            .numeric(try QueryNumericValue(
+                value: ExactDecimal(coefficient: 123, scale: 2), displayScale: 3
+            )),
+            .json(try QueryJSONValue(bytes: ByteString(utf8: "null"), limits: limits)),
+            .jsonb(try QueryJSONBValue(root: .null, limits: limits)),
+            .array(try QueryArrayValue(
+                elementType: .integer, dimensions: [], elements: [], limits: limits
+            )),
+            .interval(try QueryIntervalValue(
+                period: CalendarPeriod(months: 2, days: 3), time: TimeSpan(seconds: 4)
+            )),
+        ]
+    }
+
     private func rdfLiteral(
         _ lexicalForm: String,
         datatype: String

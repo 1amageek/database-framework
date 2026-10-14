@@ -1,65 +1,141 @@
 import DatabaseKit
 
-/// Shared ownership for a request-accounted canonical row result.
-///
-/// Rows reach this type only by consuming their linear
-/// ``DatabaseRetainedQueryRows`` owner. Copies share the same retained storage
-/// and the same request reservation, and the reservation is released when the
-/// last shared owner is released. A durable query snapshot may therefore read
-/// the complete result count and emit successive bounded pages after the read
-/// snapshot that produced the rows has closed.
-///
-/// The exposed surface is limited to the element count and page
-/// materialization. No caller borrows an individual staged row, so this type
-/// does not offer a scoped element borrow. The shared array backing the rows
-/// stays module-internal, so no caller takes ownership of the retained storage
-/// or holds a view into it after the call that produced it. A materialized page
-/// is an independent copy of its range, so the range the caller asks for, not
-/// this type, decides how much of the result reaches an ordinary Array.
+/// Shared caller-visible schema and request-accounted canonical rows.
 @_spi(DatabaseExecution)
 public struct DatabaseSharedRetainedQueryRows: Sendable {
     private let storage: DatabaseSharedRetainedArray<QueryRow>
+    public let columns: [QueryColumn]
+    package let payloadLeases: [DatabaseQueryPayloadLease]
+    package let schemaLeases: [DatabaseIntermediateReservation]
 
-    package init(storage: consuming DatabaseSharedRetainedArray<QueryRow>) {
+    /// The producing owner has validated every row and admitted the complete
+    /// schema and payload before transferring its immutable storage here.
+    package init(
+        storage: consuming DatabaseSharedRetainedArray<QueryRow>,
+        columns: [QueryColumn],
+        payloadLeases: [DatabaseQueryPayloadLease] = [],
+        schemaLeases: [DatabaseIntermediateReservation] = []
+    ) {
         self.storage = storage
+        self.columns = columns
+        self.payloadLeases = payloadLeases
+        self.schemaLeases = schemaLeases
     }
 
-    /// Moves a complete linear row result into shared ownership without
-    /// releasing its originating request reservation.
     package init(
         rows: consuming DatabaseRetainedQueryRows,
         at stage: DatabaseWorkStage
     ) throws {
-        self.storage = try rows.moveToSharedOwnership(at: stage)
+        self = try rows.moveToSharedOwnership(at: stage)
     }
 
-    package var workMeter: DatabaseWorkMeter {
-        storage.workMeter
+    /// Producer-known origins include the aggregate's own retained claims.
+    package var originPayloadLeases: [DatabaseQueryPayloadLease] {
+        payloadLeases + [storage.payloadLease]
     }
 
-    /// The number of rows the shared result retains.
-    public var count: Int {
-        storage.count
+    package var workMeter: DatabaseWorkMeter { storage.workMeter }
+    public var count: Int { storage.count }
+    package var isEmpty: Bool { storage.isEmpty }
+    package var startIndex: Int { storage.startIndex }
+    package var endIndex: Int { storage.endIndex }
+
+    package func withElement<Result, Failure: Error>(
+        at index: Int,
+        _ body: (borrowing QueryRow) throws(Failure) -> Result
+    ) throws(Failure) -> Result {
+        defer { withExtendedLifetime(self) {} }
+        return try storage.withElement(at: index, body)
     }
 
-    /// Copies the rows in `range` into an output page.
-    ///
-    /// Only the requested range is copied and the retained storage is never
-    /// promoted, so repeated pages can be emitted from one shared owner. A
-    /// range covering every element is a valid single page; the copy it returns
-    /// does not release the retained storage or its request reservation.
+    package func withElement<Result, Failure: Error>(
+        at index: Int,
+        isolation actor: isolated (any Actor)? = #isolation,
+        _ body: (borrowing QueryRow) async throws(Failure) -> Result
+    ) async throws(Failure) -> Result {
+        defer { withExtendedLifetime(self) {} }
+        return try await storage.withElement(at: index, isolation: actor, body)
+    }
+
+    package func withSpan<Result, Failure: Error>(
+        _ body: (Span<QueryRow>) throws(Failure) -> Result
+    ) throws(Failure) -> Result {
+        defer { withExtendedLifetime(self) {} }
+        return try storage.withSpan(body)
+    }
+
+    package func boundedView(_ range: Range<Int>) -> View {
+        View(owner: self, range: range)
+    }
+
+    /// The caller consumes the result at its final public array boundary.
+    package consuming func promoteToOutput() -> [QueryRow] {
+        defer {
+            withExtendedLifetime(payloadLeases) {}
+            withExtendedLifetime(schemaLeases) {}
+        }
+        return storage.promoteToOutput()
+    }
+
+    /// Copies a final output page while this snapshot retains its complete
+    /// schema, source payload and row claims for subsequent pages.
     public func materializePage(_ range: Range<Int>) -> [QueryRow] {
-        precondition(
-            range.lowerBound >= 0 && range.upperBound <= storage.count,
-            "Page range is outside the shared retained rows"
-        )
+        precondition(range.lowerBound >= 0 && range.upperBound <= storage.count,
+                     "Page range is outside the shared retained rows")
+        defer { withExtendedLifetime(self) {} }
         var output: [QueryRow] = []
         output.reserveCapacity(range.count)
         for index in range {
-            storage.withElement(at: index) { row in
-                output.append(copy row)
-            }
+            storage.withElement(at: index) { output.append(copy $0) }
         }
         return output
+    }
+
+    /// A bounded view retains the complete schema even for an empty range.
+    package struct View: Sendable {
+        package let owner: DatabaseSharedRetainedQueryRows
+        package let range: Range<Int>
+
+        package init(owner: DatabaseSharedRetainedQueryRows, range: Range<Int>) {
+            precondition(range.lowerBound >= owner.startIndex && range.upperBound <= owner.endIndex,
+                         "View range is outside the shared retained rows")
+            self.owner = owner
+            self.range = range
+        }
+
+        package var columns: [QueryColumn] { owner.columns }
+        package var payloadLeases: [DatabaseQueryPayloadLease] { owner.payloadLeases }
+        package var originPayloadLeases: [DatabaseQueryPayloadLease] { owner.originPayloadLeases }
+        package var schemaLeases: [DatabaseIntermediateReservation] { owner.schemaLeases }
+        package var count: Int { range.count }
+        package var isEmpty: Bool { range.isEmpty }
+        package var startIndex: Int { 0 }
+        package var endIndex: Int { range.count }
+        package var workMeter: DatabaseWorkMeter { owner.workMeter }
+
+        package func withElement<Result, Failure: Error>(
+            at index: Int,
+            _ body: (borrowing QueryRow) throws(Failure) -> Result
+        ) throws(Failure) -> Result {
+            precondition(index >= 0 && index < count)
+            return try owner.withElement(at: range.lowerBound + index, body)
+        }
+
+        package func withElement<Result, Failure: Error>(
+            at index: Int,
+            isolation actor: isolated (any Actor)? = #isolation,
+            _ body: (borrowing QueryRow) async throws(Failure) -> Result
+        ) async throws(Failure) -> Result {
+            precondition(index >= 0 && index < count)
+            return try await owner.withElement(at: range.lowerBound + index, isolation: actor, body)
+        }
+
+        package func withSpan<Result, Failure: Error>(
+            _ body: (Span<QueryRow>) throws(Failure) -> Result
+        ) throws(Failure) -> Result {
+            try owner.withSpan { (span: Span<QueryRow>) throws(Failure) -> Result in
+                try body(span.extracting(range))
+            }
+        }
     }
 }

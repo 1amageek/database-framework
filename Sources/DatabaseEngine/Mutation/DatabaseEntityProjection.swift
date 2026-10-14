@@ -38,6 +38,8 @@ public enum DatabaseEntityProjection {
             return .invalidCompiledSchema(entity: entity, reason: reason)
         case .fieldNotRepresentable(let entity, let field):
             return .fieldNotRepresentable(entity: entity, field: field)
+        case .invalidQueryValue(let cause):
+            return .invalidQueryValue(entity: fallbackEntity, cause: cause)
         case .invalidScalar(let type, let reason):
             return .fieldValueNotRepresentable(
                 entity: fallbackEntity,

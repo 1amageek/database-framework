@@ -73,9 +73,9 @@ struct GraphTableSQLExecutionContractTests {
 
         let row = try #require(response.rows.first)
         #expect(response.rows.count == 1)
-        #expect(row.fields["source_id"] == .string("alice"))
-        #expect(row.fields["target_id"] == .string("bob"))
-        #expect(row.fields["relationship_weight"] == .int64(7))
+        #expect(row.values[0] == .primitive(.string("alice")))
+        #expect(row.values[1] == .primitive(.string("bob")))
+        #expect(row.values[2] == .primitive(.int64(7)))
     }
 
     private func makeContainer() async throws -> DBContainer {

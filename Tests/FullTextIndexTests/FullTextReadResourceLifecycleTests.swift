@@ -371,9 +371,30 @@ struct FullTextReadResourceLifecycleTests {
         )
         try await context.save()
 
+        let retryQuery = try context.search(
+            FullTextReadResourceArticle.self
+        )
+        .fullText(FullTextReadResourceArticle.fields.body)
+        .terms(["unique"], mode: .all)
+        .toSelectQuery()
+        let calibration = ReadExecutionContext(
+            monotonicClock: container.monotonicClock
+        )
+        let calibratedRetry = try await context.executeCanonicalQuery(
+            retryQuery,
+            execution: calibration
+        )
+        #expect(calibratedRetry.rows.count == 1)
+        #expect(calibration.workMeter.retainedIntermediateRows == 0)
+        #expect(calibration.workMeter.retainedIntermediateBytes == 0)
+        let maximumIntermediateBytes = calibration.workMeter.peakIntermediateBytes
+        #expect(maximumIntermediateBytes > 0)
+
         let execution = ReadExecutionContext(
             options: ReadExecutionOptions(
-                budget: ExecutionBudget(maximumIntermediateBytes: 2_500)
+                budget: ExecutionBudget(
+                    maximumIntermediateBytes: maximumIntermediateBytes
+                )
             ),
             monotonicClock: container.monotonicClock
         )
@@ -395,8 +416,8 @@ struct FullTextReadResourceLifecycleTests {
                     stage: _,
                     consumed: _,
                     requested: _,
-                    maximum: 2_500
-                  ) = workError else {
+                    maximum: let maximum
+                  ) = workError, maximum == maximumIntermediateBytes else {
                 Issue.record("Unexpected work limit: \(workError)")
                 return
             }
@@ -406,12 +427,6 @@ struct FullTextReadResourceLifecycleTests {
         #expect(execution.workMeter.retainedIntermediateRows == 0)
         #expect(execution.workMeter.retainedIntermediateBytes == 0)
 
-        let retryQuery = try context.search(
-            FullTextReadResourceArticle.self
-        )
-        .fullText(FullTextReadResourceArticle.fields.body)
-        .terms(["unique"], mode: .all)
-        .toSelectQuery()
         let retry = try await context.executeCanonicalQuery(
             retryQuery,
             execution: execution
@@ -466,11 +481,11 @@ struct FullTextReadResourceLifecycleTests {
             execution: execution
         )
 
-        #expect(response.rows.map { $0.fields["id"]?.stringValue } == [
+        #expect(try response.rows.map { try $0.primitiveFields(columns: response.columns)["id"]?.stringValue } == [
             "first",
             "second",
         ])
-        #expect(response.rows.map { $0.fields["body"]?.stringValue } == [
+        #expect(try response.rows.map { try $0.primitiveFields(columns: response.columns)["body"]?.stringValue } == [
             "swift database",
             "swift engine",
         ])
@@ -537,11 +552,12 @@ struct FullTextReadResourceLifecycleTests {
         var identifiers: [String] = []
         var scores: [Double] = []
         for row in response.rows {
-            identifiers.append(try #require(row.fields["id"]?.stringValue))
+            let fields = try row.primitiveFields(columns: response.columns)
+            identifiers.append(try #require(fields["id"]?.stringValue))
             scores.append(try #require(row.annotations["score"]?.float64Value))
         }
         #expect(identifiers == ["high", "low"])
-        #expect(response.rows.map { $0.fields["body"]?.stringValue } == [
+        #expect(try response.rows.map { try $0.primitiveFields(columns: response.columns)["body"]?.stringValue } == [
             "swift swift swift",
             "swift",
         ])
@@ -604,12 +620,12 @@ struct FullTextReadResourceLifecycleTests {
             execution: execution
         )
 
-        #expect(response.rows.map { $0.fields["id"]?.stringValue } == [
+        #expect(try response.rows.map { try $0.primitiveFields(columns: response.columns)["id"]?.stringValue } == [
             "first",
             "second",
             "third",
         ])
-        #expect(response.rows.map { $0.fields["body"]?.stringValue } == [
+        #expect(try response.rows.map { try $0.primitiveFields(columns: response.columns)["body"]?.stringValue } == [
             "swift alpha",
             "swift beta",
             "swift gamma",

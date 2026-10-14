@@ -403,7 +403,7 @@ struct GraphPatternSPARQLSerializationTests {
             )
         ])
 
-        let sparql = pattern.toSPARQL()
+        let sparql = try pattern.toSPARQL()
         #expect(sparql.contains("?s"))
         #expect(sparql.contains("<http://xmlns.com/foaf/0.1/name>"))
         #expect(sparql.contains("?name"))
@@ -419,7 +419,7 @@ struct GraphPatternSPARQLSerializationTests {
         ])
         let optional = GraphPattern.optional(left, right)
 
-        let sparql = optional.toSPARQL()
+        let sparql = try optional.toSPARQL()
         #expect(sparql.contains("OPTIONAL"))
     }
 
@@ -429,7 +429,7 @@ struct GraphPatternSPARQLSerializationTests {
         let right = GraphPattern.basic([])
         let union = GraphPattern.union(left, right)
 
-        let sparql = union.toSPARQL()
+        let sparql = try union.toSPARQL()
         #expect(sparql.contains("UNION"))
     }
 
@@ -438,7 +438,7 @@ struct GraphPatternSPARQLSerializationTests {
         let base = GraphPattern.basic([])
         let filtered = GraphPattern.filter(base, .equal(.variable(Variable("x")), .literal(.int(1))))
 
-        let sparql = filtered.toSPARQL()
+        let sparql = try filtered.toSPARQL()
         #expect(sparql.contains("FILTER"))
     }
 
@@ -448,7 +448,7 @@ struct GraphPatternSPARQLSerializationTests {
         let right = GraphPattern.basic([])
         let minus = GraphPattern.minus(left, right)
 
-        let sparql = minus.toSPARQL()
+        let sparql = try minus.toSPARQL()
         #expect(sparql.contains("MINUS"))
     }
 
@@ -457,7 +457,7 @@ struct GraphPatternSPARQLSerializationTests {
         let inner = GraphPattern.basic([])
         let named = GraphPattern.graph(name: .iri("http://example.org/graph1"), pattern: inner)
 
-        let sparql = named.toSPARQL()
+        let sparql = try named.toSPARQL()
         #expect(sparql.contains("GRAPH"))
         #expect(sparql.contains("<http://example.org/graph1>"))
     }
@@ -467,7 +467,7 @@ struct GraphPatternSPARQLSerializationTests {
         let inner = GraphPattern.basic([])
         let service = GraphPattern.service(endpoint: "http://dbpedia.org/sparql", pattern: inner, silent: false)
 
-        let sparql = service.toSPARQL()
+        let sparql = try service.toSPARQL()
         #expect(sparql.contains("SERVICE"))
         #expect(sparql.contains("<http://dbpedia.org/sparql>"))
     }
@@ -477,7 +477,7 @@ struct GraphPatternSPARQLSerializationTests {
         let inner = GraphPattern.basic([])
         let service = GraphPattern.service(endpoint: "http://example.org", pattern: inner, silent: true)
 
-        let sparql = service.toSPARQL()
+        let sparql = try service.toSPARQL()
         #expect(sparql.contains("SERVICE SILENT"))
     }
 
@@ -486,7 +486,7 @@ struct GraphPatternSPARQLSerializationTests {
         let base = GraphPattern.basic([])
         let bind = GraphPattern.bind(base, variable: "total", expression: .literal(.int(42)))
 
-        let sparql = bind.toSPARQL()
+        let sparql = try bind.toSPARQL()
         #expect(sparql.contains("BIND"))
         #expect(sparql.contains("?total"))
     }
@@ -501,7 +501,7 @@ struct GraphPatternSPARQLSerializationTests {
             ]
         )
 
-        let sparql = values.toSPARQL()
+        let sparql = try values.toSPARQL()
         #expect(sparql.contains("VALUES"))
         #expect(sparql.contains("?x"))
         #expect(sparql.contains("?y"))
@@ -518,7 +518,7 @@ struct GraphPatternSPARQLSerializationTests {
             object: .variable("o")
         )
 
-        let sparql = path.toSPARQL()
+        let sparql = try path.toSPARQL()
         #expect(sparql.contains("?s"))
         #expect(sparql.contains("?o"))
         #expect(sparql.contains("+"))
@@ -539,7 +539,7 @@ struct SelectQuerySPARQLSerializationTests {
             ]))
         )
 
-        let sparql = query.toSPARQL()
+        let sparql = try query.toSPARQL()
         #expect(sparql.contains("SELECT *"))
         #expect(sparql.contains("WHERE"))
     }
@@ -551,7 +551,7 @@ struct SelectQuerySPARQLSerializationTests {
             source: .graphPattern(GraphPattern.basic([]))
         )
 
-        let sparql = query.toSPARQL(prefixes: ["foaf": "http://xmlns.com/foaf/0.1/"])
+        let sparql = try query.toSPARQL(prefixes: ["foaf": "http://xmlns.com/foaf/0.1/"])
         #expect(sparql.contains("PREFIX foaf: <http://xmlns.com/foaf/0.1/>"))
     }
 
@@ -563,7 +563,7 @@ struct SelectQuerySPARQLSerializationTests {
             distinct: true
         )
 
-        let sparql = query.toSPARQL()
+        let sparql = try query.toSPARQL()
         #expect(sparql.contains("SELECT DISTINCT"))
     }
 
@@ -575,7 +575,7 @@ struct SelectQuerySPARQLSerializationTests {
             limit: 10
         )
 
-        let sparql = query.toSPARQL()
+        let sparql = try query.toSPARQL()
         #expect(sparql.contains("LIMIT 10"))
     }
 
@@ -587,7 +587,7 @@ struct SelectQuerySPARQLSerializationTests {
             offset: 5
         )
 
-        let sparql = query.toSPARQL()
+        let sparql = try query.toSPARQL()
         #expect(sparql.contains("OFFSET 5"))
     }
 
@@ -599,7 +599,7 @@ struct SelectQuerySPARQLSerializationTests {
             orderBy: [SortKey(.variable(Variable("name")), direction: .ascending)]
         )
 
-        let sparql = query.toSPARQL()
+        let sparql = try query.toSPARQL()
         #expect(sparql.contains("ORDER BY"))
         #expect(sparql.contains("ASC"))
     }
@@ -612,7 +612,7 @@ struct SelectQuerySPARQLSerializationTests {
             groupBy: [.variable(Variable("x"))]
         )
 
-        let sparql = query.toSPARQL()
+        let sparql = try query.toSPARQL()
         #expect(sparql.contains("GROUP BY"))
     }
 
@@ -628,7 +628,7 @@ struct SelectQuerySPARQLSerializationTests {
             )
         )
 
-        let sparql = query.toSPARQL()
+        let sparql = try query.toSPARQL()
         #expect(sparql.contains("HAVING"))
     }
 }

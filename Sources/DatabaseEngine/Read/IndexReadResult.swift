@@ -27,16 +27,22 @@ public struct IndexReadRow: Sendable {
         _ item: T,
         annotations: [String: FieldValue] = [:]
     ) throws -> IndexReadRow {
-        let row = try QueryRowCodec.encode(item, annotations: annotations)
-        return IndexReadRow(fields: row.fields, annotations: row.annotations, version: row.version)
+        try materializing(PersistedModel(item), annotations: annotations)
     }
 
     public static func materializing(
         _ item: PersistedModel,
         annotations: [String: FieldValue] = [:]
     ) throws -> IndexReadRow {
-        let row = try QueryRowCodec.encode(item, annotations: annotations)
-        return IndexReadRow(fields: row.fields, annotations: row.annotations, version: row.version)
+        var fields: [String: FieldValue] = [:]
+        fields.reserveCapacity(item.fields.count)
+        for field in item.fields {
+            guard fields.updateValue(field.value, forKey: field.name) == nil else {
+                throw QueryRowCodecError.duplicateField(type: item.entity, field: field.name)
+            }
+        }
+        return IndexReadRow(fields: fields, annotations: annotations,
+                            version: try PersistableVersionTokenCodec.token(for: item.fields))
     }
 }
 
@@ -77,6 +83,12 @@ public struct IndexReadResult: Sendable {
     package var workMeter: DatabaseWorkMeter? {
         rows?.workMeter ?? metadataReservation?.workMeter
     }
+    /// Retains the immutable aggregate's payload claims without release authority.
+    package var originPayloadLeases: [DatabaseQueryPayloadLease] {
+        guard let rows else { return [] }
+        return [rows.payloadLease]
+    }
+
     package var retainedMetadataReservation:
         DatabaseIntermediateReservation? {
         metadataReservation
@@ -203,14 +215,24 @@ public struct IndexReadResultBuilder: ~Copyable {
     public mutating func append(
         _ row: IndexReadRow
     ) throws {
-        let footprint = try CanonicalRelationalFootprintMeter.footprint(
-            of: QueryRow(
-                fields: row.fields,
-                annotations: row.annotations,
-                version: row.version
-            ),
-            workMeter: storage.workMeter
-        )
+        // Arbitrary primitive owners use a per-reference representation
+        // bound, including known backing capacity rather than view length.
+        var footprint = CanonicalRelationalFootprintMeter.queryRowBaseFootprint()
+        for (name, value) in row.fields {
+            footprint = try footprint.adding(DatabaseIntermediateFootprint(bytes: 32 + UInt64(name.utf8.count)))
+                .adding(CanonicalRelationalFootprintMeter.valueFootprint(
+                    of: QueryValue.primitive(value), workMeter: storage.workMeter, stage: .indexScan
+                ))
+        }
+        for (name, value) in row.annotations {
+            footprint = try footprint.adding(DatabaseIntermediateFootprint(bytes: 32 + UInt64(name.utf8.count)))
+                .adding(CanonicalRelationalFootprintMeter.valueFootprint(
+                    of: QueryValue.primitive(value), workMeter: storage.workMeter, stage: .indexScan
+                ))
+        }
+        if let version = row.version {
+            footprint = try footprint.adding(DatabaseIntermediateFootprint(bytes: UInt64(version.value.utf8.count)))
+        }
         try append(
             footprint: footprint,
             make: { row }

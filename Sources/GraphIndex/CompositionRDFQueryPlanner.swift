@@ -95,6 +95,7 @@ public struct CompositionRDFQueryPlanner: Sendable {
                 "SPARQL source executor is not registered"
             )
         }
+        let columns = try Self.columns()
         let workspace = CompositionDistinctWorkspace.create(
             maximumIntermediateBytes: readContext.options.budget
                 .maximumIntermediateBytes,
@@ -144,6 +145,7 @@ public struct CompositionRDFQueryPlanner: Sendable {
                             throw DatabaseIntermediateReservationError
                                 .workMeterMismatch
                         }
+                        let sourcePayloadLease = graph.payloadLease
                         var memberSequence = memberSequenceStart
                         for index in 0..<graph.count {
                             let currentSequence = memberSequence
@@ -162,7 +164,13 @@ public struct CompositionRDFQueryPlanner: Sendable {
                                     .producing(
                                         exactFootprint: footprint,
                                         workMeter: readContext.workMeter,
-                                        stage: .resultMaterialization
+                                        stage: .resultMaterialization,
+                                        retaining: [sourcePayloadLease],
+                                        measuring: { prepared in
+                                            try CanonicalRelationalFootprintMeter.queryRowAliasFootprint(
+                                                of: prepared, prefixingRDFBlankNodeIdentifiersWith: "",
+                                                workMeter: readContext.workMeter, stage: .resultMaterialization)
+                                        }
                                     ) {
                                         let qualifiedQuad = try
                                             CompositionRDFIdentity
@@ -171,7 +179,8 @@ public struct CompositionRDFQueryPlanner: Sendable {
                                                     baseID: member.baseID
                                                 )
                                         return try Self.row(
-                                            from: qualifiedQuad
+                                            from: qualifiedQuad,
+                                            columns: columns
                                         )
                                     }
                                 try await workspace.insert(
@@ -252,15 +261,23 @@ public struct CompositionRDFQueryPlanner: Sendable {
         }
     }
 
-    private static func row(from quad: RDFQuad) throws -> QueryRow {
-        QueryRow(
-            fields: [
-                Field.subject: .rdfTerm(quad.subject.term),
-                Field.predicate: .rdfTerm(quad.predicate.term),
-                Field.object: .rdfTerm(quad.object),
-                Field.graph: quad.graph.map { .rdfTerm($0.term) } ?? .null,
-            ]
-        )
+    private static func columns() throws -> [QueryColumn] {
+        try [Field.subject, Field.predicate, Field.object, Field.graph].enumerated().map { index, name in
+            try QueryColumn(number: UInt32(index + 1), name: name, type: .primitive(.rdfTerm), isNullable: index == 3)
+        }
+    }
+
+    private static func value(from quad: borrowing RDFQuad, at index: Int) -> FieldValue {
+        switch index {
+        case 0: return .rdfTerm(quad.subject.term)
+        case 1: return .rdfTerm(quad.predicate.term)
+        case 2: return .rdfTerm(quad.object)
+        default: return quad.graph.map { .rdfTerm($0.term) } ?? .null
+        }
+    }
+
+    private static func row(from quad: RDFQuad, columns: [QueryColumn]) throws -> QueryRow {
+        try QueryRow(values: (0..<4).map { .primitive(value(from: quad, at: $0)) }, columns: columns)
     }
 
     private static func qualifiedRowFootprint(
@@ -271,31 +288,20 @@ public struct CompositionRDFQueryPlanner: Sendable {
         let prefix = CompositionRDFIdentity.qualificationPrefix(
             baseID: baseID
         )
-        var footprint = CanonicalRelationalFootprintMeter
-            .queryRowBaseFootprint()
-        func add(_ name: String, _ value: FieldValue) throws {
-            footprint = try footprint.adding(
-                CanonicalRelationalFootprintMeter.fieldEntryFootprint(
-                    nameUTF8Count: name.utf8.count,
-                    value: value,
-                    prefixingRDFBlankNodeIdentifiersWith: prefix,
-                    workMeter: workMeter,
-                    stage: .resultMaterialization
-                )
-            )
-        }
-        try add(Field.subject, .rdfTerm(quad.subject.term))
-        try add(Field.predicate, .rdfTerm(quad.predicate.term))
-        let object = quad.object
-        try add(Field.object, .rdfTerm(object))
-        try add(Field.graph, quad.graph.map { .rdfTerm($0.term) } ?? .null)
-        return footprint
+        return try CanonicalRelationalFootprintMeter.positionalValueAliasArrayFootprint(
+            count: 4,
+            valueAt: { .primitive(value(from: quad, at: $0)) },
+            prefixingRDFBlankNodeIdentifiersWith: prefix,
+            annotations: [:], version: nil,
+            workMeter: workMeter, stage: .resultMaterialization
+        )
     }
 
     private static func quad(from row: QueryRow) throws -> RDFQuad {
-        guard case .rdfTerm(let subjectTerm)? = row.fields[Field.subject],
-              case .rdfTerm(let predicateTerm)? = row.fields[Field.predicate],
-              case .rdfTerm(let object)? = row.fields[Field.object] else {
+        guard row.values.count == 4,
+              case .primitive(.rdfTerm(let subjectTerm)) = row.values[0],
+              case .primitive(.rdfTerm(let predicateTerm)) = row.values[1],
+              case .primitive(.rdfTerm(let object)) = row.values[2] else {
             throw CompositionQueryError.workspaceCorrupted
         }
         let subject: RDFSubject
@@ -311,10 +317,10 @@ public struct CompositionRDFQueryPlanner: Sendable {
             throw CompositionQueryError.workspaceCorrupted
         }
         let graph: RDFGraphName?
-        switch row.fields[Field.graph] {
-        case .null?:
+        switch row.values[3] {
+        case .primitive(.null):
             graph = nil
-        case .rdfTerm(let term)?:
+        case .primitive(.rdfTerm(let term)):
             do { graph = try RDFGraphName(term) }
             catch { throw CompositionQueryError.workspaceCorrupted }
         default:

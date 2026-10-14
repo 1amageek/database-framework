@@ -136,6 +136,9 @@ let package = Package(
                 "Directory/DESIGN.md",
                 "QueryExecution/DESIGN.md",
                 "Read/DESIGN.md",
+                "Mutation/DESIGN.md",
+                "Registry/DESIGN.md",
+                "Base/DESIGN.md",
                 "Serialization/DESIGN.md",
                 "Serialization/RDF/DESIGN.md",
             ],
@@ -411,7 +414,7 @@ let package = Package(
                 .product(name: "DatabaseTypes", package: "database-types"),
                 .product(name: "DatabaseKit", package: "database-kit"),
             ],
-            exclude: ["README.md"]
+            exclude: ["README.md", "DESIGN.md", "Parser/DESIGN.md", "Builder/DESIGN.md"]
         ),
         .target(
             name: "Database",

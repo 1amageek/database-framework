@@ -13,6 +13,10 @@ private struct CompositionSPARQLMemberQueryExecutor:
         try CompositionSPARQLPlanValidator.validate(query)
     }
 
+    func columns(session: DatabaseReadSession, query: SelectQuery) throws -> [QueryColumn] {
+        try session.boundQueryColumns(query)
+    }
+
     func execute(
         session: DatabaseReadSession,
         query: SelectQuery,
@@ -31,7 +35,7 @@ private struct CompositionSPARQLMemberQueryExecutor:
         sourceBaseID: Base.ID,
         workMeter: DatabaseWorkMeter
     ) throws -> (rows: UInt64, bytes: UInt64) {
-        let footprint = try CanonicalRelationalFootprintMeter.footprint(
+        let footprint = try CanonicalRelationalFootprintMeter.queryRowAliasFootprint(
             of: row,
             prefixingRDFBlankNodeIdentifiersWith:
                 CompositionRDFIdentity.qualificationPrefix(
@@ -43,12 +47,24 @@ private struct CompositionSPARQLMemberQueryExecutor:
         return (footprint.rows, footprint.bytes)
     }
 
+    func observedPreparedFootprint(
+        of row: borrowing DatabaseEngine.QueryRow,
+        workMeter: DatabaseWorkMeter
+    ) throws -> (rows: UInt64, bytes: UInt64) {
+        let footprint = try CanonicalRelationalFootprintMeter.queryRowAliasFootprint(
+            of: row, prefixingRDFBlankNodeIdentifiersWith: "",
+            workMeter: workMeter, stage: .resultMaterialization)
+        return (footprint.rows, footprint.bytes)
+    }
+
     func prepare(
         _ row: DatabaseEngine.QueryRow,
+        columns: [QueryColumn],
         sourceBaseID: Base.ID
     ) throws -> DatabaseEngine.QueryRow {
         try CompositionRDFIdentity.qualifyBlankNodes(
             in: row,
+            columns: columns,
             baseID: sourceBaseID
         )
     }

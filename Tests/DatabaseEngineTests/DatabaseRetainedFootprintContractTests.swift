@@ -63,8 +63,7 @@ struct DatabaseRetainedFootprintContractTests {
             workMeter: meter,
             stage: .projection
         )
-        let expectedBytes = UInt64(MemoryLayout<FieldValue>.stride + 32)
-            + UInt64("retained-value".utf8.count)
+        let expectedBytes = independentValueFootprint(value)
 
         #expect(observed == DatabaseIntermediateFootprint(bytes: expectedBytes))
         #expect(meter.retainedIntermediateBytes == 0)
@@ -246,7 +245,10 @@ struct DatabaseRetainedFootprintContractTests {
     }
 
     private func independentValueFootprint(_ value: FieldValue) -> UInt64 {
-        let base = UInt64(MemoryLayout<FieldValue>.stride + 32)
+        let base = UInt64(
+            max(MemoryLayout<QueryValue>.stride, MemoryLayout<QueryJSONBMember>.stride)
+                + 32
+        )
         switch value {
         case .string(let string):
             return base + UInt64(string.utf8.count)

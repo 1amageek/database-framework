@@ -130,10 +130,11 @@ successfully. Do not replace these invocations with a direct package-wide
 the harness proves that the resolved macro dependency revisions match the
 tracked release pins.
 
-The backend-independent unit gate selects `GraphIndexes` and executes exactly
-754 `DatabaseEngineTests`, 902 `GraphIndexTests`, and 18
-`DatabaseRuntimeTests`. These target-level counts prevent a hidden test group
-from being offset by an unrelated target's additions or removals.
+The backend-independent unit gate selects `GraphIndexes`. Its exact
+`DatabaseEngineTests`, `GraphIndexTests`, and `DatabaseRuntimeTests` counts are
+owned by [the CI workflow](../.github/workflows/ci.yml). These target-level
+counts prevent a hidden test group from being offset by an unrelated target's
+additions or removals.
 
 The framework release gate resolves database-kit 26.0831.1. That published tag
 contains the `CompositionSelection`, `CompositionResolution`, and DatabaseWire

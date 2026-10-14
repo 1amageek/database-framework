@@ -1477,6 +1477,16 @@ public struct DatabaseReadSession: Sendable {
         )
     }
 
+    /// Binds output metadata inside this session's admitted schema scope.
+    @_spi(DatabaseExecution)
+    public func boundQueryColumns(_ query: SelectQuery) throws -> [QueryColumn] {
+        let (owners, operation) = try scope.beginOperation()
+        defer { operation.end() }
+        let columns = try owners.context.boundQueryColumns(query)
+        try operation.validate()
+        return columns
+    }
+
     @_spi(DatabaseExecution)
     public func executeCanonical(
         _ query: SelectQuery,

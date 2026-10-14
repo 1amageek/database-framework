@@ -26,6 +26,10 @@ private actor CompositionSPARQLRowProbe {
     func values() -> [CompositionQueryRow] {
         rows
     }
+
+    func removeAll() {
+        rows.removeAll(keepingCapacity: false)
+    }
 }
 
 private actor CompositionRDFQuadProbe {
@@ -100,6 +104,7 @@ private struct CompositionSPARQLAuthorizationProbe:
             defaultWorkMeter: options.workMeter
         )
         var rows = try DatabaseRetainedQueryRowsBuilder(
+            columns: try session.boundQueryColumns(selectQuery),
             workMeter: output.workMeter,
             stage: .resultMaterialization
         )
@@ -332,23 +337,17 @@ struct CompositionSPARQLAuthorizationTests {
         #expect(readContext.workMeter.retainedIntermediateRows == 0)
         #expect(readContext.workMeter.retainedIntermediateBytes == 0)
 
-        let sourceRow = QueryRow(
-            fields: [
-                "subject": .rdfTerm(
-                    .blankNode(try RDFBlankNodeIdentifier("subject"))
-                ),
-            ],
+        let columns = try [QueryColumn(number: 1, name: "subject", type: .primitive(.rdfTerm), isNullable: true)]
+        let sourceRow = try QueryRow(
+            values: [.primitive(.rdfTerm(.blankNode(try RDFBlankNodeIdentifier("subject"))))],
+            columns: columns,
             annotations: [
-                "nested": .array([
-                    .rdfTerm(
-                        .blankNode(try RDFBlankNodeIdentifier("nested"))
-                    ),
-                ]),
+                "nested": .array([.rdfTerm(.blankNode(try RDFBlankNodeIdentifier("nested")))]),
             ]
         )
         fixture.outputWorkMeter.setRow(sourceRow)
         let distinctQuery = SelectQuery(
-            projection: .all,
+            projection: .items([ProjectionItem(.variable(Variable("subject")))]),
             source: .graphPattern(.basic([])),
             distinct: true
         )
@@ -385,9 +384,13 @@ struct CompositionSPARQLAuthorizationTests {
         }
         let expectedRow = try CompositionRDFIdentity.qualifyBlankNodes(
             in: sourceRow,
+            columns: columns,
             baseID: fixture.baseID
         )
         #expect(await emittedRows.values().map(\.row) == [expectedRow])
+        #expect(calibrationContext.workMeter.retainedIntermediateRows > 0)
+        #expect(calibrationContext.workMeter.retainedIntermediateBytes > 0)
+        await emittedRows.removeAll()
         #expect(calibrationContext.workMeter.retainedIntermediateRows == 0)
         #expect(calibrationContext.workMeter.retainedIntermediateBytes == 0)
         let successfulPeak = calibrationContext.workMeter

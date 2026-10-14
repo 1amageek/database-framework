@@ -76,7 +76,9 @@ struct FieldSecuritySQLiteTests {
                 source: .table(TableRef(FieldSecuritySQLiteRecord.persistableType))
             )
         )
-        #expect(publicResult.rows.map(\.fields) == [["title": .string("Visible")]])
+        #expect(try publicResult.rows.map {
+            try $0.primitiveFields(columns: publicResult.columns)
+        } == [["title": .string("Visible")]])
 
         await #expect(throws: FieldSecurityError.self) {
             try await reader.query(

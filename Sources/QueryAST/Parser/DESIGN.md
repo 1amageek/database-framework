@@ -39,6 +39,17 @@ SELECT/INSERT/UPDATE/DELETE and property-graph DDL but does not dispatch WITH.
 Both finish with statement-terminator consumption and structural validation.
 These are source facts, not a successful runtime verification of the plan.
 
+### S01 execution evidence boundary
+
+S01 validates positional set alignment and contextual NULL through canonical
+`SelectQuery`/`DataSource.unionAll` execution. The current `parseSelectQuery`
+returns after SELECT modifiers and does not parse UNION; `advance` does not
+recognize double-quoted identifiers. Their implementation and text round-trip
+evidence remain S02. New S01 fixtures therefore use semantic ASTs for set
+operations and rich fields with reserved names, while SQLite persistence uses
+nonreserved camelCase fields to execute the currently supported SQL text path.
+This boundary does not claim parser support from successful AST execution.
+
 ### Planned contracts
 
 - SELECT and general statement/block entries share grammar. WITH-leading

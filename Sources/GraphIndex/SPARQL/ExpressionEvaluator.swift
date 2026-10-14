@@ -976,6 +976,8 @@ public struct ExpressionEvaluator: Sendable {
                 required: required,
                 maximum: maximum
             )
+        case .queryLiteralConversion(let error):
+            return .typeError(error.description)
         case .nullTermUnsupported, .arrayTermUnsupported, .invalidLexicalForm:
             return .typeError("The numeric value could not be converted")
         }

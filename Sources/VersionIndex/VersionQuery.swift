@@ -124,7 +124,7 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
         )
 
         return try response.rows.map { row in
-            let item = try QueryRowCodec.decode(row, as: T.self)
+            let item = try QueryRowCodec.decode(row, columns: response.columns, as: T.self)
             guard let versionData = row.annotations["version"]?.bytesValue else {
                 throw VersionQueryError.invalidResponse("Missing version annotation")
             }

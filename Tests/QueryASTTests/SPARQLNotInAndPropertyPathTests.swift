@@ -182,7 +182,7 @@ struct SPARQLNotInTests {
             .variable(Variable("x")),
             values: [.literal(.int(1)), .literal(.int(2))]
         )
-        let sparql = expr.toSPARQL(prefixes: [:])
+        let sparql = try expr.toSPARQL(prefixes: [:])
         #expect(sparql.contains("NOT IN"))
     }
 
@@ -192,7 +192,7 @@ struct SPARQLNotInTests {
             .column(ColumnRef(column: "status")),
             values: [.literal(.string("deleted")), .literal(.string("archived"))]
         )
-        let sql = expr.toSQL()
+        let sql = try expr.toSQL()
         #expect(sql.contains("NOT IN"))
     }
 

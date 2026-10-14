@@ -169,8 +169,13 @@ struct WritePreconditionTests {
         try context.upsert(user)
         try await context.save()
 
+        let columns = try WPUser.fieldSchemas.enumerated().map { index, field in
+            try QueryColumn(number: UInt32(index + 1), name: field.name,
+                            type: field.queryType ?? .primitive(field.type, isArray: field.isArray),
+                            isNullable: field.isOptional)
+        }
         let version = try PersistableVersionTokenCodec.digest(
-            from: #require(QueryRowCodec.encode(user).version)
+            from: #require(QueryRowCodec.encode(user, columns: columns).version)
         )
 
         var firstUpdate = user

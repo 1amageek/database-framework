@@ -17,11 +17,14 @@ authority.
 
 ## Related Designs
 
-| Design | Relationship | Contract Used | Cautions |
-|---|---|---|---|
-| [StorageKit cursor contract](https://github.com/1amageek/storage-kit/blob/53e615faee772d2ee7c1a59311beaf8e8f0cf7c1/Sources/StorageKit/Storage/DESIGN.md) | depends on | State-owned `KeyValueCursor.validatingScope` | The pinned URL revision must provide post-validation before cursor readiness and finish-boundary resolution. |
-| [Core](../Core/DESIGN.md) | used by | Session transaction and admission | Core cannot widen authority. |
-| [QueryExecution](../QueryExecution/DESIGN.md) | coordinates with | Session meter | Identity, not equal budgets. |
+| Design | Relationship | Contract Used | Summary | Cautions |
+|---|---|---|---|---|
+| [StorageKit cursor contract](https://github.com/1amageek/storage-kit/blob/53e615faee772d2ee7c1a59311beaf8e8f0cf7c1/Sources/StorageKit/Storage/DESIGN.md) | depends on | State-owned `KeyValueCursor.validatingScope` | Supplies the admitted read boundary. | The pinned URL revision must provide post-validation before cursor readiness and finish-boundary resolution. |
+| [DatabaseEngine](../DESIGN.md) | parent | Module operation lifecycle | Fixes session and transaction ownership. | Result declarations confer no authority. |
+| [Registry](../Registry/DESIGN.md) | coordinates with | Admitted field query metadata | Supplies declared typed relation schema. | Do not infer rich values from persisted contents. |
+| [DatabaseKit Query](../../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md) | depends on | QueryColumn, QueryColumnType and QueryValue | Supplies immutable semantic declarations. | Runtime reservations remain here and in QueryExecution. |
+| [Core](../Core/DESIGN.md) | used by | Session transaction and admission | Supplies the admitted read boundary. | Core cannot widen authority. |
+| [QueryExecution](../QueryExecution/DESIGN.md) | coordinates with | Session meter | Supplies the admitted read boundary. | Identity, not equal budgets. |
 
 ## Architecture
 
@@ -77,3 +80,61 @@ prove async source lifetime, order, missing slots, and foreign-meter rejection;
 [retained polymorphic tests](../../../Tests/DatabaseEngineTests/PolymorphicRetainedResourceContractTests.swift)
 prove polymorphic point rejection. Scan meter provenance is a signature and
 source audit. Admission changes invalidate QueryExecution, Fusion, and index-caller evidence.
+
+### S01 frozen public result and projection boundary
+
+These are implemented S01 API changes to the existing DatabaseReadModel and
+QueryRowCodec owners; they are not new authority or a parallel result model.
+The [QueryExecution S01 contract](../QueryExecution/DESIGN.md#s01-frozen-positional-execution-contract)
+owns internal slots/binding and [DatabaseKit SQL](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s01-falsifiable-case-ids)
+owns S01-C01–C13 meanings.
+
+| API | Frozen S01 contract |
+|---|---|
+| Framework `QueryRow.values: [QueryValue]` | Ordered cells only; annotations remain primitive and version unchanged. Remove stored name-keyed fields rather than keeping duplicate row representations. |
+| Framework `QueryResponse.columns: [QueryColumn]` | Ordered immutable Kit declarations carried even when rows are empty. Columns have consecutive one-based numbers; each row matches arity and declared compatible type. |
+| `QueryRow.namedValues(columns:) throws` | Explicit dictionary projection preserving QueryValue; duplicate names, arity or invalid declarations fail. No first/last-wins behavior. |
+| `QueryRow.primitiveFields(columns:) throws` | Explicit primitive dictionary projection; additionally rejects rich cells whose metadata cannot be represented by FieldValue. No automatic metadata dropping. |
+| `QueryRowCodec.decode(_:columns:as:) throws` | Explicit typed model projection; validates unique names and expected admitted field metadata, encodes rich cells with the matching declared adapter, then uses existing persisted-field reconstruction. |
+| `QueryRowCodec.persistedModel(from:columns:entity:) throws` | Same explicit declared conversion for schema-driven destinations; incompatible value/type/missing required field is a typed error. |
+
+Public construction validates columns/row arity/type with a throwing
+initializer or explicit validated factory; there is no default inferred
+schema from rows. QueryRow cannot independently claim a row schema: its
+column contract is the response/relation's schema. Internal code cannot call
+name projection merely to avoid migrating slot consumers. Typed convenience
+`executeSQL(as:)` passes response.columns to the explicit codec, so duplicate
+labels fail visibly instead of overwriting model fields. Primitive model
+encoding remains FieldValue-based; rich values enter only through declared
+Model/Schema adaptation.
+
+```text
+session-authorized collecting rows + shared typed columns
+  -> producing scope closes transactions, sessions, cursors and leases
+  -> existing purpose-specific Ready admission
+      +-> retained result/page: schema + row claims stay owned
+      `-> consuming final public materialization:
+            complete typed columns + positional rows + byte owners
+            -> caller ownership; runtime reservation ends
+```
+
+Runtime reservations live through destination admission and authoritative
+closure. Retained Ready/server page storage owns row and shared schema claims
+until its last retained owner ends or an explicit final transfer completes.
+Public QueryResponse arrays are that explicit final materialization boundary:
+complete arrays and primitive byte owners transfer to the caller, without
+injecting runtime tokens into Kit values. Extracting or copying an
+intermediate raw array is not final output, and server encoding/persistence
+must finish while its retained owner and claims remain live. Empty output
+also retains typed schema until the same boundary. The existing copyable
+snapshot cancellation exception remains unchanged; only the Framework-owned
+Collecting-to-Ready owner performs its applicable post-closure check.
+
+S01-C01/C02 prove positional and zero-row API behavior; C04–C09 prove typed
+model adaptation/rejection; C10 proves pagination schema; C12 proves both
+retained last-owner lifetime and consuming final-public transfer; C13 proves
+primitive/SPARQL regressions. Tests belong to DatabaseTests SQL row/retained
+ownership suites and DatabaseEngineTests codec/read admission suites. Wire
+owns its encoded-frame last-owner evidence; no test equates these two
+ownership domains or treats final caller-owned output as a leaked runtime
+reservation.

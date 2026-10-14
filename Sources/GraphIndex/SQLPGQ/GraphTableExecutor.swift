@@ -58,6 +58,10 @@ public struct GraphTableRow: Sendable {
 ///
 /// Converts SQL/PGQ match patterns to GraphPropertyScanner calls with property filtering.
 package struct GraphTableExecutor: Sendable {
+    private struct MatchBindings: Sendable {
+        var fields: [String: FieldValue]
+    }
+
     private let graphTableSource: GraphTableSource
     private let indexDescriptor: IndexDescriptor
     private let indexSubspace: Subspace
@@ -92,6 +96,7 @@ package struct GraphTableExecutor: Sendable {
         workMeter: DatabaseWorkMeter
     ) async throws -> DatabaseRetainedQueryRows {
         let steps = try Self.steps(from: graphTableSource.matchPattern)
+        let columns = try Self.columns(indexDescriptor: indexDescriptor, graphTableSource: graphTableSource)
         if let filter = graphTableSource.matchPattern.where {
             try Self.validateBooleanExpression(filter)
         }
@@ -132,7 +137,7 @@ package struct GraphTableExecutor: Sendable {
 
         guard let filter = graphTableSource.matchPattern.where,
               !states.isEmpty else {
-            return DatabaseRetainedQueryRows(storage: consume states)
+            return try finish(states: consume states, columns: columns, workMeter: workMeter)
         }
 
         var released = DatabaseIntermediateFootprint()
@@ -144,17 +149,105 @@ package struct GraphTableExecutor: Sendable {
             )
             if !isIncluded {
                 released = try released.adding(
-                    CanonicalRelationalFootprintMeter.footprint(
-                        of: row,
-                        workMeter: workMeter,
-                        stage: .filterEvaluation
-                    )
+                    bindingsFootprint(row, workMeter: workMeter, stage: .filterEvaluation)
                 )
             }
             return isIncluded
         }
         let accounted = try filtered.releasingRetainedFootprint(released)
-        return DatabaseRetainedQueryRows(storage: consume accounted)
+        return try finish(states: consume accounted, columns: columns, workMeter: workMeter)
+    }
+
+    /// Static raw binding schema, independent of index presence and row values.
+    package static func columns(
+        indexDescriptor: IndexDescriptor,
+        graphTableSource: GraphTableSource
+    ) throws -> [QueryColumn] {
+        let steps = try steps(from: graphTableSource.matchPattern)
+        var names: [String] = []
+        var types: [String: (QueryColumnType, Bool)] = [:]
+        func add(_ name: String, type: QueryColumnType, nullable: Bool) {
+            if types[name] == nil { names.append(name) }
+            types[name] = (type, nullable)
+        }
+        let string = QueryColumnType.primitive(.string)
+        for name in ["source", "target", "edgeLabel"] {
+            add(name, type: string, nullable: false)
+        }
+        var properties: [(String, FieldSchema)] = []
+        for name in indexDescriptor.includedFieldNames {
+            guard let field = indexDescriptor.fieldSchemas.first(where: { $0.name == name }) else {
+                throw GraphTableError.invalidColumnExpression("Missing graph property descriptor '\(name)'")
+            }
+            properties.append((name, field))
+            add(name, type: .primitive(field.type, isArray: field.isArray), nullable: field.isOptional)
+        }
+        for step in steps {
+            for variable in [step.left.variable, step.right.variable].compactMap({ $0 }) {
+                add("\(variable).id", type: string, nullable: false)
+            }
+            if let variable = step.edge.variable {
+                add("\(variable).label", type: string, nullable: false)
+                for (name, field) in properties {
+                    add("\(variable).\(name)", type: .primitive(field.type, isArray: field.isArray),
+                        nullable: field.isOptional)
+                }
+            }
+        }
+        return try names.enumerated().map { index, name in
+            guard let number = UInt32(exactly: index + 1), let (type, nullable) = types[name] else {
+                throw GraphTableError.invalidColumnExpression("Graph binding schema exceeds supported arity")
+            }
+            return try QueryColumn(number: number, name: name, type: type, isNullable: nullable)
+        }
+    }
+
+    private func finish(
+        states: consuming DatabaseRetainedBuffer<MatchBindings>,
+        columns: [QueryColumn],
+        workMeter: DatabaseWorkMeter
+    ) throws -> DatabaseRetainedQueryRows {
+        var result = try DatabaseRetainedQueryRowsBuilder(
+            columns: columns, workMeter: workMeter, stage: .pathExpansion, expectedCount: states.count
+        )
+        for index in 0..<states.count {
+            try states.withElement(at: index) { state in
+                let fields = state.fields
+                let footprint = try CanonicalRelationalFootprintMeter.sourceRowFootprint(
+                    fields: fields, sourceName: nil, annotations: [:], version: nil,
+                    workMeter: workMeter, stage: .pathExpansion
+                )
+                try result.append(footprint: footprint) {
+                    let values = try columns.map { column -> QueryValue in
+                        guard let value = fields[column.name] else {
+                            if column.isNullable { return .primitive(.null) }
+                            throw GraphTableError.invalidColumnExpression(
+                                "Graph binding '\(column.name)' is missing"
+                            )
+                        }
+                        return .primitive(value)
+                    }
+                    return try QueryRow(values: values, columns: columns)
+                }
+            }
+        }
+        return result.finish()
+    }
+
+    private func bindingsFootprint(
+        _ state: borrowing MatchBindings,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> DatabaseIntermediateFootprint {
+        var footprint = DatabaseIntermediateFootprint(
+            rows: 1, bytes: UInt64(MemoryLayout<MatchBindings>.stride) + 64
+        )
+        for (name, value) in state.fields {
+            footprint = try footprint.adding(CanonicalRelationalFootprintMeter.fieldEntryFootprint(
+                nameUTF8Count: name.utf8.count, value: value, workMeter: workMeter, stage: stage
+            ))
+        }
+        return footprint
     }
 
     // MARK: - Pattern Evaluation
@@ -273,13 +366,13 @@ package struct GraphTableExecutor: Sendable {
     }
 
     private func extend(
-        states: consuming DatabaseRetainedBuffer<QueryRow>,
+        states: consuming DatabaseRetainedBuffer<MatchBindings>,
         with step: Step,
         scanner: GraphPropertyScanner,
         strategy: GraphIndexStrategy,
         transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
-    ) async throws -> DatabaseRetainedBuffer<QueryRow> {
+    ) async throws -> DatabaseRetainedBuffer<MatchBindings> {
         var nextStates = try makeStateBuilder(workMeter: workMeter)
         for index in 0..<states.count {
             try await states.withElement(at: index) { state in
@@ -304,9 +397,9 @@ package struct GraphTableExecutor: Sendable {
         strategy: GraphIndexStrategy,
         transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter
-    ) async throws -> DatabaseRetainedBuffer<QueryRow> {
+    ) async throws -> DatabaseRetainedBuffer<MatchBindings> {
         var matches = try makeStateBuilder(workMeter: workMeter)
-        let initialState = QueryRow(fields: [:])
+        let initialState = MatchBindings(fields: [:])
         try await appendMatches(
             step: step,
             state: initialState,
@@ -322,13 +415,13 @@ package struct GraphTableExecutor: Sendable {
 
     private func appendMatches(
         step: Step,
-        state: borrowing QueryRow,
+        state: borrowing MatchBindings,
         isInitial: Bool,
         scanner: GraphPropertyScanner,
         strategy: GraphIndexStrategy,
         transaction: any TransactionReadAccess,
         workMeter: DatabaseWorkMeter,
-        into matches: inout DatabaseRetainedArrayBuilder<QueryRow>
+        into matches: inout DatabaseRetainedArrayBuilder<MatchBindings>
     ) async throws {
         let stateCopy = copy state
         let fields = stateCopy.fields
@@ -422,7 +515,7 @@ package struct GraphTableExecutor: Sendable {
     /// counted twice, so admission can reject conservatively but can never
     /// retain more memory than it owns.
     private func prospectiveFootprint(
-        retaining state: borrowing QueryRow,
+        retaining state: borrowing MatchBindings,
         step: borrowing Step,
         leftID: borrowing String,
         rightID: borrowing String,
@@ -430,11 +523,7 @@ package struct GraphTableExecutor: Sendable {
         isInitial: Bool,
         workMeter: DatabaseWorkMeter
     ) throws -> DatabaseIntermediateFootprint {
-        var footprint = try CanonicalRelationalFootprintMeter.footprint(
-            of: state,
-            workMeter: workMeter,
-            stage: .pathExpansion
-        )
+        var footprint = try bindingsFootprint(state, workMeter: workMeter, stage: .pathExpansion)
 
         func addingField(
             nameUTF8Count: Int,
@@ -511,11 +600,11 @@ package struct GraphTableExecutor: Sendable {
 
     private func makeStateBuilder(
         workMeter: DatabaseWorkMeter
-    ) throws -> DatabaseRetainedArrayBuilder<QueryRow> {
+    ) throws -> DatabaseRetainedArrayBuilder<MatchBindings> {
         try DatabaseRetainedArrayBuilder(
             workMeter: workMeter,
             stage: .pathExpansion,
-            layout: try DatabaseRetainedArrayLayout.forElement(QueryRow.self)
+            layout: try DatabaseRetainedArrayLayout.forElement(MatchBindings.self)
         )
     }
 
@@ -669,9 +758,9 @@ package struct GraphTableExecutor: Sendable {
         leftID: String,
         rightID: String,
         edge: GraphEdgeWithProperties,
-        extending existing: borrowing QueryRow,
+        extending existing: borrowing MatchBindings,
         isInitial: Bool
-    ) throws -> QueryRow? {
+    ) throws -> MatchBindings? {
         // The caller holds a conservative reservation before this mutation.
         // Swift COW keeps existing FieldValue payload owners shared while the
         // match receives its independently mutable binding map.
@@ -728,7 +817,7 @@ package struct GraphTableExecutor: Sendable {
             }
         }
 
-        return QueryRow(fields: fields)
+        return MatchBindings(fields: fields)
     }
 
     private func bind(
@@ -1068,7 +1157,6 @@ extension DatabaseContext {
                 GraphTableColumn(
                     expression: .column(
                         ColumnRef(
-                            table: source.graphName,
                             column: fieldName
                         )
                     ),
@@ -1087,9 +1175,10 @@ extension DatabaseContext {
         var rows: [GraphTableRow] = []
         rows.reserveCapacity(response.rows.count)
         for row in response.rows {
-            guard let sourceID = row.fields["source"]?.stringValue,
-                  let targetID = row.fields["target"]?.stringValue,
-                  let edgeLabel = row.fields["edgeLabel"]?.stringValue else {
+            let fields = try row.primitiveFields(columns: response.columns)
+            guard let sourceID = fields["source"]?.stringValue,
+                  let targetID = fields["target"]?.stringValue,
+                  let edgeLabel = fields["edgeLabel"]?.stringValue else {
                 throw GraphTableError.invalidGraphPattern(
                     "Canonical GRAPH_TABLE result is missing an endpoint or edge label"
                 )
@@ -1097,7 +1186,7 @@ extension DatabaseContext {
             var properties: [String: FieldValue] = [:]
             properties.reserveCapacity(propertyNames.count)
             for propertyName in propertyNames {
-                if let value = row.fields[propertyName] {
+                if let value = fields[propertyName] {
                     properties[propertyName] = value
                 }
             }
@@ -1109,7 +1198,7 @@ extension DatabaseContext {
                     target: targetID,
                     edgeLabel: edgeLabel,
                     properties: properties,
-                    fields: row.fields
+                    fields: fields
                 )
             )
         }

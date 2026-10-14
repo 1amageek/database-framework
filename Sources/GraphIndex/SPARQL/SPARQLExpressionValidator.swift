@@ -109,6 +109,19 @@ private extension SPARQLExpressionValidator {
             switch consume expression {
             case .literal(let literal):
                 switch literal {
+                case .queryValue(let value, _):
+                    guard case .primitive(let primitive) = value else {
+                        throw SPARQLExpressionCompilationError
+                            .unsupportedExpression(semanticName)
+                    }
+                    let converted: Literal
+                    do throws(QueryLiteralConversionError) {
+                        converted = try primitive.queryLiteral
+                    } catch {
+                        throw SPARQLExpressionCompilationError
+                            .unsupportedExpression(semanticName)
+                    }
+                    tasks.append(.expression(.literal(converted), depth: childDepth))
                 case .null, .array, .binary:
                     throw SPARQLExpressionCompilationError
                         .unsupportedExpression(semanticName)

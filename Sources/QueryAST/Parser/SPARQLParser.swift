@@ -339,7 +339,7 @@ public final class SPARQLParser {
         switch resource {
         case .valuesRows, .valuesVariables, .valuesCells:
             try structuralLedger.consume(resource, amount: amount)
-        case .nestingDepth, .inputTokens, .totalNodes, .collectionElements,
+        case .nestingDepth, .inputTokens, .totalNodes, .collectionElements, .retainedBytes,
              .basicGraphPatterns,
              .triplePatterns, .reifiedTripleExpansions:
             preconditionFailure("Unexpected parser resource")

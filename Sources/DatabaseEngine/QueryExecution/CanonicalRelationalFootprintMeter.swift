@@ -9,14 +9,8 @@ package enum CanonicalRelationalFootprintMeter {
         workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage
     ) throws -> DatabaseIntermediateFootprint {
-        try sourceRowFootprint(
-            fields: [:],
-            sourceName: nil,
-            annotations: [:],
-            version: nil,
-            workMeter: workMeter,
-            stage: stage
-        )
+        try positionalRowFootprint(values: [], annotations: [:], version: nil,
+                                   workMeter: workMeter, stage: stage)
     }
 
     package static func sourceScopeBaseFootprint(
@@ -24,59 +18,57 @@ package enum CanonicalRelationalFootprintMeter {
         workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage
     ) throws -> DatabaseIntermediateFootprint {
-        let bytes = try adding(
-            try adding(collectionEntryByteCount, UInt64(nameUTF8Count)),
-            UInt64(MemoryLayout<[String: FieldValue]>.stride)
-        )
-        try DatabaseByteProcessingMeter.consume(
-            byteCount: bytes,
-            workMeter: workMeter,
-            stage: stage
-        )
+        let bytes = try adding(collectionEntryByteCount, UInt64(nameUTF8Count))
+        try DatabaseByteProcessingMeter.consume(byteCount: bytes, workMeter: workMeter, stage: stage)
         return DatabaseIntermediateFootprint(bytes: bytes)
+    }
+
+    /// Shared source labels, slot storage and wildcard indices are admitted
+    /// once, before the source layout is allocated.
+    static func sourceLayoutFootprint<Names: Collection>(
+        fieldNames: Names,
+        sourceName: String?,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> DatabaseIntermediateFootprint where Names.Element == String {
+        var bytes = try arrayStorageByteCount(elementCount: fieldNames.count,
+                                               elementStride: MemoryLayout<CanonicalSourceLayout.Slot>.stride)
+        bytes = try adding(bytes, arrayStorageByteCount(elementCount: fieldNames.count,
+                                                        elementStride: MemoryLayout<Int>.stride))
+        bytes = try adding(bytes, arrayStorageByteCount(elementCount: fieldNames.count,
+                                                        elementStride: MemoryLayout<QueryColumnType?>.stride))
+        bytes = try adding(bytes, arrayStorageByteCount(elementCount: fieldNames.count,
+                                                        elementStride: MemoryLayout<Bool>.stride))
+        bytes = try adding(bytes, 64)
+        for name in fieldNames { bytes = try adding(bytes, UInt64(name.utf8.count)) }
+        if let sourceName {
+            bytes = try adding(bytes, UInt64(sourceName.utf8.count))
+            bytes = try adding(bytes, arrayStorageByteCount(elementCount: 1, elementStride: MemoryLayout<String>.stride))
+        }
+        try DatabaseByteProcessingMeter.consume(byteCount: bytes, workMeter: workMeter, stage: stage)
+        return DatabaseIntermediateFootprint(bytes: bytes)
+    }
+
+    static func sourceAliasFootprint(
+        of row: CanonicalSourceRow,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage = .projection
+    ) throws -> DatabaseIntermediateFootprint {
+        let (count, overflow) = row.payloadLeases.count.addingReportingOverflow(1)
+        guard !overflow else { throw DatabaseExpressionEvaluationError.numericOverflow }
+        return try positionalValueArrayFootprint(count: row.values.count,
+            valueAt: { _ in .primitive(.null) }, annotations: row.annotations,
+            version: row.version, workMeter: workMeter, stage: stage)
+            .adding(DatabaseIntermediateCollectionMeter.arrayFootprint(count: count,
+                element: DatabaseQueryPayloadLease.self))
     }
 
     static func footprint(
         of row: CanonicalSourceRow,
         workMeter: DatabaseWorkMeter
     ) throws -> DatabaseIntermediateFootprint {
-        var retainedBytes = try retainedByteCount(
-            fields: row.fields,
-            workMeter: workMeter
-        )
-        retainedBytes = try adding(
-            retainedBytes,
-            retainedByteCount(
-                fields: row.annotations,
-                workMeter: workMeter
-            )
-        )
-        for (scope, fields) in row.scopedFields {
-            let scopeBytes = try adding(
-                collectionEntryByteCount,
-                UInt64(scope.utf8.count)
-            )
-            try DatabaseByteProcessingMeter.consume(
-                byteCount: scopeBytes,
-                workMeter: workMeter,
-                stage: .projection
-            )
-            retainedBytes = try adding(retainedBytes, scopeBytes)
-            retainedBytes = try adding(
-                retainedBytes,
-                retainedByteCount(fields: fields, workMeter: workMeter)
-            )
-        }
-        if let version = row.version {
-            retainedBytes = try adding(
-                retainedBytes,
-                UInt64(version.value.utf8.count)
-            )
-        }
-        return DatabaseIntermediateFootprint(
-            rows: 1,
-            bytes: try adding(rowHeaderByteCount, retainedBytes)
-        )
+        try positionalRowFootprint(values: row.values, annotations: row.annotations,
+                                   version: row.version, workMeter: workMeter, stage: .projection)
     }
 
     package static func footprint(
@@ -84,81 +76,255 @@ package enum CanonicalRelationalFootprintMeter {
         workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage = .projection
     ) throws -> DatabaseIntermediateFootprint {
-        var retainedBytes = try retainedByteCount(
-            fields: row.fields,
-            workMeter: workMeter,
-            stage: stage
-        )
-        retainedBytes = try adding(
-            retainedBytes,
-            retainedByteCount(
-                fields: row.annotations,
-                workMeter: workMeter,
-                stage: stage
-            )
-        )
-        if let version = row.version {
-            retainedBytes = try adding(
-                retainedBytes,
-                UInt64(version.value.utf8.count)
-            )
-        }
-        return DatabaseIntermediateFootprint(
-            rows: 1,
-            bytes: try adding(rowHeaderByteCount, retainedBytes)
-        )
+        try positionalRowFootprint(values: row.values, annotations: row.annotations,
+                                   version: row.version, workMeter: workMeter, stage: stage)
     }
 
-    /// Measures the exact destination row after RDF blank-node identifiers
-    /// receive a shared prefix, without constructing the qualified row.
+    package static func queryRowAliasFootprint(
+        of row: borrowing QueryRow,
+        prefixingRDFBlankNodeIdentifiersWith prefix: String? = nil,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> DatabaseIntermediateFootprint {
+        try positionalValueAliasArrayFootprint(count: row.values.count,
+            valueAt: { row.values[$0] }, prefixingRDFBlankNodeIdentifiersWith: prefix,
+            annotations: row.annotations, version: row.version, workMeter: workMeter, stage: stage)
+    }
+
+    /// Known producer roots cover existing payloads. Qualification allocates
+    /// new primitive containers and complete blank-node identifier strings.
+    package static func positionalValueAliasArrayFootprint(
+        count: Int,
+        valueAt: (Int) throws -> QueryValue,
+        prefixingRDFBlankNodeIdentifiersWith prefix: String? = nil,
+        annotations: [String: FieldValue],
+        version: PersistableVersionToken?,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> DatabaseIntermediateFootprint {
+        var bytes = try adding(rowHeaderByteCount,
+            arrayStorageByteCount(elementCount: count, elementStride: MemoryLayout<QueryValue>.stride))
+        bytes = try adding(bytes, UInt64(MemoryLayout<[String: FieldValue]>.stride))
+        for name in annotations.keys {
+            bytes = try adding(bytes, try adding(collectionEntryByteCount, UInt64(name.utf8.count)))
+        }
+        if let version { bytes = try adding(bytes, UInt64(version.value.utf8.count)) }
+        if let prefix {
+            let prefixBytes = UInt64(prefix.utf8.count)
+            for index in 0..<count {
+                if case .primitive(let value) = try valueAt(index) {
+                    let shape = try QueryValueValidator.measure(.primitive(value))
+                    bytes = try adding(bytes, structureByteCount(nodes: shape.nodeCount,
+                                                                 elements: shape.collectionElementCount))
+                    bytes = try adding(bytes, newBlankNodeTextByteCount(value,
+                        prefixByteCount: prefixBytes, workMeter: workMeter, stage: stage))
+                }
+            }
+            for value in annotations.values {
+                let shape = try QueryValueValidator.measure(.primitive(value))
+                bytes = try adding(bytes, structureByteCount(nodes: shape.nodeCount,
+                                                             elements: shape.collectionElementCount))
+                bytes = try adding(bytes, newBlankNodeTextByteCount(value,
+                    prefixByteCount: prefixBytes, workMeter: workMeter, stage: stage))
+            }
+        }
+        try DatabaseByteProcessingMeter.consume(byteCount: bytes, workMeter: workMeter, stage: stage)
+        return DatabaseIntermediateFootprint(rows: 1, bytes: bytes)
+    }
+
+    private enum PrimitiveAliasVisit {
+        case field(FieldValue)
+        case array([FieldValue], index: Int)
+        case object([(key: String, value: FieldValue)], index: Int)
+    }
+
+    private static func newBlankNodeTextByteCount(
+        _ value: FieldValue,
+        prefixByteCount: UInt64,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> UInt64 {
+        let layout = try DatabaseRetainedArrayLayout.forElement(PrimitiveAliasVisit.self)
+        let claim = try workMeter.reserveIntermediate(at: stage)
+        defer { claim.release() }
+        var stack: [PrimitiveAliasVisit] = []
+        var capacity = 0
+        var bytes: UInt64 = 0
+        func push(_ visit: PrimitiveAliasVisit) throws {
+            let (needed, overflow) = stack.count.addingReportingOverflow(1)
+            guard !overflow else { throw DatabaseExpressionEvaluationError.numericOverflow }
+            let growth = try layout.growth(from: capacity, toFit: needed)
+            if growth.additionalByteCount > 0 {
+                try claim.reserveAdditional(bytes: growth.additionalByteCount, at: stage)
+                stack.reserveCapacity(growth.capacity)
+                capacity = growth.capacity
+            }
+            stack.append(visit)
+        }
+        try push(.field(value))
+        while let visit = stack.popLast() {
+            try workMeter.consume(at: stage)
+            switch visit {
+            case .array(let values, let index):
+                if index + 1 < values.count { try push(.array(values, index: index + 1)) }
+                try push(.field(values[index]))
+            case .object(let fields, let index):
+                if index + 1 < fields.count { try push(.object(fields, index: index + 1)) }
+                try push(.field(fields[index].value))
+            case .field(let value):
+                switch value {
+                case .array(let values):
+                    if !values.isEmpty { try push(.array(values, index: 0)) }
+                case .object(let object):
+                    let fields = object.fields
+                    if !fields.isEmpty { try push(.object(fields, index: 0)) }
+                case .rdfTerm(let first):
+                    var term = first
+                    var complete = false
+                    while !complete {
+                        try workMeter.consume(at: stage)
+                        switch term {
+                        case .blankNode(let identifier):
+                            bytes = try adding(bytes, adding(prefixByteCount, UInt64(identifier.rawValue.utf8.count)))
+                            complete = true
+                        case .tripleTerm(let subject, _, let object):
+                            if case .blankNode(let identifier) = subject {
+                                bytes = try adding(bytes, adding(prefixByteCount, UInt64(identifier.rawValue.utf8.count)))
+                            }
+                            term = object
+                        case .iri, .literal: complete = true
+                        }
+                    }
+                default: break
+                }
+            }
+        }
+        return bytes
+    }
+
+    private enum DecodedStructureVisit {
+        case value(QueryValue)
+        case arrayElements([QueryValue], index: Int)
+    }
+
+    /// Observes complete newly constructed owners before publishing a decoded row.
+    /// Primitive fields and lexical JSON share the already-admitted source root.
+    /// String UTF-8 is a content allowance, not an allocator capacity claim.
+    static func decodedRowStructureFootprint(
+        values: [QueryValue],
+        annotations: [String: FieldValue],
+        version: PersistableVersionToken?,
+        payloadLeaseCount: Int,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> DatabaseIntermediateFootprint {
+        var bytes = try adding(rowHeaderByteCount,
+            DatabaseIntermediateFootprint(bytes: UInt64(MemoryLayout<QueryValue>.stride))
+                .multiplied(by: UInt64(values.capacity)).bytes)
+        bytes = try adding(bytes, UInt64(MemoryLayout<[String: FieldValue]>.stride))
+        bytes = try adding(bytes, DatabaseIntermediateFootprint(
+            bytes: UInt64(MemoryLayout<String>.stride + MemoryLayout<FieldValue>.stride + 32))
+            .multiplied(by: UInt64(annotations.capacity)).bytes)
+        for name in annotations.keys { bytes = try adding(bytes, UInt64(name.utf8.count)) }
+        bytes = try adding(bytes, DatabaseIntermediateCollectionMeter.arrayFootprint(
+            count: payloadLeaseCount, element: DatabaseQueryPayloadLease.self).bytes)
+        if let version { bytes = try adding(bytes, UInt64(version.value.utf8.count)) }
+        let layout = try DatabaseRetainedArrayLayout.forElement(DecodedStructureVisit.self)
+        let scratch = try workMeter.reserveIntermediate(at: stage)
+        defer { scratch.release() }
+        var capacity = 0
+        var stack: [DecodedStructureVisit] = []
+        func push(_ visit: DecodedStructureVisit) throws {
+            let (needed, overflow) = stack.count.addingReportingOverflow(1)
+            guard !overflow else { throw DatabaseExpressionEvaluationError.numericOverflow }
+            let growth = try layout.growth(from: capacity, toFit: needed)
+            if growth.additionalByteCount > 0 {
+                try scratch.reserveAdditional(bytes: growth.additionalByteCount, at: stage)
+                stack.reserveCapacity(growth.capacity)
+                capacity = growth.capacity
+            }
+            stack.append(visit)
+        }
+        for value in values {
+            try push(.value(value))
+            while let visit = stack.popLast() {
+                switch visit {
+                case .arrayElements(let elements, let index):
+                    if index + 1 < elements.count { try push(.arrayElements(elements, index: index + 1)) }
+                    try push(.value(elements[index]))
+                case .value(let value):
+                    try workMeter.consume(at: stage)
+                    switch value {
+                    case .jsonb(let json):
+                        let owner = json.root.storageFootprint
+                        bytes = try adding(bytes, owner.retainedStorageByteCount)
+                        bytes = try adding(bytes, owner.utf8ByteCount)
+                    case .array(let array):
+                        bytes = try adding(bytes, DatabaseIntermediateFootprint(
+                            bytes: UInt64(MemoryLayout<QueryValue>.stride))
+                            .multiplied(by: UInt64(array.elements.capacity)).bytes)
+                        bytes = try adding(bytes, DatabaseIntermediateFootprint(
+                            bytes: UInt64(MemoryLayout<QueryArrayDimension>.stride))
+                            .multiplied(by: UInt64(array.dimensions.capacity)).bytes)
+                        bytes = try adding(bytes, 64)
+                        if !array.elements.isEmpty { try push(.arrayElements(array.elements, index: 0)) }
+                    case .primitive, .numeric, .json, .interval:
+                        break
+                    }
+                }
+            }
+        }
+        try workMeter.checkpoint(at: stage)
+        return DatabaseIntermediateFootprint(rows: 1, bytes: bytes)
+    }
+
+    /// Capacity selection is Framework policy; Kit reports logical requirements.
+    /// Actual arena capacities are reconciled after bounded construction.
+    private static func decodedStructureAllowance(
+        _ decoded: QueryFieldDecodedFootprint
+    ) throws -> UInt64 {
+        func capacity(_ count: UInt64) throws -> UInt64 {
+            guard let count = Int(exactly: count) else { throw DatabaseExpressionEvaluationError.numericOverflow }
+            let layout = try DatabaseRetainedArrayLayout.forElement(QueryValue.self)
+            return UInt64(try layout.growth(from: 0, toFit: count).capacity)
+        }
+        let flat = try QueryJSONBStorageFootprint.storageByteCount(
+            nodeCapacity: capacity(decoded.jsonbNodeCount),
+            elementIndexCapacity: capacity(decoded.jsonbElementIndexCount),
+            memberCapacity: capacity(decoded.jsonbMemberCount))
+        return try adding(adding(structureByteCount(nodes: decoded.nodeCount,
+            elements: decoded.collectionElementCount), flat), decoded.utf8ByteCount)
+    }
+
+    /// Only primitive RDF terms change; declared rich SQL values remain intact.
     package static func footprint(
         of row: borrowing QueryRow,
         prefixingRDFBlankNodeIdentifiersWith prefix: String,
         workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage
     ) throws -> DatabaseIntermediateFootprint {
-        var retainedBytes = try retainedByteCount(
-            fields: row.fields,
-            prefixingRDFBlankNodeIdentifiersWith: prefix,
-            workMeter: workMeter,
-            stage: stage
-        )
-        retainedBytes = try adding(
-            retainedBytes,
-            retainedByteCount(
-                fields: row.annotations,
-                prefixingRDFBlankNodeIdentifiersWith: prefix,
-                workMeter: workMeter,
-                stage: stage
-            )
-        )
-        if let version = row.version {
-            retainedBytes = try adding(
-                retainedBytes,
-                UInt64(version.value.utf8.count)
-            )
+        var bytes = try arrayStorageByteCount(elementCount: row.values.count,
+                                               elementStride: MemoryLayout<QueryValue>.stride)
+        for value in row.values {
+            bytes = try adding(bytes, queryValueByteCount(
+                value, prefixingRDFBlankNodeIdentifiersWith: prefix, workMeter: workMeter, stage: stage
+            ))
         }
-        return DatabaseIntermediateFootprint(
-            rows: 1,
-            bytes: try adding(rowHeaderByteCount, retainedBytes)
-        )
+        bytes = try adding(bytes, retainedByteCount(fields: row.annotations,
+                                                    prefixingRDFBlankNodeIdentifiersWith: prefix,
+                                                    workMeter: workMeter, stage: stage))
+        if let version = row.version { bytes = try adding(bytes, UInt64(version.value.utf8.count)) }
+        return DatabaseIntermediateFootprint(rows: 1, bytes: try adding(rowHeaderByteCount, bytes))
     }
 
-    /// Returns the fixed retained shape of a QueryRow before its field and
-    /// annotation dictionaries are populated.
-    package static func queryRowBaseFootprint()
-        -> DatabaseIntermediateFootprint
-    {
-        DatabaseIntermediateFootprint(
-            rows: 1,
-            bytes: rowHeaderByteCount
-                + UInt64(MemoryLayout<[String: FieldValue]>.stride) * 2
-        )
+    package static func queryRowBaseFootprint() -> DatabaseIntermediateFootprint {
+        DatabaseIntermediateFootprint(rows: 1, bytes: rowHeaderByteCount
+            + UInt64(MemoryLayout<[QueryValue]>.stride)
+            + UInt64(MemoryLayout<[String: FieldValue]>.stride))
     }
 
-    /// Measures the exact retained shape created by
-    /// `CanonicalSourceRow.fromBaseFields` before that shape allocates its
-    /// flattened and scoped dictionaries.
+    /// Prospective primitive adapter row. Dictionary inputs are consumed only
+    /// at this explicit adapter boundary; source row storage is positional.
     package static func sourceRowFootprint(
         fields: [String: FieldValue],
         sourceName: String?,
@@ -167,77 +333,16 @@ package enum CanonicalRelationalFootprintMeter {
         workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage = .projection
     ) throws -> DatabaseIntermediateFootprint {
-        var retainedBytes: UInt64
-        if let sourceName {
-            retainedBytes = UInt64(
-                MemoryLayout<[String: FieldValue]>.stride
-            )
-            for (name, value) in fields {
-                retainedBytes = try adding(
-                    retainedBytes,
-                    retainedEntryByteCount(
-                        nameUTF8Count: name.utf8.count,
-                        value: value,
-                        workMeter: workMeter,
-                        stage: stage
-                    )
-                )
-                retainedBytes = try adding(
-                    retainedBytes,
-                    retainedEntryByteCount(
-                        nameUTF8Count: sourceName.utf8.count
-                            + 1
-                            + name.utf8.count,
-                        value: value,
-                        workMeter: workMeter,
-                        stage: stage
-                    )
-                )
-            }
-            retainedBytes = try adding(
-                retainedBytes,
-                try adding(
-                    collectionEntryByteCount,
-                    UInt64(sourceName.utf8.count)
-                )
-            )
-            retainedBytes = try adding(
-                retainedBytes,
-                retainedByteCount(
-                    fields: fields,
-                    workMeter: workMeter,
-                    stage: stage
-                )
-            )
-        } else {
-            retainedBytes = try retainedByteCount(
-                fields: fields,
-                workMeter: workMeter,
-                stage: stage
-            )
+        var bytes = try arrayStorageByteCount(elementCount: fields.count,
+                                               elementStride: MemoryLayout<QueryValue>.stride)
+        for value in fields.values {
+            bytes = try adding(bytes, queryValueByteCount(.primitive(value), workMeter: workMeter, stage: stage))
         }
-        retainedBytes = try adding(
-            retainedBytes,
-            retainedByteCount(
-                fields: annotations,
-                workMeter: workMeter,
-                stage: stage
-            )
-        )
-        if let version {
-            retainedBytes = try adding(
-                retainedBytes,
-                UInt64(version.value.utf8.count)
-            )
-        }
-        return DatabaseIntermediateFootprint(
-            rows: 1,
-            bytes: try adding(rowHeaderByteCount, retainedBytes)
-        )
+        bytes = try adding(bytes, retainedByteCount(fields: annotations, workMeter: workMeter, stage: stage))
+        if let version { bytes = try adding(bytes, UInt64(version.value.utf8.count)) }
+        return DatabaseIntermediateFootprint(rows: 1, bytes: try adding(rowHeaderByteCount, bytes))
     }
 
-    /// Measures a renamed subquery row before allocating its destination
-    /// dictionaries. Source and target columns are positionally paired.
     package static func sourceRowFootprint(
         sourceFields: [String: FieldValue],
         sourceColumns: [String],
@@ -248,129 +353,171 @@ package enum CanonicalRelationalFootprintMeter {
         workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage = .bindingCandidate
     ) throws -> DatabaseIntermediateFootprint {
-        precondition(sourceColumns.count == targetColumns.count)
-        var flattenedBytes = UInt64(
-            MemoryLayout<[String: FieldValue]>.stride
-        )
-        var scopedBytes = UInt64(
-            MemoryLayout<[String: FieldValue]>.stride
-        )
-        for (sourceColumn, targetColumn) in zip(
-            sourceColumns,
-            targetColumns
-        ) {
+        guard sourceColumns.count == targetColumns.count else {
+            throw CanonicalReadError.unsupportedSelectQuery("Subquery column arity does not match its destination")
+        }
+        var bytes = try arrayStorageByteCount(elementCount: sourceColumns.count,
+                                               elementStride: MemoryLayout<QueryValue>.stride)
+        for sourceColumn in sourceColumns {
             guard let value = sourceFields[sourceColumn] else {
-                throw CanonicalReadError.unsupportedSelectQuery(
-                    "Subquery output column '\(sourceColumn)' is missing"
-                )
+                throw CanonicalReadError.unsupportedSelectQuery("Subquery output column '\(sourceColumn)' is missing")
             }
-            let base = try retainedEntryByteCount(
-                nameUTF8Count: targetColumn.utf8.count,
-                value: value,
-                workMeter: workMeter,
-                stage: stage
-            )
-            flattenedBytes = try adding(flattenedBytes, base)
-            flattenedBytes = try adding(
-                flattenedBytes,
-                retainedEntryByteCount(
-                    nameUTF8Count: sourceName.utf8.count
-                        + 1
-                        + targetColumn.utf8.count,
-                    value: value,
-                    workMeter: workMeter,
-                    stage: stage
-                )
-            )
-            scopedBytes = try adding(scopedBytes, base)
+            bytes = try adding(bytes, queryValueByteCount(.primitive(value), workMeter: workMeter, stage: stage))
         }
-        var retainedBytes = try adding(flattenedBytes, scopedBytes)
-        retainedBytes = try adding(
-            retainedBytes,
-            try adding(
-                collectionEntryByteCount,
-                UInt64(sourceName.utf8.count)
-            )
-        )
-        retainedBytes = try adding(
-            retainedBytes,
-            retainedByteCount(
-                fields: annotations,
-                workMeter: workMeter,
-                stage: stage
-            )
-        )
-        if let version {
-            retainedBytes = try adding(
-                retainedBytes,
-                UInt64(version.value.utf8.count)
-            )
-        }
-        return DatabaseIntermediateFootprint(
-            rows: 1,
-            bytes: try adding(rowHeaderByteCount, retainedBytes)
-        )
+        bytes = try adding(bytes, retainedByteCount(fields: annotations, workMeter: workMeter, stage: stage))
+        if let version { bytes = try adding(bytes, UInt64(version.value.utf8.count)) }
+        return DatabaseIntermediateFootprint(rows: 1, bytes: try adding(rowHeaderByteCount, bytes))
     }
 
-    /// Persisted-model variant of the prospective source-row measurement. It
-    /// avoids allocating the QueryRow field dictionary before admission.
-    package static func sourceRowFootprint(
+    /// Admits new destination arrays and rich-value structure before decode.
+    /// Persisted byte roots remain charged through the source entry's lease;
+    /// envelope traversal counts bound new structure, not unique allocation.
+    static func sourceRowFootprint(
         of model: borrowing PersistedModel,
-        sourceName: String?,
+        entity: Schema.Entity,
+        layout: CanonicalSourceLayout,
         workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage = .projection
     ) throws -> DatabaseIntermediateFootprint {
-        var flattenedBytes = UInt64(
-            MemoryLayout<[String: FieldValue]>.stride
-        )
-        var scopedBytes = UInt64(
-            MemoryLayout<[String: FieldValue]>.stride
-        )
-        for field in model.fields {
-            let base = try retainedEntryByteCount(
-                nameUTF8Count: field.name.utf8.count,
-                value: field.value,
-                workMeter: workMeter,
-                stage: stage
-            )
-            flattenedBytes = try adding(flattenedBytes, base)
-            if let sourceName {
-                flattenedBytes = try adding(
-                    flattenedBytes,
-                    retainedEntryByteCount(
-                        nameUTF8Count: sourceName.utf8.count
-                            + 1
-                            + field.name.utf8.count,
-                        value: field.value,
-                        workMeter: workMeter,
-                        stage: stage
-                    )
-                )
-                scopedBytes = try adding(scopedBytes, base)
+        try EntityRuntimeDefinition.validateCanonicalSourceModel(model, entity: entity)
+        var bytes = try arrayStorageByteCount(elementCount: layout.slots.count,
+                                               elementStride: MemoryLayout<QueryValue>.stride)
+        bytes = try adding(bytes, UInt64(MemoryLayout<[String: FieldValue]>.stride))
+        // Version hashing sorts fields into a temporary array after admission.
+        bytes = try adding(bytes, arrayStorageByteCount(elementCount: model.fields.count,
+                                                        elementStride: MemoryLayout<PersistableField>.stride))
+        bytes = try adding(bytes, arrayStorageByteCount(elementCount: 1,
+                                                        elementStride: MemoryLayout<DatabaseQueryPayloadLease>.stride))
+        for slot in layout.slots {
+            guard let schema = entity.fieldMapByName[slot.name] else { continue }
+            let payload = try EntityRuntimeDefinition.canonicalSourceField(model, schema: schema)
+            if let descriptor = schema.queryType {
+                try QueryFieldStorageAdapter.validateDescriptor(descriptor, fieldType: schema.type, isArray: schema.isArray)
+                let decoded = try QueryFieldStorageAdapter.measureDecoded(payload, type: descriptor)
+                bytes = try adding(bytes, decodedStructureAllowance(decoded))
+                try workMeter.consume(decoded.nodeCount, at: stage)
+            } else {
+                guard QueryValueValidator.accepts(.primitive(payload), type: .primitive(schema.type, isArray: schema.isArray)) else {
+                    throw SchemaDrivenEntityRuntimeError.invalidFieldValue(entity: entity.name, field: schema.name, expected: schema.type)
+                }
             }
         }
-        var retainedBytes = flattenedBytes
-        if let sourceName {
-            retainedBytes = try adding(
-                retainedBytes,
-                try adding(
-                    collectionEntryByteCount,
-                    UInt64(sourceName.utf8.count)
-                )
-            )
-            retainedBytes = try adding(retainedBytes, scopedBytes)
+        // The version's lowercase SHA-256 text is newly owned by the row.
+        bytes = try adding(bytes, 64)
+        try DatabaseByteProcessingMeter.consume(byteCount: bytes, workMeter: workMeter, stage: stage)
+        return DatabaseIntermediateFootprint(rows: 1, bytes: try adding(rowHeaderByteCount, bytes))
+    }
+
+    package static func positionalRowFootprint(
+        values: [QueryValue], annotations: [String: FieldValue], version: PersistableVersionToken?,
+        workMeter: DatabaseWorkMeter, stage: DatabaseWorkStage
+    ) throws -> DatabaseIntermediateFootprint {
+        try positionalValueArrayFootprint(
+            count: values.count, valueAt: { values[$0] }, annotations: annotations,
+            version: version, workMeter: workMeter, stage: stage
+        )
+    }
+
+    /// Measures a positional destination before its array is allocated.
+    /// Column labels are owned by the independently admitted shared schema.
+    package static func positionalValueArrayFootprint(
+        count: Int,
+        valueAt: (Int) throws -> QueryValue,
+        prefixingRDFBlankNodeIdentifiersWith prefix: String? = nil,
+        annotations: [String: FieldValue],
+        version: PersistableVersionToken?,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> DatabaseIntermediateFootprint {
+        var bytes = try arrayStorageByteCount(elementCount: count,
+                                               elementStride: MemoryLayout<QueryValue>.stride)
+        for index in 0..<count {
+            bytes = try adding(bytes, queryValueByteCount(try valueAt(index), prefixingRDFBlankNodeIdentifiersWith: prefix,
+                                                            workMeter: workMeter, stage: stage))
         }
-        retainedBytes = try adding(
-            retainedBytes,
-            UInt64(MemoryLayout<[String: FieldValue]>.stride)
-        )
-        // QueryRowCodec emits a lowercase SHA-256 token for every persisted
-        // model. Its retained textual representation is always 64 UTF-8 bytes.
-        retainedBytes = try adding(retainedBytes, 64)
-        return DatabaseIntermediateFootprint(
-            rows: 1,
-            bytes: try adding(rowHeaderByteCount, retainedBytes)
-        )
+        bytes = try adding(bytes, retainedByteCount(fields: annotations, workMeter: workMeter, stage: stage))
+        if let version { bytes = try adding(bytes, UInt64(version.value.utf8.count)) }
+        return DatabaseIntermediateFootprint(rows: 1, bytes: try adding(rowHeaderByteCount, bytes))
+    }
+
+    private static func queryValueByteCount(
+        _ value: QueryValue,
+        prefixingRDFBlankNodeIdentifiersWith prefix: String? = nil,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> UInt64 {
+        let counts = try QueryValueValidator.measure(value)
+        var bytes = try adding(structureByteCount(nodes: counts.nodeCount, elements: counts.collectionElementCount),
+                               counts.retainedByteCount)
+        if let prefix, case .primitive(let primitive) = value {
+            // Prefixing changes only RDF lexical text, preserving all value
+            // nodes, container capacities and unrelated retained byte roots.
+            bytes = try adding(bytes, rdfPrefixByteIncrease(primitive, prefixByteCount: UInt64(prefix.utf8.count)))
+        }
+        try workMeter.consume(counts.nodeCount, at: stage)
+        try DatabaseByteProcessingMeter.consume(byteCount: bytes, workMeter: workMeter, stage: stage)
+        return bytes
+    }
+
+    private static func rdfPrefixByteIncrease(_ value: FieldValue, prefixByteCount: UInt64) throws -> UInt64 {
+        switch value {
+        case .rdfTerm(let term): return try rdfPrefixByteIncrease(term, prefixByteCount: prefixByteCount)
+        case .array(let values):
+            var total: UInt64 = 0
+            for value in values { total = try adding(total, rdfPrefixByteIncrease(value, prefixByteCount: prefixByteCount)) }
+            return total
+        case .object(let object):
+            var total: UInt64 = 0
+            for field in object.fields { total = try adding(total, rdfPrefixByteIncrease(field.value, prefixByteCount: prefixByteCount)) }
+            return total
+        case .reference(let reference):
+            var total: UInt64 = 0
+            for field in reference.partitions.fields {
+                total = try adding(total, rdfPrefixByteIncrease(field.value, prefixByteCount: prefixByteCount))
+            }
+            return total
+        default: return 0
+        }
+    }
+
+    private static func rdfPrefixByteIncrease(_ term: RDFTerm, prefixByteCount: UInt64) throws -> UInt64 {
+        switch term {
+        case .blankNode: return prefixByteCount
+        case .tripleTerm(let subject, _, let object):
+            let subjectBytes: UInt64
+            if case .blankNode = subject { subjectBytes = prefixByteCount } else { subjectBytes = 0 }
+            return try adding(subjectBytes, rdfPrefixByteIncrease(object, prefixByteCount: prefixByteCount))
+        case .iri, .literal: return 0
+        }
+    }
+
+    /// Logical producer bounds use the same structural allowances as actual
+    /// retained values; callers separately bound newly produced UTF-8 bytes.
+    package static func prospectiveValueFootprint(
+        nodeCount: UInt64 = 1,
+        collectionElementCount: UInt64 = 0,
+        retainedByteCount: UInt64 = 0
+    ) throws -> DatabaseIntermediateFootprint {
+        DatabaseIntermediateFootprint(bytes: try adding(
+            structureByteCount(nodes: nodeCount, elements: collectionElementCount), retainedByteCount
+        ))
+    }
+
+    private static func structureByteCount(nodes: UInt64, elements: UInt64) throws -> UInt64 {
+        let nodeStride = UInt64(max(MemoryLayout<QueryValue>.stride, MemoryLayout<QueryJSONBMember>.stride) + 32)
+        let nodeBytes = try DatabaseIntermediateFootprint(bytes: nodeStride).multiplied(by: nodes)
+        // Twice the logical count bounds the deterministic geometric capacity.
+        let entryBytes = try DatabaseIntermediateFootprint(bytes: nodeStride).multiplied(by: elements).multiplied(by: 2)
+        return try nodeBytes.adding(entryBytes).bytes
+    }
+
+    private static func arrayStorageByteCount(elementCount: Int, elementStride: Int) throws -> UInt64 {
+        let layout = try DatabaseRetainedArrayLayout.validated(
+            containerByteCount: UInt64(MemoryLayout<[QueryValue]>.stride),
+            elementCapacitySlotByteCount: UInt64(max(1, elementStride)),
+            sharedOwnerByteCount: 32, appendAdmissionByteCount: 16)
+        let growth = try layout.growth(from: 0, toFit: elementCount)
+        return try adding(layout.containerByteCount, growth.additionalByteCount)
     }
 
     /// Returns the retained claim for one prospective QueryRow field.
@@ -400,10 +547,8 @@ package enum CanonicalRelationalFootprintMeter {
         workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage
     ) throws -> DatabaseIntermediateFootprint {
-        let valueBytes = try StorageValueDecoder.retainedFootprint(
-            of: copy value,
-            prefixingRDFBlankNodeIdentifiersWith: prefix
-        )
+        let valueBytes = try queryValueByteCount(.primitive(copy value),
+            prefixingRDFBlankNodeIdentifiersWith: prefix, workMeter: workMeter, stage: stage)
         let retainedBytes = try adding(
             collectionEntryByteCount,
             try adding(UInt64(nameUTF8Count), valueBytes)
@@ -424,13 +569,16 @@ package enum CanonicalRelationalFootprintMeter {
         workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage
     ) throws -> DatabaseIntermediateFootprint {
-        DatabaseIntermediateFootprint(
-            bytes: try StorageValueDecoder.retainedFootprint(
-                of: copy value,
-                workMeter: workMeter,
-                stage: stage
-            )
-        )
+        DatabaseIntermediateFootprint(bytes: try queryValueByteCount(
+            .primitive(copy value), workMeter: workMeter, stage: stage))
+    }
+
+    package static func valueFootprint(
+        of value: borrowing QueryValue,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage
+    ) throws -> DatabaseIntermediateFootprint {
+        DatabaseIntermediateFootprint(bytes: try queryValueByteCount(copy value, workMeter: workMeter, stage: stage))
     }
 
     /// Conservatively bounds the retained canonical FieldValue footprint of
@@ -489,10 +637,11 @@ package enum CanonicalRelationalFootprintMeter {
                 workMeter: workMeter
             )
         }
-        var retainedBytes = try retainedByteCount(
-            fields: row.fields,
-            workMeter: workMeter
-        )
+        var retainedBytes = try arrayStorageByteCount(elementCount: row.values.count,
+                                                        elementStride: MemoryLayout<QueryValue>.stride)
+        for cell in row.values {
+            retainedBytes = try adding(retainedBytes, queryValueByteCount(cell, workMeter: workMeter, stage: .projection))
+        }
         retainedBytes = try adding(
             retainedBytes,
             retainedByteCount(
@@ -606,10 +755,8 @@ package enum CanonicalRelationalFootprintMeter {
     ) throws -> UInt64 {
         var total = UInt64(MemoryLayout<[String: FieldValue]>.stride)
         for (name, value) in fields {
-            let valueBytes = try StorageValueDecoder.retainedFootprint(
-                of: value,
-                prefixingRDFBlankNodeIdentifiersWith: prefix
-            )
+            let valueBytes = try queryValueByteCount(.primitive(value),
+                prefixingRDFBlankNodeIdentifiersWith: prefix, workMeter: workMeter, stage: stage)
             let retainedBytes = try adding(
                 collectionEntryByteCount,
                 try adding(UInt64(name.utf8.count), valueBytes)
@@ -693,7 +840,7 @@ package enum CanonicalRelationalFootprintMeter {
         workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage
     ) throws -> UInt64 {
-        let valueBytes = try StorageValueDecoder.retainedFootprint(of: value)
+        let valueBytes = try queryValueByteCount(.primitive(copy value), workMeter: workMeter, stage: stage)
         let retainedBytes = try adding(
             collectionEntryByteCount,
             try adding(UInt64(nameUTF8Count), valueBytes)

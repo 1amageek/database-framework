@@ -650,9 +650,9 @@ extension SPARQLQueryBuilder {
     }
 
     /// Generate SPARQL string
-    public func toSPARQL() -> String {
+    public func toSPARQL() throws(QueryLiteralConversionError) -> String {
         let ast = buildAST()
-        return ast.toSPARQL(prefixes: prefixes)
+        return try ast.toSPARQL(prefixes: prefixes)
     }
 }
 

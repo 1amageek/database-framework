@@ -60,8 +60,9 @@ private actor CompositionSPARQLResultCollector {
         }
     }
 
-    func result() -> [CompositionResult<QueryRow>] {
-        values
+    func result() throws -> CompositionQueryResponse {
+        guard let metadata else { throw CompositionQueryError.workspaceCorrupted }
+        return try CompositionQueryResponse(columns: metadata.columns, rows: values)
     }
 }
 
@@ -72,7 +73,7 @@ public extension CompositionDataSource {
         _ query: SelectQuery,
         graphPartitions: FieldObject = FieldObject(),
         options: ReadExecutionOptions = .default
-    ) async throws -> [CompositionResult<QueryRow>] {
+    ) async throws -> CompositionQueryResponse {
         let execution = ReadExecutionContext(
             options: options,
             monotonicClock: container.monotonicClock
@@ -93,7 +94,7 @@ public extension CompositionDataSource {
             )
             return true
         }
-        return await collector.result()
+        return try await collector.result()
     }
 
     /// Executes a Composition CONSTRUCT in-process. Blank-node identity and

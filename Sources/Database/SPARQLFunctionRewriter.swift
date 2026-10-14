@@ -857,9 +857,10 @@ internal struct SPARQLFunctionRewriter: Sendable {
                     try workMeter.consume(at: .expressionEvaluation)
                     try rewritten.append(
                         footprint: try CanonicalRelationalFootprintMeter
-                            .footprint(
-                                of: QueryRow(fields: ["value": fieldValue]),
-                                workMeter: workMeter
+                            .valueFootprint(
+                                of: QueryValue.primitive(fieldValue),
+                                workMeter: workMeter,
+                                stage: .expressionEvaluation
                             ),
                         make: {
                             .literal(try fieldValueToLiteral(fieldValue))

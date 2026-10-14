@@ -142,7 +142,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         )
 
         return try response.rows.map { row in
-            let item = try QueryRowCodec.decode(row, as: T.self)
+            let item = try QueryRowCodec.decode(row, columns: response.columns, as: T.self)
             guard let rank = row.annotations["rank"]?.int64Value,
                   let exactRank = Int(exactly: rank) else {
                 throw RankQueryError.invalidResponse("Missing rank annotation")

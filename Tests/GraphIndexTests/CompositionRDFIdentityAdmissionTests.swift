@@ -12,18 +12,14 @@ struct CompositionRDFIdentityAdmissionTests {
     @Test("Qualified blank-node rows are admitted before construction")
     func qualifiedBlankNodeRowIsAdmittedBeforeConstruction() throws {
         let baseID = try Base.ID("qualified-base")
-        let row = QueryRow(
-            fields: [
-                "subject": .rdfTerm(
-                    .blankNode(try RDFBlankNodeIdentifier("subject"))
-                ),
-                "object": .array([
-                    .rdfTerm(
-                        .blankNode(try RDFBlankNodeIdentifier("nested"))
-                    ),
-                ]),
-            ]
-        )
+        let columns = try [
+            QueryColumn(number: 1, name: "subject", type: .primitive(.rdfTerm), isNullable: false),
+            QueryColumn(number: 2, name: "object", type: .primitive(.rdfTerm, isArray: true), isNullable: false),
+        ]
+        let row = try QueryRow(values: [
+            .primitive(.rdfTerm(.blankNode(try RDFBlankNodeIdentifier("subject")))),
+            .primitive(.array([.rdfTerm(.blankNode(try RDFBlankNodeIdentifier("nested")))])),
+        ], columns: columns)
         let generousMeter = makeMeter(maximumBytes: 1 * 1_024 * 1_024)
         let footprint = try CanonicalRelationalFootprintMeter.footprint(
             of: row,
@@ -34,6 +30,7 @@ struct CompositionRDFIdentityAdmissionTests {
         )
         let qualified = try CompositionRDFIdentity.qualifyBlankNodes(
             in: row,
+            columns: columns,
             baseID: baseID
         )
         let observed = try CanonicalRelationalFootprintMeter.footprint(
@@ -57,6 +54,7 @@ struct CompositionRDFIdentityAdmissionTests {
                 producerWasInvoked.withLock { $0 = true }
                 return try CompositionRDFIdentity.qualifyBlankNodes(
                     in: row,
+                    columns: columns,
                     baseID: baseID
                 )
             }

@@ -12,6 +12,12 @@ import StorageKit
 public protocol CompositionMemberQueryExecutor: Sendable {
     func validate(_ query: SelectQuery) throws
 
+    /// Binds the complete output before any member starts fetching rows.
+    func columns(
+        session: DatabaseReadSession,
+        query: SelectQuery
+    ) throws -> [QueryColumn]
+
     func execute(
         session: DatabaseReadSession,
         query: SelectQuery,
@@ -25,9 +31,29 @@ public protocol CompositionMemberQueryExecutor: Sendable {
         workMeter: DatabaseWorkMeter
     ) throws -> (rows: UInt64, bytes: UInt64)
 
+    /// Measures the actual prepared destination under the same payload-sharing
+    /// contract as the prospective footprint.
+    func observedPreparedFootprint(
+        of row: borrowing QueryRow,
+        workMeter: DatabaseWorkMeter
+    ) throws -> (rows: UInt64, bytes: UInt64)
+
     func prepare(
         _ row: QueryRow,
+        columns: [QueryColumn],
         sourceBaseID: Base.ID
     ) throws -> QueryRow
+}
+
+extension CompositionMemberQueryExecutor {
+    /// Arbitrary conformers conservatively own their complete prepared row.
+    public func observedPreparedFootprint(
+        of row: borrowing QueryRow,
+        workMeter: DatabaseWorkMeter
+    ) throws -> (rows: UInt64, bytes: UInt64) {
+        let footprint = try CanonicalRelationalFootprintMeter.footprint(
+            of: row, workMeter: workMeter, stage: .resultMaterialization)
+        return (footprint.rows, footprint.bytes)
+    }
 }
 #endif
