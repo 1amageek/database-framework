@@ -10,6 +10,7 @@ products.
 - Parent: [database-framework](../../DESIGN.md).
 - Children: none. This module has no nested design authority; parser and AST
   semantics remain owned by the `QueryAST`/`DatabaseKit` dependencies.
+  PostgreSQL compatibility additions below are planned S00 contracts.
 
 ## Responsibilities and Boundaries
 
@@ -38,6 +39,8 @@ The concrete entry/adaptation paths are [DatabaseContext+SQL](DatabaseContext+SQ
 |---|---|---|---|---|
 | [database-framework](../../DESIGN.md) | parent | Package composition and dependency direction | Places this module at the public entry boundary. | Keep child contracts linked rather than duplicated here. |
 | [DatabaseEngine](../DatabaseEngine/DESIGN.md) | depends on | Read session, transaction-bound preparation, canonical rows, and typed failures | Supplies the session and persistence execution boundary. | `Database` must not replace session authority with ambient state. |
+| [QueryAST](../QueryAST/DESIGN.md) | depends on | Strict parser and canonical SQL serializer | Adapts text without executing it. | SELECT and statement entry points must agree on shared syntax. |
+| [DatabaseKit SQL](../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md) | depends on | SQL profile, statement/block, positional typed result | Owns semantic values and compatibility inventory. | Public adaptation must preserve column order, duplicate names, types, and failures. |
 | [GraphIndex](../GraphIndex/DESIGN.md) | depends on | Transaction-bound graph-facing SPARQL and graph physical execution | Receives graph work after SQL entry/adaptation and session admission. | Graph layout, RDF bytes, and graph-facing SPARQL semantics remain in GraphIndex. |
 
 The `DatabaseKit`, `QueryAST`, and `StorageKit` dependencies are package-owned
@@ -124,3 +127,48 @@ Changes to SQL/SPARQL entry contracts require rechecking DatabaseEngine's
 session design and GraphIndex's transaction-bound executor evidence. Changes
 to parser semantics belong to the owning dependency and are not expanded into
 this module's design.
+
+### Planned statement and block entry contracts
+
+The current `executeSQL` implementation parses one statement, binds values,
+and rejects non-SELECT statements. That read-only API remains read-only.
+S01–S17 add `executeStatement` and `executeSQLBlock` public entry points;
+names here describe accepted proposed APIs, not existing declarations.
+Their DatabaseKit input/output types and wire shapes follow the linked SQL
+design. Database owns parsing and admission, not execution-policy decisions.
+
+```text
+SQL text + parameters + execution configuration
+    -> QueryAST strict parse
+    -> DatabaseKit structural validation and parameter contract
+    -> DatabaseEngine scope/name/type binding
+    -> Framework-owned statement or block lifecycle
+    -> purpose-specific Ready result
+    -> public positional result / command / schema-change adaptation
+```
+
+- A statement result distinguishes rows, affected-row command, and schema
+  change. A block returns results in statement order only after its complete
+  producing lifecycle ends. It never exposes an intermediate result while a
+  transaction, sequence recovery operation, or schema publication is active.
+- Parameters retain their semantic types, typmods, and owned bytes. An empty
+  relation still returns its bound column schema; duplicate labels and
+  projection order survive adaptation without a dictionary conversion.
+- Block state, prepared statements, temporary relations, and SET values are
+  request-scoped. They do not establish an ambient cross-request session or
+  transport-owned transaction. SELECT admission does not widen write or DDL
+  authority, and SQL schema selection does not select a Partition or Tenant.
+- Existing SQL-embedded SPARQL work continues to borrow the exact admitted
+  transaction and meter; it cannot open an independent transaction to obtain
+  compatibility behavior.
+- Syntax, type, cardinality, constraint, budget, cancellation, stale schema,
+  cleanup, and commit-unknown failures remain typed through response
+  adaptation. SQLSTATE classification is a semantic contract, not message
+  parsing. No failed block is represented as an empty successful result.
+
+Verification extends the linked SQL acceptance IDs with public-entry tests:
+WITH accepted identically by SELECT and statement entries; non-SELECT
+rejected by the read-only entry; same-name columns and empty typed results
+retained; DML RETURNING held through commit; blocks publish nothing early;
+SQL-embedded SPARQL retains parent authority. Tests run through the real
+Framework backend path, with wire/CLI publication verified by their owners.

@@ -55,6 +55,7 @@ Usage:
   scripts/docker-test-harness foundationdb-client
   scripts/docker-test-harness sqlite [--multi-base] [--result-directory <path>]
   scripts/docker-test-harness postgresql [--result-directory <path>]
+  scripts/docker-test-harness postgresql-run [--result-directory <path>] -- <command> [arguments...]
   scripts/docker-test-harness foundationdb [--result-directory <path>]
   scripts/docker-test-harness foundationdb-run [--result-directory <path>] -- <command> [arguments...]
   scripts/docker-test-harness macos-sqlite [--multi-base] [--result-directory <path>]
@@ -111,7 +112,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$COMMAND" in
-  doctor|foundationdb-client|sqlite|postgresql|foundationdb|foundationdb-run|macos-sqlite|all) ;;
+  doctor|foundationdb-client|sqlite|postgresql|postgresql-run|foundationdb|foundationdb-run|macos-sqlite|all) ;;
   *)
     echo "error: unknown command: $COMMAND" >&2
     usage >&2
@@ -120,6 +121,10 @@ case "$COMMAND" in
 esac
 if [[ "$COMMAND" == "foundationdb-run" && ${#RUN_COMMAND[@]} -eq 0 ]]; then
   echo "error: foundationdb-run requires a command after --" >&2
+  exit 2
+fi
+if [[ "$COMMAND" == "postgresql-run" && ${#RUN_COMMAND[@]} -eq 0 ]]; then
+  echo "error: postgresql-run requires a command after --" >&2
   exit 2
 fi
 if [[ "$MULTI_BASE" == true && "$COMMAND" != "sqlite" && "$COMMAND" != "macos-sqlite" ]]; then
@@ -140,7 +145,61 @@ require_commands() {
 timeout_command() {
   local seconds="$1"
   shift
-  perl -e 'alarm shift; exec @ARGV' "$seconds" "$@"
+  require_commands python3
+  python3 - "$seconds" "$@" <<'PY'
+import os
+import signal
+import subprocess
+import sys
+
+
+class SupervisorSignal(Exception):
+    def __init__(self, number):
+        self.number = number
+
+
+def interrupted(number, frame):
+    raise SupervisorSignal(number)
+
+
+def stop_process_group(process):
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+    # The leader may exit before a descendant that ignores SIGTERM.
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait()
+
+
+seconds = int(sys.argv[1])
+command = sys.argv[2:]
+for number in (signal.SIGINT, signal.SIGTERM):
+    signal.signal(number, interrupted)
+process = None
+try:
+    process = subprocess.Popen(command, start_new_session=True)
+    status = process.wait(timeout=seconds)
+    sys.exit(status if status >= 0 else 128 - status)
+except subprocess.TimeoutExpired:
+    print(f"error: command exceeded {seconds}s timeout: {command[0]}", file=sys.stderr)
+    stop_process_group(process)
+    sys.exit(124)
+except SupervisorSignal as error:
+    if process is not None:
+        stop_process_group(process)
+    sys.exit(128 + error.number)
+except OSError as error:
+    print(f"error: cannot start command: {error}", file=sys.stderr)
+    sys.exit(127)
+PY
 }
 
 sha256_file() {
@@ -1068,6 +1127,19 @@ run_linux_postgresql() {
     "$POSTGRESQL_EXPECTED_TEST_COUNT" PostgreSQLTests
 }
 
+run_postgresql_command() {
+  docker_doctor
+  prepare_test_image
+  initialize_run postgresql
+  start_postgresql
+  printf 'command-timeout-seconds=%s\n' "$TEST_TIMEOUT_SECONDS" \
+    > "$RUN_RESULT_DIRECTORY/reference-command.txt"
+  timeout_command "$TEST_TIMEOUT_SECONDS" "$DOCKER_BIN" exec \
+    --env PGPASSWORD=database-framework-test \
+    "$ACTIVE_SERVICE_CONTAINER" "${RUN_COMMAND[@]}" \
+    2>&1 | tee "$RUN_RESULT_DIRECTORY/reference-command.log"
+}
+
 run_linux_foundationdb() {
   docker_doctor
   prepare_test_image
@@ -1135,6 +1207,9 @@ case "$COMMAND" in
     ;;
   postgresql)
     run_linux_postgresql
+    ;;
+  postgresql-run)
+    run_postgresql_command
     ;;
   foundationdb)
     run_linux_foundationdb

@@ -10,6 +10,7 @@ contracts owned by a child design.
 - Parent: the workspace system design at [../DESIGN.md](../DESIGN.md).
 - Direct children: [Database](Sources/Database/DESIGN.md),
   [DatabaseEngine](Sources/DatabaseEngine/DESIGN.md),
+  [QueryAST](Sources/QueryAST/DESIGN.md),
   [GraphIndex](Sources/GraphIndex/DESIGN.md),
   [BitmapIndex](Sources/BitmapIndex/DESIGN.md),
   [FullTextIndex](Sources/FullTextIndex/DESIGN.md),
@@ -39,6 +40,7 @@ products.
 |---|---|---|---|---|
 | [Database](Sources/Database/DESIGN.md) | child | SQL and SQL-facing SPARQL entry/adaptation | Routes public database calls into the execution and graph contracts. | It must not absorb graph-facing SPARQL physical execution or session authority. |
 | [DatabaseEngine](Sources/DatabaseEngine/DESIGN.md) | child | Session, authorization, transaction, persistence, and resource contracts | Owns the in-process execution boundary consumed by feature modules. | Changes to session or retained ownership require every feature child to revalidate its caller path. |
+| [QueryAST](Sources/QueryAST/DESIGN.md) | child | SQL parsing, building, and canonical serialization | Adapts SQL syntax to DatabaseKit semantic contracts. | Grammar acceptance never proves executable SQL compatibility. |
 | [GraphIndex](Sources/GraphIndex/DESIGN.md) | child | RDF, SPARQL, graph, and graph-table physical execution | Owns physical graph execution above the DatabaseEngine boundary. | SQL entry/adaptation remains in Database. |
 | [BitmapIndex](Sources/BitmapIndex/DESIGN.md) | child | Bitmap read and retained-result contract | Consumes the DatabaseEngine session and result boundary. | Bitmap-specific behavior must not become a package-wide resource contract. |
 | [FullTextIndex](Sources/FullTextIndex/DESIGN.md) | child | Full-text read, scoring, facet, and autocomplete contract | Owns full-text execution and its child designs. | Authorization and session creation remain in DatabaseEngine. |
@@ -56,6 +58,7 @@ Arrows point from a consumer to the contract it consumes:
 ```text
 Database (public entry and adaptation)
     -> GraphIndex (graph/RDF/SPARQL physical execution)
+    -> QueryAST (parser, builder, canonical serializer) -> DatabaseKit
     -> DatabaseEngine (session, authorization, transaction, persistence)
         -> DatabaseKit + DatabaseTypes + StorageKit
 
@@ -126,6 +129,15 @@ is complete only after the affected child contracts are reviewed and the
 integrated package path is verified once at the converged boundary. A change
 to dependency direction, runtime composition, or a child public contract
 invalidates the corresponding child and package integration evidence.
+
+The Docker harness's `postgresql-run` entry executes reference SQL against its
+pinned isolated server and owns identity checks, logs, authoritative stop,
+negative readiness, and state removal. Its external timeout keeps a supervisor
+outside the command's process group: deadline expiry sends TERM, allows at most
+five seconds to exit, then sends KILL and reaps the command before returning
+124. This remains effective when a command changes its own signal handlers.
+Command failure remains failure after cleanup; cleanup failure also rejects an
+otherwise successful run.
 
 ### Serialized integration-scenario lifecycle
 
@@ -222,3 +234,30 @@ open admission releases it, and
 prove the boundary over
 [the scenario engine](Tests/Shared/ScenarioStorageEngine.swift) and
 [the scenario coordinator](Tests/Shared/FoundationDBScenarioCoordinator.swift).
+
+### PostgreSQL basic SQL compatibility program
+
+The accepted S00–S18 program extends the in-process engine, not a backend
+SQL forwarding path. The feature inventory, PostgreSQL reference version,
+explicit product differences, and stable acceptance IDs are owned by
+[DatabaseKit SQL](../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md).
+That inventory includes lexical syntax, queries, functions, type semantics,
+DML, transactional DDL, SQL blocks, and auxiliary operations; it is not
+limited to repairing SELECT. The acceptance inventory is a planned contract,
+not a claim that the current source implements it.
+
+| Layer | Sole responsibility in this program | Design authority |
+|---|---|---|
+| DatabaseKit | SQL semantic values, statements, results, constraints, and profile | Linked SQL design |
+| QueryAST | Strict text adaptation and canonical serialization | [QueryAST](Sources/QueryAST/DESIGN.md) |
+| Database | Public statement/block admission and response adaptation | [Database](Sources/Database/DESIGN.md) |
+| DatabaseEngine | Binding, planning, execution, catalog, and operation lifecycle | [DatabaseEngine](Sources/DatabaseEngine/DESIGN.md) |
+| StorageKit | Physical transaction checkpoints, ordered journals, and backend guarantees | [StorageKit](../storage-kit/Sources/StorageKit/DESIGN.md) |
+| Server/client/host | Dispatch, transport, and publication after readiness | [System](../DESIGN.md) |
+
+S00 establishes these responsibilities and executable acceptance evidence.
+Later sprints supply implementation and invalidate evidence only where a
+changed contract requires it. Every SQL path preserves [SPEC](../SPEC.md)
+transaction, Directory, Partition, authority, and post-closure publication
+contracts. PostgreSQL-backed storage is not PostgreSQL SQL compatibility
+evidence.

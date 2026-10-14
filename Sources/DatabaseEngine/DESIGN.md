@@ -21,13 +21,17 @@ StorageKit Directory node through [Directory](Directory/DESIGN.md).
 
 ## Related Designs
 
-| Design | Relationship | Contract Used | Cautions |
-|---|---|---|---|
-| [Read](Read/DESIGN.md) | child | Session admission | Context methods cannot bypass it. |
-| [Core](Core/DESIGN.md) | child | Polymorphic orchestration | Does not decide query authority. |
-| [Serialization](Serialization/DESIGN.md) | child | Retained bounded item read | Envelope and chunks are bounded. |
-| [QueryExecution](QueryExecution/DESIGN.md) | child | Retained aggregate/destinations | Copyable raw values do not escape. |
-| [Directory](Directory/DESIGN.md) | child | Declaration-to-node binding | A resolved node is valid only in its resolving transaction. |
+| Design | Relationship | Contract Used | Summary | Cautions |
+|---|---|---|---|---|
+| [Package](../../DESIGN.md) | parent | Runtime module composition | Fixes dependency direction. | Execution semantics remain in this module. |
+| [DatabaseKit SQL](../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md) | depends on | SQL profile and semantic model | Fixes accepted SQL capability and value meaning. | Planned compatibility is not current implementation evidence. |
+| [StorageKit](../../../storage-kit/Sources/StorageKit/DESIGN.md) | depends on | Storage transaction and physical checkpoint contract | Supplies backend-neutral atomicity and journal behavior. | Framework restores logical state without implementing backend key semantics. |
+| [Database](../Database/DESIGN.md) | used by | Operation admission and ready output | Exposes statement/block entry points. | It cannot acquire independent transaction authority. |
+| [Read](Read/DESIGN.md) | child | Session admission | Composes this direct component contract. | Context methods cannot bypass it. |
+| [Core](Core/DESIGN.md) | child | Polymorphic orchestration | Composes this direct component contract. | Does not decide query authority. |
+| [Serialization](Serialization/DESIGN.md) | child | Retained bounded item read | Composes this direct component contract. | Envelope and chunks are bounded. |
+| [QueryExecution](QueryExecution/DESIGN.md) | child | Retained aggregate/destinations | Composes this direct component contract. | Copyable raw values do not escape. |
+| [Directory](Directory/DESIGN.md) | child | Declaration-to-node binding | Composes this direct component contract. | A resolved node is valid only in its resolving transaction. |
 
 ## Architecture
 
@@ -230,3 +234,124 @@ and canonical resource identity. The complete `DatabaseEngineTests` target also
 covers existing request authorization and field restrictions. Native verification
 uses the identity-checked 2026-09-04 toolchain; this change adds immutable captures
 only and introduces no target-specific storage or synchronization branch.
+
+### Planned SQL operation kernel
+
+The accepted SQL program is specified by
+[DatabaseKit SQL](../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md).
+The contracts below are S00 design obligations for later implementation, not
+current capability claims. QueryExecution owns relational execution; this
+module owns the aggregate operation, catalog, transaction, and generation
+lifecycle that composes it with mutation, schema, and StorageKit contracts.
+
+#### Current implementation facts
+
+| Path | Confirmed behavior | Remaining planned change |
+|---|---|---|
+| [Canonical rows](QueryExecution/DatabaseContext+CanonicalRows.swift) | Source rows use field-name maps; projection validation rejects duplicate output names. | Typed positional relation result bound before evaluation. |
+| [Statement mutation](Mutation/DatabaseEntityStatementMutationExecutor.swift) | INSERT/UPDATE/DELETE run on supplied transaction; RETURNING and INSERT SELECT are rejected. | Complete DML using one admitted transaction and retained RETURNING result. |
+| [Schema publication](Schema/DBContainer+SchemaPublication.swift) | Schema registry and generation metadata are persisted transactionally. | Logical SQL catalog and transaction-scoped DDL candidate publication. |
+| [Mutation journal](Transaction/TransactionMutationJournal.swift) | First-seen identity order, net mutation effects, and footprint reservations are retained. | Restore logical journal state when StorageKit checkpoint rolls back. |
+
+These observations come from source and existing test definitions. S00 has
+not supplied new runtime SQL compatibility evidence.
+
+#### Execution composition and transaction authority
+
+```text
+statement/block operation owner
+    -> schema lease + authority + one exact work meter
+    -> logical SQL binding -> QueryExecution
+    -> admitted transaction
+        +-> primary mutation + indexes + relationships + constraints
+        +-> Directory/Partition metadata
+        +-> logical SQL catalog + schema generation
+        +-> StorageKit ordered checkpoint journal
+    -> drain cursors, sessions, vaults and physical transactions
+    -> release Partition/schema/sequence leases and required recovery work
+    -> authoritative closure + applicable cancellation check
+    -> purpose-specific Ready result
+```
+
+Same-domain operations share one data transaction. Feature executors consume
+bound capabilities and cannot commit, cancel, choose a different Partition,
+or construct Ready. MultiBase is a non-default feature and does not turn
+SQL blocks into cross-domain atomic transactions. Cross-domain writes are
+rejected rather than committed partially. Primary/index/relationship/
+constraint/catalog/Directory changes are one invariant; SQL must not bypass
+existing precondition, idempotency, authorization, or maintenance contracts.
+
+#### SQL catalog and schema generation
+
+- A persisted logical SQL catalog owns stable relation and column IDs,
+  logical schema names, constraints, views, sequences, and SQL typmods.
+  Public declarations belong to DatabaseKit; their persisted interpretation
+  and runtime assembly belong to this module.
+- SQL namespace, SQL primary key, internal row identity, and physical
+  Directory/Partition identity are distinct. Rename changes logical catalog
+  names without moving a Directory. A table without a SQL primary key still
+  has internal row identity; arbitrary and composite SQL keys are supported.
+- Dynamic-table DDL builds and validates a candidate runtime before staging
+  data, catalog, and generation in one transaction. The candidate becomes
+  active only after authoritative commit. Failed or cancelled operations
+  do not publish it; commit-unknown is not interpreted as rollback.
+- Static Swift model metadata remains its application's contract. A SQL
+  change incompatible with its fields, identity, Directory, index, reference,
+  or security declarations is rejected before mutation. SQL names never
+  reinterpret Directory, Partition, Base, Tenant, or policy authority.
+- Existing asynchronous schema-application jobs remain a different
+  operation. Job acceptance is not SQL DDL completion. DDL that cannot fit
+  configured transaction resources fails explicitly instead of switching to
+  a job. Stale prepared plans and schema leases fail or are rebound before
+  accessing storage; mixed-generation execution is prohibited.
+
+#### SQL block, checkpoints, and sequence lifecycle
+
+| State | Owner | Restoration or terminal requirement |
+|---|---|---|
+| Physical writes and read overlay | StorageKit transaction checkpoint journal | Ordered set/clear/range-clear/atomic and native Directory mutations roll back together. |
+| Mutation effects, decoded caches, deferred constraints, candidate schema | Framework block state | Restore state matching the physical checkpoint; release abandoned retained claims. |
+| Consumed work, elapsed deadline, cancellation | Exact operation meter | Never rewind on ROLLBACK TO or retry. |
+| Retained bytes/rows | Concrete owners and reservations | Release only claims whose owners are destroyed; surviving results retain claims. |
+| Block SET/PREPARE/temp state | Framework request owner | Exists only in this request; ends before readiness. |
+| Sequence allocation cursor and recovery obligation | Framework sequence request lease | Nonrollback consumption, persisted recovery, authoritative close before readiness. |
+
+SAVEPOINT restores both physical and Framework logical state. Releasing a
+checkpoint does not release objects still referenced by a later result.
+Rollback cannot reset resource consumption to evade the work budget. The
+physical journal is a StorageKit responsibility, including FoundationDB
+Directory-layer calls; Framework does not duplicate backend key semantics.
+
+Sequence accesses use a request lease and nonrollback cursor. A value
+consumed by NEXTVAL remains consumed after savepoint or transaction rollback.
+The sequence owner persists allocation/recovery evidence, keeps stable
+allocations across automatic attempts of the same request, and completes
+required recovery writes and their transaction closure before producing
+Ready. Allocation gaps are legal; duplicate allocation after rollback, retry,
+or restart is not. CURRVAL/LASTVAL are request-scoped. Request serialization
+and intermediate visibility differ from PostgreSQL; this difference is part
+of the profile and cannot be presented as PostgreSQL concurrency parity.
+
+The aggregate block retains ordered collecting statement results and emits
+no early public output. Failed transaction state admits only the profile's
+rollback recovery operations. Operation failure and cleanup failure are
+preserved together; cancellation and commit-unknown never become empty
+success or fabricated command counts.
+
+#### Verification and change impact
+
+| Invariant | Required behavior evidence in later sprints |
+|---|---|
+| One admitted transaction | DML/DDL primary, index, relationship, constraint and Directory readback after commit; unchanged state after failure. |
+| Checkpoint completeness | Roll back data, native Directory creation, index, catalog, and deferred checks together on each production backend. |
+| Static-model protection | Reject incompatible DDL before observable state changes. |
+| Generation atomicity | Restart restores committed generation; stale lease and publication failure cannot expose a partial runtime. |
+| Sequence nonrollback lifecycle | Rollback, retry, cancellation, restart and commit-unknown preserve allocation/recovery guarantees. |
+| Readiness | Suspended commit/cleanup/schema publication/sequence recovery exposes no results; terminal owners retain no transaction resource. |
+| Work accounting | Repeated rollback cannot refund consumed work; abandoned retained owners release exactly their own claims. |
+
+A change to these contracts revalidates QueryExecution, Read, Directory,
+StorageKit adapters, Database entry points, DatabaseKit semantic and wire
+contracts, and server/host publication paths. New runtime subcomponents must
+receive their own directory-local design before source implementation; this
+module does not invent a second lower-level transaction contract.
