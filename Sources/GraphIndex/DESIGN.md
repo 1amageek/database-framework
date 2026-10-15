@@ -49,6 +49,27 @@ The primary physical paths are [GraphQuery](GraphQuery.swift),
 | [Serialization/RDF](../DatabaseEngine/Serialization/RDF/DESIGN.md) | depends on | Role-aware canonical RDF term bytes, validation, limits, and scoped views | Supplies the term representation used in graph keys and identity storage. | GraphIndex owns key layout and graph meaning, not term encoding. |
 | [Database](../Database/DESIGN.md) | used by | SQL-facing SPARQL entry adaptation into transaction-bound execution | Routes SQL-embedded calls to this module's graph-facing executor. | SQL expression rewriting remains a Database responsibility. |
 
+### S03 shared semantic model adaptation
+
+Consume [Query's S03 distinctions](../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md#s03-semantic-carriage-and-occurrence-addresses)
+without acquiring SQL inference. SQL unknown strings and queryValue literals
+with an invalid/unresolved explicit declaration fail existing typed SPARQL
+literal/compile gates; schema-qualified calls fail the SQL-qualified-function
+gate. Existing valid typed primitives retain RDF meaning. SPARQL rewriters
+preserve function schema rather than erasing it. S03-C04/C12 and the existing
+SPARQL/graph suites verify these direct shared-model adaptations; no graph
+algorithm, transaction or authority change is introduced.
+
+GRAPH_TABLE retains its established primitive string meaning for quoted
+lexical strings in its limited scalar and property-filter language. Its own
+literal adapter explicitly resolves SQL unknown strings to that text contract
+before calling primitive conversion; the general literal converter continues
+to reject unbound SQL strings. This preserves the existing product behavior
+without introducing PostgreSQL type-inference claims for GRAPH_TABLE. Numeric
+properties retain their existing typed representations. The public
+GraphTableSQLExecutionContractTests covers parser-to-executor string filters
+alongside the existing numeric-property behavior.
+
 ## Architecture
 
 ```text

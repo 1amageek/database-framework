@@ -219,9 +219,15 @@ public enum CanonicalRowFingerprint {
         case .array(let element):
             updateByte(20, hasher: &hasher)
             updateSQLType(element, hasher: &hasher)
-        case .custom(let name):
+        case .custom(let name, let schema):
             updateByte(21, hasher: &hasher)
             updateString(name, hasher: &hasher)
+            if let schema {
+                updateByte(1, hasher: &hasher)
+                updateString(schema, hasher: &hasher)
+            } else {
+                updateByte(0, hasher: &hasher)
+            }
         }
     }
 

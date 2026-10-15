@@ -7,7 +7,8 @@ DF-06R compose retained polymorphic and regular-model paths from [Read](Read/DES
 [Core](Core/DESIGN.md), [Serialization](Serialization/DESIGN.md), and
 [QueryExecution](QueryExecution/DESIGN.md), over keyspaces bound by
 [Directory](Directory/DESIGN.md), [Registry](Registry/DESIGN.md),
-[Mutation](Mutation/DESIGN.md), and optional [Base](Base/DESIGN.md).
+[Mutation](Mutation/DESIGN.md), with [Fusion](Fusion/DESIGN.md) coordination
+and optional [Base](Base/DESIGN.md).
 
 - Parent: [database-framework](../../DESIGN.md).
 - Children: the component designs linked above.
@@ -32,6 +33,7 @@ StorageKit Directory node through [Directory](Directory/DESIGN.md).
 | [Core](Core/DESIGN.md) | child | Polymorphic orchestration | Composes this direct component contract. | Does not decide query authority. |
 | [Serialization](Serialization/DESIGN.md) | child | Retained bounded item read | Composes this direct component contract. | Envelope and chunks are bounded. |
 | [QueryExecution](QueryExecution/DESIGN.md) | child | Retained aggregate/destinations | Composes this direct component contract. | Copyable raw values do not escape. |
+| [Fusion](Fusion/DESIGN.md) | child | Authorized prepared inputs and selected relational plans | Coordinates bound operators within one admitted session. | Shared parameter identity and exact meter precede source scans. |
 | [Mutation](Mutation/DESIGN.md) | child | Prepared mutation and typed adaptation failures | Preserves entity-change authority and query-value causes. | Revalidate direct server error mapping. |
 | [Base](Base/DESIGN.md) | child | MultiBase Composition execution | Coordinates retained member rows and provenance. | Enabled only with MultiBase. |
 | [Registry](Registry/DESIGN.md) | child | Admitted schema and declared model adaptation | Supplies ordered typed source metadata and direct slot construction. | Descriptor meaning is never inferred from payload shape. |

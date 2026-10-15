@@ -113,7 +113,11 @@ private extension SPARQLExpressionValidator {
             throw SPARQLExpressionCompilationError.unsupportedExpression("SQL ARRAY/ROW constructor")
             case .literal(let literal):
                 switch literal {
-                case .queryValue(let value, _):
+                case .queryValue(let value, let declaredType):
+                    if let declaredType, !QueryValueValidator.accepts(value, type: declaredType) {
+                        throw SPARQLExpressionCompilationError
+                            .unsupportedExpression(semanticName)
+                    }
                     guard case .primitive(let primitive) = value else {
                         throw SPARQLExpressionCompilationError
                             .unsupportedExpression(semanticName)
@@ -126,7 +130,7 @@ private extension SPARQLExpressionValidator {
                             .unsupportedExpression(semanticName)
                     }
                     tasks.append(.expression(.literal(converted), depth: childDepth))
-                case .null, .array, .binary:
+                case .sqlUnknownString, .null, .array, .binary:
                     throw SPARQLExpressionCompilationError
                         .unsupportedExpression(semanticName)
                 case .string(let value), .iri(let value),
@@ -249,6 +253,10 @@ private extension SPARQLExpressionValidator {
             childDepth: UInt64,
             tasks: inout [ValidationTask]
         ) throws(SPARQLExpressionCompilationError) {
+            guard function.schema == nil else {
+                throw SPARQLExpressionCompilationError
+                    .unsupportedExpression("SQL-qualified function")
+            }
             guard !function.distinct else {
                 throw SPARQLExpressionCompilationError
                     .distinctScalarFunction(function.name)

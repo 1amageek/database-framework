@@ -197,7 +197,7 @@ struct DatabaseExpressionEvaluatorTests {
         #expect(
             try evaluator.evaluate(
                 .function(
-                    FunctionCall(name: "ABS", arguments: [.col("small")])
+                    FunctionCall(name: "abs", arguments: [.col("small")])
                 )
             ) == .int64(7)
         )

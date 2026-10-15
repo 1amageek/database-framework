@@ -40,8 +40,12 @@ struct CompositionQueryExecutorTests {
 
     private actor CompositionRowProbe {
         private var values: [CompositionQueryRow] = []
+        private var columns: [QueryColumn] = []
 
         func receive(_ event: CompositionQueryEvent) -> Bool {
+            if case .began(let metadata) = event {
+                columns = metadata.columns
+            }
             if case .row(let value) = event {
                 values.append(value)
             }
@@ -51,6 +55,101 @@ struct CompositionQueryExecutorTests {
         func rows() -> [CompositionQueryRow] {
             values
         }
+
+        func result() -> (columns: [QueryColumn], rows: [CompositionQueryRow]) {
+            (columns, values)
+        }
+    }
+
+    @Test("Composition freezes parameter identity before member paging, aggregates and cross-Base JOIN")
+    func parametersRetainIdentityAcrossCompositionRoutes() async throws {
+        let fixture = try await makeFixture(readerCanReadSecondary: true)
+        defer { await fixture.container.shutdown() }
+        let source = fixture.container.session(
+            authorization: fixture.readerAuthorization
+        ).composition(fixture.compositionID)
+        let parameters = [QueryParameter(position: 1, name: "value", value: .primitive(.null), type: .sql(.bigint))]
+        let empty = try await executeParameterizedQuery(
+            SelectQuery(
+                projection: .items([
+                    ProjectionItem(.parameter(.position(1)), alias: "position"),
+                    ProjectionItem(.parameter(.name("value")), alias: "name"),
+                ]),
+                source: .table(TableRef(Item.persistableType))
+            ), source: source, parameters: parameters, fixture: fixture
+        )
+        #expect(empty.rows.isEmpty)
+        #expect(empty.columns.map(\.type) == [.sql(.bigint), .sql(.bigint)])
+        #expect(empty.columns.allSatisfy { $0.isNullable })
+
+        try await insert([("shared", 1), ("primary", 3)], baseID: fixture.primaryBaseID, fixture: fixture)
+        try await insert([("shared", 2), ("secondary", 4)], baseID: fixture.secondaryBaseID, fixture: fixture)
+        let raw = [QueryParameter(position: 1, name: "value", value: .primitive(.int64(2)))]
+        let filtered = try await executeParameterizedQuery(
+            SelectQuery(
+                projection: .items([
+                    ProjectionItem(.column(ColumnRef("rank")), alias: "rank"),
+                    ProjectionItem(.parameter(.name("value")), alias: "parameter"),
+                ]),
+                source: .table(TableRef(Item.persistableType)),
+                filter: .greaterThanOrEqual(.column(ColumnRef("rank")), .parameter(.position(1))),
+                orderBy: [SortKey(.column(ColumnRef("rank")), direction: .ascending)]
+            ), source: source, parameters: raw, fixture: fixture
+        )
+        #expect(filtered.rows.map { $0.row.values[0] } == [.primitive(.int64(2)), .primitive(.int64(3)), .primitive(.int64(4))])
+        #expect(filtered.rows.allSatisfy { $0.row.values[1] == .primitive(.int64(2)) })
+        let aggregate = try await executeParameterizedQuery(
+            SelectQuery(
+                projection: .items([ProjectionItem(.aggregate(.sum(.parameter(.name("value")), distinct: false)), alias: "sum")]),
+                source: .table(TableRef(Item.persistableType)),
+                filter: .greaterThanOrEqual(.column(ColumnRef("rank")), .parameter(.position(1)))
+            ), source: source, parameters: raw, fixture: fixture
+        )
+        #expect(aggregate.rows.count == 1)
+        guard case .numeric(let sum) = aggregate.rows[0].row.values[0] else {
+            Issue.record("Expected numeric SUM output")
+            return
+        }
+        #expect(sum.value == ExactDecimal(coefficient: 6, scale: 0))
+
+        let join = crossBaseQuery(fixture: fixture, joinType: .inner).replacing(
+            filter: .lessThan(.column(ColumnRef(table: "world", column: "rank")), .parameter(.position(1)))
+        )
+        let joined = try await executeParameterizedQuery(join, source: source, parameters: raw, fixture: fixture)
+        #expect(joined.rows.count == 1)
+        #expect(joined.rows[0].row.values == [.primitive(.int64(1)), .primitive(.int64(2))])
+        let probe = PublicationEventProbe()
+        let execution = ReadExecutionContext(options: .default, monotonicClock: fixture.container.monotonicClock)
+        await #expect(throws: DatabaseExpressionEvaluationError.typeMismatch(operation: "ambiguous parameter type")) {
+            try await CompositionQueryPlanner(structuralLimits: execution.queryStructuralLimits).execute(
+                SelectQuery(
+                    projection: .items([
+                        ProjectionItem(.parameter(.position(1)), alias: "earlier"),
+                        ProjectionItem(.cast(.parameter(.name("value")), targetType: .bigint), alias: "later"),
+                    ]), source: .table(TableRef(Item.persistableType))
+                ), source: source,
+                options: CompositionQueryExecutionOptions(pageSize: 1, readContext: execution,
+                    parameters: [QueryParameter(position: 1, name: "value", value: .primitive(.null))])
+            ) { _ in await probe.receive(); return true }
+        }
+        #expect(await probe.receivedCount() == 0)
+        #expect(execution.workMeter.retainedIntermediateRows == 0)
+        #expect(execution.workMeter.retainedIntermediateBytes == 0)
+    }
+
+    private func executeParameterizedQuery(
+        _ query: SelectQuery,
+        source: CompositionDataSource,
+        parameters: [QueryParameter],
+        fixture: Fixture
+    ) async throws -> (columns: [QueryColumn], rows: [CompositionQueryRow]) {
+        let execution = ReadExecutionContext(options: .default, monotonicClock: fixture.container.monotonicClock)
+        let probe = CompositionRowProbe()
+        try await CompositionQueryPlanner(structuralLimits: execution.queryStructuralLimits).execute(
+            query, source: source,
+            options: CompositionQueryExecutionOptions(pageSize: 1, readContext: execution, parameters: parameters)
+        ) { event in await probe.receive(event) }
+        return await probe.result()
     }
 
     private actor CancellationRowProbe {

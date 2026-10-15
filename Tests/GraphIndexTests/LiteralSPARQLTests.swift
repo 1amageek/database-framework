@@ -7,6 +7,38 @@ import Testing
 
 @Suite("Literal to SPARQL FieldValue", .heartbeat)
 struct LiteralSPARQLTests {
+    @Test("SQL unknown strings and unresolved declarations cannot become RDF terms")
+    func sqlBindingFormsAreUnsupported() throws {
+        let literals: [Literal] = [
+            .sqlUnknownString("value"),
+            .queryValue(.primitive(.string("value")), type: .sql(.custom("text", schema: "private"))),
+            .queryValue(.primitive(.string("value")), type: .sql(.custom("text"))),
+        ]
+        for literal in literals {
+            #expect(
+                throws: SPARQLLiteralConversionError.queryLiteralConversion(.unsupportedSPARQLLiteral)
+            ) {
+                try literal.toSPARQLFieldValue()
+            }
+            #expect(throws: SPARQLExpressionCompilationError.self) {
+                try SPARQLExpressionValidator.validate(.literal(literal))
+            }
+            #expect(throws: SPARQLExpressionEvaluationError.self) {
+                try ExpressionEvaluator.evaluate(.literal(literal), binding: VariableBinding())
+            }
+            #expect(
+                throws: SPARQLLiteralConversionError.queryLiteralConversion(.unsupportedSPARQLLiteral)
+            ) {
+                try SPARQLConstructFootprintPlanner.maximumQuadFootprint(
+                    template(object: literal), binding: VariableBinding()
+                )
+            }
+        }
+        let typed = Literal.queryValue(.primitive(.string("value")), type: .sql(.text))
+        #expect(try typed.toSPARQLFieldValue() == Literal.string("value").toSPARQLFieldValue())
+        try SPARQLExpressionValidator.validate(.literal(typed))
+    }
+
     @Test("scalar values preserve SPARQL datatype identity")
     func commonScalarsConvert() throws {
         #expect(

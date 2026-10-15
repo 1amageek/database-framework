@@ -43,6 +43,12 @@ Composition lease + operation schema lease
 - Every member output is bound before the first row fetch or began event.
   Column order, type, nullability and labels must agree across members.
 - Every continuation page must match that schema, including empty pages.
+- Relational request parameters retain their references, payloads and explicit
+  declarations until QueryExecution binds the complete query in an existing
+  admitted member session. Its resolved immutable declarations feed every
+  member schema/page, aggregate operand and cross-Base JOIN binding; splitting
+  the query cannot restart contextual parameter inference. Feature-owned
+  member executors retain their existing parameter contract.
 - Output labels may duplicate. Slots, aggregate operands, identity and row
   alignment remain positional; dictionary projection is an explicit adapter.
 - CompositionQueryMetadata carries columns. CompositionQueryResponse retains
@@ -62,6 +68,9 @@ Source projection and local aggregate-operand projection each bind before
 their respective fetches. Global aggregate results normalize to the bound
 output type before positional row construction. SQL expressions use SQL type
 binding; SPARQL output uses GraphIndex's term and aggregate type contract.
+Parameter preflight uses the snapshot's captured member and exact request
+meter before any row fetch. It opens no additional authority or transaction.
+The Server adapter passes raw request parameters into planner options.
 
 ## State, Ownership, and Lifecycle
 
@@ -113,6 +122,9 @@ zero/one-byte-short cases reject the first Ready buffer admission at result
 materialization; invalid aggregate operands fail static type binding before
 member fetching. Retained aggregate probe aliases keep their claims until all
 probe and local copies are explicitly released.
+Parameter regressions cover positional/named identity across paged members,
+typed NULL projection, aggregate operands, cross-Base JOIN expressions and
+whole-query ambiguity rejection before any event is published.
 Server durable-paging fixtures must cover both rejection below complete-result
 retention and successful bounded publication with the Server's page destinations
 inside the same request budget. SQL aggregate assertions consume their bound

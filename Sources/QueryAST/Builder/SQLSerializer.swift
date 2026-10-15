@@ -98,8 +98,8 @@ extension SQLTextWriter {
         case .array(let element):
             if case .array = element { throw .unsupportedType("Nested array DataType") }
             try type(element); try append("[]")
-        case .custom(let name):
-            guard !name.contains(".") else { throw .unsupportedType("Ambiguous qualified custom type name") }
+        case .custom(let name, let schema):
+            if let schema { try identifier(schema); try append(".") }
             try identifier(name)
         }
     }
@@ -129,7 +129,8 @@ extension SQLTextWriter {
             catch let error as SQLSerializationError { throw error }
             catch { throw .unsupportedLiteral("Invalid exact decimal") }
         case .double(let value): try primitive(.float64(value), declared: nil)
-        case .string(let value): try string(value)
+        case .sqlUnknownString(let value): try string(value)
+        case .string(let value): try primitive(.string(value), declared: nil)
         case .date(let value): try append("DATE "); try string(QueryLiteralEncoding.iso8601(value))
         case .timestamp(let value):
             guard value.nanoseconds.isMultiple(of: 1000) else { throw .unsupportedLiteral("SQL timestamps have microsecond resolution") }
@@ -160,6 +161,17 @@ extension SQLTextWriter {
             case .sql(let type): sqlType = type
             case .primitive: throw .unsupportedMetadata("Primitive type declaration has no SQL type identity")
             case nil: sqlType = nil
+            }
+            if preservesOutputReferenceCasts {
+                switch (value, sqlType) {
+                case (.primitive(.int32(let integer)), .integer):
+                    try primitive(.int32(integer), declared: sqlType)
+                    return
+                case (.primitive(.int64(let integer)), .bigint) where Int32(exactly: integer) == nil:
+                    try primitive(.int64(integer), declared: sqlType)
+                    return
+                default: break
+                }
             }
             if sqlType != nil { try append("CAST(") }
             switch value {
@@ -274,7 +286,9 @@ extension SQLTextWriter {
                 }
             default: break
             }
+            if declared == nil { try append("CAST(") }
             try string(value)
+            if declared == nil { try append(" AS TEXT)") }
         case .date(let value): try literal(.date(value))
         case .timestamp(let value): try literal(.timestamp(value))
         case .uuid(let value): try literal(.uuid(value))
@@ -332,7 +346,7 @@ extension SQLTextWriter {
         case .aggregate(let value): try aggregate(value)
         case .function(let call):
             guard !call.distinct || !call.arguments.isEmpty else { throw .invalidStructure("Generic DISTINCT call requires arguments") }
-            guard !call.name.contains(".") else { throw .unsupportedMetadata("Ambiguous qualified function name") }
+            if let schema = call.schema { try identifier(schema); try append(".") }
             try identifier(call.name)
             try append("(")
             if call.distinct { try append("DISTINCT ") }
@@ -368,6 +382,9 @@ extension SQLTextWriter {
     }
 
     mutating func aggregate(_ aggregate: AggregateFunction) throws(SQLSerializationError) {
+        let enclosingOutputReferenceCasts = preservesOutputReferenceCasts
+        preservesOutputReferenceCasts = false
+        defer { preservesOutputReferenceCasts = enclosingOutputReferenceCasts }
         try enter(); defer { depth -= 1 }
         let name: String
         let value: Expression?
@@ -397,11 +414,38 @@ extension SQLTextWriter {
         try append(")")
     }
 
-    mutating func sorts(_ keys: [SortKey]) throws(SQLSerializationError) {
-        try list(keys) { (writer: inout SQLTextWriter, key: SortKey) throws(SQLSerializationError) -> Void in
-            try writer.expression(key.expression)
-            try writer.append(key.direction == .ascending ? " ASC" : " DESC")
-            if let nulls = key.nulls { try writer.append(nulls == .first ? " NULLS FIRST" : " NULLS LAST") }
+    mutating func outputReference(_ value: Expression) throws(SQLSerializationError) {
+        if case .literal(.int(let position)) = value {
+            try enter(); defer { depth -= 1 }
+            try enter(); defer { depth -= 1 }
+            try append(String(position))
+            return
+        }
+        let enclosingOutputReferenceCasts = preservesOutputReferenceCasts
+        defer { preservesOutputReferenceCasts = enclosingOutputReferenceCasts }
+        if case .literal(let literal) = value {
+            preservesOutputReferenceCasts = false
+            if case .queryValue(.primitive(.int32), nil) = literal {
+                try append("CAST("); try expression(value); try append(" AS INTEGER)")
+            } else if case .queryValue(.primitive(.int64), nil) = literal {
+                try append("CAST("); try expression(value); try append(" AS BIGINT)")
+            } else {
+                try expression(value)
+            }
+        } else {
+            preservesOutputReferenceCasts = true
+            try expression(value)
+        }
+    }
+
+    mutating func sorts(_ keys: [SortKey], outputReferences: Bool = false) throws(SQLSerializationError) {
+        try collection(keys.count)
+        for (index, key) in keys.enumerated() {
+            if index > 0 { try append(", ") }
+            if outputReferences { try outputReference(key.expression) }
+            else { try expression(key.expression) }
+            try append(key.direction == .ascending ? " ASC" : " DESC")
+            if let nulls = key.nulls { try append(nulls == .first ? " NULLS FIRST" : " NULLS LAST") }
         }
     }
 
@@ -414,6 +458,9 @@ extension SQLTextWriter {
     }
 
     mutating func select(_ query: SelectQuery) throws(SQLSerializationError) {
+        let enclosingOutputReferenceCasts = preservesOutputReferenceCasts
+        preservesOutputReferenceCasts = false
+        defer { preservesOutputReferenceCasts = enclosingOutputReferenceCasts }
         try enter(); defer { depth -= 1 }
         guard !query.reduced, query.dataset == .implicit else { throw .unsupportedLanguage("SPARQL SELECT metadata") }
         guard query.accessPath == nil else { throw .unsupportedMetadata("Physical access path") }
@@ -441,9 +488,9 @@ extension SQLTextWriter {
         if case .values(let rows, let columns) = query.source, rows == [[]], columns == nil || columns == [] {
         } else { try append(" FROM "); try source(query.source) }
         if let filter = query.filter { try append(" WHERE "); try expression(filter) }
-        if let group = query.groupBy, !group.isEmpty { try append(" GROUP BY "); try list(group) { (writer: inout SQLTextWriter, value: Expression) throws(SQLSerializationError) -> Void in try writer.expression(value) } }
+        if let group = query.groupBy, !group.isEmpty { try append(" GROUP BY "); try list(group) { (writer: inout SQLTextWriter, value: Expression) throws(SQLSerializationError) -> Void in try writer.outputReference(value) } }
         if let having = query.having { try append(" HAVING "); try expression(having) }
-        if let order = query.orderBy, !order.isEmpty { try append(" ORDER BY "); try sorts(order) }
+        if let order = query.orderBy, !order.isEmpty { try append(" ORDER BY "); try sorts(order, outputReferences: true) }
         if let limit = query.limit { try append(" LIMIT \(limit)") }
         if let offset = query.offset { try append(" OFFSET \(offset)") }
     }

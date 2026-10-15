@@ -144,7 +144,16 @@ enum SPARQLConstructFootprintPlanner {
         _ literal: Literal
     ) throws -> DatabaseIntermediateFootprint {
         switch literal {
-        case .queryValue(let value, _):
+        case .sqlUnknownString:
+            throw SPARQLLiteralConversionError.queryLiteralConversion(
+                .unsupportedSPARQLLiteral
+            )
+        case .queryValue(let value, let declaredType):
+            if let declaredType, !QueryValueValidator.accepts(value, type: declaredType) {
+                throw SPARQLLiteralConversionError.queryLiteralConversion(
+                    .unsupportedSPARQLLiteral
+                )
+            }
             guard case .primitive(let primitive) = value else {
                 throw SPARQLLiteralConversionError.queryLiteralConversion(
                     .unsupportedSPARQLLiteral

@@ -82,8 +82,8 @@ struct QueryValueSQLSerializationTests {
     func primitiveSQLGenerationPreservesBehavior() throws {
         let serializer = SQLSerializer()
         let value = Literal.queryValue(.primitive(.string("a'b")))
-        #expect(try serializer.serialize(value) == "'a''b'")
-        #expect(try projection(serializer.serialize(value)) == .literal(.string("a'b")))
+        #expect(try serializer.serialize(value) == "CAST('a''b' AS TEXT)")
+        #expect(try projection(serializer.serialize(value)) == .literal(.queryValue(.primitive(.string("a'b")), type: .sql(.text))))
         #expect(throws: SQLSerializationError.self) {
             _ = try serializer.serialize(Literal.queryValue(.primitive(.uint64(.max))))
         }

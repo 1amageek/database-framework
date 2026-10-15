@@ -1,5 +1,7 @@
 #if GraphIndexes
 import DatabaseKit
+import Foundation
+import QueryAST
 import DatabaseRuntime
 import DatabaseTypes
 import StorageKit
@@ -45,7 +47,7 @@ struct SPARQLFunctionTransactionTests {
             filter: .equal(
                 .function(
                     FunctionCall(
-                        name: "LOWER",
+                        name: "lower",
                         arguments: [.column(ColumnRef("name"))]
                     )
                 ),
@@ -60,7 +62,7 @@ struct SPARQLFunctionTransactionTests {
                 values: [
                     .function(
                         FunctionCall(
-                            name: "SPARQL",
+                            name: "sparql",
                             arguments: [
                                 .column(ColumnRef("SPARQLTransactionStatement")),
                                 .literal(.string("SELECT ?s WHERE { ?s ?p ?o }")),
@@ -99,7 +101,7 @@ struct SPARQLFunctionTransactionTests {
                         values: [
                             .function(
                                 FunctionCall(
-                                    name: "SPARQL",
+                                    name: "sparql",
                                     arguments: [
                                         .column(
                                             ColumnRef(
@@ -208,7 +210,7 @@ struct SPARQLFunctionTransactionTests {
                 values: [
                     .function(
                         FunctionCall(
-                            name: "SPARQL",
+                            name: "sparql",
                             arguments: [
                                 .column(
                                     ColumnRef("SPARQLTransactionStatement")
@@ -353,8 +355,11 @@ struct SPARQLFunctionTransactionTests {
                 as: SPARQLTransactionUser.self
             )
             Issue.record("Expected an incompatible SQL string and RDF term comparison to fail")
-        } catch CanonicalReadError.expressionEvaluation(let error) {
-            #expect(error == .typeMismatch(operation: "common result type"))
+        } catch let failure as SQLBindingSourceFailure {
+            guard case .expression(.typeMismatch(operation: "common result type")) = failure.cause else {
+                Issue.record("Expected an incompatible RDF membership type")
+                return
+            }
         }
 
         let users = try await context.executeSQL(
@@ -371,6 +376,113 @@ struct SPARQLFunctionTransactionTests {
         )
         #expect(users.map(\.id) == [user.id])
         #expect(users.first?.resource == .iri(userIRI))
+    }
+
+    @Test("Invalid surrounding SQL rejects before any graph range read")
+    func invalidSQLPrecedesGraphReads() async throws {
+        let scenario = try await makeScenario()
+        let context = scenario.container.testBaseContext()
+        let sql = """
+        SELECT absent FROM "SPARQLTransactionUser"
+        WHERE resource IN (SPARQL("SPARQLTransactionStatement", 'SELECT ?s WHERE { ?s ?p ?o }'))
+        """
+        let before = scenario.engine.rangeReadCount
+        do {
+            _ = try await context.executeSQL(sql)
+            Issue.record("Expected the invalid SQL target list to reject admission")
+        } catch let failure as SQLBindingSourceFailure {
+            guard case .expression(.missingColumn("absent")) = failure.cause else {
+                Issue.record("Expected the exact unknown SQL column rejection")
+                return
+            }
+            #expect(failure.position == 7)
+        }
+        #expect(scenario.engine.rangeReadCount == before)
+        await scenario.container.shutdown()
+    }
+
+    @Test("Generated graph membership failures point to their SQL producer")
+    func generatedMembershipFailureHasProducerSource() async throws {
+        let scenario = try await makeScenario()
+        let context = scenario.container.testBaseContext()
+        try await seedGraph(context)
+        let sql = """
+        SELECT id FROM "SPARQLTransactionUser"
+        WHERE id IN (SPARQL("SPARQLTransactionStatement", 'SELECT ?s WHERE { ?s <urn:predicate:active> "true" }'))
+        """
+        let expected = sql.range(of: "SPARQL(").map { sql.utf8.distance(from: sql.utf8.startIndex, to: $0.lowerBound) }
+        let before = scenario.engine.rangeReadCount
+        do {
+            _ = try await context.executeSQL(sql)
+            Issue.record("Expected generated RDF terms to remain incompatible with SQL text")
+        } catch let failure as SQLBindingSourceFailure {
+            guard case .expression(.typeMismatch(operation: "common result type")) = failure.cause else {
+                Issue.record("Expected the generated RDF membership type rejection")
+                return
+            }
+            #expect(failure.position == expected)
+        }
+        #expect(scenario.engine.rangeReadCount > before)
+        await scenario.container.shutdown()
+    }
+
+    @Test("SQL after a graph producer preserves the decisive CAST occurrence")
+    func producerDoesNotShiftFollowingParameterSource() async throws {
+        let scenario = try await makeScenario()
+        let context = scenario.container.testBaseContext()
+        try await seedGraph(context)
+        let queryText = "SELECT ?s WHERE { ?s <urn:predicate:active> \"true\" }"
+        let valid = try await context.executeSQL(
+            "SELECT id FROM \"SPARQLTransactionUser\" WHERE resource IN (SPARQL(\"SPARQLTransactionStatement\", $1), $2)",
+            parameters: [
+                QueryParameter(position: 1, value: .primitive(.string(queryText))),
+                QueryParameter(position: 2, value: .primitive(.null), type: .primitive(.rdfTerm))
+            ]
+        )
+        #expect(valid.rows.count == 2)
+        let invalid = "SELECT id FROM \"SPARQLTransactionUser\" WHERE resource IN (SPARQL(\"SPARQLTransactionStatement\", $1), $2::integer)"
+        let before = scenario.engine.rangeReadCount
+        let parsed = try SQLParser().parseWithSource(invalid)
+        let filter = try #require(parsed.occurrences.child(of: parsed.root, field: .filter))
+        let cast = try #require(parsed.occurrences.child(of: filter, field: .argument, index: 1))
+        let parameter = try #require(parsed.occurrences.child(of: cast, field: .operand, index: 0))
+        #expect(cast != parameter)
+        let annotation = try #require(parsed.sourceMap[cast])
+        do {
+            _ = try await context.executeSQL(invalid, parameters: [
+                QueryParameter(position: 1, value: .primitive(.string(queryText))),
+                QueryParameter(position: 2, value: .primitive(.null))
+            ])
+            Issue.record("Expected the following CAST result to fail SQL admission")
+        } catch let failure as SQLBindingSourceFailure {
+            guard case .expression(.typeMismatch(operation: "common result type")) = failure.cause else {
+                Issue.record("Expected the following CAST result's incompatible membership type")
+                return
+            }
+            // Membership rejects the CAST result after its parameter binds successfully.
+            #expect(failure.occurrence == cast)
+            #expect(failure.position == (annotation.identifierRange?.start ?? annotation.range.start))
+        }
+        #expect(scenario.engine.rangeReadCount == before)
+        await scenario.container.shutdown()
+    }
+
+    private func seedGraph(_ context: DatabaseContext) async throws {
+        for ordinal in 1...2 {
+            let iri = try RDFIRI("urn:user:source-\(ordinal)")
+            var user = SPARQLTransactionUser()
+            user.id = iri.rawValue
+            user.resource = .iri(iri)
+            user.name = "Source"
+            var statement = SPARQLTransactionStatement()
+            statement.id = "source-statement-\(ordinal)"
+            statement.subject = .iri(iri)
+            statement.predicate = try .iri(validating: "urn:predicate:active")
+            statement.object = .literal(RDFLiteral(lexicalForm: "true", datatype: .xsdString))
+            try context.insert(user)
+            try context.insert(statement)
+        }
+        try await context.save()
     }
 
     private func makeScenario() async throws -> (
@@ -409,19 +521,22 @@ struct SPARQLFunctionTransactionTests {
 private final class SPARQLTransactionCountingEngine: StorageEngine, Sendable {
     struct Configuration: Sendable {}
 
-    typealias TransactionType = InMemoryTransaction
+    typealias TransactionType = SPARQLCountingTransaction
 
     private let engine = InMemoryEngine()
     private let transactionCountState = Mutex(0)
+    private let rangeReadCountState = Mutex(0)
 
     init(configuration: Configuration = Configuration()) {
         _ = configuration
     }
 
-    func createTransaction() throws -> InMemoryTransaction {
+    func createTransaction() throws -> SPARQLCountingTransaction {
         let transaction = try engine.createTransaction()
         transactionCountState.withLock { $0 += 1 }
-        return transaction
+        return SPARQLCountingTransaction(transaction: transaction) { [self] in
+            rangeReadCountState.withLock { $0 += 1 }
+        }
     }
 
     var transactionDomain: StorageTransactionDomain {
@@ -443,5 +558,53 @@ private final class SPARQLTransactionCountingEngine: StorageEngine, Sendable {
     var transactionCount: Int {
         transactionCountState.withLock { $0 }
     }
+
+    var rangeReadCount: Int {
+        rangeReadCountState.withLock { $0 }
+    }
+}
+
+private struct SPARQLCountingTransaction: Transaction {
+    let transaction: InMemoryTransaction
+    let rangeRead: @Sendable () -> Void
+
+    init(transaction: InMemoryTransaction, rangeRead: @escaping @Sendable () -> Void) {
+        self.transaction = transaction
+        self.rangeRead = rangeRead
+    }
+
+    var transactionDomain: StorageTransactionDomain { transaction.transactionDomain }
+    var storageFailure: StorageError? { transaction.storageFailure }
+    var mutationByteLimit: Int? { transaction.mutationByteLimit }
+    var capabilities: TransactionCapabilities { transaction.capabilities }
+    var compaction: StorageCompactionAccess? { transaction.compaction }
+
+    func configureMutationByteLimit(maximumBytes: Int?) throws { try transaction.configureMutationByteLimit(maximumBytes: maximumBytes) }
+    func getValue(for key: ByteString, snapshot: Bool) async throws -> ByteString? { try await transaction.getValue(for: key, snapshot: snapshot) }
+    func getValue(for key: ByteString) async throws -> ByteString? { try await transaction.getValue(for: key) }
+    func getValue(for key: ByteString, snapshot: Bool, maximumByteCount: Int) async throws -> ByteString? {
+        try await transaction.getValue(for: key, snapshot: snapshot, maximumByteCount: maximumByteCount)
+    }
+    func getKey(selector: KeySelector, snapshot: Bool) async throws -> ByteString? { try await transaction.getKey(selector: selector, snapshot: snapshot) }
+    func rangeCursor(from begin: KeySelector, to end: KeySelector, limit: Int, reverse: Bool, snapshot: Bool, streamingMode: StreamingMode) -> KeyValueCursor {
+        rangeRead()
+        return transaction.rangeCursor(from: begin, to: end, limit: limit, reverse: reverse, snapshot: snapshot, streamingMode: streamingMode)
+    }
+    func setValue(_ value: ByteString, for key: ByteString) throws { try transaction.setValue(value, for: key) }
+    func clear(key: ByteString) throws { try transaction.clear(key: key) }
+    func clearRange(beginKey: ByteString, endKey: ByteString) throws { try transaction.clearRange(beginKey: beginKey, endKey: endKey) }
+    func atomicOp(key: ByteString, param: ByteString, mutationType: MutationType) throws { try transaction.atomicOp(key: key, param: param, mutationType: mutationType) }
+    func setReadVersion(_ version: Int64) throws { try transaction.setReadVersion(version) }
+    func getReadVersion() async throws -> Int64 { try await transaction.getReadVersion() }
+    func setOption(forOption option: TransactionOption) throws { try transaction.setOption(forOption: option) }
+    func setOption(to value: ByteString?, forOption option: TransactionOption) throws { try transaction.setOption(to: value, forOption: option) }
+    func setOption(to value: Int, forOption option: TransactionOption) throws { try transaction.setOption(to: value, forOption: option) }
+    func addConflictRange(beginKey: ByteString, endKey: ByteString, type: ConflictRangeType) throws { try transaction.addConflictRange(beginKey: beginKey, endKey: endKey, type: type) }
+    func getEstimatedRangeSizeBytes(beginKey: ByteString, endKey: ByteString) async throws -> Int { try await transaction.getEstimatedRangeSizeBytes(beginKey: beginKey, endKey: endKey) }
+    func getRangeSplitPoints(beginKey: ByteString, endKey: ByteString, chunkSize: Int) async throws -> [ByteString] { try await transaction.getRangeSplitPoints(beginKey: beginKey, endKey: endKey, chunkSize: chunkSize) }
+    func requestVersionstamp() -> any PendingTransactionVersionstamp { transaction.requestVersionstamp() }
+    func commit() async throws { try await transaction.commit() }
+    func cancel() async throws { try await transaction.cancel() }
+    func getCommittedVersion() throws -> Int64 { try transaction.getCommittedVersion() }
 }
 #endif

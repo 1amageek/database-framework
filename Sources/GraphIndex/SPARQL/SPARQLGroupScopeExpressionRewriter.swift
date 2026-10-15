@@ -204,7 +204,8 @@ struct SPARQLGroupScopeExpressionRewriter {
                     arguments: try call.arguments.map {
                         try rewrite($0, aggregateRewriter: &aggregateRewriter)
                     },
-                    distinct: call.distinct
+                    distinct: call.distinct,
+                    schema: call.schema
                 )
             )
         case .caseWhen(let pairs, let elseResult):

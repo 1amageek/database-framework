@@ -182,7 +182,8 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
                     listRequirements: [
                         try DatabaseReadPolicy.listRequirement(
                             entityName: entity.name,
-                            selectQuery: selectQuery
+                            selectQuery: selectQuery,
+                            schema: policy.schema
                         )
                     ],
                     fields: .make(

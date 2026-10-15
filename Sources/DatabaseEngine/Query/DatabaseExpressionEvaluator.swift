@@ -153,6 +153,8 @@ package struct DatabaseExpressionEvaluator: Sendable {
             return .decimal(value)
         case .double(let value): return .float64(value)
         case .string(let value): return .string(value)
+        case .sqlUnknownString:
+            throw DatabaseExpressionEvaluationError.unsupportedExpression("Unbound SQL string literal")
         case .date(let value): return .date(value)
         case .timestamp(let value): return .timestamp(value)
         case .binary(let value): return .bytes(value)
@@ -607,8 +609,10 @@ package struct DatabaseExpressionEvaluator: Sendable {
             }
             return .float64(floating)
         case .char, .varchar, .text:
-            guard case .string = value else { throw invalidCast(target) }
-            return value
+            if case .string = value { return value }
+            if let integer = signedInteger(value) { return .string(String(integer)) }
+            if let integer = unsignedInteger(value) { return .string(String(integer)) }
+            throw invalidCast(target)
         case .date:
             guard case .date = value else { throw invalidCast(target) }
             return value
@@ -670,7 +674,7 @@ package struct DatabaseExpressionEvaluator: Sendable {
         case .jsonb: return "JSONB"
         case .uuid: return "UUID"
         case .array(let element): return "\(dataTypeName(element)) ARRAY"
-        case .custom(let name): return name
+        case .custom(let name, let schema): return schema.map { "\($0).\(name)" } ?? name
         }
     }
 

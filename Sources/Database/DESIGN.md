@@ -103,10 +103,66 @@ The public single-statement SELECT entry continues to reject non-SELECT and
 multiple statements. Parser.parseStatements is a syntax capability only;
 S12/S16/S17 own transaction blocks, control syntax and their public execution.
 S02 preserves syntax errors with zero-based UTF-8 token-start positions.
-S03 later owns propagation of parsed source annotations into binding failures;
-no S02 success claim includes that deferred boundary. Typed ARRAY/ROW and
+S03 owns propagation of parsed source annotations into binding failures under
+the contract below; no S02 success claim includes that boundary. Typed ARRAY/ROW and
 unimplemented temporal conversion paths return explicit marked unsupported
 failures rather than successful synthetic values.
+
+### S03 SQL binding and local diagnostic bridge
+
+Database composes
+[Parser's annotated semantic result](../QueryAST/Parser/DESIGN.md#s03-occurrence-source-sidecar),
+[Kit parameter identity](../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s03-frozen-semantic-binding-boundary)
+and [executable Engine binding](../DatabaseEngine/QueryExecution/DESIGN.md#s03-executable-binding-contract).
+SQL admission preserves the original QueryIR parameter references and supplied
+declarations; it no longer performs context-free literal substitution before
+Framework inference. Existing SPARQL/GraphTerm substitution retains its own
+language contract. Parameter state is operation-owned and explicitly passed,
+never ambient. Prepared SQL owns immutable resolved parameters, the exact
+meter, rewritten literal storage and semantic provenance until execution or
+release; a foreign meter remains an error.
+
+```text
+SQL text + supplied parameters
+  -> parse result(statement, semantic arena/root, sparse source ranges)
+  -> boundQueryParameters preflight -> immutable resolved parameters
+  -> optional admitted product SPARQL producer in parent transaction
+  -> rewrite with origin provenance -> full bind of actual produced values
+  -> canonical SQL relation execution -> existing authoritative result closure
+typed Engine failure(address, cause) -> optional local source annotation
+```
+
+The product SPARQL producer may have data-dependent output types. Preflight
+checks its exact unqualified signature, raw SPARQL syntax and all determinable
+SQL names/types/parameter contexts before graph reads. Deferred producer output
+is an explicit admission state, not a fabricated executable value. After the
+existing transaction-bound rewrite, full binding checks actual produced values
+before SQL relation scans. Deterministically invalid surrounding SQL must
+start zero graph reads; the contract does not claim that data-dependent output
+failures are knowable before the producer runs. Existing graph reservation,
+parent transaction and retained prepared-storage lifetimes are preserved.
+
+Engine receives only Kit occurrence arena/root, never QueryAST/source-span
+types. Database retains the parse result and maps a decisive typed Engine
+failure address to zero-based UTF-8 source position, preserving the typed
+underlying cause. Repeated identical expressions, parameter uses, normalization
+and alias/ordinal/SPARQL rewrites require explicit provenance; direct semantic
+IR has no invented position. When a SPARQL rewrite changes child structure,
+the existing rewriter explicitly walks original field/index addresses while
+constructing the rewritten semantic arena/root and a new-ID-to-original-ID
+origin dictionary. Every generated literal in a producer expansion maps to
+that producer's original occurrence. Prepared storage retains both arena/root
+lifetimes and the origin map; reusing the old arena on the changed tree is
+invalid. Prepared execution remaps a rewritten binding failure's exact address
+and root through that origin dictionary before Database consults the original
+source map. An absent origin yields an absent source position. This avoids
+copying source ranges into another map. Existing rewriter child knowledge is
+sufficient; no generic Kit AST visitor or equality-based source search is
+required. Admission precedes arena/map/lookup growth, and
+the existing runtime meter retains the corresponding actual-owner claim.
+S16 owns final remote SQLSTATE/details and CLI
+formatting. S03-C02/C03/C09–C11 prove the public production parameter path,
+preflight ordering, actual coercion, local positions and retained-owner cleanup.
 
 ## Runtime Flows
 
@@ -143,6 +199,16 @@ SPARQL function.
 | Index admission and explicit missing/ambiguous failures | [SPARQLFunctionIndexAdmissionTests](../../Tests/DatabaseTests/Integration/SPARQLFunctionIndexAdmissionTests.swift) |
 | Real SPARQL function behavior | [SPARQLFunctionIntegrationTests](../../Tests/DatabaseTests/Integration/SPARQLFunctionIntegrationTests.swift) |
 | Graph-table SQL adaptation | [GraphTableSQLExecutionContractTests](../../Tests/DatabaseTests/GraphTableSQLExecutionContractTests.swift) |
+
+The user-approved [S03-C12 verification schedule](../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s03-falsifiable-case-ids)
+places graph-enabled Database standard WASM/Embedded compile/link/runtime in
+S18. `OccurrenceRewrite` and `InliningStructureMeter` use the common Mutex
+storage and Native behavior tests; their graph-enabled portable runtime path
+remains unverified until that lane passes. Two stopped GraphIndex builds
+executed zero runtime cases and are not passing evidence. The pinned release
+compiler concentrated in async-variable debug-information propagation even
+with debug information disabled; a separately identified debug-pass option is
+only a diagnostic candidate, not accepted runtime evidence.
 
 Changes to SQL/SPARQL entry contracts require rechecking DatabaseEngine's
 session design and GraphIndex's transaction-bound executor evidence. Changes
@@ -213,3 +279,18 @@ owns relation slots and metadata binding.
 DatabaseTests owns real public-entry S01-C01–C08 and C10 evidence; failures
 must retain typed causes. Existing SQL/SPARQL parameter meaning and the parent
 transaction/meter path remain intact (C13).
+
+SQL parameters used by the product SPARQL producer retain their SQL occurrence
+identity through preflight. The producer's string argument contexts resolve
+parameter declarations before graph work. Only that producer's argument tree
+uses the Kit substitution boundary after declarations are frozen; surrounding
+SQL expressions keep parameter references for canonical binding. Explicit
+string QueryValue carriers are accepted, and NULL or non-string arguments fail
+before graph reads.
+
+Preparation admits the frozen parameter-declaration array before preflight
+materializes it. Its reservation remains with the prepared carrier. The same
+reservation grows before each rewritten occurrence and origin-map entry is
+retained; arena and origin ownership therefore remain request-accounted until
+the prepared carrier is released. Parameter value payloads and the original
+parse arena retain their existing owners without copying those payloads.

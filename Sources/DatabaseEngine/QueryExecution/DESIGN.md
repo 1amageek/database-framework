@@ -319,13 +319,14 @@ CAST, arithmetic/comparison/logical, function, CASE/COALESCE/NULLIF,
 aggregate and subquery forms. It produces the same schema on empty and
 nonempty inputs. A bare NULL acquires a contextual type, or text at a final
 SQL output with no stronger context; explicit typed NULL retains its CAST or
-parameter declaration. A CAST of a literal NULL is a pure typed-NULL identity:
-validate the target descriptor and retain its complete type, including temporal
-precision 0...6, without invoking conversion or rounding. This is the same
-contract as Builder constant normalization; the explicit NULL remains NULL,
-not a synthetic result for an unsupported operand. Nonliteral or non-NULL
-temporal precision conversions still fail explicitly until S06 implements
-rounding. Invalid target descriptors fail even for NULL. Column metadata comes from admitted FieldSchema,
+parameter declaration. S03 refines the earlier S02 literal-NULL rule: only a
+bare untyped NULL may acquire an arbitrary valid resolved target. A typed NULL
+retains its incoming declaration and must pass source-to-target signature
+validation. Legal same-family temporal precision casts preserve NULL and the
+target precision without invoking conversion or rounding; illegal typed chains
+fail even for NULL. Builder leaves typed NULL CAST edges for this check.
+Non-NULL temporal precision conversions still fail explicitly until S06
+implements rounding. Invalid target descriptors fail even for NULL. Column metadata comes from admitted FieldSchema,
 never persisted object shape. Outer joins widen nullability. Scalar
 subqueries retain their sole declared output type and become nullable;
 multiple output columns fail before execution and multiple rows fail at
@@ -344,6 +345,175 @@ in S01. Primitive-only non-SQL outputs use QueryColumnType.primitive,
 including the array flag, rather than a fabricated SQL type. SQL-specific
 binding is language-qualified; SPARQL term identity, unbound/error behavior,
 and equality do not adopt SQL rules.
+
+### S03 executable binding contract
+
+This is the runtime authority for
+[S03 semantics and case IDs](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s03-frozen-semantic-binding-boundary).
+It extends the existing CanonicalQueryTypeBinder and CanonicalBoundExpression
+path; it does not introduce a second binder or a duplicate SQL statement AST.
+Current source returns only columns from query binding and executes original
+expressions. That metadata-only path does not satisfy S03.
+
+```text
+QueryIR + supplied parameters + semantic occurrence arena/root
+    + admitted schema, parent transaction, authority and exact meter
+    -> ordered whole-query binding
+        -> resolved frames/columns, base parameter types, available signatures
+        -> bound children and executable coercions
+        -> ordered output columns and admitted plan owner
+    -> canonical relation operators consume those bound operations
+        -> proven equivalent physical hints, otherwise canonical evaluation
+    -> retained typed positional rows -> existing authoritative Ready boundary
+```
+
+| Owner | Assumption | Guarantee |
+|---|---|---|
+| Kit declarations | Structurally valid QueryIR, original parameter references/declarations, occurrence field/index meaning | Source-independent immutable semantics; no evaluator or source-text policy. |
+| QueryExecution binder | Admitted schema and one explicit operation parameter state | Binds every CTE/body/source/ON/filter/projection/group/HAVING/order expression before its data read; returns operations actually consumed, including empty-source paths. |
+| Existing scalar evaluator | Selected executable signature and explicitly lowered operands | Executes selected coercions/functions, preserves lazy branches, and returns values compatible with the bound signature. No second name/type inference. |
+| Relation execution | Bound source/child plans and stable frame addresses | Uses the same resolved column address in JOIN, filter, grouped and ordinary projection, sorting, nested and lateral execution. |
+
+Grouped projection retains the evaluated `QueryValue` through row admission;
+it does not down-convert numeric/rich cells through a primitive scalar bridge.
+Temporary cell storage uses its actual collection footprint, and the complete
+output payload is admitted before temporary evaluation leases end. This keeps
+both primitive declared carriers and canonical numeric metadata unchanged.
+Ungrouped correlated references reject at their bound column occurrence and
+include its qualified name; no representative-row value makes such a reference
+legal.
+
+| Database bridge | Parsed arena/root and optional QueryAST map | Resolves typed semantic failure addresses to local source positions without Engine importing QueryAST. |
+
+The bound expression entry preserves the existing runtime failure boundary:
+scalar evaluation and normalization failures become
+`CanonicalReadError.expressionEvaluation` with the original typed cause.
+Resource, cancellation, aggregate and nested-read failures retain their owning
+error types. This boundary does not evaluate additional children or change
+CASE, COALESCE, AND or OR branch selection. The existing
+`SchemaDeclaredIndexBehaviorTests.canonicalSelectUsesDatabaseExpressionSemantics`
+assertion distinguishes a correctly wrapped division-by-zero failure from a
+raw scalar-kernel error escaping canonical execution.
+
+#### Binding state, execution and scope
+
+One request-owned parameter state is passed explicitly through preparation,
+canonical execution and nested binders. Explicit declarations and intrinsic
+non-NULL payload types initialize it; contextual parameters follow the SQL
+child's observed visitation order. Position/name aliases share one identity.
+Every occurrence retains its resolved use and legal coercion, including
+unresolved earlier occurrences that cannot be repaired by a later CAST.
+Repeated execution of an already-bound child consumes established decisions
+rather than recording fresh constraints. No TaskLocal, global registration,
+or weakening of the sealed ReadExecutionContext identity is introduced.
+
+CanonicalBoundExpression retains selected children/type/nullability and the
+resolved column address. It may materialize an executable existing Expression
+from those children, typed parameter/column literals and explicit coercions,
+then reuse the existing scalar/aggregate/query-scoped evaluator. Rebuilding
+from the original unbound expression, discarding children, or using a raw-AST
+fallback is prohibited. Binding must not eagerly evaluate a CASE/COALESCE
+branch or scalar subquery. Selected overloads, input conversion, result width,
+NULL contract and runtime availability have one decision owner; an immutable
+existing policy table is sufficient and no generic plugin/catalog service is
+required.
+
+A column address is a stable frame depth plus slot, or an equivalent shared
+layout mapping used identically by binder and evaluator. Current binder
+local-before-outer offsets cannot be applied to runtime inherited-before-local
+overlay cells. Local ambiguity is terminal; a local qualifier shadows the
+outer qualifier even when its requested column is absent. Public ordinals,
+output labels, internal slots and frame depth remain separate meanings.
+Outer frames retain payload leases across nested await and preserve existing
+outerFrameLifetime ownership; NULL extension retains complete typed layout.
+
+Bind all nonrecursive CTEs in order, including unused definitions. Only prior
+siblings and inherited definitions are visible to a body; local definitions
+shadow inherited names. Recursive execution stays explicitly unsupported
+until S10. Derived, JOIN and LATERAL schemas bind before row iteration, so an
+empty left source cannot hide an invalid right expression. GROUP/ORDER use
+the SQL child's separate label/ordinal precedence, including identical-output
+alias equivalence; their resolved expressions feed actual execution.
+
+Selected coercions must run at their use sites, not only as final-cell
+normalization. The same binding feeds filter, JOIN, grouping, projection,
+sorting, conditional branches, CTE/derived/subquery and set alignment. Existing
+working primitive operations remain available; future numeric/string/temporal/
+array/relational kernels remain owned by S04–S10. Unavailable signatures fail
+before the affected scan, even if NULL or zero rows would avoid evaluation.
+Physical predicate/order/pagination hints require equivalence with the chosen
+types, coercions, comparison and NULL behavior; otherwise use canonical
+evaluation with the same bound operations.
+
+SQL boolean and primitive Bool are identical scalar carriers. Common-type
+selection may preserve either declaration; use-site coercion lowers their
+representation-only change through the existing BOOLEAN identity cast,
+preserving NULL and rejecting non-boolean or array operands.
+
+SUM/AVG retain the existing exact numeric aggregate capability: the bound
+input must have an admitted numeric type, and the aggregate's scoped-value
+bridge converts canonical numeric to its ExactDecimal carrier before invoking
+DatabaseNumericAggregateAccumulator. This existing bridge admits decimal
+columns and numeric literals without enabling general rich-value arithmetic;
+non-numeric inputs still fail during signature binding.
+
+Source-column alignment retains the existing relational numeric identity
+contract independently of scalar CAST admission. Mixed decimal/floating
+VALUES, set inputs and JOIN USING columns select numeric metadata; the existing
+source-carrier normalization converts exactly representable floating values
+through RelationalValueIdentity into ExactDecimal and rejects unrepresentable
+values explicitly. Scalar expressions still reject deferred exact/floating
+coercions. Integer arithmetic result widths remain the existing bigint/uint64
+contract until S04; SQL integer literal classification alone does not narrow
+an arithmetic result.
+
+#### Occurrence, resource and lifecycle proof
+
+The operation receives Kit's arena and root explicitly. Child lookup uses
+semantic field/index edges in that same arena; it never guesses IDs from a
+second traversal or identifies nodes by Expression equality. Binding failures
+preserve typed cause plus the decisive occurrence and its arena/root lifetime.
+Alias/ordinal expansion and product SPARQL rewriting retain explicit origin
+provenance. Direct IR input legitimately has no SQL source location.
+
+Plan nodes, executable lowered expressions, signatures, parameter occurrence
+state, scope lookup indexes and address storage are pre-admitted under the
+existing work meter's bindingCandidate stage. Count/depth/overflow and retained
+bytes are checked before growth, including conservative capacity bounds for
+containers. Shared parent/edge storage is O(nodes + edges); repeated full
+root-to-node path copying is not a permitted hot-path implementation. Plan
+reservations and parameter/payload owners survive until execution releases
+them; failure/cancellation releases partial owners. Existing row/schema claims,
+authority, exact meter identity, transaction closure and publication guarantees
+remain unchanged on native, WASM and Embedded.
+
+Primitive-array parameter inference visits non-NULL elements once with one
+element-kind accumulator; it creates no payload-sized filtered/type arrays
+and rejects heterogeneous or nested primitive arrays. Contextual unknown
+string conversion receives the exact operation work meter. Before copying
+input, the binder reserves a conservative scratch allowance for eight UTF-8
+conversion buffers (including terminators and String headers); decimal input
+also reserves both existing parser split arrays with the retained-array
+capacity policy and a checked UTF-8-count-plus-one element bound. String
+allowances bound copied content, consistent with existing relational string
+accounting; they do not claim observable allocator capacity. A synchronous
+defer releases scratch on success or throw, and failed/cancelled admission
+performs no conversion. Text identity and unsupported input types do not copy
+input. Production binders always receive the operation meter; schema-only
+common-type helpers and isolated unit binders may omit it.
+
+CAST validates the bound child's source-to-target signature before inspecting
+that child's statically NULL value. Supplied typed NULL parameters therefore
+use the same legal precision/typmod identity lowering as NULL literals;
+non-NULL deferred conversions remain rejected before source reads.
+
+S03-C01–C12 require public SQL through actual production execution and focused
+scope/type/resource failures. Binding rejection observes zero affected scans
+and a subsequent valid query on the same container; correlated rich values
+prove outer-frame retention. Scan/index comparison proves actual coercion
+equivalence. Empty and nonempty inputs have identical declarations. Existing
+S01 retained-owner and SPARQL/graph suites remain regressions; final full FDB
+and published URL graph verification remain S18.
 
 #### Admission and direct model conversion
 
@@ -496,6 +666,9 @@ provenance remains separate from independent derived-value admission.
 VALUES metadata is admitted once in its shared positional layout. Its row
 producer reserves slot-array capacity and value payloads, without charging
 column labels as per-row dictionary entries. Exact/one-byte-short tests include
-that schema claim before the append boundary. Tiny work budgets may reject
+the operation's persistent parameter/selected-plan claims and that schema claim
+before the append boundary. A raw-string fixture with no conversion scratch
+can measure its persistent binding prefix through pure metadata binding; that
+measurement does not replace the separate exact row-append footprint. Tiny work budgets may reject
 mandatory schema construction even for zero rows; physical cursor bounds and
 stable LIMIT 0 no-read behavior remain separate observable contracts.

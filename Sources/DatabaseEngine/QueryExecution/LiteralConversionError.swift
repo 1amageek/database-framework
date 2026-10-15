@@ -16,6 +16,7 @@ public enum LiteralConversionError: Error, Sendable, Equatable,
     }
 
     case queryValue(QueryValueError)
+    case unboundSQLStringLiteral
     case invalidRDFLiteral(datatype: String)
     case invalidLanguageTag(String)
     case invalidBaseDirection(String)
@@ -26,6 +27,8 @@ public enum LiteralConversionError: Error, Sendable, Equatable,
         switch self {
         case .queryValue(let error):
             return "Query literal persistence conversion failed: \(error)"
+        case .unboundSQLStringLiteral:
+            return "SQL string literal requires semantic binding before persistence conversion"
         case .invalidRDFLiteral(let datatype):
             return "Invalid RDF literal datatype: \(datatype)"
         case .invalidLanguageTag(let language):

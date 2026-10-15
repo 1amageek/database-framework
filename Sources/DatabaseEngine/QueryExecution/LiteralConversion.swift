@@ -86,6 +86,8 @@ extension Literal {
     /// Convert a query literal into the canonical database value model.
     public func toFieldValue() throws(LiteralConversionError) -> FieldValue {
         switch self {
+        case .sqlUnknownString:
+            throw .unboundSQLStringLiteral
         case .queryValue(let value, let declaredType):
             if case .primitive(let primitive) = value { return primitive }
             let type: QueryColumnType

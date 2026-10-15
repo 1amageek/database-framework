@@ -103,7 +103,8 @@ struct SPARQLAggregateRewriter {
                 FunctionCall(
                     name: call.name,
                     arguments: try call.arguments.map { try rewrite($0) },
-                    distinct: call.distinct
+                    distinct: call.distinct,
+                    schema: call.schema
                 )
             )
         case .caseWhen(let pairs, let elseResult):

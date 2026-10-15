@@ -139,6 +139,7 @@ let package = Package(
                 "Mutation/DESIGN.md",
                 "Registry/DESIGN.md",
                 "Base/DESIGN.md",
+                "Fusion/DESIGN.md",
                 "Serialization/DESIGN.md",
                 "Serialization/RDF/DESIGN.md",
             ],

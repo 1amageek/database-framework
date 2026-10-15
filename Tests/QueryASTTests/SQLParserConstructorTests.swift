@@ -74,9 +74,9 @@ struct SQLParserConstructorTests {
     @Test("Temporal lexical input preserves typmods without host timezone conversion")
     func temporalTypedInput() throws {
         #expect(try expressions("SELECT DATE '2026-10-15', TIME(3) WITH TIME ZONE '10:20:30+09', TIMESTAMP(6) WITHOUT TIME ZONE '2026-10-15 10:20:30'") == [
-            .cast(.literal(.string("2026-10-15")), targetType: .date),
-            .cast(.literal(.string("10:20:30+09")), targetType: .time(withTimeZone: true, precision: 3)),
-            .cast(.literal(.string("2026-10-15 10:20:30")), targetType: .timestamp(withTimeZone: false, precision: 6)),
+            .cast(.literal(.sqlUnknownString("2026-10-15")), targetType: .date),
+            .cast(.literal(.sqlUnknownString("10:20:30+09")), targetType: .time(withTimeZone: true, precision: 3)),
+            .cast(.literal(.sqlUnknownString("2026-10-15 10:20:30")), targetType: .timestamp(withTimeZone: false, precision: 6)),
         ])
     }
 
@@ -154,7 +154,7 @@ struct SQLParserConstructorTests {
         }
     }
 
-    @Test("Qualified names require a complete component and ambiguous names fail")
+    @Test("Qualified names preserve components and reject incomplete syntax")
     func strictQualification() throws {
         #expect(try expressions("SELECT \"a.b\", \"a\".\"b\"") == [.col("a.b"), .column(ColumnRef(table: "a", column: "b"))])
         #expect(try SQLParser().parseSelect("SELECT MiXeD.* FROM items AS MiXeD").projection == .allFrom("mixed"))
@@ -164,7 +164,18 @@ struct SQLParserConstructorTests {
             #expect(try SQLParser().parseSelect(sql) == query)
         }
         #expect(throws: SQLParser.ParseError.self) { _ = try SQLParser().parseSelect("SELECT t.*, :x FROM items AS t") }
-        for sql in ["SELECT a.", "SELECT 1 FROM schema.", "SELECT a.f(1)", "SELECT \"a.b\"(1)", "SELECT NULL::a.b", "SELECT NULL::\"a.b\""] {
+        let qualified = try expressions("SELECT a.f(1), \"a.b\"(1), NULL::a.b, NULL::\"a.b\"")
+        let integer = Expression.literal(.queryValue(.primitive(.int32(1)), type: .sql(.integer)))
+        #expect(qualified == [
+            .function(FunctionCall(name: "f", arguments: [integer], schema: "a")),
+            .function(FunctionCall(name: "a.b", arguments: [integer])),
+            .cast(.null, targetType: .custom("b", schema: "a")),
+            .cast(.null, targetType: .custom("a.b")),
+        ])
+        for expression in qualified {
+            #expect(try expressions("SELECT " + SQLSerializer().serialize(expression)) == [expression])
+        }
+        for sql in ["SELECT a.", "SELECT 1 FROM schema."] {
             #expect(throws: SQLParser.ParseError.self) { _ = try SQLParser().parseSelect(sql) }
         }
     }

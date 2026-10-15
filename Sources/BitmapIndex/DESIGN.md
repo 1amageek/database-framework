@@ -61,6 +61,10 @@ bounded id payloads -> retained primary-key collection
 
 - Authorization is evaluated before any bitmap or identifier storage read; the
   existing session authorization order is unchanged.
+- Direct bitmap list admission relays the same immutable policy schema used
+  for field admission to Read's ordering-field requirement. Output-reference
+  interpretation remains owned by Read and QueryExecution; this relay grants
+  no additional field, transaction, or meter authority.
 - Every point read uses the session-owned work meter and a backend-enforced
   maximum returned byte count. The meter budget is the bitmap payload upper
   bound and is a correctness limit, not an optimization hint.

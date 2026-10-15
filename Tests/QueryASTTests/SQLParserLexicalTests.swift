@@ -21,7 +21,7 @@ struct SQLParserLexicalTests {
             ProjectionItem(.col("ÉtÉ")), ProjectionItem(.col("a\"b")),
         ]))
         #expect(query.source == .table(TableRef(schema: "Schema", table: "table_name")))
-        #expect(try expressions("SELECT 'a''\u{301}', \"a\"\"\u{301}\"") == [.literal(.string("a'\u{301}")), .col("a\"\u{301}")])
+        #expect(try expressions("SELECT 'a''\u{301}', \"a\"\"\u{301}\"") == [.literal(.sqlUnknownString("a'\u{301}")), .col("a\"\u{301}")])
     }
 
     @Test("Reserved words require quotes and Unicode lookalikes remain names")
@@ -60,14 +60,14 @@ struct SQLParserLexicalTests {
 
     @Test("Ordinary strings preserve backslashes and doubled quotes")
     func ordinaryStrings() throws {
-        #expect(try expressions(#"SELECT 'a\nb', 'it''s'"#) == [.literal(.string(#"a\nb"#)), .literal(.string("it's"))])
+        #expect(try expressions(#"SELECT 'a\nb', 'it''s'"#) == [.literal(.sqlUnknownString(#"a\nb"#)), .literal(.sqlUnknownString("it's"))])
     }
 
     @Test("Escape strings decode bytes, Unicode and surrogate pairs")
     func escapeStrings() throws {
-        #expect(try expressions(#"SELECT E'\n\t\141\x62\u00e9\U0001F600\uD83D\uDE00\U0000D83D\U0000DE00'"#) == [.literal(.string("\n\tabé😀😀😀"))])
+        #expect(try expressions(#"SELECT E'\n\t\141\x62\u00e9\U0001F600\uD83D\uDE00\U0000D83D\U0000DE00'"#) == [.literal(.sqlUnknownString("\n\tabé😀😀😀"))])
         #expect(try expressions(#"SELECT E'\x', E'\xG', E'\z'"#) == [
-            .literal(.string("x")), .literal(.string("xG")), .literal(.string("z")),
+            .literal(.sqlUnknownString("x")), .literal(.sqlUnknownString("xG")), .literal(.sqlUnknownString("z")),
         ])
     }
 
@@ -81,7 +81,7 @@ struct SQLParserLexicalTests {
     @Test("Unicode strings and identifiers support UESCAPE and scalar escapes")
     func unicodeStringsAndIdentifiers() throws {
         #expect(try expressions(#"SELECT U&'d\0061t\+000061', U&'!+00D83D!+00DE00' UESCAPE '!', U&"A!0042" UESCAPE '!'"#) == [
-            .literal(.string("data")), .literal(.string("😀")), .col("AB"),
+            .literal(.sqlUnknownString("data")), .literal(.sqlUnknownString("😀")), .col("AB"),
         ])
     }
 
@@ -95,14 +95,14 @@ struct SQLParserLexicalTests {
     @Test("Dollar delimiters are exact and do not expose SQL markers")
     func dollarStrings() throws {
         #expect(try expressions(#"SELECT $$a;'$1 -- /*$$, $Tag$x$tag$y$Tag$, $1"#) == [
-            .literal(.string("a;'$1 -- /*")), .literal(.string("x$tag$y")), .parameter(.position(1)),
+            .literal(.sqlUnknownString("a;'$1 -- /*")), .literal(.sqlUnknownString("x$tag$y")), .parameter(.position(1)),
         ])
         #expect(throws: SQLParser.ParseError.self) { _ = try SQLParser().parseSelect("SELECT $Tag$body$tag$") }
     }
 
     @Test("SQL newline concatenation accepts line comments and stops at block comments")
     func newlineConcatenation() throws {
-        #expect(try expressions("SELECT 'one'\r\n-- ; hidden delimiter\n 'two'") == [.literal(.string("onetwo"))])
+        #expect(try expressions("SELECT 'one'\r\n-- ; hidden delimiter\n 'two'") == [.literal(.sqlUnknownString("onetwo"))])
         for sql in [
             "SELECT 'one'\n/* nested /* hidden */ comment */ 'two'",
             "SELECT 'one' /* newline\ninside */ 'two'",
@@ -111,10 +111,10 @@ struct SQLParserLexicalTests {
         ] {
             #expect(throws: SQLParser.ParseError.self) { _ = try SQLParser().parseSelect(sql) }
         }
-        #expect(try expressions("SELECT 'one' /* nested /* hidden */ comment */, 'two'") == [.literal(.string("one")), .literal(.string("two"))])
-        #expect(try expressions("SELECT U&'a'\n'b'") == [.literal(.string("ab"))])
-        #expect(try expressions("SELECT U&'!0061'\n'!0062' UESCAPE '!'") == [.literal(.string("ab"))])
-        #expect(try expressions("SELECT E'\\401'") == [.literal(.string("\u{1}"))])
+        #expect(try expressions("SELECT 'one' /* nested /* hidden */ comment */, 'two'") == [.literal(.sqlUnknownString("one")), .literal(.sqlUnknownString("two"))])
+        #expect(try expressions("SELECT U&'a'\n'b'") == [.literal(.sqlUnknownString("ab"))])
+        #expect(try expressions("SELECT U&'!0061'\n'!0062' UESCAPE '!'") == [.literal(.sqlUnknownString("ab"))])
+        #expect(try expressions("SELECT E'\\401'") == [.literal(.sqlUnknownString("\u{1}"))])
         #expect(throws: SQLParser.ParseError.self) { _ = try SQLParser().parseSelect("SELECT 'one' 'two'") }
     }
 

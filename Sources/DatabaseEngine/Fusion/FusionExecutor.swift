@@ -20,10 +20,13 @@ enum FusionExecutor {
             expectedCount: execution.source.scoredInputCount
         )
 
+        var inputOrdinal = 0
         for stage in execution.plan.stages {
             let incoming = candidates
             var stageCandidates: FusionCandidateDomain?
             for input in stage.inputs {
+                let ordinal = inputOrdinal
+                inputOrdinal += 1
                 let result: InputExecutionResult
                 if let incoming, incoming.isEmpty {
                     result = try emptyResult(
@@ -34,6 +37,7 @@ enum FusionExecutor {
                 } else {
                     result = try await execute(
                         input,
+                        ordinal: ordinal,
                         incoming: incoming,
                         execution: execution
                     )
@@ -87,6 +91,7 @@ enum FusionExecutor {
 
     private static func execute(
         _ input: FusionPreparedPlan.Input,
+        ordinal: Int,
         incoming: FusionCandidateDomain?,
         execution: FusionExecution
     ) async throws -> InputExecutionResult {
@@ -97,21 +102,16 @@ enum FusionExecutor {
             )
         }
         switch input.operation {
-        case .filter(let expression):
-            let query = SelectQuery(
-                projection: .all,
-                source: .table(execution.plan.tableRef),
-                filter: expression,
-                limit: input.limit.map(UInt64.init)
-            )
+        case .filter:
             let response: CanonicalRetainedQueryResponse
             if let incoming {
                 response = try await execution.executeCandidateRelationalRows(
                     incoming,
-                    query: query
+                    for: input,
+                    at: ordinal
                 )
             } else {
-                response = try await execution.executeRelationalRows(query)
+                response = try await execution.executeRelationalRows(for: input, at: ordinal)
             }
             return InputExecutionResult(
                 candidates: try FusionCandidateDomain.make(
@@ -121,19 +121,14 @@ enum FusionExecutor {
                 ),
                 scored: nil
             )
-        case .order(let sortKeys):
+        case .order:
             guard let incoming, let scoring = input.scoring else {
                 throw FusionExecutionError.invalidInputScoring(input.scoring)
             }
-            let query = SelectQuery(
-                projection: .all,
-                source: .table(execution.plan.tableRef),
-                orderBy: sortKeys,
-                limit: input.limit.map(UInt64.init)
-            )
             let response = try await execution.executeCandidateRelationalRows(
                 incoming,
-                query: query
+                for: input,
+                at: ordinal
             )
             let limit = input.limit ?? incoming.count
             let sink = try FusionMatchSink(
@@ -193,6 +188,7 @@ enum FusionExecutor {
                 descriptor: descriptor,
                 executor: executor,
                 input: input,
+                ordinal: ordinal,
                 incoming: incoming,
                 execution: execution
             )
@@ -205,6 +201,7 @@ enum FusionExecutor {
         descriptor: IndexDescriptor,
         executor: any FusionConnectedReadExecutor,
         input: FusionPreparedPlan.Input,
+        ordinal: Int,
         incoming: FusionCandidateDomain?,
         execution: FusionExecution
     ) async throws -> InputExecutionResult {
@@ -213,10 +210,8 @@ enum FusionExecutor {
             candidatePool = incoming
         } else {
             let response = try await execution.executeRelationalRows(
-                SelectQuery(
-                    projection: .all,
-                    source: .table(execution.plan.tableRef)
-                )
+                for: input,
+                at: ordinal
             )
             candidatePool = try FusionCandidateDomain.make(
                 rows: response.visibleRows,

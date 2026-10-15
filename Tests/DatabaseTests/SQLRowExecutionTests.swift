@@ -38,6 +38,7 @@ struct SQLRowExecutionTests {
         )
 
         #expect(response.rows.count == 1)
+        #expect(response.columns[0].type == .sql(.bigint))
         #expect(response.rows[0].values[0] == .primitive(.int64(3)))
         let cast = try await container.testBaseContext().query(SelectQuery(
             projection: .items([
@@ -92,17 +93,17 @@ struct SQLRowExecutionTests {
         let container = try await makeContainer()
         let context = container.testBaseContext()
 
-        await #expect(throws: CanonicalReadError.self) {
+        await #expect(throws: SQLBindingSourceFailure.self) {
             _ = try await context.executeSQL(
                 "SELECT wrong.id FROM \"SQLRowItem\" item"
             )
         }
-        await #expect(throws: CanonicalReadError.self) {
+        await #expect(throws: SQLBindingSourceFailure.self) {
             _ = try await context.executeSQL(
                 "SELECT (SELECT id, rank FROM \"SQLRowItem\") AS invalid FROM \"SQLRowItem\""
             )
         }
-        await #expect(throws: CanonicalReadError.self) {
+        await #expect(throws: SQLBindingSourceFailure.self) {
             _ = try await context.executeSQL(
                 "SELECT * FROM \"SQLRowItem\" lhs JOIN \"SQLRowItem\" rhs ON wrong.id = rhs.id"
             )
@@ -131,12 +132,12 @@ struct SQLRowExecutionTests {
         try context.insert(SQLRowItem(id: "first", category: "books", rank: 1))
         try await context.save()
 
-        await #expect(throws: CanonicalReadError.self) {
+        await #expect(throws: SQLBindingSourceFailure.self) {
             _ = try await context.executeSQL(
                 "SELECT item.id FROM \"SQLRowItem\" item WHERE wrong.category = 'books'"
             )
         }
-        await #expect(throws: CanonicalReadError.self) {
+        await #expect(throws: SQLBindingSourceFailure.self) {
             _ = try await context.executeSQL(
                 "SELECT item.id FROM \"SQLRowItem\" item ORDER BY wrong.rank"
             )
@@ -224,7 +225,7 @@ struct SQLRowExecutionTests {
     @Test("Ungrouped columns in aggregate queries fail explicitly")
     func aggregateProjectionRejectsUngroupedColumns() async throws {
         let container = try await makeContainer()
-        await #expect(throws: CanonicalReadError.self) {
+        await #expect(throws: SQLBindingSourceFailure.self) {
             _ = try await container.testBaseContext().executeSQL(
                 "SELECT category, COUNT(*) FROM \"SQLRowItem\""
             )
@@ -258,7 +259,7 @@ struct SQLRowExecutionTests {
         #expect(duplicate.rows.isEmpty)
         #expect(duplicate.columns.map(\.name) == ["value", "value"])
         #expect(duplicate.columns.map(\.number) == [1, 2])
-        await #expect(throws: CanonicalReadError.self) {
+        await #expect(throws: SQLBindingSourceFailure.self) {
             _ = try await container.testBaseContext().executeSQL(
                 "SELECT * FROM \"SQLRowItem\" GROUP BY category"
             )
@@ -282,34 +283,42 @@ struct SQLRowExecutionTests {
             .primitive(.string("books")), .primitive(.string("music")),
         ])
 
+        let ungroupedSQL = "SELECT parent.category, COUNT(*) AS item_count, (SELECT parent.rank FROM \"SQLRowItem\" candidate WHERE candidate.id = 'first' LIMIT 1) AS arbitrary_rank FROM \"SQLRowItem\" parent GROUP BY parent.category"
         do {
-            _ = try await context.executeSQL(
-                "SELECT parent.category, COUNT(*) AS item_count, (SELECT parent.rank FROM \"SQLRowItem\" candidate WHERE candidate.id = 'first' LIMIT 1) AS arbitrary_rank FROM \"SQLRowItem\" parent GROUP BY parent.category"
-            )
+            _ = try await context.executeSQL(ungroupedSQL)
             Issue.record("Expected a non-grouped correlated column failure")
-        } catch let error as CanonicalReadError {
-            guard case .aggregateEvaluation(
+        } catch let error as SQLBindingSourceFailure {
+            guard case .read(.aggregateEvaluation(
                 .invalidGroupedExpression(let message)
-            ) = error else {
+            )) = error.cause else {
                 Issue.record("Unexpected grouped subquery failure: \(error)")
                 return
             }
             #expect(message.contains("parent.rank"))
+            let decisive = try #require(ungroupedSQL.utf8.indices.first {
+                ungroupedSQL.utf8[$0...].starts(with: "parent.rank".utf8)
+            })
+            #expect(error.occurrence != nil)
+            #expect(error.position == ungroupedSQL.utf8.distance(from: ungroupedSQL.utf8.startIndex, to: decisive))
         }
 
+        let shadowedSQL = "SELECT parent.id, (SELECT COUNT(*) + (SELECT parent.rank FROM \"SQLRowItem\" candidate WHERE candidate.id = 'first' LIMIT 1) FROM \"SQLRowItem\" parent) AS leaked_rank FROM \"SQLRowItem\" parent"
         do {
-            _ = try await context.executeSQL(
-                "SELECT parent.id, (SELECT COUNT(*) + (SELECT parent.rank FROM \"SQLRowItem\" candidate WHERE candidate.id = 'first' LIMIT 1) FROM \"SQLRowItem\" parent) AS leaked_rank FROM \"SQLRowItem\" parent"
-            )
+            _ = try await context.executeSQL(shadowedSQL)
             Issue.record("Expected the current aggregate scope to shadow its ancestor")
-        } catch let error as CanonicalReadError {
-            guard case .aggregateEvaluation(
+        } catch let error as SQLBindingSourceFailure {
+            guard case .read(.aggregateEvaluation(
                 .invalidGroupedExpression(let message)
-            ) = error else {
+            )) = error.cause else {
                 Issue.record("Unexpected aggregate shadowing failure: \(error)")
                 return
             }
             #expect(message.contains("parent.rank"))
+            let decisive = try #require(shadowedSQL.utf8.indices.first {
+                shadowedSQL.utf8[$0...].starts(with: "parent.rank".utf8)
+            })
+            #expect(error.occurrence != nil)
+            #expect(error.position == shadowedSQL.utf8.distance(from: shadowedSQL.utf8.startIndex, to: decisive))
         }
     }
 
@@ -322,10 +331,15 @@ struct SQLRowExecutionTests {
         try context.insert(SQLRowItem(id: "third", category: "music", rank: 8))
         try await context.save()
 
-        await #expect(throws: CanonicalReadError.self) {
+        await #expect {
             _ = try await context.executeSQL(
                 "SELECT (SELECT candidate.rank FROM \"SQLRowItem\" candidate) AS invalid"
             )
+        } throws: { error in
+            guard case CanonicalReadError.invalidScalarSubquery(rowCount: 3, columnCount: nil) = error else {
+                return false
+            }
+            return true
         }
         let emptyScalar = try await context.executeSQL(
             "SELECT (SELECT candidate.rank FROM \"SQLRowItem\" candidate WHERE candidate.id = 'missing') AS absent"
@@ -564,7 +578,7 @@ struct SQLRowExecutionTests {
         ])
         let qualified = try await context.executeSQL("SELECT lhs.id, rhs.id, third.id \(source)")
         #expect(qualified.rows[0].values == [.primitive(.int32(1)), .primitive(.int32(1)), .primitive(.int32(2))])
-        await #expect(throws: CanonicalReadError.self) {
+        await #expect(throws: SQLBindingSourceFailure.self) {
             _ = try await context.executeSQL("SELECT id \(source)")
         }
     }
@@ -581,7 +595,7 @@ struct SQLRowExecutionTests {
         #expect(throws: QueryRowCodecError.duplicateColumn("same")) {
             try derived.rows[0].namedValues(columns: derived.columns)
         }
-        await #expect(throws: CanonicalReadError.self) {
+        await #expect(throws: SQLBindingSourceFailure.self) {
             _ = try await context.executeSQL("SELECT nested.same FROM (SELECT 1 AS same, 2 AS same) nested")
         }
         let left = SelectQuery(projection: .items([

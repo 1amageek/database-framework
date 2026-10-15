@@ -897,7 +897,7 @@ package struct GraphTableExecutor: Sendable {
             }
             return value
         case .literal(let literal):
-            return try convertLiteralToFieldValue(literal)
+            return try Self.convertLiteralToFieldValue(literal)
         default:
             // GRAPH_TABLE filtering on the canonical path is intentionally scoped
             // to column and literal expressions for now.
@@ -966,7 +966,7 @@ package struct GraphTableExecutor: Sendable {
             switch expression {
             case .literal(let literal):
                 // Property equality: {since: 2020}
-                let fieldValue = try literal.toFieldValue()
+                let fieldValue = try convertLiteralToFieldValue(literal)
                 filters.append(PropertyFilter(
                     fieldName: fieldName,
                     op: .equal,
@@ -1088,12 +1088,14 @@ package struct GraphTableExecutor: Sendable {
                 "Property comparison value must be a literal, not an expression"
             )
         }
-        return try literal.toFieldValue()
+        return try convertLiteralToFieldValue(literal)
     }
 
     /// Convert Literal to DatabaseEngine.FieldValue
-    private func convertLiteralToFieldValue(_ literal: Literal) throws -> FieldValue {
-        try literal.toFieldValue()
+    private static func convertLiteralToFieldValue(_ literal: Literal) throws -> FieldValue {
+        // GRAPH_TABLE's product string syntax denotes primitive text without SQL coercion.
+        if case .sqlUnknownString(let value) = literal { return .string(value) }
+        return try literal.toFieldValue()
     }
 
 }

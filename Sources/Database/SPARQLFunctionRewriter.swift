@@ -70,12 +70,91 @@ internal struct SPARQLFunctionRewriter: Sendable {
         }
     }
 
+    private final class OccurrenceRewrite: Sendable {
+        struct Snapshot: Sendable {
+            let occurrences: QueryOccurrenceArena
+            let root: QueryOccurrenceID
+            let origins: [QueryOccurrenceID: QueryOccurrenceID]
+        }
+
+        private struct State {
+            var occurrences: QueryOccurrenceArena
+            var origins: [QueryOccurrenceID: QueryOccurrenceID] = [:]
+            var ledger: QueryStructuralResourceLedger
+        }
+
+        let original: QueryOccurrenceArena
+        private let state: Mutex<State>
+        private let reservation: DatabaseIntermediateReservation
+
+        init(original: QueryOccurrenceArena, limits: QueryStructuralLimits,
+             reservation: DatabaseIntermediateReservation) {
+            self.original = original
+            self.reservation = reservation
+            self.state = Mutex(State(occurrences: QueryOccurrenceArena(limits: limits),
+                                     ledger: QueryStructuralResourceLedger(limits: limits)))
+        }
+
+        func append(original origin: QueryOccurrenceID, parent: QueryOccurrenceID?,
+                    field: QueryOccurrenceField, index: UInt32? = nil) throws -> Cursor {
+            let rewritten = try state.withLock { state in
+                try state.ledger.consume(.collectionElements)
+                let bytes = MemoryLayout<QueryOccurrence>.stride
+                    + MemoryLayout<QueryOccurrenceID>.stride * 4
+                    + MemoryLayout<QueryOccurrenceField>.stride + MemoryLayout<UInt32?>.stride
+                try state.ledger.consume(.retainedBytes, amount: UInt64(bytes))
+                try reservation.reserveAdditional(bytes: UInt64(bytes), at: .bindingCandidate)
+                let rewritten = try state.occurrences.append(parent: parent, field: field, index: index)
+                state.origins[rewritten] = origin
+                return rewritten
+            }
+            return Cursor(owner: self, original: origin, rewritten: rewritten)
+        }
+
+        func snapshot(root: QueryOccurrenceID) -> Snapshot {
+            state.withLock { Snapshot(occurrences: $0.occurrences, root: root, origins: $0.origins) }
+        }
+
+        struct Cursor: Sendable {
+            let owner: OccurrenceRewrite
+            let original: QueryOccurrenceID
+            let rewritten: QueryOccurrenceID
+
+            func child(_ field: QueryOccurrenceField, _ index: Int? = nil,
+                       rewrittenIndex: Int? = nil) throws -> Cursor? {
+                guard let origin = try originalChild(field, index) else { return nil }
+                return try owner.append(original: origin, parent: rewritten, field: field,
+                                        index: try (rewrittenIndex ?? index).map(Self.ordinal))
+            }
+
+            func originalChild(_ field: QueryOccurrenceField, _ index: Int? = nil) throws -> QueryOccurrenceID? {
+                owner.original.child(of: original, field: field, index: try index.map(Self.ordinal))
+            }
+
+            func generatedChild(origin: QueryOccurrenceID, index: Int) throws {
+                _ = try owner.append(original: origin, parent: rewritten, field: .argument, index: Self.ordinal(index))
+            }
+
+            func copyTypeDescendants() throws {
+                if let child = try child(.elementType) {
+                    try child.copyTypeDescendants()
+                }
+            }
+
+            private static func ordinal(_ index: Int) throws -> UInt32 {
+                guard let ordinal = UInt32(exactly: index) else { throw QueryOccurrenceError.identifierOverflow }
+                return ordinal
+            }
+        }
+    }
+
     private let context: DatabaseContext
     private let workMeter: DatabaseWorkMeter
     private let transaction: DatabaseReadTransaction
     private let structuralLimits: QueryStructuralLimits
     private let retainedStorage: DatabasePreparedSQLSelectStorage
     private let inliningStructureMeter = InliningStructureMeter()
+    private let parameters: [QueryParameter]
 
     /// Initialize with DatabaseContext
     ///
@@ -90,13 +169,15 @@ internal struct SPARQLFunctionRewriter: Sendable {
         workMeter: DatabaseWorkMeter,
         transaction: DatabaseReadTransaction,
         retainedStorage: DatabasePreparedSQLSelectStorage,
-        structuralLimits: QueryStructuralLimits = .default
+        structuralLimits: QueryStructuralLimits = .default,
+        parameters: [QueryParameter] = []
     ) {
         self.context = context
         self.workMeter = workMeter
         self.transaction = transaction
         self.retainedStorage = retainedStorage
         self.structuralLimits = structuralLimits
+        self.parameters = parameters
     }
 
     /// Returns whether any query expression contains a SPARQL SQL function
@@ -223,7 +304,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
             }
             switch expression {
             case .function(let call):
-                if call.name.uppercased() == "SPARQL" {
+                if call.schema == nil && call.name == "sparql" {
                     return true
                 }
                 pendingExpressions.append(contentsOf: call.arguments)
@@ -331,43 +412,67 @@ internal struct SPARQLFunctionRewriter: Sendable {
     /// - Returns: Rewritten SelectQuery with SPARQL() calls replaced
     /// - Throws: `SPARQLFunctionError` for execution errors
     internal func rewritePrepared(
-        _ query: SelectQuery
+        _ query: SelectQuery,
+        parameters: [QueryParameter] = [],
+        metadataReservation: DatabaseIntermediateReservation? = nil,
+        occurrences: QueryOccurrenceArena? = nil,
+        occurrence: QueryOccurrenceID? = nil
     ) async throws -> DatabasePreparedSQLSelect {
-        DatabasePreparedSQLSelect(
-            query: try await rewrite(query),
+        let reservation = try metadataReservation ?? workMeter.reserveIntermediate(
+            bytes: 128, at: .bindingCandidate
+        )
+        let cursor: OccurrenceRewrite.Cursor?
+        if let occurrences, let occurrence {
+            let rewrite = OccurrenceRewrite(original: occurrences, limits: structuralLimits,
+                                            reservation: reservation)
+            cursor = try rewrite.append(original: occurrence, parent: nil, field: .statement)
+        } else {
+            cursor = nil
+        }
+        let rewrittenQuery = try await rewrite(query, provenance: cursor)
+        let snapshot = cursor.map { $0.owner.snapshot(root: $0.rewritten) }
+        return DatabasePreparedSQLSelect(
+            query: rewrittenQuery,
             workMeter: workMeter,
+            parameters: parameters,
+            metadataReservation: reservation,
+            occurrences: snapshot?.occurrences,
+            occurrence: snapshot?.root,
+            originalOccurrences: occurrences,
+            originalOccurrence: occurrence,
+            occurrenceOrigins: snapshot?.origins ?? [:],
             retainedStorage: retainedStorage
         )
     }
 
-    private func rewrite(_ query: SelectQuery) async throws -> SelectQuery {
+    private func rewrite(_ query: SelectQuery, provenance: OccurrenceRewrite.Cursor? = nil) async throws -> SelectQuery {
         let rewrittenFilter: DatabaseKit.Expression?
         if let filter = query.filter {
-            rewrittenFilter = try await rewriteExpression(filter)
+            rewrittenFilter = try await rewriteExpression(filter, provenance: try provenance?.child(.filter))
         } else {
             rewrittenFilter = nil
         }
         var rewrittenSubqueries: [NamedSubquery] = []
         rewrittenSubqueries.reserveCapacity(query.subqueries?.count ?? 0)
-        for subquery in query.subqueries ?? [] {
+        for (index, subquery) in (query.subqueries ?? []).enumerated() {
             rewrittenSubqueries.append(
                 NamedSubquery(
                     name: subquery.name,
                     columns: subquery.columns,
-                    query: try await rewrite(subquery.query),
+                    query: try await rewrite(subquery.query, provenance: try provenance?.child(.cte, index)),
                     materialized: subquery.materialized
                 )
             )
         }
 
         return SelectQuery(
-            projection: try await rewriteProjection(query.projection),
-            source: try await rewriteSource(query.source),
+            projection: try await rewriteProjection(query.projection, provenance: provenance),
+            source: try await rewriteSource(query.source, provenance: try provenance?.child(.source)),
             accessPath: query.accessPath,
             filter: rewrittenFilter,
-            groupBy: try await rewriteOptionalExpressions(query.groupBy),
-            having: try await rewriteOptionalExpression(query.having),
-            orderBy: try await rewriteOptionalSortKeys(query.orderBy),
+            groupBy: try await rewriteOptionalExpressions(query.groupBy, provenance: provenance, field: .groupBy),
+            having: try await rewriteOptionalExpression(query.having, provenance: try provenance?.child(.having)),
+            orderBy: try await rewriteOptionalSortKeys(query.orderBy, provenance: provenance, field: .orderBy),
             limit: query.limit,
             offset: query.offset,
             distinct: query.distinct,
@@ -377,15 +482,15 @@ internal struct SPARQLFunctionRewriter: Sendable {
         )
     }
 
-    private func rewriteSource(_ source: DataSource) async throws -> DataSource {
+    private func rewriteSource(_ source: DataSource, provenance: OccurrenceRewrite.Cursor? = nil) async throws -> DataSource {
         switch source {
         case .subquery(let query, let alias):
-            return .subquery(try await rewrite(query), alias: alias)
+            return .subquery(try await rewrite(query, provenance: try provenance?.child(.subquery)), alias: alias)
         case .join(let join):
             let condition: JoinCondition?
             switch join.condition {
             case .on(let expression):
-                condition = .on(try await rewriteExpression(expression))
+                condition = .on(try await rewriteExpression(expression, provenance: try provenance?.child(.joinCondition)))
             case .using(let columns):
                 condition = .using(columns)
             case nil:
@@ -394,8 +499,8 @@ internal struct SPARQLFunctionRewriter: Sendable {
             return .join(
                 JoinClause(
                     type: join.type,
-                    left: try await rewriteSource(join.left),
-                    right: try await rewriteSource(join.right),
+                    left: try await rewriteSource(join.left, provenance: try provenance?.child(.joinLeft)),
+                    right: try await rewriteSource(join.right, provenance: try provenance?.child(.joinRight)),
                     condition: condition
                 )
             )
@@ -463,7 +568,8 @@ internal struct SPARQLFunctionRewriter: Sendable {
     }
 
     private func rewritePattern(
-        _ pattern: GraphPattern
+        _ pattern: GraphPattern,
+        provenance: OccurrenceRewrite.Cursor? = nil
     ) async throws -> GraphPattern {
         switch pattern {
         case .basic, .values:
@@ -539,7 +645,8 @@ internal struct SPARQLFunctionRewriter: Sendable {
     }
 
     private func rewriteExpressions(
-        _ expressions: [DatabaseKit.Expression]
+        _ expressions: [DatabaseKit.Expression],
+        provenance: OccurrenceRewrite.Cursor? = nil
     ) async throws -> [DatabaseKit.Expression] {
         var rewritten: [DatabaseKit.Expression] = []
         rewritten.reserveCapacity(expressions.count)
@@ -550,7 +657,8 @@ internal struct SPARQLFunctionRewriter: Sendable {
     }
 
     private func rewriteSources(
-        _ sources: [DataSource]
+        _ sources: [DataSource],
+        provenance: OccurrenceRewrite.Cursor? = nil
     ) async throws -> [DataSource] {
         var rewritten: [DataSource] = []
         rewritten.reserveCapacity(sources.count)
@@ -561,7 +669,8 @@ internal struct SPARQLFunctionRewriter: Sendable {
     }
 
     private func rewriteProjection(
-        _ projection: Projection
+        _ projection: Projection,
+        provenance: OccurrenceRewrite.Cursor? = nil
     ) async throws -> Projection {
         switch projection {
         case .all:
@@ -569,21 +678,22 @@ internal struct SPARQLFunctionRewriter: Sendable {
         case .allFrom(let sourceName):
             return .allFrom(sourceName)
         case .items(let items):
-            return .items(try await rewriteProjectionItems(items))
+            return .items(try await rewriteProjectionItems(items, provenance: provenance))
         case .distinctItems(let items):
-            return .distinctItems(try await rewriteProjectionItems(items))
+            return .distinctItems(try await rewriteProjectionItems(items, provenance: provenance))
         }
     }
 
     private func rewriteProjectionItems(
-        _ items: [ProjectionItem]
+        _ items: [ProjectionItem],
+        provenance: OccurrenceRewrite.Cursor? = nil
     ) async throws -> [ProjectionItem] {
         var rewritten: [ProjectionItem] = []
         rewritten.reserveCapacity(items.count)
-        for item in items {
+        for (index, item) in items.enumerated() {
             rewritten.append(
                 ProjectionItem(
-                    try await rewriteExpression(item.expression),
+                    try await rewriteExpression(item.expression, provenance: try provenance?.child(.projection, index)),
                     alias: item.alias
                 )
             )
@@ -592,34 +702,39 @@ internal struct SPARQLFunctionRewriter: Sendable {
     }
 
     private func rewriteOptionalExpressions(
-        _ expressions: [DatabaseKit.Expression]?
+        _ expressions: [DatabaseKit.Expression]?,
+        provenance: OccurrenceRewrite.Cursor? = nil,
+        field: QueryOccurrenceField = .argument
     ) async throws -> [DatabaseKit.Expression]? {
         guard let expressions else { return nil }
         var rewritten: [DatabaseKit.Expression] = []
         rewritten.reserveCapacity(expressions.count)
-        for expression in expressions {
-            rewritten.append(try await rewriteExpression(expression))
+        for (index, expression) in expressions.enumerated() {
+            rewritten.append(try await rewriteExpression(expression, provenance: try provenance?.child(field, index)))
         }
         return rewritten
     }
 
     private func rewriteOptionalExpression(
-        _ expression: DatabaseKit.Expression?
+        _ expression: DatabaseKit.Expression?,
+        provenance: OccurrenceRewrite.Cursor? = nil
     ) async throws -> DatabaseKit.Expression? {
         guard let expression else { return nil }
-        return try await rewriteExpression(expression)
+        return try await rewriteExpression(expression, provenance: provenance)
     }
 
     private func rewriteOptionalSortKeys(
-        _ sortKeys: [SortKey]?
+        _ sortKeys: [SortKey]?,
+        provenance: OccurrenceRewrite.Cursor? = nil,
+        field: QueryOccurrenceField = .aggregateOrderBy
     ) async throws -> [SortKey]? {
         guard let sortKeys else { return nil }
         var rewritten: [SortKey] = []
         rewritten.reserveCapacity(sortKeys.count)
-        for sortKey in sortKeys {
+        for (index, sortKey) in sortKeys.enumerated() {
             rewritten.append(
                 SortKey(
-                    try await rewriteExpression(sortKey.expression),
+                    try await rewriteExpression(sortKey.expression, provenance: try provenance?.child(field, index)),
                     direction: sortKey.direction,
                     nulls: sortKey.nulls
                 )
@@ -639,140 +754,142 @@ internal struct SPARQLFunctionRewriter: Sendable {
     /// - Returns: Rewritten expression
     /// - Throws: `SPARQLFunctionError` for execution errors
     private func rewriteExpression(
-        _ expr: DatabaseKit.Expression
+        _ expr: DatabaseKit.Expression,
+        provenance: OccurrenceRewrite.Cursor? = nil
     ) async throws -> DatabaseKit.Expression {
         switch expr {
         case .inList(let lhs, let values):
             return .inList(
-                try await rewriteExpression(lhs),
-                values: try await rewriteMembershipValues(values)
+                try await rewriteExpression(lhs, provenance: try provenance?.child(.operand, 0)),
+                values: try await rewriteMembershipValues(values, provenance: provenance)
             )
 
         case .notInList(let lhs, let values):
             return .notInList(
-                try await rewriteExpression(lhs),
-                values: try await rewriteMembershipValues(values)
+                try await rewriteExpression(lhs, provenance: try provenance?.child(.operand, 0)),
+                values: try await rewriteMembershipValues(values, provenance: provenance)
             )
 
         case .inSubquery(let lhs, let subquery):
             // Check if subquery contains SPARQL() - recursively rewrite
-            let rewrittenSubquery = try await rewrite(subquery)
-            return .inSubquery(try await rewriteExpression(lhs), subquery: rewrittenSubquery)
+            let rewrittenSubquery = try await rewrite(subquery, provenance: try provenance?.child(.subquery))
+            return .inSubquery(try await rewriteExpression(lhs, provenance: try provenance?.child(.operand, 0)), subquery: rewrittenSubquery)
 
         // Logical operators - recurse
         case .and(let left, let right):
-            return .and(try await rewriteExpression(left), try await rewriteExpression(right))
+            return .and(try await rewriteExpression(left, provenance: try provenance?.child(.operand, 0)), try await rewriteExpression(right, provenance: try provenance?.child(.operand, 1)))
 
         case .or(let left, let right):
-            return .or(try await rewriteExpression(left), try await rewriteExpression(right))
+            return .or(try await rewriteExpression(left, provenance: try provenance?.child(.operand, 0)), try await rewriteExpression(right, provenance: try provenance?.child(.operand, 1)))
 
         case .not(let inner):
-            return .not(try await rewriteExpression(inner))
+            return .not(try await rewriteExpression(inner, provenance: try provenance?.child(.operand, 0)))
 
         // Comparison operators - recurse on both sides
         case .equal(let left, let right):
-            return .equal(try await rewriteExpression(left), try await rewriteExpression(right))
+            return .equal(try await rewriteExpression(left, provenance: try provenance?.child(.operand, 0)), try await rewriteExpression(right, provenance: try provenance?.child(.operand, 1)))
 
         case .notEqual(let left, let right):
-            return .notEqual(try await rewriteExpression(left), try await rewriteExpression(right))
+            return .notEqual(try await rewriteExpression(left, provenance: try provenance?.child(.operand, 0)), try await rewriteExpression(right, provenance: try provenance?.child(.operand, 1)))
 
         case .lessThan(let left, let right):
-            return .lessThan(try await rewriteExpression(left), try await rewriteExpression(right))
+            return .lessThan(try await rewriteExpression(left, provenance: try provenance?.child(.operand, 0)), try await rewriteExpression(right, provenance: try provenance?.child(.operand, 1)))
 
         case .lessThanOrEqual(let left, let right):
-            return .lessThanOrEqual(try await rewriteExpression(left), try await rewriteExpression(right))
+            return .lessThanOrEqual(try await rewriteExpression(left, provenance: try provenance?.child(.operand, 0)), try await rewriteExpression(right, provenance: try provenance?.child(.operand, 1)))
 
         case .greaterThan(let left, let right):
-            return .greaterThan(try await rewriteExpression(left), try await rewriteExpression(right))
+            return .greaterThan(try await rewriteExpression(left, provenance: try provenance?.child(.operand, 0)), try await rewriteExpression(right, provenance: try provenance?.child(.operand, 1)))
 
         case .greaterThanOrEqual(let left, let right):
-            return .greaterThanOrEqual(try await rewriteExpression(left), try await rewriteExpression(right))
+            return .greaterThanOrEqual(try await rewriteExpression(left, provenance: try provenance?.child(.operand, 0)), try await rewriteExpression(right, provenance: try provenance?.child(.operand, 1)))
 
         // Arithmetic operators - recurse
         case .add(let left, let right):
-            return .add(try await rewriteExpression(left), try await rewriteExpression(right))
+            return .add(try await rewriteExpression(left, provenance: try provenance?.child(.operand, 0)), try await rewriteExpression(right, provenance: try provenance?.child(.operand, 1)))
 
         case .subtract(let left, let right):
-            return .subtract(try await rewriteExpression(left), try await rewriteExpression(right))
+            return .subtract(try await rewriteExpression(left, provenance: try provenance?.child(.operand, 0)), try await rewriteExpression(right, provenance: try provenance?.child(.operand, 1)))
 
         case .multiply(let left, let right):
-            return .multiply(try await rewriteExpression(left), try await rewriteExpression(right))
+            return .multiply(try await rewriteExpression(left, provenance: try provenance?.child(.operand, 0)), try await rewriteExpression(right, provenance: try provenance?.child(.operand, 1)))
 
         case .divide(let left, let right):
-            return .divide(try await rewriteExpression(left), try await rewriteExpression(right))
+            return .divide(try await rewriteExpression(left, provenance: try provenance?.child(.operand, 0)), try await rewriteExpression(right, provenance: try provenance?.child(.operand, 1)))
 
         case .modulo(let left, let right):
-            return .modulo(try await rewriteExpression(left), try await rewriteExpression(right))
+            return .modulo(try await rewriteExpression(left, provenance: try provenance?.child(.operand, 0)), try await rewriteExpression(right, provenance: try provenance?.child(.operand, 1)))
 
         case .negate(let inner):
-            return .negate(try await rewriteExpression(inner))
+            return .negate(try await rewriteExpression(inner, provenance: try provenance?.child(.operand, 0)))
 
         // Other cases that might contain expressions
         case .between(let expr, let low, let high):
             return .between(
-                try await rewriteExpression(expr),
-                low: try await rewriteExpression(low),
-                high: try await rewriteExpression(high)
+                try await rewriteExpression(expr, provenance: try provenance?.child(.operand, 0)),
+                low: try await rewriteExpression(low, provenance: try provenance?.child(.operand, 1)),
+                high: try await rewriteExpression(high, provenance: try provenance?.child(.operand, 2))
             )
 
         case .isNull(let inner):
-            return .isNull(try await rewriteExpression(inner))
+            return .isNull(try await rewriteExpression(inner, provenance: try provenance?.child(.operand, 0)))
 
         case .isNotNull(let inner):
-            return .isNotNull(try await rewriteExpression(inner))
+            return .isNotNull(try await rewriteExpression(inner, provenance: try provenance?.child(.operand, 0)))
 
         case .like(let inner, let pattern):
-            return .like(try await rewriteExpression(inner), pattern: pattern)
+            return .like(try await rewriteExpression(inner, provenance: try provenance?.child(.operand, 0)), pattern: pattern)
 
         case .regex(let inner, let pattern, let flags):
-            return .regex(try await rewriteExpression(inner), pattern: pattern, flags: flags)
+            return .regex(try await rewriteExpression(inner, provenance: try provenance?.child(.operand, 0)), pattern: pattern, flags: flags)
 
         case .cast(let inner, let targetType):
-            return .cast(try await rewriteExpression(inner), targetType: targetType)
+            try provenance?.child(.castType)?.copyTypeDescendants()
+            return .cast(try await rewriteExpression(inner, provenance: try provenance?.child(.operand, 0)), targetType: targetType)
 
         case .caseWhen(let cases, let elseResult):
             var rewrittenCases: [CaseWhenPair] = []
-            for pair in cases {
+            for (index, pair) in cases.enumerated() {
                 rewrittenCases.append(CaseWhenPair(
-                    condition: try await rewriteExpression(pair.condition),
-                    result: try await rewriteExpression(pair.result)
+                    condition: try await rewriteExpression(pair.condition, provenance: try provenance?.child(.caseCondition, index)),
+                    result: try await rewriteExpression(pair.result, provenance: try provenance?.child(.caseResult, index))
                 ))
             }
-            let rewrittenElse = try await elseResult.asyncMap { try await rewriteExpression($0) }
+            let rewrittenElse = try await elseResult.asyncMap { try await rewriteExpression($0, provenance: try provenance?.child(.caseElse)) }
             return .caseWhen(cases: rewrittenCases, elseResult: rewrittenElse)
 
         case .array(let exprs), .row(let exprs):
             var rewrittenExprs: [DatabaseKit.Expression] = []
-            for expr in exprs { rewrittenExprs.append(try await rewriteExpression(expr)) }
+            for (index, expr) in exprs.enumerated() { rewrittenExprs.append(try await rewriteExpression(expr, provenance: try provenance?.child(.argument, index))) }
             if case .array = expr { return .array(rewrittenExprs) }
             return .row(rewrittenExprs)
 
         case .coalesce(let exprs):
             var rewrittenExprs: [DatabaseKit.Expression] = []
-            for expr in exprs {
-                rewrittenExprs.append(try await rewriteExpression(expr))
+            for (index, expr) in exprs.enumerated() {
+                rewrittenExprs.append(try await rewriteExpression(expr, provenance: try provenance?.child(.argument, index)))
             }
             return .coalesce(rewrittenExprs)
 
         case .nullIf(let left, let right):
-            return .nullIf(try await rewriteExpression(left), try await rewriteExpression(right))
+            return .nullIf(try await rewriteExpression(left, provenance: try provenance?.child(.operand, 0)), try await rewriteExpression(right, provenance: try provenance?.child(.operand, 1)))
 
         // Function call - check if it's SPARQL()
         case .function(let call):
-            if call.name.uppercased() == "SPARQL" {
+            if call.schema == nil && call.name == "sparql" {
                 throw SPARQLFunctionError.invalidArguments(
                     "SPARQL() must be used as an IN-list item"
                 )
             }
             // Other functions - recurse on arguments
             var rewrittenArgs: [DatabaseKit.Expression] = []
-            for arg in call.arguments {
-                rewrittenArgs.append(try await rewriteExpression(arg))
+            for (index, arg) in call.arguments.enumerated() {
+                rewrittenArgs.append(try await rewriteExpression(arg, provenance: try provenance?.child(.argument, index)))
             }
-            return .function(FunctionCall(name: call.name, arguments: rewrittenArgs, distinct: call.distinct))
+            return .function(FunctionCall(name: call.name, arguments: rewrittenArgs, distinct: call.distinct, schema: call.schema))
 
         case .aggregate(let aggregate):
-            return .aggregate(try await rewriteAggregate(aggregate))
+            return .aggregate(try await rewriteAggregate(aggregate, provenance: provenance))
 
         // Terminal cases - no recursion needed
         case .literal, .column, .variable, .parameter, .bound:
@@ -780,63 +897,64 @@ internal struct SPARQLFunctionRewriter: Sendable {
 
         case .triple(let subject, let predicate, let object):
             return .triple(
-                subject: try await rewriteExpression(subject),
-                predicate: try await rewriteExpression(predicate),
-                object: try await rewriteExpression(object)
+                subject: try await rewriteExpression(subject, provenance: try provenance?.child(.operand, 0)),
+                predicate: try await rewriteExpression(predicate, provenance: try provenance?.child(.operand, 1)),
+                object: try await rewriteExpression(object, provenance: try provenance?.child(.operand, 2))
             )
         case .isTriple(let inner):
-            return .isTriple(try await rewriteExpression(inner))
+            return .isTriple(try await rewriteExpression(inner, provenance: try provenance?.child(.operand, 0)))
         case .subject(let inner):
-            return .subject(try await rewriteExpression(inner))
+            return .subject(try await rewriteExpression(inner, provenance: try provenance?.child(.operand, 0)))
         case .predicate(let inner):
-            return .predicate(try await rewriteExpression(inner))
+            return .predicate(try await rewriteExpression(inner, provenance: try provenance?.child(.operand, 0)))
         case .object(let inner):
-            return .object(try await rewriteExpression(inner))
+            return .object(try await rewriteExpression(inner, provenance: try provenance?.child(.operand, 0)))
 
         // Subquery expression cases
         case .exists(let subquery):
-            return .exists(try await rewrite(subquery))
+            return .exists(try await rewrite(subquery, provenance: try provenance?.child(.subquery)))
 
         case .subquery(let subquery):
-            return .subquery(try await rewrite(subquery))
+            return .subquery(try await rewrite(subquery, provenance: try provenance?.child(.subquery)))
         }
     }
 
     private func rewriteAggregate(
-        _ aggregate: AggregateFunction
+        _ aggregate: AggregateFunction,
+        provenance: OccurrenceRewrite.Cursor? = nil
     ) async throws -> AggregateFunction {
         switch aggregate {
         case .count(let expression, let distinct):
             return .count(
-                try await rewriteOptionalExpression(expression),
+                try await rewriteOptionalExpression(expression, provenance: try provenance?.child(.aggregateArgument)),
                 distinct: distinct
             )
         case .sum(let expression, let distinct):
             return .sum(
-                try await rewriteExpression(expression),
+                try await rewriteExpression(expression, provenance: try provenance?.child(.aggregateArgument)),
                 distinct: distinct
             )
         case .avg(let expression, let distinct):
             return .avg(
-                try await rewriteExpression(expression),
+                try await rewriteExpression(expression, provenance: try provenance?.child(.aggregateArgument)),
                 distinct: distinct
             )
         case .min(let expression):
-            return .min(try await rewriteExpression(expression))
+            return .min(try await rewriteExpression(expression, provenance: try provenance?.child(.aggregateArgument)))
         case .max(let expression):
-            return .max(try await rewriteExpression(expression))
+            return .max(try await rewriteExpression(expression, provenance: try provenance?.child(.aggregateArgument)))
         case .groupConcat(let expression, let separator, let distinct):
             return .groupConcat(
-                try await rewriteExpression(expression),
+                try await rewriteExpression(expression, provenance: try provenance?.child(.aggregateArgument)),
                 separator: separator,
                 distinct: distinct
             )
         case .sample(let expression):
-            return .sample(try await rewriteExpression(expression))
+            return .sample(try await rewriteExpression(expression, provenance: try provenance?.child(.aggregateArgument)))
         case .arrayAgg(let expression, let orderBy, let distinct):
             return .arrayAgg(
-                try await rewriteExpression(expression),
-                orderBy: try await rewriteOptionalSortKeys(orderBy),
+                try await rewriteExpression(expression, provenance: try provenance?.child(.aggregateArgument)),
+                orderBy: try await rewriteOptionalSortKeys(orderBy, provenance: provenance),
                 distinct: distinct
             )
         }
@@ -845,7 +963,8 @@ internal struct SPARQLFunctionRewriter: Sendable {
     // MARK: - SPARQL Execution
 
     private func rewriteMembershipValues(
-        _ values: [DatabaseKit.Expression]
+        _ values: [DatabaseKit.Expression],
+        provenance: OccurrenceRewrite.Cursor? = nil
     ) async throws -> [DatabaseKit.Expression] {
         var rewritten = try DatabaseRetainedArrayBuilder<
             DatabaseKit.Expression
@@ -855,11 +974,15 @@ internal struct SPARQLFunctionRewriter: Sendable {
             layout: try DatabaseRetainedArrayLayout.forElement(DatabaseKit.Expression.self),
             expectedCount: values.count
         )
-        for value in values {
+        var rewrittenIndex = 0
+        for (index, value) in values.enumerated() {
             if case .function(let call) = value,
-               call.name.uppercased() == "SPARQL" {
+               call.schema == nil && call.name == "sparql" {
                 let inlinedValues = try await executeSPARQLFunctionValues(call)
+                let origin = try provenance?.originalChild(.argument, index)
                 for fieldValue in inlinedValues {
+                    if let origin { try provenance?.generatedChild(origin: origin, index: rewrittenIndex) }
+                    rewrittenIndex += 1
                     try workMeter.consume(at: .expressionEvaluation)
                     try rewritten.append(
                         footprint: try CanonicalRelationalFootprintMeter
@@ -874,7 +997,10 @@ internal struct SPARQLFunctionRewriter: Sendable {
                     )
                 }
             } else {
-                let rewrittenValue = try await rewriteExpression(value)
+                let rewrittenValue = try await rewriteExpression(
+                    value, provenance: try provenance?.child(.argument, index, rewrittenIndex: rewrittenIndex)
+                )
+                rewrittenIndex += 1
                 try rewritten.append(
                     footprint: DatabaseIntermediateFootprint(),
                     make: { rewrittenValue }
@@ -899,7 +1025,20 @@ internal struct SPARQLFunctionRewriter: Sendable {
         _ call: FunctionCall
     ) async throws -> DatabaseSharedRetainedArray<FieldValue> {
         // 1. Extract arguments (type name, query string, optional variable)
-        let (typeName, sparqlQuery, extractVar) = try extractArguments(call)
+        let producer = try QueryParameterBinder(
+            parameters: parameters,
+            structuralLimits: structuralLimits
+        ).bind(.select(SelectQuery(
+            projection: .items([ProjectionItem(.function(call))]),
+            source: .values([[]], columnNames: [])
+        )))
+        guard case .select(let query) = producer,
+              case .items(let items) = query.projection,
+              let item = items.first,
+              case .function(let substitutedCall) = item.expression else {
+            throw QueryParameterBindingError.invalidTraversalState
+        }
+        let (typeName, sparqlQuery, extractVar) = try extractArguments(substitutedCall)
 
         // 2. Resolve type via TypeResolver
         let resolver = TypeResolver(schema: context.container.schema)
@@ -1005,7 +1144,8 @@ internal struct SPARQLFunctionRewriter: Sendable {
         switch call.arguments[0] {
         case .column(let col):
             typeName = col.column
-        case .literal(.string(let str)):
+        case .literal(.string(let str)), .literal(.sqlUnknownString(let str)),
+             .literal(.queryValue(.primitive(.string(let str)), _)):
             typeName = str
         default:
             throw SPARQLFunctionError.invalidArguments(
@@ -1014,7 +1154,12 @@ internal struct SPARQLFunctionRewriter: Sendable {
         }
 
         // Second argument: SPARQL query string
-        guard case .literal(.string(let sparqlQuery)) = call.arguments[1] else {
+        let sparqlQuery: String
+        switch call.arguments[1] {
+        case .literal(.string(let value)), .literal(.sqlUnknownString(let value)),
+             .literal(.queryValue(.primitive(.string(let value)), _)):
+            sparqlQuery = value
+        default:
             throw SPARQLFunctionError.invalidArguments(
                 "Second argument must be a SPARQL query string literal"
             )
@@ -1023,12 +1168,17 @@ internal struct SPARQLFunctionRewriter: Sendable {
         // Third argument (optional): variable name
         let extractVar: String?
         if call.arguments.count == 3 {
-            guard case .literal(.string(let varName)) = call.arguments[2] else {
+            let variable: String
+            switch call.arguments[2] {
+            case .literal(.string(let value)), .literal(.sqlUnknownString(let value)),
+                 .literal(.queryValue(.primitive(.string(let value)), _)):
+                variable = value
+            default:
                 throw SPARQLFunctionError.invalidArguments(
                     "Third argument must be a variable name string literal (e.g., '?s')"
                 )
             }
-            extractVar = varName.hasPrefix("?") ? varName : "?\(varName)"
+            extractVar = variable.hasPrefix("?") ? variable : "?\(variable)"
         } else {
             extractVar = nil
         }

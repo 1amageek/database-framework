@@ -18,7 +18,7 @@ private struct GraphTableSQLEdge {
                 graph: nil,
                 strategy: .tripleStore
             ),
-            includedFields: [\GraphTableSQLEdge.weight]
+            includedFields: [\GraphTableSQLEdge.weight, \GraphTableSQLEdge.status]
         )
     )
 
@@ -27,6 +27,7 @@ private struct GraphTableSQLEdge {
     var label: String = ""
     var target: String = ""
     var weight: Int64 = 0
+    var status: String = ""
 }
 
 @Suite("GRAPH_TABLE SQL execution contract")
@@ -42,7 +43,8 @@ struct GraphTableSQLExecutionContractTests {
                 source: "alice",
                 label: "KNOWS",
                 target: "bob",
-                weight: 7
+                weight: 7,
+                status: "active"
             )
         )
         try context.insert(
@@ -51,7 +53,28 @@ struct GraphTableSQLExecutionContractTests {
                 source: "alice",
                 label: "BLOCKS",
                 target: "carol",
-                weight: 11
+                weight: 11,
+                status: "inactive"
+            )
+        )
+        try context.insert(
+            GraphTableSQLEdge(
+                id: "inactive-knows-edge",
+                source: "alice",
+                label: "KNOWS",
+                target: "carol",
+                weight: 7,
+                status: "inactive"
+            )
+        )
+        try context.insert(
+            GraphTableSQLEdge(
+                id: "other-source-edge",
+                source: "dave",
+                label: "KNOWS",
+                target: "erin",
+                weight: 7,
+                status: "active"
             )
         )
         try await context.save()
@@ -61,11 +84,13 @@ struct GraphTableSQLExecutionContractTests {
             SELECT *
             FROM GRAPH_TABLE(
                 graph_table_sql_index,
-                MATCH (source)-[relation:"KNOWS"]->(target)
+                MATCH (source)-[relation:"KNOWS" {status: 'active', weight: 7}]->(target)
+                WHERE source.id = 'alice' AND relation.label = 'KNOWS'
                 COLUMNS (
                     source.id AS source_id,
                     target.id AS target_id,
-                    relation.weight AS relationship_weight
+                    relation.weight AS relationship_weight,
+                    relation.status AS relationship_status
                 )
             )
             """
@@ -76,6 +101,7 @@ struct GraphTableSQLExecutionContractTests {
         #expect(row.values[0] == .primitive(.string("alice")))
         #expect(row.values[1] == .primitive(.string("bob")))
         #expect(row.values[2] == .primitive(.int64(7)))
+        #expect(row.values[3] == .primitive(.string("active")))
     }
 
     private func makeContainer() async throws -> DBContainer {

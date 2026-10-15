@@ -78,6 +78,17 @@ proofs. Unsupported runtime branches explicitly identify the S03/S06/S07/S08
 owner. Source diagnostics in this sprint use UTF-8 token ranges; the binding
 sidecar and binder diagnostic integration remain explicit S03 work.
 
+### S03 composition
+
+[Parser](Parser/DESIGN.md#s03-occurrence-source-sidecar) owns the immutable
+semantic result plus sparse source sidecar; [Builder](Builder/DESIGN.md#s03-typed-text-and-qualified-serialization)
+preserves unknown/typed text, exact qualification and typed NULL CAST edges.
+Both consume [Kit's semantic occurrence/model contract](../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md#s03-semantic-carriage-and-occurrence-addresses).
+Database composes source mapping with Engine failures; Engine gains no QueryAST
+dependency. The same returned semantic tree/provenance is used after normalization.
+S03-C10/C11 prove occurrence-safe local positions and bounded retained state;
+S16 owns final remote diagnostic presentation.
+
 ## Runtime Flows
 
 Parser consumes request-local lexer state, validates syntax and the final

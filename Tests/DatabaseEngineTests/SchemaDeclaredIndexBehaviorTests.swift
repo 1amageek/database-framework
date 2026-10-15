@@ -290,7 +290,7 @@ struct SchemaDeclaredIndexBehaviorTests {
                     ProjectionItem(
                         .function(
                             FunctionCall(
-                                name: "LOWER",
+                                name: "lower",
                                 arguments: [.column(ColumnRef("title"))]
                             )
                         ),

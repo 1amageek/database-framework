@@ -175,7 +175,14 @@ enum SQLConstantSyntax {
     static func normalize(_ expression: Expression, as type: DataType,
                           limits: QueryStructuralLimits) throws(SQLConstantError) -> Literal? {
         guard case .literal(let literal) = expression else { return nil }
+        if literal.isNull, case .queryValue(_, let declaration) = literal, declaration != nil {
+            // Preserve the incoming type so binding validates every explicit cast edge.
+            return nil
+        }
         if literal.isNull {
+            var element = type
+            while case .array(let child) = element { element = child }
+            if case .custom = element { return nil }
             guard QueryValueValidator.accepts(.primitive(.null), type: .sql(type)) else {
                 throw .invalidConstant("Invalid SQL NULL type descriptor")
             }
@@ -183,7 +190,7 @@ enum SQLConstantSyntax {
         }
         let text: String?
         switch literal {
-        case .string(let value): text = value
+        case .sqlUnknownString(let value), .string(let value): text = value
         case .int(let value): text = String(value)
         case .decimal(let value):
             text = try numericText(try makeNumeric(value, scale: max(0, value.scale)), maximum: limits.maximumRetainedBytes)

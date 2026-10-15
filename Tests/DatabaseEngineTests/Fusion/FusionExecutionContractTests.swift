@@ -1825,6 +1825,89 @@ struct FusionExecutionContractTests {
         )
     }
 
+    @Test("Fusion filter and ordering retain one positional and named parameter", .timeLimit(.minutes(1)))
+    func relationalInputsRetainParameterIdentity() async throws {
+        let container = try await makeParameterContainer()
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        for value in Int64(1)...3 {
+            try context.insert(FusionExecutionContractItem(id: "item-\(value)", value: value))
+        }
+        try await context.save()
+        let query = SelectQuery(projection: .all,
+            source: .table(TableRef(FusionExecutionContractItem.persistableType)),
+            accessPath: .fusion(FusionSource(stages: [
+                FusionStageSource(inputs: [FusionInput(operation: .filter(
+                    .greaterThanOrEqual(.column(ColumnRef("value")), .parameter(.position(1))))) ]),
+                FusionStageSource(inputs: [FusionInput(operation: .order([
+                    SortKey(.multiply(.column(ColumnRef("value")), .parameter(.name("threshold"))),
+                        direction: .descending)
+                ]), scoring: .position, requirement: .candidates, limit: 1)])
+            ])))
+        for parameter in [
+            QueryParameter(position: 1, name: "threshold", value: .primitive(.int32(2)), type: .sql(.integer)),
+            QueryParameter(position: 1, name: "threshold", value: .primitive(.null), type: .sql(.integer)),
+        ] {
+            for sessionBound in [false, true] {
+                let execution = ReadExecutionContext(options: .default, monotonicClock: container.monotonicClock)
+                let response: QueryResponse
+                if sessionBound {
+                    response = try await context.withReadSnapshot(workMeter: execution.workMeter) { snapshot in
+                        try await snapshot.session.executeCanonical(query, execution: execution, parameters: [parameter])
+                    }
+                } else {
+                    response = try await context.query(query, execution: execution, parameters: [parameter])
+                }
+                #expect(response.columns.map(\.type) == [.primitive(.string), .primitive(.int64)])
+                #expect(response.rows.map { $0.values[0] }
+                    == (parameter.value.isNull ? [] : [.primitive(.string("item-3"))]))
+                #expect(execution.workMeter.retainedIntermediateRows == 0)
+                #expect(execution.workMeter.retainedIntermediateBytes == 0)
+            }
+        }
+    }
+
+    @Test("Fusion rejects conflicting input inference before any index executor read", .timeLimit(.minutes(1)))
+    func relationalInputBindingPrecedesSourceReads() async throws {
+        let executor = FixedFusionReadExecutor(primaryKey: try primaryKey("one"))
+        let container = try await makeParameterContainer(executor: executor)
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        try context.insert(FusionExecutionContractItem(id: "one", value: 1))
+        try await context.save()
+        let query = SelectQuery(projection: .all,
+            source: .table(TableRef(FusionExecutionContractItem.persistableType)),
+            accessPath: .fusion(FusionSource(stages: [
+                FusionStageSource(inputs: [FusionInput(operation: .index(FusionIndexSource(
+                    selection: .named(name: "fusion_contract_value", type: .ordered))), scoring: .position)]),
+                FusionStageSource(inputs: [
+                    FusionInput(operation: .filter(.isNull(.parameter(.position(1)))), requirement: .candidates),
+                    FusionInput(operation: .filter(.equal(.column(ColumnRef("value")),
+                        .parameter(.name("threshold")))), requirement: .candidates),
+                ]),
+            ])))
+        let rejected = ReadExecutionContext(options: .default, monotonicClock: container.monotonicClock)
+        await #expect {
+            _ = try await context.query(query, execution: rejected, parameters: [
+                QueryParameter(position: 1, name: "threshold", value: .primitive(.null)),
+            ])
+        } throws: { error in
+            error as? DatabaseExpressionEvaluationError == .typeMismatch(operation: "ambiguous parameter type")
+        }
+        #expect(executor.executionCount == 0)
+        #expect(rejected.workMeter.retainedIntermediateRows == 0)
+        #expect(rejected.workMeter.retainedIntermediateBytes == 0)
+
+        let accepted = ReadExecutionContext(options: .default, monotonicClock: container.monotonicClock)
+        let response = try await context.query(query, execution: accepted, parameters: [
+            QueryParameter(position: 1, name: "threshold", value: .primitive(.null), type: .sql(.bigint)),
+        ])
+        #expect(response.rows.map { $0.values[0] } == [.primitive(.string("one"))])
+        #expect(executor.executionCount == 1)
+        #expect(accepted.workMeter.retainedIntermediateRows == 0)
+        #expect(accepted.workMeter.retainedIntermediateBytes == 0)
+    }
+
     @Test("Prepared Fusion lookup binds each exact logical list requirement")
     func preparedLookupBindsExactLogicalListRequirement() async throws {
         let schema = try Schema(
@@ -2072,6 +2155,23 @@ struct FusionExecutionContractTests {
         )
     }
 
+    private func makeParameterContainer(
+        executor: (any FusionIndexReadExecutor)? = nil
+    ) async throws -> DBContainer {
+        let schema = try Schema(entities: [try FusionExecutionContractItem.schemaEntity])
+        let scalarProvider = ScalarIndexMaintainerProvider()
+        var entityRuntime = try EntityRuntimeDefinition(FusionExecutionContractItem.self)
+        try entityRuntime.register(scalarProvider)
+        return try await DBContainer.open(for: schema,
+            configuration: .testing(storageEngine: InMemoryEngine()),
+            runtimeConfiguration: try DatabaseRuntimeConfiguration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(identifier: "fusion-parameter-tests", revision: 1),
+                indexMaintainerProviderDescriptors: [.init(describing: scalarProvider)],
+                fusionIndexReadExecutors: executor.map { [$0] } ?? [],
+                entityRuntimes: [entityRuntime.registration()]),
+            security: .testingDisabled)
+    }
+
     private func makeMeter(
         maximumIntermediateBytes: UInt64 = 1_000_000
     ) -> DatabaseWorkMeter {
@@ -2240,9 +2340,16 @@ private struct ContractFailingFusionReadExecutor: FusionIndexReadExecutor {
     }
 }
 
-private struct FixedFusionReadExecutor: FusionIndexReadExecutor {
+private final class FixedFusionReadExecutor: FusionIndexReadExecutor, Sendable {
     let indexType: IndexType = .ordered
     let primaryKey: ByteString
+    private let executions = Mutex(0)
+
+    init(primaryKey: ByteString) {
+        self.primaryKey = primaryKey
+    }
+
+    var executionCount: Int { executions.withLock { $0 } }
 
     func validate(_ request: FusionIndexValidationRequest) throws {}
 
@@ -2250,6 +2357,7 @@ private struct FixedFusionReadExecutor: FusionIndexReadExecutor {
         _ request: FusionIndexReadRequest,
         output: FusionMatchSink
     ) async throws -> FusionInputCoverage {
+        executions.withLock { $0 += 1 }
         try output.submit(primaryKey: primaryKey, numericSignal: nil)
         return .exhausted
     }
@@ -2259,6 +2367,7 @@ private struct FixedFusionReadExecutor: FusionIndexReadExecutor {
         candidates: FusionCandidateDomain,
         output: FusionMatchSink
     ) async throws -> FusionInputCoverage {
+        executions.withLock { $0 += 1 }
         if try candidates.contains(
             primaryKey: primaryKey,
             workMeter: request.workMeter

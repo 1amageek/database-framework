@@ -5,6 +5,41 @@ import Testing
 
 @Suite("SPARQL expression compilation", .heartbeat)
 struct SPARQLExpressionCompilationTests {
+    @Test("SQL-qualified function identity survives rewriting and fails SPARQL compilation")
+    func qualifiedFunctionsRemainUnsupported() throws {
+        let expression = Expression.function(
+            FunctionCall(name: "STRLEN", arguments: [.literal(.string("value"))], schema: "pg_catalog")
+        )
+        var aggregateRewriter = SPARQLAggregateRewriter()
+        let aggregateRewritten = try aggregateRewriter.rewrite(expression)
+        #expect(aggregateRewritten == expression)
+        var scopeRewriter = SPARQLGroupScopeExpressionRewriter(
+            groupedExpressions: SPARQLGroupedExpressionBindings(),
+            directlyGroupedVariables: [],
+            eligibleVariables: [],
+            protectedVariables: []
+        )
+        let scopeRewritten = try scopeRewriter.rewrite(
+            expression, aggregateRewriter: &aggregateRewriter
+        )
+        #expect(scopeRewritten == expression)
+        for candidate in [expression, aggregateRewritten, scopeRewritten] {
+            #expect(
+                throws: SPARQLExpressionCompilationError.unsupportedExpression("SQL-qualified function")
+            ) {
+                try SPARQLExpressionValidator.validate(candidate)
+            }
+            #expect(throws: SPARQLExpressionEvaluationError.self) {
+                try ExpressionEvaluator.evaluate(candidate, binding: VariableBinding())
+            }
+        }
+        let unqualified = Expression.function(
+            FunctionCall(name: "STRLEN", arguments: [.literal(.string("value"))])
+        )
+        try SPARQLExpressionValidator.validate(unqualified)
+        #expect(try ExpressionEvaluator.evaluate(unqualified, binding: VariableBinding())
+            == Literal.int(5).toSPARQLFieldValue())
+    }
 
     @Test("SQL constructors fail SPARQL compilation and cannot become false or unbound")
     func sqlConstructorsFailCompilation() {

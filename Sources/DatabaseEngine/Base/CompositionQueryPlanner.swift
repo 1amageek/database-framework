@@ -11,12 +11,14 @@ public struct CompositionQueryPlanner: Sendable {
     private struct RelationalMemberQueryExecutor:
         CompositionMemberQueryExecutor
     {
+        let parameters: [QueryParameter]
+
         func validate(_ query: SelectQuery) throws {
             try CompositionQueryPlanner.validateRelationalSource(query)
         }
 
         func columns(session: DatabaseReadSession, query: SelectQuery) throws -> [QueryColumn] {
-            try session.boundQueryColumns(query)
+            try session.boundQueryColumns(query, parameters: parameters)
         }
 
         func execute(
@@ -26,7 +28,8 @@ public struct CompositionQueryPlanner: Sendable {
         ) async throws -> DatabaseRetainedQueryPage {
             try await session.retainedCanonicalPage(
                 query,
-                execution: execution
+                execution: execution,
+                parameters: parameters
             )
         }
 
@@ -259,7 +262,7 @@ public struct CompositionQueryPlanner: Sendable {
             limits: structuralLimits
         )
         try Self.validatePageSize(options.pageSize)
-        let memberExecutor = RelationalMemberQueryExecutor()
+        let memberExecutor = RelationalMemberQueryExecutor(parameters: options.parameters)
         let crossBaseJoin = try Self.crossBaseJoinPlan(query)
         try Self.validateCommon(query)
         try memberExecutor.validate(query)
@@ -314,9 +317,45 @@ public struct CompositionQueryPlanner: Sendable {
         emit: @Sendable @escaping (CompositionQueryEvent) async throws -> Bool
     ) async throws {
         let workMeter = options.readContext.workMeter
+        let originalOptions = options
+        let originalMemberExecutor = memberExecutor
+        let parameterClaim: DatabaseIntermediateReservation?
+        if memberExecutor is RelationalMemberQueryExecutor, !options.parameters.isEmpty {
+            let footprint = try DatabaseIntermediateCollectionMeter.arrayFootprint(
+                count: options.parameters.count, element: QueryParameter.self
+            )
+            parameterClaim = try workMeter.reserveIntermediate(
+                bytes: footprint.bytes, at: .bindingCandidate
+            )
+        } else {
+            parameterClaim = nil
+        }
+        defer { withExtendedLifetime(parameterClaim) {} }
 
         let ready = try CompositionQueryReadyBuffer(workMeter: workMeter)
         try await source.withReadSnapshot { snapshot in
+            let options: CompositionQueryExecutionOptions
+            let memberExecutor: any CompositionMemberQueryExecutor
+            if let relational = originalMemberExecutor as? RelationalMemberQueryExecutor,
+               !relational.parameters.isEmpty {
+                guard let member = snapshot.members.first else {
+                    throw CompositionQueryError.workspaceCorrupted
+                }
+                let parameters = try await source.withMemberReadSession(
+                    member, in: snapshot, workMeter: workMeter
+                ) { session in
+                    try session.boundQueryParameters(query, parameters: relational.parameters)
+                }
+                options = CompositionQueryExecutionOptions(
+                    pageSize: originalOptions.pageSize,
+                    readContext: originalOptions.readContext,
+                    parameters: parameters
+                )
+                memberExecutor = RelationalMemberQueryExecutor(parameters: parameters)
+            } else {
+                options = originalOptions
+                memberExecutor = originalMemberExecutor
+            }
             // Only internal, bounded retention is allowed while Domain
             // transactions are alive. Host callbacks may perform control I/O.
             let emit: @Sendable (CompositionQueryEvent) async throws -> Bool = { event in
@@ -673,7 +712,8 @@ public struct CompositionQueryPlanner: Sendable {
                 leftTable: plan.leftTable,
                 rightRows: consume rightRows,
                 rightTable: plan.rightTable,
-                options: joinExecution
+                options: joinExecution,
+                parameters: options.parameters
             )
         } catch let error as CanonicalReadError {
             switch error {

@@ -242,7 +242,8 @@ enum SchemaEntityEntryCodec {
             try writer.writeLengthPrefixed { writer throws(StorageFrameError) in
                 try writeDataType(element, into: &writer)
             }
-        case .custom(let name):
+        case .custom(let name, let schema):
+            guard schema == nil else { throw .invalidValue }
             writer.writeUInt8(21)
             try writer.writeString(name)
         }

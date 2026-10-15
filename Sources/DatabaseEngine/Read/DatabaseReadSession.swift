@@ -786,7 +786,7 @@ public struct DatabaseReadSession: Sendable {
             listRequirements: [
                 try DatabaseReadPolicy.listRequirement(
                     entityName: entity.name,
-                    selectQuery: selectQuery
+                    selectQuery: selectQuery, schema: owners.policy.schema
                 )
             ],
             fields: fields
@@ -826,7 +826,7 @@ public struct DatabaseReadSession: Sendable {
         let requirements = try group.memberTypeNames.map {
             try DatabaseReadPolicy.listRequirement(
                 entityName: $0,
-                selectQuery: selectQuery
+                selectQuery: selectQuery, schema: owners.policy.schema
             )
         }
         let fields = DatabaseFieldReadAuthorizationPlan.make(
@@ -888,7 +888,7 @@ public struct DatabaseReadSession: Sendable {
         let requirements = try group.memberTypeNames.map {
             try DatabaseReadPolicy.listRequirement(
                 entityName: $0,
-                selectQuery: selectQuery
+                selectQuery: selectQuery, schema: owners.policy.schema
             )
         }
         let indexFieldNames = Set(index.fieldNames + index.includedFields)
@@ -1054,13 +1054,30 @@ public struct DatabaseReadSession: Sendable {
         try owners.policy.validate(authorization)
     }
 
+    func boundFusionRelationalQueries(
+        _ queries: [SelectQuery],
+        parameters: [QueryParameter],
+        options: ReadExecutionContext
+    ) throws -> [CanonicalBoundSelect] {
+        try scope.requireWorkMeter(options.workMeter)
+        let (owners, operation) = try scope.beginOperation()
+        defer { operation.end() }
+        let plans = try owners.context.boundFusionRelationalQueries(
+            queries, parameters: parameters, options: options
+        )
+        try operation.validate()
+        return plans
+    }
+
     func executeFusionRelationalRows(
         _ query: SelectQuery,
         options: ReadExecutionContext,
         preparedFusionGraph: FusionPreparedQueryGraph,
         authorization: DatabaseReadAuthorization,
         listAuthorizationRequirement:
-            DatabaseListReadAuthorizationRequirement
+            DatabaseListReadAuthorizationRequirement,
+        parameters: [QueryParameter] = [],
+        boundPlan: CanonicalBoundSelect? = nil
     ) async throws -> CanonicalRetainedQueryResponse {
         try scope.requireWorkMeter(options.workMeter)
         return try await scope.withNoncopyableOperation { owners, operation in
@@ -1071,7 +1088,9 @@ public struct DatabaseReadSession: Sendable {
                 preparedFusionGraph: preparedFusionGraph,
                 session: self,
                 authorization: authorization,
-                listAuthorizationRequirement: listAuthorizationRequirement
+                listAuthorizationRequirement: listAuthorizationRequirement,
+                parameters: parameters,
+                boundPlan: boundPlan
             )
             try operation.validate()
             return result
@@ -1083,7 +1102,9 @@ public struct DatabaseReadSession: Sendable {
         query: SelectQuery,
         options: ReadExecutionContext,
         preparedFusionGraph: FusionPreparedQueryGraph,
-        authorization: DatabaseReadAuthorization
+        authorization: DatabaseReadAuthorization,
+        parameters: [QueryParameter] = [],
+        boundPlan: CanonicalBoundSelect? = nil
     ) async throws -> CanonicalRetainedQueryResponse {
         try scope.requireWorkMeter(options.workMeter)
         return try await scope.withNoncopyableOperation { owners, operation in
@@ -1095,7 +1116,9 @@ public struct DatabaseReadSession: Sendable {
                     options: options,
                     preparedFusionGraph: preparedFusionGraph,
                     session: self,
-                    authorization: authorization
+                    authorization: authorization,
+                    parameters: parameters,
+                    boundPlan: boundPlan
                 )
             try operation.validate()
             return result
@@ -1479,19 +1502,42 @@ public struct DatabaseReadSession: Sendable {
 
     /// Binds output metadata inside this session's admitted schema scope.
     @_spi(DatabaseExecution)
-    public func boundQueryColumns(_ query: SelectQuery) throws -> [QueryColumn] {
+    public func boundQueryColumns(
+        _ query: SelectQuery,
+        parameters: [QueryParameter] = []
+    ) throws -> [QueryColumn] {
         let (owners, operation) = try scope.beginOperation()
         defer { operation.end() }
-        let columns = try owners.context.boundQueryColumns(query)
+        let columns = try owners.context.boundQueryColumns(
+            query, parameters: parameters, workMeter: scope.operationWorkMeter()
+        )
         try operation.validate()
         return columns
+    }
+
+    /// Resolves query parameters inside this session's admitted schema scope.
+    @_spi(DatabaseExecution)
+    public func boundQueryParameters(
+        _ query: SelectQuery,
+        parameters: [QueryParameter] = []
+    ) throws -> [QueryParameter] {
+        let (owners, operation) = try scope.beginOperation()
+        defer { operation.end() }
+        let resolved = try owners.context.boundQueryParameters(
+            query, parameters: parameters, workMeter: scope.operationWorkMeter()
+        )
+        try operation.validate()
+        return resolved
     }
 
     @_spi(DatabaseExecution)
     public func executeCanonical(
         _ query: SelectQuery,
         execution: ReadExecutionContext,
-        graphPartitions: FieldObject = FieldObject()
+        graphPartitions: FieldObject = FieldObject(),
+        parameters: [QueryParameter] = [],
+        occurrences: QueryOccurrenceArena? = nil,
+        occurrence: QueryOccurrenceID? = nil
     ) async throws -> QueryResponse {
         try scope.requireWorkMeter(execution.workMeter)
         return try await scope.withOperation { owners, operation in
@@ -1499,7 +1545,10 @@ public struct DatabaseReadSession: Sendable {
                 query,
                 execution: execution,
                 graphPartitions: graphPartitions,
-                session: self
+                session: self,
+                parameters: parameters,
+                occurrences: occurrences,
+                occurrence: occurrence
             )
             try operation.validate()
             return response
@@ -1510,7 +1559,10 @@ public struct DatabaseReadSession: Sendable {
     public func retainedCanonicalPage(
         _ query: SelectQuery,
         execution: ReadExecutionContext,
-        graphPartitions: FieldObject = FieldObject()
+        graphPartitions: FieldObject = FieldObject(),
+        parameters: [QueryParameter] = [],
+        occurrences: QueryOccurrenceArena? = nil,
+        occurrence: QueryOccurrenceID? = nil
     ) async throws -> DatabaseRetainedQueryPage {
         try scope.requireWorkMeter(execution.workMeter)
         return try await scope.withNoncopyableOperation { owners, operation in
@@ -1518,7 +1570,10 @@ public struct DatabaseReadSession: Sendable {
                 query,
                 execution: execution,
                 graphPartitions: graphPartitions,
-                session: self
+                session: self,
+                parameters: parameters,
+                occurrences: occurrences,
+                occurrence: occurrence
             )
             try operation.validate()
             return page

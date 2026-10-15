@@ -95,9 +95,9 @@ literal adapters.
 | Complete input | Existing parse/parseSelect return one complete statement and reject additional statements. Add parseStatements for bounded ordered existing statements; accept trailing separators/empty separators as delimiters without creating empty statements. Quoted/comment semicolons never split input. This API performs syntax only, not transactional SQL blocks. Unsupported BEGIN/DDL/new query features remain typed unsupported until their owning sprint. |
 
 TableRef schema/table and ColumnRef table/column already distinguish
-qualification from an exact quoted name. FunctionCall.name and DataType.custom
-do not; forms whose qualification cannot be preserved by that existing String
-representation fail as unsupported until S03/S11 rather than losing the distinction.
+qualification from an exact quoted name. S03 adds separate optional schema
+components to FunctionCall and DataType.custom under the contract below;
+dynamic lookup remains S11 rather than losing qualification.
 
 Invocation starts with checked UTF-8 source-size admission before retained
 source/token copying. The existing maximumRetainedBytes policy bounds source
@@ -130,6 +130,67 @@ parser reuse, token-start positions, multibyte input, huge single tokens and
 nested comments, and cumulative batch limits. Previous tests expecting SQL
 UInt64 literal selection or rejecting DECIMAL scale>precision migrate to the
 accepted profile; primitive/SPARQL fixtures retain their previous semantics.
+
+### S03 occurrence source sidecar
+
+Parser consumes [Query's S03 declarations and occurrence arena](../../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md#s03-semantic-carriage-and-occurrence-addresses).
+Bare decoded SQL strings become Literal.sqlUnknownString; typed strings retain
+typed meaning. Function/custom-type qualification preserves exact schema and
+terminal components; a quoted dotted identifier is one name. Qualified custom
+input remains CAST input until binding resolves it. Bare NULL may normalize to
+a valid resolved target; typed NULL preserves its CAST edge and incoming type.
+
+An immutable annotated parse result owns statement, Kit arena/root and sparse
+occurrence-to-source ranges. Existing parse/parseSelect consume the same grammar
+path. Shared semantic field/index edges identify the returned tree; equality
+and independently guessed traversal IDs cannot identify occurrences. Identifier
+ranges may differ from enclosing expression ranges. Normalization explicitly
+maps the resulting occurrence to original syntax. Invocation-local shadow
+capture is permitted; discarded nodes cannot leave stale identities. Decisive
+nested CTE/subquery/CASE/function/CAST failures must retain correct ranges even
+when identical values recur in other scopes.
+
+Ranges are zero-based UTF-8 half-open offsets in the original complete input,
+including batch statements; EOF is byte count. Existing structural limits
+pre-admit source, token captures, map entries, arena edges/indexes, depth and
+logical retained bytes before growth. This is representation accounting,
+not an allocator-capacity claim. Shared parent/edge storage avoids per-node
+ancestor-path copies. Results remain independent of mutable parser state after
+reuse. Source text, quoted flags and ranges never enter QueryIR. S03-C01/C04/
+C06/C10–C12 prove semantic distinction, source correspondence, reuse and
+exact/one-past bounds. Database owns the local failure bridge; remote diagnostics
+remain S16. Database's prepared execution remaps rewritten failure addresses
+through explicit origin IDs before consulting the original sparse source map,
+including producer-to-many-literals fanout. QueryAST does not copy another map
+for that operation. Missing original ranges remain optional; unrelated
+occurrences are never matched by value equality.
+
+### S03 output-position syntax carriage
+
+Query-level ORDER BY and GROUP BY preserve a bare signed or parenthesized
+integer as the existing `Literal.int` output-position representation. Ordinary
+projection and nested arithmetic integers retain SQL INTEGER/BIGINT declarations.
+Explicit integer CAST, postfix cast and typed-prefix syntax retain a CAST edge
+inside an output-reference expression, so normalization cannot turn a constant
+into a position. Nested SELECTs reset that syntax context, and aggregate-local
+ORDER BY keeps ordinary expression semantics. Engine resolves positions against
+the expanded projection and owns invalid-position and aggregate-GROUP rejection.
+
+```text
+query ORDER/GROUP bare integer -> Literal.int -> output-position resolution
+query ORDER/GROUP explicit cast -> Expression.cast -> ordinary expression binding
+ordinary integer expression -> typed queryValue -> SQL width-preserving binding
+```
+
+The parser replaces only the completed position expression's construction node;
+its source occurrence covers the original signed/parenthesized expression. No
+source-text lookup or value-equality lookup enters execution. The serializer
+emits positions as bare integers only in query-level ORDER/GROUP context;
+explicit casts remain casts across repeated serialization and parsing.
+[SQL binding syntax](../../../Tests/QueryASTTests/SQLBindingSyntaxTests.swift)
+and [source annotations](../../../Tests/QueryASTTests/SQLSourceAnnotationTests.swift)
+prove representation, round-trip distinction and occurrence-arena shape.
+Database's public SQL tests own empty/nonempty execution and rejection evidence.
 
 ## Runtime Flows
 

@@ -1830,7 +1830,7 @@ struct ReadAuthorizationCapabilityTests {
                 listRequirements: [
                     try DatabaseReadPolicy.listRequirement(
                         entityName: entity.name,
-                        selectQuery: admittedQuery
+                        selectQuery: admittedQuery, schema: try context.readPolicy().schema
                     )
                 ],
                 fields: DatabaseFieldReadAuthorizationPlan.index(
@@ -1892,7 +1892,7 @@ struct ReadAuthorizationCapabilityTests {
                         authorizationRequirement: try DatabaseReadPolicy
                             .listRequirement(
                                 entityName: entity.name,
-                                selectQuery: widenedQuery
+                                selectQuery: widenedQuery, schema: try context.readPolicy().schema
                             )
                     )
                 }

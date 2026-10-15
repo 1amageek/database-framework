@@ -60,7 +60,7 @@ enum FusionPreflight {
                                         partitions: connected.edgePartitions
                                     )
                                 )
-                            )
+                            ), schema: policy.schema
                         )
                     )
                 }
@@ -74,21 +74,15 @@ enum FusionPreflight {
                     listAuthorizationRequirement: try DatabaseReadPolicy
                         .listRequirement(
                             entityName: tableRef.table,
-                            selectQuery: query
+                            selectQuery: query, schema: policy.schema
                         )
                 )
             }
         } visitTable: { tableRef, query in
-            let commonTableNames = Set(
-                query.subqueries?.map { $0.name } ?? []
-            )
-            guard !commonTableNames.contains(tableRef.table) else {
-                return
-            }
             listAuthorizationRequirements.append(
                 try DatabaseReadPolicy.listRequirement(
                     entityName: tableRef.table,
-                    selectQuery: query
+                    selectQuery: query, schema: policy.schema
                 )
             )
         } visitPolymorphic: { logicalSource, query in
@@ -99,7 +93,7 @@ enum FusionPreflight {
                 listAuthorizationRequirements.append(
                     try DatabaseReadPolicy.listRequirement(
                         entityName: entityName,
-                        selectQuery: query
+                        selectQuery: query, schema: policy.schema
                     )
                 )
             }

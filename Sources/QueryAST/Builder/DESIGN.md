@@ -73,15 +73,15 @@ remain with their existing Kit owners.
 | Opaque typed input | DATE/TIME/TIMESTAMP and general type-prefixed string syntax lower to existing cast(string, canonical type) where conversion requires runtime policy. Serializer emits CAST without host conversion. Canonical intrinsically decidable constant casts can normalize to an owned QueryValue literal while preserving value and declared type. |
 | Constructor and parameter | Emit ARRAY[...] and ROW(...) from their ordered expression children; emit explicit $n, retaining product named-parameter identity. Explicit parameter/literal type uses CAST where required. Preserve all nested declared type metadata. |
 
-FunctionCall.name and DataType.custom currently store one String, not a
-qualified-name structure. A custom name containing qualification ambiguity
-(such as a dot) is a typed unsupported name, never split or emitted as raw SQL.
+S02 FunctionCall.name and DataType.custom stored one String. S03 adds separate
+optional schema components; each exact component is quoted separately and an
+embedded dot remains part of that identifier, never split or emitted raw.
 Dedicated expression and aggregate variants own built-in grammar spellings.
 Every generic FunctionCall name uses exact identifier quoting, including names
 that collide with COALESCE or NULLIF; serialization never changes their case or
 lowers them into a different expression variant. Custom type identifiers also
-use exact validated quoting. Full qualified function
-and type-name representation/binding belongs to S03/S11. No SQLIdentifier
+use exact validated quoting. S03 supplies qualified representation/binding;
+dynamic catalog lookup remains S11. No SQLIdentifier
 algebra or quoted-state field is introduced solely for this serializer.
 
 One internal constant adapter in this Builder component supplies both canonical
@@ -96,9 +96,10 @@ fallback to an untyped string. General expression casts remain casts.
 The parser-facing internal contract is SQLConstantSyntax.numericLiteral(_:limits:)
 returning Literal and SQLConstantSyntax.normalize(_:as:limits:) accepting an
 Expression plus DataType and returning Literal?. Both accept
-QueryStructuralLimits and throw SQLConstantError. Constant NULL casts normalize
-to a typed null query literal without a temporal conversion, including explicit
-precision; the execution owner defines the same literal-NULL identity in
+QueryStructuralLimits and throw SQLConstantError. S03 permits only bare untyped
+NULL casts to normalize to typed null without conversion. Already-typed NULL
+retains its CAST edge and source declaration for the execution owner's legality
+check, including temporal precision, under
 [existing-syntax output typing](../../DatabaseEngine/QueryExecution/DESIGN.md#existing-syntax-output-typing).
 The target descriptor must be valid, and nonliteral/non-NULL conversion remains
 with its runtime owner. This preserves builder-to-text agreement without claiming rounding.
@@ -159,6 +160,36 @@ builder and emitted SQL through the real executable subset, including quoted
 static names, exact numeric types and zero-row metadata. Future ARRAY/ROW/
 temporal runtime capability is tested as explicit failure until its owner
 implements it; serializer success is not execution success.
+
+### S03 typed text and qualified serialization
+
+Consume [S03 semantic declarations](../../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md#s03-semantic-carriage-and-occurrence-addresses).
+Emit sqlUnknownString as a bounded SQL string without a text CAST. Emit existing
+Literal.string and explicitly typed text with their text declaration, so parsing
+cannot silently turn typed text into unknown. Text round trips preserve SQL
+value/type meaning; exact enum identity is guaranteed by Kit/Wire rather than
+requiring Literal.string and an explicitly typed queryValue to collapse.
+Functions/custom types emit optional schema and terminal name as separate exact
+quoted components. Constant normalization preserves typed NULL source-to-target
+edges and unresolved custom targets for binding; only bare NULL can acquire a
+valid resolved target. No new runtime conversion kernel is introduced.
+S03-C01/C04/C06/C10 cover these changes through parser, serializer and public
+execution; existing structural/output budgets remain authoritative.
+
+Query-level GROUP BY and ORDER BY emit `Literal.int` as a bare output position,
+matching [Parser's syntax carriage](../Parser/DESIGN.md#s03-output-position-syntax-carriage).
+Other integer values retain their existing width-preserving emission. In these
+query clauses, integral `Literal.queryValue` constants retain an explicit type
+CAST even when ordinary emission could omit it, so reparsing cannot turn a
+constant into an output position. Explicit CAST edges remain represented.
+An invocation-local writer flag suppresses redundant natural-width INTEGER and
+BIGINT declarations only below the output-reference root, retaining the CAST
+edges already carried by Parser. A nested SELECT or aggregate resets that flag;
+no context crosses its syntax boundary. Non-natural-width values keep their
+required type CAST, and root typed integer constants always keep a CAST.
+Aggregate-local ORDER BY uses ordinary expression emission. S03-C07/C10 syntax
+and source-annotation tests cover repeated position/constant round trips; public
+Database tests own execution equivalence and invalid-position rejection.
 
 ## Runtime Flows
 

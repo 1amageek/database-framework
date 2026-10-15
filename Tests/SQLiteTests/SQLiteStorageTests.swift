@@ -176,19 +176,33 @@ struct SQLiteStorageTests {
         #expect(emitted.columns == direct.columns)
         #expect(emitted.rows.map(\.values) == direct.rows.map(\.values))
         #expect(emitted.rows.count == 1)
-        await #expect(throws: CanonicalReadError.self) {
+        do {
             _ = try await context.executeSQL("SELECT id FROM SQLiteStoredItem")
+            Issue.record("Expected the folded SQL source name to reject binding")
+        } catch let failure as SQLBindingSourceFailure {
+            guard case .read(.unsupportedSource("Entity 'sqlitestoreditem' not found in schema")) = failure.cause else {
+                Issue.record("Expected the exact missing SQL source rejection")
+                return
+            }
+            #expect(failure.position == 15)
+            #expect(failure.occurrence != nil)
         }
         for (sql, reason) in [
             ("SELECT ARRAY[1] WHERE FALSE", "SQL ARRAY/ROW constructor"),
             ("SELECT ROW(1, NULL)", "SQL ARRAY/ROW constructor"),
-            ("SELECT TIMESTAMP(3) '2026-10-15 10:20:30'", "temporal precision conversion"),
+            ("SELECT TIMESTAMP(3) '2026-10-15 10:20:30'", "SQL unknown string input for unsupported target type"),
         ] {
             do {
                 _ = try await context.executeSQL(sql)
                 Issue.record("Expected an explicit pending SQL execution failure")
-            } catch CanonicalReadError.expressionEvaluation(.unsupportedExpression(let message)) {
+            } catch let failure as SQLBindingSourceFailure {
+                guard case .expression(.unsupportedExpression(let message)) = failure.cause else {
+                    Issue.record("Expected the typed unsupported SQL execution capability")
+                    continue
+                }
                 #expect(message == reason)
+                #expect(failure.position == 7)
+                #expect(failure.occurrence != nil)
             } catch {
                 Issue.record("Unexpected SQL execution failure: \(error)")
             }

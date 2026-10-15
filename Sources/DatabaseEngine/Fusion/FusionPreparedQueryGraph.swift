@@ -134,7 +134,9 @@ enum FusionSelectQueryGraphWalker {
                 try appendChildren(of: query, to: &stack)
             case .source(let source, let query):
                 if case .table(let tableRef) = source {
-                    try visitTable(tableRef, query)
+                    let isCommonTable = try tableRef.schema == nil
+                        && stack.scope?.contains(tableRef.table, workMeter: workMeter) == true
+                    if !isCommonTable { try visitTable(tableRef, query) }
                 } else if case .logical(let logicalSource) = source,
                     logicalSource.kindIdentifier
                         == LogicalSourceKind.polymorphic
@@ -167,18 +169,59 @@ enum FusionSelectQueryGraphWalker {
         case aggregate(AggregateFunction)
     }
 
+    private final class CommonTableScope: Sendable {
+        private struct Contents: Sendable {
+            let parent: CommonTableScope?
+            let definitions: [NamedSubquery]
+            let visibleCount: Int
+        }
+
+        private let contents: Contents
+        private let reservation: DatabaseIntermediateReservation
+
+        init(parent: CommonTableScope?, definitions: [NamedSubquery], visibleCount: Int,
+             workMeter: DatabaseWorkMeter) throws {
+            let layout = try DatabaseRetainedArrayLayout.forElement(Contents.self)
+            let footprint = try DatabaseIntermediateFootprint(bytes: layout.elementCapacitySlotByteCount)
+                .adding(DatabaseIntermediateFootprint(bytes: layout.sharedOwnerByteCount))
+                .adding(DatabaseIntermediateFootprint(bytes: UInt64(MemoryLayout<DatabaseIntermediateReservation>.stride)))
+            self.reservation = try workMeter.reserveIntermediate(bytes: footprint.bytes, at: .validation)
+            self.contents = Contents(parent: parent, definitions: definitions, visibleCount: visibleCount)
+        }
+
+        func contains(_ name: String, workMeter: DatabaseWorkMeter) throws -> Bool {
+            var current: CommonTableScope? = self
+            while let scope = current {
+                for definition in scope.contents.definitions.prefix(scope.contents.visibleCount) {
+                    try workMeter.consume(at: .validation)
+                    if definition.name == name { return true }
+                }
+                current = scope.contents.parent
+            }
+            return false
+        }
+    }
+
     private struct WorkStack {
-        private var values: [WorkItem] = []
+        private struct Entry {
+            let item: WorkItem
+            let scope: CommonTableScope?
+        }
+
+        private var values: [Entry] = []
         private let reservation: DatabaseIntermediateReservation
         private let layout: DatabaseRetainedArrayLayout
         private var accountedCapacity = 0
+        var scope: CommonTableScope?
+
+        var workMeter: DatabaseWorkMeter { reservation.workMeter }
 
         init(
             root: WorkItem,
             workMeter: DatabaseWorkMeter
         ) throws {
             let layout = try DatabaseRetainedArrayLayout.forElement(
-                WorkItem.self
+                Entry.self
             )
             self.layout = layout
             self.reservation = try workMeter.reserveIntermediate(
@@ -209,13 +252,14 @@ enum FusionSelectQueryGraphWalker {
                 values.reserveCapacity(growth.capacity)
                 accountedCapacity = growth.capacity
             }
-            values.append(item)
+            values.append(Entry(item: item, scope: scope))
         }
 
         mutating func popLast() -> WorkItem? {
             guard let value = values.popLast() else { return nil }
             reservation.releaseGuaranteedPartial(rows: 1)
-            return value
+            scope = value.scope
+            return value.item
         }
     }
 
@@ -223,8 +267,15 @@ enum FusionSelectQueryGraphWalker {
         of query: SelectQuery,
         to stack: inout WorkStack
     ) throws {
-        for nested in query.subqueries ?? [] {
-            try stack.append(.query(nested.query))
+        if let definitions = query.subqueries, !definitions.isEmpty {
+            let inheritedScope = stack.scope
+            for (index, definition) in definitions.enumerated() {
+                stack.scope = try CommonTableScope(parent: inheritedScope,
+                    definitions: definitions, visibleCount: index, workMeter: stack.workMeter)
+                try stack.append(.query(definition.query))
+            }
+            stack.scope = try CommonTableScope(parent: inheritedScope,
+                definitions: definitions, visibleCount: definitions.count, workMeter: stack.workMeter)
         }
         try stack.append(.source(query.source, owner: query))
         switch query.projection {

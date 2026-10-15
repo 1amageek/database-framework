@@ -126,7 +126,7 @@ package struct DatabaseReadPolicy: Sendable {
         try authorizeList(
             Self.listRequirement(
                 entityName: entityName,
-                selectQuery: selectQuery
+                selectQuery: selectQuery, schema: schema
             )
         )
     }
@@ -199,7 +199,7 @@ package struct DatabaseReadPolicy: Sendable {
             listRequirements.append(
                 try Self.listRequirement(
                     entityName: typeName,
-                    selectQuery: selectQuery
+                    selectQuery: selectQuery, schema: schema
                 )
             )
         }
@@ -444,7 +444,8 @@ package struct DatabaseReadPolicy: Sendable {
 
     package static func listRequirement(
         entityName: String,
-        selectQuery: SelectQuery
+        selectQuery: SelectQuery,
+        schema: Schema
     ) throws -> DatabaseListReadAuthorizationRequirement {
         DatabaseListReadAuthorizationRequirement(
             entityName: entityName,
@@ -456,7 +457,7 @@ package struct DatabaseReadPolicy: Sendable {
                 selectQuery.offset,
                 parameter: "offset"
             ),
-            orderBy: try selectQuery.requiredOrderByColumnNames()
+            orderBy: try selectQuery.requiredOrderByColumnNames(entity: schema.entity(named: entityName))
         )
     }
 }

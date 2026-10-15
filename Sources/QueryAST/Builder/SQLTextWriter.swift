@@ -9,6 +9,7 @@ struct SQLTextWriter {
     var collectionElements: UInt64 = 0
     var retainedValueBytes: UInt64 = 0
     var depth: UInt64 = 0
+    var preservesOutputReferenceCasts = false
 
     mutating func admit(_ count: UInt64) throws(SQLSerializationError) {
         let next = byteCount.addingReportingOverflow(count)

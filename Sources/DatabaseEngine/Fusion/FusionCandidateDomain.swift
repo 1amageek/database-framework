@@ -333,7 +333,7 @@ package struct FusionCandidateDomain: Sendable {
         }
         let declaredFields = entity.fields.lazy.filter { admittedFieldNames?.contains($0.name) ?? true }
         let schemaFootprint = try CanonicalRelationalFootprintMeter.sourceLayoutFootprint(
-            fieldNames: declaredFields.map(\.name), sourceName: nil,
+            fieldNames: declaredFields.map { $0.name }, sourceName: nil,
             workMeter: workMeter, stage: .storageRow
         )
         let columnBytes = try DatabaseIntermediateFootprint(bytes: UInt64(MemoryLayout<QueryColumn>.stride))
@@ -348,7 +348,7 @@ package struct FusionCandidateDomain: Sendable {
         }
         let layout = CanonicalSourceLayout(
             slots: declaredFields.map { .init(name: $0.name, scope: nil) }, reservation: schemaReservation,
-            types: columns.map(\.type), nullability: columns.map(\.isNullable)
+            types: columns.map { $0.type }, nullability: columns.map { $0.isNullable }
         )
         var builder = try DatabaseRetainedArrayBuilder<Entry>(
             workMeter: workMeter,

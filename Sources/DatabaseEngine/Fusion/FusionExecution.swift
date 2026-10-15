@@ -14,6 +14,15 @@ struct FusionExecution: Sendable {
     private let session: DatabaseReadSession
     private let preparedQueryGraph: FusionPreparedQueryGraph
     private let authorization: DatabaseReadAuthorization
+    private let parameters: [QueryParameter]
+    private let relationalInputs: DatabaseSharedRetainedArray<RelationalInput>
+
+    private struct RelationalInput: Sendable {
+        let stageIndex: Int
+        let inputIndex: Int
+        let query: SelectQuery?
+        let boundPlan: CanonicalBoundSelect?
+    }
 
     private init(
         plan: FusionPreparedPlan,
@@ -22,7 +31,9 @@ struct FusionExecution: Sendable {
         maximumResultCount: Int?,
         session: DatabaseReadSession,
         preparedQueryGraph: FusionPreparedQueryGraph,
-        authorization: DatabaseReadAuthorization
+        authorization: DatabaseReadAuthorization,
+        parameters: [QueryParameter],
+        relationalInputs: DatabaseSharedRetainedArray<RelationalInput>
     ) {
         self.plan = plan
         self.source = source
@@ -31,6 +42,8 @@ struct FusionExecution: Sendable {
         self.session = session
         self.preparedQueryGraph = preparedQueryGraph
         self.authorization = authorization
+        self.parameters = parameters
+        self.relationalInputs = relationalInputs
     }
 
     static func make(
@@ -38,7 +51,8 @@ struct FusionExecution: Sendable {
         entry: FusionPreparedQueryGraph.Entry,
         graph: FusionPreparedQueryGraph,
         session: DatabaseReadSession,
-        options: ReadExecutionContext
+        options: ReadExecutionContext,
+        parameters: [QueryParameter] = []
     ) throws -> FusionExecution {
         guard let authorization = graph.authorization else {
             throw FusionExecutionError.executionContractViolation
@@ -46,7 +60,7 @@ struct FusionExecution: Sendable {
         let listAuthorizationRequirement = try DatabaseReadPolicy
             .listRequirement(
                 entityName: entry.plan.entity.name,
-                selectQuery: query
+                selectQuery: query, schema: session.schema
             )
         guard listAuthorizationRequirement
                 == entry.plan.listAuthorizationRequirement,
@@ -59,6 +73,63 @@ struct FusionExecution: Sendable {
             authorization: authorization,
             workMeter: options.workMeter
         )
+        var queryCount = 0
+        for stage in entry.plan.stages {
+            for input in stage.inputs {
+                if case .index = input.operation { continue }
+                let (next, overflow) = queryCount.addingReportingOverflow(1)
+                guard !overflow else { throw DatabaseExpressionEvaluationError.numericOverflow }
+                queryCount = next
+            }
+        }
+        let queryLayout = try DatabaseRetainedArrayLayout.forElement(SelectQuery.self)
+        let queryGrowth = try queryLayout.growth(from: 0, toFit: queryCount)
+        let queryFootprint = try DatabaseIntermediateFootprint(bytes: queryLayout.containerByteCount)
+            .adding(DatabaseIntermediateFootprint(bytes: queryGrowth.additionalByteCount))
+        let queryReservation = try options.workMeter.reserveIntermediate(
+            bytes: queryFootprint.bytes, at: .bindingCandidate)
+        defer { withExtendedLifetime(queryReservation) {} }
+        var queries: [SelectQuery] = []
+        queries.reserveCapacity(queryGrowth.capacity)
+        for stage in entry.plan.stages {
+            for input in stage.inputs {
+                if let query = relationalQuery(for: input, table: entry.plan.tableRef) {
+                    queries.append(query)
+                }
+            }
+        }
+        let boundPlans = try session.boundFusionRelationalQueries(
+            queries,
+            parameters: parameters,
+            options: options
+        )
+        guard boundPlans.count == queries.count else {
+            throw FusionExecutionError.executionContractViolation
+        }
+        var relationalInputs = try DatabaseRetainedArrayBuilder<RelationalInput>(
+            workMeter: options.workMeter,
+            stage: .bindingCandidate,
+            layout: DatabaseRetainedArrayLayout.forElement(RelationalInput.self)
+        )
+        var relationalIndex = 0
+        for stage in entry.plan.stages {
+            for input in stage.inputs {
+                let isRelational: Bool
+                switch input.operation {
+                case .filter, .order, .connected: isRelational = true
+                case .index: isRelational = false
+                }
+                try relationalInputs.append(footprint: DatabaseIntermediateFootprint()) {
+                    RelationalInput(
+                        stageIndex: input.stageIndex,
+                        inputIndex: input.inputIndex,
+                        query: isRelational ? queries[relationalIndex] : nil,
+                        boundPlan: isRelational ? boundPlans[relationalIndex] : nil
+                    )
+                }
+                if isRelational { relationalIndex += 1 }
+            }
+        }
         return FusionExecution(
             plan: entry.plan,
             source: entry.source,
@@ -66,36 +137,82 @@ struct FusionExecution: Sendable {
             maximumResultCount: try scoringOutputPrefixLimit(query),
             session: session,
             preparedQueryGraph: graph,
-            authorization: authorization
+            authorization: authorization,
+            parameters: parameters,
+            relationalInputs: try relationalInputs.finish()
+                .moveToSharedOwnership(at: .bindingCandidate)
         )
     }
 
     var wallClock: any WallClock { session.wallClock }
 
     func executeRelationalRows(
-        _ query: SelectQuery
+        for input: FusionPreparedPlan.Input,
+        at ordinal: Int
     ) async throws -> CanonicalRetainedQueryResponse {
-        try await session.executeFusionRelationalRows(
+        let (query, boundPlan) = try relationalInput(for: input, at: ordinal)
+        return try await session.executeFusionRelationalRows(
             query,
             options: options,
             preparedFusionGraph: preparedQueryGraph,
             authorization: authorization,
             listAuthorizationRequirement:
-                plan.listAuthorizationRequirement
+                plan.listAuthorizationRequirement,
+            parameters: parameters,
+            boundPlan: boundPlan
         )
     }
 
     func executeCandidateRelationalRows(
         _ candidates: FusionCandidateDomain,
-        query: SelectQuery
+        for input: FusionPreparedPlan.Input,
+        at ordinal: Int
     ) async throws -> CanonicalRetainedQueryResponse {
-        try await session.executeFusionCandidateRelationalRows(
+        let (query, boundPlan) = try relationalInput(for: input, at: ordinal)
+        return try await session.executeFusionCandidateRelationalRows(
             candidates,
             query: query,
             options: options,
             preparedFusionGraph: preparedQueryGraph,
-            authorization: authorization
+            authorization: authorization,
+            parameters: parameters,
+            boundPlan: boundPlan
         )
+    }
+
+    private func relationalInput(
+        for input: FusionPreparedPlan.Input,
+        at ordinal: Int
+    ) throws -> (SelectQuery, CanonicalBoundSelect) {
+        guard relationalInputs.indices.contains(ordinal) else {
+            throw FusionExecutionError.executionContractViolation
+        }
+        let selected = relationalInputs[ordinal]
+        guard selected.stageIndex == input.stageIndex,
+              selected.inputIndex == input.inputIndex,
+              let query = selected.query,
+              let boundPlan = selected.boundPlan else {
+            throw FusionExecutionError.executionContractViolation
+        }
+        return (query, boundPlan)
+    }
+
+    private static func relationalQuery(
+        for input: FusionPreparedPlan.Input,
+        table: TableRef
+    ) -> SelectQuery? {
+        switch input.operation {
+        case .filter(let expression):
+            return SelectQuery(projection: .all, source: .table(table),
+                filter: expression, limit: input.limit.map(UInt64.init))
+        case .order(let keys):
+            return SelectQuery(projection: .all, source: .table(table),
+                orderBy: keys, limit: input.limit.map(UInt64.init))
+        case .connected:
+            return SelectQuery(projection: .all, source: .table(table))
+        case .index:
+            return nil
+        }
     }
 
     func readableIndex(

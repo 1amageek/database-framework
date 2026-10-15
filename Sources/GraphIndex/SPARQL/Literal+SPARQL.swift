@@ -5,7 +5,12 @@ extension Literal {
     /// Converts a SPARQL term literal without erasing its RDF identity or datatype.
     public func toSPARQLFieldValue() throws(SPARQLLiteralConversionError) -> FieldValue {
         switch self {
-        case .queryValue(let value, _):
+        case .sqlUnknownString:
+            throw .queryLiteralConversion(.unsupportedSPARQLLiteral)
+        case .queryValue(let value, let declaredType):
+            if let declaredType, !QueryValueValidator.accepts(value, type: declaredType) {
+                throw .queryLiteralConversion(.unsupportedSPARQLLiteral)
+            }
             guard case .primitive(let primitive) = value else {
                 throw .queryLiteralConversion(.unsupportedSPARQLLiteral)
             }

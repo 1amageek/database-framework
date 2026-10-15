@@ -8,15 +8,36 @@ import StorageKit
 public struct DatabasePreparedSQLSelect: Sendable {
     private let query: SelectQuery
     private let workMeter: DatabaseWorkMeter
+    private let parameters: [QueryParameter]
+    private let metadataReservation: DatabaseIntermediateReservation?
+    private let occurrences: QueryOccurrenceArena?
+    private let occurrence: QueryOccurrenceID?
+    private let originalOccurrences: QueryOccurrenceArena?
+    private let originalOccurrence: QueryOccurrenceID?
+    private let occurrenceOrigins: [QueryOccurrenceID: QueryOccurrenceID]
     private let retainedStorage: DatabasePreparedSQLSelectStorage?
 
     package init(
         query: SelectQuery,
         workMeter: DatabaseWorkMeter,
+        parameters: [QueryParameter] = [],
+        metadataReservation: DatabaseIntermediateReservation? = nil,
+        occurrences: QueryOccurrenceArena? = nil,
+        occurrence: QueryOccurrenceID? = nil,
+        originalOccurrences: QueryOccurrenceArena? = nil,
+        originalOccurrence: QueryOccurrenceID? = nil,
+        occurrenceOrigins: [QueryOccurrenceID: QueryOccurrenceID] = [:],
         retainedStorage: DatabasePreparedSQLSelectStorage? = nil
     ) {
         self.query = query
         self.workMeter = workMeter
+        self.parameters = parameters
+        self.metadataReservation = metadataReservation
+        self.occurrences = occurrences
+        self.occurrence = occurrence
+        self.originalOccurrences = originalOccurrences
+        self.originalOccurrence = originalOccurrence
+        self.occurrenceOrigins = occurrenceOrigins
         self.retainedStorage = retainedStorage
     }
 
@@ -32,12 +53,23 @@ public struct DatabasePreparedSQLSelect: Sendable {
             throw DatabasePreparedSQLSelectError.workMeterMismatch
         }
         let lifetimeOwner = retainedStorage
-        defer { withExtendedLifetime(lifetimeOwner) {} }
-        return try await session.executeCanonical(
-            query,
-            execution: execution,
-            graphPartitions: graphPartitions
-        )
+        let metadataOwner = metadataReservation
+        defer {
+            withExtendedLifetime(lifetimeOwner) {}
+            withExtendedLifetime(metadataOwner) {}
+        }
+        do {
+            return try await session.executeCanonical(
+                query,
+                execution: execution,
+                graphPartitions: graphPartitions,
+                parameters: parameters,
+                occurrences: occurrences,
+                occurrence: occurrence
+            )
+        } catch let failure as CanonicalSQLBindingFailure {
+            throw originalFailure(failure)
+        }
     }
 
     /// Executes the prepared query for the complete visible result and moves
@@ -59,12 +91,24 @@ public struct DatabasePreparedSQLSelect: Sendable {
             throw DatabasePreparedSQLSelectError.workMeterMismatch
         }
         let lifetimeOwner = retainedStorage
-        defer { withExtendedLifetime(lifetimeOwner) {} }
-        let page = try await session.retainedCanonicalPage(
-            query,
-            execution: execution.withoutExternalPageWindow(),
-            graphPartitions: graphPartitions
-        )
+        let metadataOwner = metadataReservation
+        defer {
+            withExtendedLifetime(lifetimeOwner) {}
+            withExtendedLifetime(metadataOwner) {}
+        }
+        let page: DatabaseRetainedQueryPage
+        do {
+            page = try await session.retainedCanonicalPage(
+                query,
+                execution: execution.withoutExternalPageWindow(),
+                graphPartitions: graphPartitions,
+                parameters: parameters,
+                occurrences: occurrences,
+                occurrence: occurrence
+            )
+        } catch let failure as CanonicalSQLBindingFailure {
+            throw originalFailure(failure)
+        }
         guard page.continuation == nil else {
             throw DatabasePreparedSQLSelectError.stagedResultIsIncomplete
         }
@@ -72,5 +116,11 @@ public struct DatabasePreparedSQLSelect: Sendable {
             rows: page.takeRows(),
             at: .resultMaterialization
         )
+    }
+
+    private func originalFailure(_ failure: CanonicalSQLBindingFailure) -> CanonicalSQLBindingFailure {
+        guard originalOccurrences != nil else { return failure }
+        let origin = failure.occurrence.flatMap { occurrenceOrigins[$0] }
+        return CanonicalSQLBindingFailure(cause: failure.cause, occurrence: origin, root: originalOccurrence)
     }
 }

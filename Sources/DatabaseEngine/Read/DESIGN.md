@@ -138,3 +138,64 @@ ownership suites and DatabaseEngineTests codec/read admission suites. Wire
 owns its encoded-frame last-owner evidence; no test equates these two
 ownership domains or treats final caller-owned output as a leaked runtime
 reservation.
+
+### S03 canonical parameter relay
+
+Canonical execution and retained-page entry points carry immutable query
+parameters to the [QueryExecution binding owner](../QueryExecution/DESIGN.md#s03-executable-binding-contract).
+Session-bound output-metadata binding accepts the same parameters, so
+Composition member admission and execution use the same declarations.
+Session-bound parameter preflight returns resolved declarations under that
+operation's exact work meter. The caller owns their retained lifetime;
+metadata and parameter binding do not create another operational meter.
+Fusion relays ordered relational inputs to QueryExecution's batch binding and
+returns those selected plans to the same authorized execution. Its internal
+row entry points forward the plan and frozen parameters without re-inferring
+them or changing the session's authority, transaction or meter.
+They also relay an optional immutable semantic occurrence arena and selected
+root. Read neither interprets addresses nor retains SQL source bytes.
+Read does not infer types or substitute references. SQL preparation may supply
+the binding owner's resolved declarations; ordinary canonical calls may supply
+the original declarations for operation-scoped binding. Omitted parameters
+retain the existing empty-input behavior.
+
+```text
+session operation + immutable parameters
+  -> QueryExecution binding and canonical execution
+  -> operation validation -> response or retained page
+```
+
+Parameter data grants no authority. The same schema lease, principal,
+transaction, scope and work-meter identity checks surround execution, and
+failure/cancellation still ends the admitted operation before it escapes.
+S03 public SQL and retained-page tests verify reference identity and typed
+NULL declarations through these entry points; existing session authorization,
+foreign-meter and retained-owner tests cover the unchanged admission boundary.
+
+### S03 output-reference list authorization
+
+List authorization uses the same immutable admitted schema as field admission.
+Its ordering requirement resolves an output ordinal or alias to the projected
+input expressions before collecting field names. Constant keys, including an
+explicit constant CAST, require no input field. Direct table wildcard ordinals
+use the entity declaration's existing field order. A composite wildcard already
+requires all projected entity fields; its list requirement conservatively keeps
+that complete per-entity field set. QueryExecution remains the sole owner of
+ordinal range, ambiguity, coercion, evaluation and decisive occurrence failures.
+Unresolved or invalid output references conservatively retain every admitted
+entity field (or every candidate projection dependency), then proceed to the
+binding owner. Read does not issue semantic range or ambiguity errors. Binding
+still rejects the request before any affected source read, with its original
+occurrence; conservative requirements never authorize a missing dependency.
+The original limit and offset, sealed principal/schema lease, field authorization
+plan and exact meter identity remain unchanged.
+
+```text
+logical ORDER key + admitted schema
+  -> projection/input field requirements -> sealed list authorization
+  -> existing bound ORDER execution
+```
+
+The existing public SQL ordinal test covers reordered rows, direct table
+wildcards and explicit constant CAST keys; the source-position assertions keep
+invalid references at the binding owner's original occurrences.

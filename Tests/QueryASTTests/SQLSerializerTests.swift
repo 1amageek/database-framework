@@ -31,8 +31,8 @@ struct SQLSerializerTests {
 
     @Test("Scalar escaping recognizes quote before a combining mark")
     func combiningMarkEscaping() throws {
-        #expect(try serializer.serialize(Literal.string("a'\u{301}b")) == "'a''\u{301}b'")
-        #expect(try parsedLiteral(serializer.serialize(Literal.string("a'\u{301}b"))) == .string("a'\u{301}b"))
+        #expect(try serializer.serialize(Literal.string("a'\u{301}b")) == "CAST('a''\u{301}b' AS TEXT)")
+        #expect(try parsedLiteral(serializer.serialize(Literal.string("a'\u{301}b"))) == .queryValue(.primitive(.string("a'\u{301}b")), type: .sql(.text)))
         #expect(throws: SQLSerializationError.self) { try serializer.serialize(Literal.string("a\0b")) }
     }
 
@@ -195,8 +195,7 @@ struct SQLSerializerTests {
             SelectQuery(projection: .all, source: .table(TableRef("a", partitions: try FieldObject([("tenant", .string("t"))]))))
         ]
         for query in queries { #expect(throws: SQLSerializationError.self) { try serializer.serialize(query) } }
-        for expression in [Expression.variable(Variable("x")), .regex(.column(ColumnRef("x")), pattern: "a.*", flags: "i"),
-                           .function(FunctionCall(name: "schema.fn", arguments: [])), .cast(.null, targetType: .custom("schema.type"))] {
+        for expression in [Expression.variable(Variable("x")), .regex(.column(ColumnRef("x")), pattern: "a.*", flags: "i")] {
             #expect(throws: SQLSerializationError.self) { try serializer.serialize(expression) }
         }
         #expect(throws: SQLSerializationError.self) { try serializer.serialize(Literal.iri("urn:a")) }
@@ -205,8 +204,8 @@ struct SQLSerializerTests {
     @Test("UTF-8 output and cumulative multi-statement budgets reject before growth")
     func boundedOutput() throws {
         let tiny = SQLSerializer(limits: QueryStructuralLimits(maximumRetainedBytes: 5))
-        #expect(try tiny.serialize(Literal.string("é")) == "'é'")
-        #expect(throws: SQLSerializationError.self) { try tiny.serialize(Literal.string("''")) }
+        #expect(try tiny.serialize(Literal.sqlUnknownString("é")) == "'é'")
+        #expect(throws: SQLSerializationError.self) { try tiny.serialize(Literal.sqlUnknownString("''")) }
         let query = SelectQuery(projection: .all, source: .table(TableRef("a")))
         let one = try serializer.serialize(query)
         let block = SQLSerializer(limits: QueryStructuralLimits(maximumRetainedBytes: UInt64(one.utf8.count)))

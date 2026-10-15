@@ -29,13 +29,16 @@ public enum CompositionQueryError: Error, Sendable, Equatable,
 public struct CompositionQueryExecutionOptions: Sendable {
     public let pageSize: Int
     public let readContext: ReadExecutionContext
+    public let parameters: [QueryParameter]
 
     public init(
         pageSize: Int,
-        readContext: ReadExecutionContext
+        readContext: ReadExecutionContext,
+        parameters: [QueryParameter] = []
     ) {
         self.pageSize = pageSize
         self.readContext = readContext
+        self.parameters = parameters
     }
 }
 

@@ -25,12 +25,13 @@ extension DatabaseContext {
             monotonicClock: container.monotonicClock
         )
         let parser = SQLParser(structuralLimits: structuralLimits)
-        let parsedStatement = try parser.parse(sql)
-        let statement = try QueryParameterBinder(
+        let parsed = try parser.parseWithSource(sql)
+        let parsedStatement = parsed.statement
+        try QueryParameterBinder(
             parameters: parameters,
             structuralLimits: structuralLimits
-        ).bind(parsedStatement)
-        guard case .select(let selectQuery) = statement else {
+        ).validate(parsedStatement)
+        guard case .select(let selectQuery) = parsedStatement else {
             throw SQLExecutionError.unsupportedStatement(
                 "Only SELECT queries are supported"
             )
@@ -42,11 +43,19 @@ extension DatabaseContext {
             workMeter: workMeter,
             queryStructuralLimits: structuralLimits
         )
-        let response = try await executeSQLSelect(
-            selectQuery,
-            execution: execution,
-            workMeter: workMeter
-        )
+        let response: QueryResponse
+        do {
+            response = try await executeSQLSelect(
+                selectQuery,
+                parameters: parameters,
+                execution: execution,
+                workMeter: workMeter,
+                occurrences: parsed.occurrences,
+                occurrence: parsed.root
+            )
+        } catch let failure as CanonicalSQLBindingFailure {
+            throw SQLBindingSourceFailure(failure, sourceMap: parsed.sourceMap)
+        }
         guard let rowCount = UInt32(exactly: response.rows.count) else {
             throw DatabaseWorkLimitError.maximumRows(
                 stage: .resultMaterialization,
@@ -106,8 +115,11 @@ extension DatabaseContext {
 
     private func executeSQLSelect(
         _ selectQuery: SelectQuery,
+        parameters: [QueryParameter],
         execution: ReadExecutionContext,
-        workMeter: DatabaseWorkMeter
+        workMeter: DatabaseWorkMeter,
+        occurrences: QueryOccurrenceArena,
+        occurrence: QueryOccurrenceID
     ) async throws -> QueryResponse {
         #if DATABASE_GRAPH_INDEXES
         if SPARQLFunctionRewriter.containsSPARQLFunction(in: selectQuery) {
@@ -120,7 +132,10 @@ extension DatabaseContext {
                     selectQuery,
                     workMeter: workMeter,
                     session: session,
-                    structuralLimits: execution.queryStructuralLimits
+                    structuralLimits: execution.queryStructuralLimits,
+                    parameters: parameters,
+                    occurrences: occurrences,
+                    occurrence: occurrence
                 )
                 return try await preparedQuery.execute(
                     in: session,
@@ -129,7 +144,13 @@ extension DatabaseContext {
             }
         }
         #endif
-        return try await query(selectQuery, execution: execution)
+        return try await query(
+            selectQuery,
+            execution: execution,
+            parameters: parameters,
+            occurrences: occurrences,
+            occurrence: occurrence
+        )
     }
 
     #if DATABASE_GRAPH_INDEXES
@@ -145,9 +166,26 @@ extension DatabaseContext {
         _ selectQuery: SelectQuery,
         workMeter: DatabaseWorkMeter,
         session: DatabaseReadSession,
-        structuralLimits: QueryStructuralLimits
+        structuralLimits: QueryStructuralLimits,
+        parameters: [QueryParameter] = [],
+        occurrences: QueryOccurrenceArena? = nil,
+        occurrence: QueryOccurrenceID? = nil
     ) async throws -> DatabasePreparedSQLSelect {
-        try await session.withCanonicalExecution(
+        try QueryParameterBinder(parameters: parameters, structuralLimits: structuralLimits)
+            .validate(.select(selectQuery))
+        let metadataReservation = try reserveSQLParameterMetadata(
+            parameters: parameters,
+            workMeter: workMeter
+        )
+        let resolvedParameters = try boundQueryParameters(
+            selectQuery,
+            parameters: parameters,
+            workMeter: workMeter,
+            allowingSPARQLFunctions: true,
+            occurrences: occurrences,
+            occurrence: occurrence
+        )
+        return try await session.withCanonicalExecution(
             workMeter: workMeter
         ) { transaction in
             guard SPARQLFunctionRewriter.containsSPARQLFunction(
@@ -155,7 +193,11 @@ extension DatabaseContext {
             ) else {
                 return DatabasePreparedSQLSelect(
                     query: selectQuery,
-                    workMeter: workMeter
+                    workMeter: workMeter,
+                    parameters: resolvedParameters,
+                    metadataReservation: metadataReservation,
+                    occurrences: occurrences,
+                    occurrence: occurrence
                 )
             }
             let retainedStorage = try DatabasePreparedSQLSelectStorage(
@@ -166,9 +208,16 @@ extension DatabaseContext {
                 workMeter: workMeter,
                 transaction: transaction,
                 retainedStorage: retainedStorage,
-                structuralLimits: structuralLimits
+                structuralLimits: structuralLimits,
+                parameters: resolvedParameters
             )
-            return try await rewriter.rewritePrepared(selectQuery)
+            return try await rewriter.rewritePrepared(
+                selectQuery,
+                parameters: resolvedParameters,
+                metadataReservation: metadataReservation,
+                occurrences: occurrences,
+                occurrence: occurrence
+            )
         }
     }
     #else
@@ -177,19 +226,50 @@ extension DatabaseContext {
         _ selectQuery: SelectQuery,
         workMeter: DatabaseWorkMeter,
         session: DatabaseReadSession,
-        structuralLimits: QueryStructuralLimits
+        structuralLimits: QueryStructuralLimits,
+        parameters: [QueryParameter] = [],
+        occurrences: QueryOccurrenceArena? = nil,
+        occurrence: QueryOccurrenceID? = nil
     ) async throws -> DatabasePreparedSQLSelect {
-        _ = structuralLimits
+        try QueryParameterBinder(parameters: parameters, structuralLimits: structuralLimits)
+            .validate(.select(selectQuery))
+        let metadataReservation = try reserveSQLParameterMetadata(
+            parameters: parameters,
+            workMeter: workMeter
+        )
+        let resolvedParameters = try boundQueryParameters(
+            selectQuery,
+            parameters: parameters,
+            workMeter: workMeter,
+            occurrences: occurrences,
+            occurrence: occurrence
+        )
         return try await session.withCanonicalExecution(
             workMeter: workMeter
         ) { _ in
             DatabasePreparedSQLSelect(
                 query: selectQuery,
-                workMeter: workMeter
+                workMeter: workMeter,
+                parameters: resolvedParameters,
+                metadataReservation: metadataReservation,
+                occurrences: occurrences,
+                occurrence: occurrence
             )
         }
     }
     #endif
+
+    private func reserveSQLParameterMetadata(
+        parameters: [QueryParameter],
+        workMeter: DatabaseWorkMeter
+    ) throws -> DatabaseIntermediateReservation {
+        let footprint = try DatabaseIntermediateFootprint(
+            bytes: UInt64(MemoryLayout<QueryParameter>.stride)
+        ).multiplied(by: UInt64(parameters.count)).adding(
+            DatabaseIntermediateFootprint(bytes: 128)
+        )
+        return try workMeter.reserveIntermediate(bytes: footprint.bytes, at: .bindingCandidate)
+    }
 }
 
 // MARK: - Errors

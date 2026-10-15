@@ -7,7 +7,7 @@ import StorageKit
 import Synchronization
 import TestSupport
 import Testing
-@testable import DatabaseEngine
+@_spi(DatabaseExecution) @testable import DatabaseEngine
 
 @Suite("Canonical SQL retained ownership", .serialized)
 struct CanonicalSQLRetainedOwnershipTests {
@@ -145,8 +145,8 @@ struct CanonicalSQLRetainedOwnershipTests {
             timeoutMilliseconds: 30_000
         )
 
-        // The tiny work allowance still caps the physical cursor, but S01's
-        // mandatory typed schema can exhaust it before an empty result publishes.
+        // Mandatory whole-query binding rejects this work budget before a
+        // physical cursor opens, even when the source would be empty.
         do {
             _ = try await container.testBaseContext().query(
                 SelectQuery(
@@ -169,6 +169,14 @@ struct CanonicalSQLRetainedOwnershipTests {
             #expect(requested > maximum - consumed)
         }
 
+        #expect(control.rangeCursorLimits.count == recordedBefore)
+        let cursorBudget = ExecutionBudget(maximumRows: 3, maximumWorkUnits: 100_000,
+            maximumIntermediateRows: 3, maximumIntermediateBytes: 1 * 1_024 * 1_024,
+            timeoutMilliseconds: 30_000)
+        let bounded = try await container.testBaseContext().query(SelectQuery(projection: .all,
+            source: .table(TableRef(DecodeProbeItem.persistableType)), limit: 1_000_000, offset: 1_000_000),
+            options: ReadExecutionOptions(budget: cursorBudget))
+        #expect(bounded.rows.isEmpty)
         let boundedLimits = Array(
             control.rangeCursorLimits.dropFirst(recordedBefore)
         )
@@ -687,7 +695,7 @@ struct CanonicalSQLRetainedOwnershipTests {
                 ProjectionItem(
                     .function(
                         FunctionCall(
-                            name: "LOWER",
+                            name: "lower",
                             arguments: [.column(ColumnRef("value"))]
                         )
                     ),
@@ -696,7 +704,7 @@ struct CanonicalSQLRetainedOwnershipTests {
                 ProjectionItem(
                     .function(
                         FunctionCall(
-                            name: "UPPER",
+                            name: "upper",
                             arguments: [.column(ColumnRef("value"))]
                         )
                     ),
@@ -727,8 +735,8 @@ struct CanonicalSQLRetainedOwnershipTests {
     func allocatingExpressionsRequireOwnedPayload() throws {
         let value = Expression.column(ColumnRef("value"))
         let expressions: [Expression] = [
-            .function(FunctionCall(name: "LOWER", arguments: [value])),
-            .function(FunctionCall(name: "UPPER", arguments: [value])),
+            .function(FunctionCall(name: "lower", arguments: [value])),
+            .function(FunctionCall(name: "upper", arguments: [value])),
             .literal(.langLiteral(value: "Hello", language: "EN-US")),
             .literal(
                 .dirLangLiteral(
@@ -1088,6 +1096,10 @@ struct CanonicalSQLRetainedOwnershipTests {
         let fieldName = "value"
         let stringValue = String(repeating: "x", count: 1_024)
         let fieldValue = FieldValue.string(stringValue)
+        let container = try await makeContainer()
+        defer { await container.shutdown() }
+        let query = SelectQuery(projection: .all,
+            source: .values([[Literal.string(stringValue)]], columnNames: [fieldName]))
         let measurementMeter = makeMeter(
             maximumIntermediateRows: 64,
             maximumIntermediateBytes: UInt64.max
@@ -1106,15 +1118,19 @@ struct CanonicalSQLRetainedOwnershipTests {
         let initialGrowth = try layout.growth(from: 0, toFit: 1)
         let initialBuilderBytes = layout.containerByteCount
             + initialGrowth.additionalByteCount
+        // This raw-string binding performs no temporary input conversion.
+        // Its measured peak is the parameter/selected-plan prefix retained by
+        // execution until the VALUES append and response boundary complete.
+        _ = try container.testBaseContext().boundQueryParameters(query, parameters: [], workMeter: measurementMeter)
+        let bindingPrefixBytes = measurementMeter.peakIntermediateBytes
+        #expect(measurementMeter.retainedIntermediateBytes == 0)
         let retainedBeforeAppendBytes = DatabaseReadSession
             .scopeCursorRegistryContainerByteCount
-            + initialBuilderBytes + schemaFootprint.bytes
+            + bindingPrefixBytes + initialBuilderBytes + schemaFootprint.bytes
         let appendRequestBytes = valuesFootprint.bytes
             + layout.appendAdmissionByteCount
         let maximumBytes = retainedBeforeAppendBytes + appendRequestBytes - 1
 
-        let container = try await makeContainer()
-        defer { await container.shutdown() }
         let meter = makeMeter(
             maximumIntermediateRows: 64,
             maximumIntermediateBytes: maximumBytes
@@ -1123,14 +1139,6 @@ struct CanonicalSQLRetainedOwnershipTests {
             in: container,
             meter: meter
         )
-        let query = SelectQuery(
-            projection: .all,
-            source: .values(
-                [[Literal.string(stringValue)]],
-                columnNames: [fieldName]
-            )
-        )
-
         do {
             _ = try await container.testBaseContext().queryRetained(
                 query,

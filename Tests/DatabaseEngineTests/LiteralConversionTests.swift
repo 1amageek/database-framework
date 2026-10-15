@@ -6,6 +6,17 @@ import Testing
 
 @Suite("Literal bridge contracts")
 struct LiteralConversionTests {
+    @Test("Unbound SQL string literals cannot cross the persistence boundary")
+    func sqlUnknownStringRequiresBinding() throws {
+        #expect(throws: LiteralConversionError.unboundSQLStringLiteral) {
+            try Literal.sqlUnknownString("value").toFieldValue()
+        }
+        #expect(throws: LiteralConversionError.unboundSQLStringLiteral) {
+            try Literal.array([.sqlUnknownString("value")]).toFieldValue()
+        }
+        #expect(try Literal.string("value").toFieldValue() == .string("value"))
+    }
+
     @Persistable
     struct Entity {
         #Directory<Entity>("tests", "literal-bridge")

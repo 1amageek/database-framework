@@ -1038,7 +1038,7 @@ public struct EntityRuntimeDefinition: Sendable {
         }
         let fields = entity.fields.lazy.filter { admittedFieldNames.contains($0.name) }
         let schemaFootprint = try CanonicalRelationalFootprintMeter.sourceLayoutFootprint(
-            fieldNames: fields.map(\.name), sourceName: sourceName,
+            fieldNames: fields.map { $0.name }, sourceName: sourceName,
             workMeter: workMeter, stage: .resultMaterialization
         )
         let schemaReservation = try workMeter.reserveIntermediate(
@@ -1048,7 +1048,7 @@ public struct EntityRuntimeDefinition: Sendable {
             slots: fields.map { .init(name: $0.name, scope: sourceName) },
             scopes: [sourceName], reservation: schemaReservation,
             types: fields.map { $0.queryType ?? .primitive($0.type, isArray: $0.isArray) },
-            nullability: fields.map(\.isOptional)
+            nullability: fields.map { $0.isOptional }
         )
         var retainedRows = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
             workMeter: workMeter,

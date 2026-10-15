@@ -38,28 +38,28 @@ struct SQLEscapeTests {
     // MARK: - string
 
     @Test func stringSimple() throws {
-        let result = try SQLSerializer().serialize(Literal.string("hello"))
+        let result = try SQLSerializer().serialize(Literal.sqlUnknownString("hello"))
         #expect(result == "'hello'")
     }
 
     @Test func stringEscapesSingleQuotes() throws {
-        let result = try SQLSerializer().serialize(Literal.string("it's"))
+        let result = try SQLSerializer().serialize(Literal.sqlUnknownString("it's"))
         #expect(result == "'it''s'")
     }
 
     @Test func stringMultipleSingleQuotes() throws {
-        let result = try SQLSerializer().serialize(Literal.string("a'b'c"))
+        let result = try SQLSerializer().serialize(Literal.sqlUnknownString("a'b'c"))
         #expect(result == "'a''b''c'")
     }
 
     @Test func stringEmpty() throws {
-        let result = try SQLSerializer().serialize(Literal.string(""))
+        let result = try SQLSerializer().serialize(Literal.sqlUnknownString(""))
         #expect(result == "''")
     }
 
     @Test func stringWithDoubleQuotes() throws {
         // Double quotes should NOT be escaped in string literals
-        let result = try SQLSerializer().serialize(Literal.string("say \"hello\""))
+        let result = try SQLSerializer().serialize(Literal.sqlUnknownString("say \"hello\""))
         #expect(result == "'say \"hello\"'")
     }
 
