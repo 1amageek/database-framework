@@ -222,3 +222,18 @@ are current behavioral test definitions. Later sprints execute all profile
 syntax IDs, malformed counterparts, boundary nesting, parser reuse and
 canonical-builder round trips. Full text-to-backend execution belongs to
 Database and QueryExecution; tests of syntax alone cannot close that gap.
+
+### S04 conditional and quantified grammar
+
+Consume [S04 semantic forms](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s04-semantic-additions-and-scope).
+Parse simple CASE operand once before WHEN; never duplicate it into equality
+conditions. Parse unquoted/unqualified GREATEST/LEAST into dedicated forms;
+quoted or qualified names remain exact generic calls. Admit IS [NOT]
+TRUE/FALSE/UNKNOWN, IS [NOT] DISTINCT FROM and scalar comparison ANY/SOME/ALL
+with existing array-valued expressions/parameters or a single-column query.
+SOME normalizes to ANY. ARRAY constructors remain S07 runtime work, ROW
+comparison S08. Source capture and semantic occurrence traversal use one
+operand edge and the exact child edges fixed by Query; normalized aliases
+preserve provenance. Binding checks type/cardinality, not the parser.
+S04-C07/C08/C11 prove round trips, repeated-expression source positions,
+strict malformed input and selected runtime behavior through Database.

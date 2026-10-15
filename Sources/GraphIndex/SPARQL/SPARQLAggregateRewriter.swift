@@ -8,6 +8,9 @@ struct SPARQLAggregateRewriter {
         _ expression: Expression
     ) throws -> Expression {
         switch expression {
+        // SQL conditionals and quantified predicates have no RDF interpretation.
+        case .greatest, .least, .truthTest, .isDistinctFrom, .quantifiedComparison:
+            throw SPARQLExpressionCompilationError.unsupportedExpression("SQL conditional or quantified expression")
         // FIXME(INCOMPLETE_IMPLEMENTATION): SPARQL compilation must reject SQL-only constructors.
         // S07/S08 own SQL execution; RDF term semantics cannot be used as their implementation.
         case .array, .row:
@@ -107,7 +110,8 @@ struct SPARQLAggregateRewriter {
                     schema: call.schema
                 )
             )
-        case .caseWhen(let pairs, let elseResult):
+        case .caseWhen(let operand, let pairs, let elseResult):
+            guard operand == nil else { throw SPARQLExpressionCompilationError.unsupportedExpression("Simple SQL CASE") }
             return .caseWhen(
                 cases: try pairs.map {
                     CaseWhenPair(

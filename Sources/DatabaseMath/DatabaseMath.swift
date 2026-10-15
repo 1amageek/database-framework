@@ -153,4 +153,69 @@ public enum DatabaseMath {
     public static func rounded(_ value: Double) -> Double {
         value.rounded(.toNearestOrAwayFromZero)
     }
+    @inlinable
+    public static func commonLogarithm(_ value: Double) -> Double {
+#if canImport(Darwin)
+        Darwin.log10(value)
+#elseif canImport(Musl)
+        Musl.log10(value)
+#elseif canImport(Glibc)
+        Glibc.log10(value)
+#else
+        WASILibc.log10(value)
+#endif
+    }
+
+    @inlinable
+    public static func cubeRoot(_ value: Double) -> Double {
+#if canImport(Darwin)
+        Darwin.cbrt(value)
+#elseif canImport(Musl)
+        Musl.cbrt(value)
+#elseif canImport(Glibc)
+        Glibc.cbrt(value)
+#else
+        WASILibc.cbrt(value)
+#endif
+    }
+
+    @inlinable
+    public static func tangent(_ value: Double) -> Double {
+#if canImport(Darwin)
+        Darwin.tan(value)
+#elseif canImport(Musl)
+        Musl.tan(value)
+#elseif canImport(Glibc)
+        Glibc.tan(value)
+#else
+        WASILibc.tan(value)
+#endif
+    }
+
+    @inlinable
+    public static func arcCosine(_ value: Double) -> Double {
+#if canImport(Darwin)
+        Darwin.acos(value)
+#elseif canImport(Musl)
+        Musl.acos(value)
+#elseif canImport(Glibc)
+        Glibc.acos(value)
+#else
+        WASILibc.acos(value)
+#endif
+    }
+
+    @inlinable
+    public static func arcTangent(_ value: Double) -> Double {
+#if canImport(Darwin)
+        Darwin.atan(value)
+#elseif canImport(Musl)
+        Musl.atan(value)
+#elseif canImport(Glibc)
+        Glibc.atan(value)
+#else
+        WASILibc.atan(value)
+#endif
+    }
+
 }

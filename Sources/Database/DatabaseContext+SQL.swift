@@ -55,6 +55,8 @@ extension DatabaseContext {
             )
         } catch let failure as CanonicalSQLBindingFailure {
             throw SQLBindingSourceFailure(failure, sourceMap: parsed.sourceMap)
+        } catch CanonicalReadError.expressionEvaluation(let cause, let occurrence) {
+            throw SQLBindingSourceFailure(cause: .expression(cause), occurrence: occurrence, sourceMap: parsed.sourceMap)
         }
         guard let rowCount = UInt32(exactly: response.rows.count) else {
             throw DatabaseWorkLimitError.maximumRows(

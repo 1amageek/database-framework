@@ -252,7 +252,7 @@ struct CanonicalQueryTypeBinderTests {
         #expect(try bound.normalize(.primitive(.int64(3))) == .numeric(QueryNumericValue(value: ExactDecimal(coefficient: 3, scale: 0), displayScale: 0)))
     }
 
-    @Test("Aggregate signatures normalize actual reducer representations")
+    @Test("Aggregate signatures retain final SQL metadata before reading rows")
     func aggregateResultSignatures() throws {
         let binder = binder()
         let count = try binder.bind(.aggregate(.count(nil, distinct: false)))
@@ -260,22 +260,9 @@ struct CanonicalQueryTypeBinderTests {
         #expect(!count.isNullable)
         let sum = try binder.bind(.aggregate(.sum(.literal(.int(1)), distinct: false)))
         let average = try binder.bind(.aggregate(.avg(.literal(.int(1)), distinct: false)))
-        var accumulator = DatabaseNumericAggregateAccumulator()
-        try accumulator.add(.int64(1))
-        try accumulator.add(.int64(2))
         #expect(sum.type == .sql(.decimal(precision: nil, scale: nil)))
-        #expect(average.type == .sql(.doublePrecision))
+        #expect(average.type == .sql(.decimal(precision: nil, scale: nil)))
         #expect(sum.isNullable && average.isNullable)
-        let sumResult = try accumulator.sum()
-        let averageResult = try accumulator.average()
-        let sumValue = try #require(sumResult)
-        let averageValue = try #require(averageResult)
-        #expect(QueryValueValidator.accepts(try sum.normalize(.primitive(sumValue)), type: sum.type))
-        #expect(try average.normalize(.primitive(averageValue)) == .primitive(.float64(1.5)))
-        #expect(try average.normalize(.primitive(.int64(2))) == .primitive(.float64(2)))
-        #expect(throws: DatabaseExpressionEvaluationError.numericOverflow) {
-            try average.normalize(.primitive(.int64(9_007_199_254_740_993)))
-        }
         let numericType = QueryColumnType.sql(.decimal(precision: nil, scale: nil))
         let amount = try QueryColumn(number: 1, name: "amount", type: numericType, isNullable: false)
         let numericBinder = self.binder(columns: [amount])
@@ -411,9 +398,9 @@ struct CanonicalQueryTypeBinderTests {
                 == .int32(text == "0xF" ? 15 : 10))
         }
         let rich = QueryValue.numeric(try QueryNumericValue(value: ExactDecimal(coefficient: 7, scale: 0), displayScale: 0))
-        #expect(throws: DatabaseExpressionEvaluationError.self) {
-            try binder().bind(.add(.literal(.queryValue(rich)), .literal(.int(1))))
-        }
+        let numericArithmetic = try binder().bind(.add(.literal(.queryValue(rich)), .literal(.int(1))))
+        #expect(numericArithmetic.type == .sql(.decimal(precision: nil, scale: nil)))
+        #expect(numericArithmetic.children.allSatisfy { $0.type == numericArithmetic.type })
         let scratchBytes = UInt64(8 * (" 7 ".utf8.count + 1 + MemoryLayout<String>.stride))
         func meter(_ bytes: UInt64) -> DatabaseWorkMeter {
             DatabaseWorkMeter(budget: ExecutionBudget(maximumRows: 100, maximumWorkUnits: 1_000,

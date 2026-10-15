@@ -322,12 +322,13 @@ internal struct SPARQLFunctionRewriter: Sendable {
                  .greaterThanOrEqual(let left, let right),
                  .and(let left, let right),
                  .or(let left, let right),
-                 .nullIf(let left, let right):
+                 .nullIf(let left, let right), .isDistinctFrom(let left, let right, _):
                 pendingExpressions.append(left)
                 pendingExpressions.append(right)
 
             case .negate(let inner),
                  .not(let inner),
+                 .truthTest(let inner, _, _),
                  .isNull(let inner),
                  .isNotNull(let inner),
                  .like(let inner, _),
@@ -349,11 +350,18 @@ internal struct SPARQLFunctionRewriter: Sendable {
                 pendingExpressions.append(value)
                 pendingExpressions.append(contentsOf: values)
 
+            case .quantifiedComparison(let lhs, _, _, let source):
+                pendingExpressions.append(lhs)
+                switch source {
+                case .array(let value): pendingExpressions.append(value)
+                case .subquery(let query): pendingQueries.append(query)
+                }
             case .inSubquery(let value, let subquery):
                 pendingExpressions.append(value)
                 pendingQueries.append(subquery)
 
-            case .caseWhen(let cases, let elseResult):
+            case .caseWhen(let operand, let cases, let elseResult):
+                if let operand { pendingExpressions.append(operand) }
                 for pair in cases {
                     pendingExpressions.append(pair.condition)
                     pendingExpressions.append(pair.result)
@@ -362,7 +370,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
                     pendingExpressions.append(elseResult)
                 }
 
-            case .coalesce(let expressions), .array(let expressions), .row(let expressions):
+            case .coalesce(let expressions), .array(let expressions), .row(let expressions), .greatest(let expressions), .least(let expressions):
                 pendingExpressions.append(contentsOf: expressions)
 
             case .triple(let subject, let predicate, let object):
@@ -847,7 +855,8 @@ internal struct SPARQLFunctionRewriter: Sendable {
             try provenance?.child(.castType)?.copyTypeDescendants()
             return .cast(try await rewriteExpression(inner, provenance: try provenance?.child(.operand, 0)), targetType: targetType)
 
-        case .caseWhen(let cases, let elseResult):
+        case .caseWhen(let operand, let cases, let elseResult):
+            let rewrittenOperand = try await rewriteOptionalExpression(operand, provenance: try provenance?.child(.operand, 0))
             var rewrittenCases: [CaseWhenPair] = []
             for (index, pair) in cases.enumerated() {
                 rewrittenCases.append(CaseWhenPair(
@@ -856,13 +865,34 @@ internal struct SPARQLFunctionRewriter: Sendable {
                 ))
             }
             let rewrittenElse = try await elseResult.asyncMap { try await rewriteExpression($0, provenance: try provenance?.child(.caseElse)) }
-            return .caseWhen(cases: rewrittenCases, elseResult: rewrittenElse)
+            return .caseWhen(operand: rewrittenOperand, cases: rewrittenCases, elseResult: rewrittenElse)
 
         case .array(let exprs), .row(let exprs):
             var rewrittenExprs: [DatabaseKit.Expression] = []
             for (index, expr) in exprs.enumerated() { rewrittenExprs.append(try await rewriteExpression(expr, provenance: try provenance?.child(.argument, index))) }
             if case .array = expr { return .array(rewrittenExprs) }
             return .row(rewrittenExprs)
+
+        case .greatest(let exprs), .least(let exprs):
+            var rewritten: [Expression] = []
+            for (index, value) in exprs.enumerated() {
+                rewritten.append(try await rewriteExpression(value, provenance: try provenance?.child(.argument, index)))
+            }
+            if case .greatest = expr { return .greatest(rewritten) }
+            return .least(rewritten)
+        case .truthTest(let value, let truth, let negated):
+            return .truthTest(try await rewriteExpression(value, provenance: try provenance?.child(.operand, 0)), value: truth, negated: negated)
+        case .isDistinctFrom(let lhs, let rhs, let negated):
+            return .isDistinctFrom(try await rewriteExpression(lhs, provenance: try provenance?.child(.operand, 0)),
+                try await rewriteExpression(rhs, provenance: try provenance?.child(.operand, 1)), negated: negated)
+        case .quantifiedComparison(let lhs, let comparison, let quantifier, let source):
+            let left = try await rewriteExpression(lhs, provenance: try provenance?.child(.operand, 0))
+            let rewrittenSource: QuantifiedComparisonSource
+            switch source {
+            case .array(let value): rewrittenSource = .array(try await rewriteExpression(value, provenance: try provenance?.child(.operand, 1)))
+            case .subquery(let query): rewrittenSource = .subquery(try await rewrite(query, provenance: try provenance?.child(.subquery)))
+            }
+            return .quantifiedComparison(left, comparison: comparison, quantifier: quantifier, source: rewrittenSource)
 
         case .coalesce(let exprs):
             var rewrittenExprs: [DatabaseKit.Expression] = []

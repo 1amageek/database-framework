@@ -5,6 +5,11 @@ enum SPARQLExpressionSemanticName {
         switch expression {
         case .array: return "SQL ARRAY constructor"
         case .row: return "SQL ROW constructor"
+        case .greatest: return "SQL GREATEST"
+        case .least: return "SQL LEAST"
+        case .truthTest: return "SQL truth test"
+        case .isDistinctFrom: return "SQL DISTINCT predicate"
+        case .quantifiedComparison: return "SQL quantified comparison"
         case .literal: return "literal"
         case .column: return "column"
         case .variable: return "variable"

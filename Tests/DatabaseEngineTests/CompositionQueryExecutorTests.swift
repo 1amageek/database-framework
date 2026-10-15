@@ -152,6 +152,65 @@ struct CompositionQueryExecutorTests {
         return await probe.result()
     }
 
+    @Test("Composition numeric aggregates retain widened state and release after final overflow")
+    func selectedNumericAggregateWorkspace() async throws {
+        let fixture = try await makeFixture(readerCanReadSecondary: true)
+        defer { await fixture.container.shutdown() }
+        try await insert([("positive-a", 1), ("positive-b", 1)], baseID: fixture.primaryBaseID, fixture: fixture)
+        try await insert([("negative", -1)], baseID: fixture.secondaryBaseID, fixture: fixture)
+        let source = fixture.container.session(authorization: fixture.readerAuthorization).composition(fixture.compositionID)
+        let numericType = QueryColumnType.sql(.decimal(precision: nil, scale: nil))
+        let maximum = Int128("99999999999999999999999999999999999999")!
+        let parameters = [QueryParameter(position: 1, value: .numeric(try QueryNumericValue(
+            value: ExactDecimal(coefficient: maximum, scale: 0), displayScale: 0)), type: numericType)]
+        let operand = DatabaseKit.Expression.parameter(.position(1))
+        let failureContext = ReadExecutionContext(options: .default, monotonicClock: fixture.container.monotonicClock)
+        do {
+            try await CompositionQueryPlanner(structuralLimits: failureContext.queryStructuralLimits).execute(
+                SelectQuery(projection: .items([ProjectionItem(.aggregate(.sum(operand, distinct: false)), alias: "sum")]),
+                            source: .table(TableRef(Item.persistableType))), source: source,
+                options: CompositionQueryExecutionOptions(pageSize: 1, readContext: failureContext, parameters: parameters)
+            ) { _ in true }
+            Issue.record("Expected final 39-digit SUM rejection")
+        } catch let error as CompositionQueryError {
+            guard case .aggregateFailure = error else { throw error }
+        }
+        #expect(failureContext.workMeter.retainedIntermediateRows == 0)
+        #expect(failureContext.workMeter.retainedIntermediateBytes == 0)
+        let signed = DatabaseKit.Expression.multiply(operand,
+            .cast(.column(ColumnRef("rank")), targetType: .decimal(precision: nil, scale: nil)))
+        let valid = try await executeParameterizedQuery(
+            SelectQuery(projection: .items([
+                ProjectionItem(.aggregate(.avg(operand, distinct: false)), alias: "average"),
+                ProjectionItem(.aggregate(.sum(signed, distinct: false)), alias: "sum"),
+            ]), source: .table(TableRef(Item.persistableType))), source: source, parameters: parameters, fixture: fixture)
+        #expect(valid.rows.count == 1)
+        #expect(valid.columns.map(\.type) == [numericType, numericType])
+        let expected = QueryValue.numeric(try QueryNumericValue(
+            value: ExactDecimal(coefficient: maximum, scale: 0), displayScale: 0))
+        #expect(valid.rows[0].row.values == [expected, expected])
+        let scaledParameters = [QueryParameter(position: 1, value: .numeric(try QueryNumericValue(
+            value: ExactDecimal(coefficient: 125, scale: 2), displayScale: 5)), type: numericType)]
+        let scaled = try await executeParameterizedQuery(
+            SelectQuery(projection: .items([ProjectionItem(.aggregate(.sum(operand, distinct: false)), alias: "sum")]),
+                        source: .table(TableRef(Item.persistableType))), source: source,
+            parameters: scaledParameters, fixture: fixture)
+        #expect(scaled.rows[0].row.values == [.numeric(try QueryNumericValue(
+            value: ExactDecimal(coefficient: 375, scale: 2), displayScale: 5))])
+        let primitiveParameters = [QueryParameter(position: 1,
+            value: .primitive(.decimal(ExactDecimal(coefficient: 125, scale: 2))), type: numericType)]
+        let primitive = try await executeParameterizedQuery(
+            SelectQuery(projection: .items([
+                ProjectionItem(.aggregate(.sum(operand, distinct: false)), alias: "sum"),
+                ProjectionItem(.aggregate(.avg(operand, distinct: false)), alias: "average"),
+            ]), source: .table(TableRef(Item.persistableType))), source: source,
+            parameters: primitiveParameters, fixture: fixture)
+        #expect(primitive.rows[0].row.values == [
+            .numeric(try QueryNumericValue(value: ExactDecimal(coefficient: 375, scale: 2), displayScale: 2)),
+            .numeric(try QueryNumericValue(value: ExactDecimal(coefficient: 125, scale: 2), displayScale: 20)),
+        ])
+    }
+
     private actor CancellationRowProbe {
         private var count = 0
         private var minimumRetainedRows: UInt64?
@@ -625,7 +684,7 @@ struct CompositionQueryExecutorTests {
             failingAggregateError = error
         }
         guard let failingAggregate = failingAggregateError as? CanonicalReadError,
-              case .expressionEvaluation(.typeMismatch(operation: "numeric expression")) = failingAggregate else {
+              case .expressionEvaluation(.typeMismatch(operation: "numeric expression"), _) = failingAggregate else {
             Issue.record(
                 "Expected bound numeric type failure, got \(String(describing: failingAggregateError))"
             )

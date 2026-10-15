@@ -1347,22 +1347,25 @@ public struct CompositionQueryPlanner: Sendable {
             at: .aggregateInput
         )
         var states: [AggregateState] = []
+        // This reservation covers fixed enum slots; each numeric value owns its dynamic workspace.
+        defer {
+            states.removeAll(keepingCapacity: false)
+            stateReservation.release()
+        }
         states.reserveCapacity(stateGrowth.capacity)
         for descriptor in aggregates.descriptors {
             switch descriptor.kind {
             case .countAll, .countValue:
                 states.append(.count(0))
             case .sum, .average:
-                states.append(
-                    .numeric(DatabaseNumericAggregateAccumulator())
-                )
+                guard let slot = descriptor.operandSlot, localColumns.indices.contains(slot) else {
+                    throw CompositionQueryError.aggregateFailure("Numeric aggregate has no selected input type")
+                }
+                states.append(.numeric(DatabaseNumericAggregateAccumulator(
+                    inputType: localColumns[slot].type, workMeter: workMeter)))
             case .minimum, .maximum:
                 states.append(.extremum(nil))
             }
-        }
-        defer {
-            states.removeAll(keepingCapacity: false)
-            stateReservation.release()
         }
         guard let maximumIntermediateRows = Int(
             exactly: options.readContext.options.budget.maximumIntermediateRows
@@ -1426,19 +1429,19 @@ public struct CompositionQueryPlanner: Sendable {
                 try preparedRow.withRow { prepared in
                     for index in aggregates.descriptors.indices {
                         let descriptor = aggregates.descriptors[index]
-                        let value: FieldValue
+                        let value: QueryValue
                         if let slot = descriptor.operandSlot {
                             guard prepared.values.indices.contains(slot) else {
                                 throw CompositionQueryError.aggregateFailure("Base-local aggregate operand is missing")
                             }
                             let operand = prepared.values[slot]
                             if case .countValue = descriptor.kind {
-                                value = operand.isNull ? .null : .bool(true)
+                                value = .primitive(operand.isNull ? .null : .bool(true))
                             } else {
-                                value = try Self.comparablePrimitive(operand)
+                                value = operand
                             }
                         } else {
-                            value = .bool(true)
+                            value = .primitive(.bool(true))
                         }
                         try Self.accumulate(
                             value,
@@ -1457,7 +1460,7 @@ public struct CompositionQueryPlanner: Sendable {
         }
         func outputValue(at index: Int) throws -> QueryValue {
             let result = try Self.result(descriptor: aggregates.descriptors[index], state: states[index])
-            return try CanonicalQueryTypeBinder.normalize(.primitive(result), to: columns[index].type)
+            return try CanonicalQueryTypeBinder.normalize(result, to: columns[index].type)
         }
         let rowFootprint = try CanonicalRelationalFootprintMeter.positionalValueArrayFootprint(
             count: columns.count, valueAt: outputValue,
@@ -1488,7 +1491,7 @@ public struct CompositionQueryPlanner: Sendable {
     }
 
     private static func accumulate(
-        _ value: FieldValue,
+        _ value: QueryValue,
         descriptor: AggregateDescriptor,
         state: inout AggregateState,
         workMeter: DatabaseWorkMeter
@@ -1497,22 +1500,21 @@ public struct CompositionQueryPlanner: Sendable {
         case (.countAll, .count(let count)):
             state = .count(try incrementAggregateCount(count))
         case (.countValue, .count(let count)):
-            state = value == .null
+            state = value.isNull
                 ? .count(count)
                 : .count(try incrementAggregateCount(count))
         case (.sum, .numeric(var accumulator)),
              (.average, .numeric(var accumulator)):
             do {
                 try accumulator.add(value)
-            } catch let failure {
-                throw CompositionQueryError.aggregateFailure(
-                        aggregateFailureMessage(failure)
-                    )
+            } catch let failure as DatabaseNumericAggregateAccumulator.Failure {
+                throw CompositionQueryError.aggregateFailure(aggregateFailureMessage(failure))
             }
             state = .numeric(accumulator)
         case (.minimum, .extremum(let current)),
              (.maximum, .extremum(let current)):
-            guard value != .null else { return }
+            guard !value.isNull else { return }
+            let value = try Self.comparablePrimitive(value)
             guard let current else {
                 state = .extremum(
                     try DatabaseQueryScopedFieldValue.retaining(
@@ -1569,28 +1571,28 @@ public struct CompositionQueryPlanner: Sendable {
     private static func result(
         descriptor: AggregateDescriptor,
         state: AggregateState
-    ) throws -> FieldValue {
+    ) throws -> QueryValue {
         switch (descriptor.kind, state) {
         case (.countAll, .count(let value)),
              (.countValue, .count(let value)):
-            return .int64(value)
+            return .primitive(.int64(value))
         case (.sum, .numeric(let accumulator)):
-            do { return try accumulator.sum() ?? .null }
-            catch let failure {
+            do { return try accumulator.sum() ?? .primitive(.null) }
+            catch let failure as DatabaseNumericAggregateAccumulator.Failure {
                 throw CompositionQueryError.aggregateFailure(
                         aggregateFailureMessage(failure)
                     )
             }
         case (.average, .numeric(let accumulator)):
-            do { return try accumulator.average() ?? .null }
-            catch let failure {
+            do { return try accumulator.average() ?? .primitive(.null) }
+            catch let failure as DatabaseNumericAggregateAccumulator.Failure {
                 throw CompositionQueryError.aggregateFailure(
                         aggregateFailureMessage(failure)
                     )
             }
         case (.minimum, .extremum(let value)),
              (.maximum, .extremum(let value)):
-            return value?.withValue { copy $0 } ?? .null
+            return .primitive(value?.withValue { copy $0 } ?? .null)
         default:
             throw CompositionQueryError.aggregateFailure(
                 "aggregate state does not match its plan"

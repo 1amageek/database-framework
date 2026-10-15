@@ -361,3 +361,13 @@ StorageKit adapters, Database entry points, DatabaseKit semantic and wire
 contracts, and server/host publication paths. New runtime subcomponents must
 receive their own directory-local design before source implementation; this
 module does not invent a second lower-level transaction contract.
+
+### S04 composition
+
+[QueryExecution](QueryExecution/DESIGN.md#s04-frozen-selected-value-execution)
+owns selected numeric QueryValue kernels and metered exact aggregate state;
+[Base](Base/DESIGN.md#s04-selected-sql-aggregate-composition) consumes that same
+contract under MultiBase. Operation authority, transaction closure, retained
+Ready publication and raw RDF/primitive behavior retain their owners. Changes
+to dynamic workspace require both callers' lifetime evidence before this
+module accepts the lower contract.

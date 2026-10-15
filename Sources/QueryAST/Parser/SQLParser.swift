@@ -1468,42 +1468,56 @@ extension SQLParser {
     }
 
     private func parseComparisonExpression() throws -> Expression {
+        var expression = try parsePredicateExpression()
+        while isKeyword("IS") { expression = try parseIsPredicate(expression) }
+        return expression
+    }
+
+    private func parsePredicateExpression() throws -> Expression {
         let left = try parseAddExpression()
 
+        let comparison: DatabaseKit.ComparisonOperator?
         switch currentToken {
-        case .symbol("="):
+        case .symbol("="): comparison = .equal
+        case .symbol("<>"), .symbol("!="): comparison = .notEqual
+        case .symbol("<"): comparison = .lessThan
+        case .symbol("<="): comparison = .lessThanOrEqual
+        case .symbol(">"): comparison = .greaterThan
+        case .symbol(">="): comparison = .greaterThanOrEqual
+        default: comparison = nil
+        }
+        if let comparison {
             advance()
-            let right = try parseAddExpression()
-            return try makeStructuralNode(.equal(left, right))
-        case .symbol("<>"), .symbol("!="):
-            advance()
-            let right = try parseAddExpression()
-            return try makeStructuralNode(.notEqual(left, right))
-        case .symbol("<"):
-            advance()
-            let right = try parseAddExpression()
-            return try makeStructuralNode(.lessThan(left, right))
-        case .symbol("<="):
-            advance()
-            let right = try parseAddExpression()
-            return try makeStructuralNode(.lessThanOrEqual(left, right))
-        case .symbol(">"):
-            advance()
-            let right = try parseAddExpression()
-            return try makeStructuralNode(.greaterThan(left, right))
-        case .symbol(">="):
-            advance()
-            let right = try parseAddExpression()
-            return try makeStructuralNode(.greaterThanOrEqual(left, right))
-        case .keyword("IS"):
-            advance()
-            let notNull = currentToken == .keyword("NOT")
-            if notNull { advance() }
-            try expect("NULL")
-            if notNull {
-                return try makeStructuralNode(.isNotNull(left))
+            let expression: Expression
+            if isKeyword("ANY") || isKeyword("SOME") || isKeyword("ALL") {
+                let quantifier: ComparisonQuantifier = isKeyword("ALL") ? .all : .any
+                advance()
+                try expect("(")
+                let source: QuantifiedComparisonSource
+                if isKeyword("SELECT") || isKeyword("WITH") {
+                    source = .subquery(try parseSelectQuery())
+                } else {
+                    source = .array(try parseExpression())
+                }
+                try expect(")")
+                expression = try makeStructuralNode(.quantifiedComparison(left, comparison: comparison, quantifier: quantifier, source: source))
+            } else {
+                let right = try parseAddExpression()
+                switch comparison {
+                case .equal: expression = try makeStructuralNode(.equal(left, right))
+                case .notEqual: expression = try makeStructuralNode(.notEqual(left, right))
+                case .lessThan: expression = try makeStructuralNode(.lessThan(left, right))
+                case .lessThanOrEqual: expression = try makeStructuralNode(.lessThanOrEqual(left, right))
+                case .greaterThan: expression = try makeStructuralNode(.greaterThan(left, right))
+                case .greaterThanOrEqual: expression = try makeStructuralNode(.greaterThanOrEqual(left, right))
+                }
             }
-            return try makeStructuralNode(.isNull(left))
+            return expression
+        }
+
+        switch currentToken {
+        case .keyword("IS"):
+            return try parseIsPredicate(left)
         case .keyword("LIKE"):
             advance()
             if case .string(let pattern) = currentToken {
@@ -1618,6 +1632,32 @@ extension SQLParser {
         default:
             return left
         }
+    }
+
+    private func parseIsPredicate(_ value: Expression) throws -> Expression {
+        try expect("IS")
+        let negated = isKeyword("NOT")
+        if negated { advance() }
+        if isKeyword("NULL") {
+            advance()
+            return try makeStructuralNode(negated ? .isNotNull(value) : .isNull(value))
+        }
+        if isKeyword("DISTINCT") {
+            advance()
+            try expect("FROM")
+            let right = try parseAddExpression()
+            return try makeStructuralNode(.isDistinctFrom(value, right, negated: negated))
+        }
+        let truth: TruthValue
+        if isKeyword("TRUE") { truth = .true }
+        else if isKeyword("FALSE") { truth = .false }
+        else if consumeContextualWord("UNKNOWN") {
+            return try makeStructuralNode(.truthTest(value, value: .unknown, negated: negated))
+        } else {
+            throw ParseError.unexpectedToken(expected: "NULL, TRUE, FALSE, UNKNOWN, or DISTINCT FROM", found: tokenDescription(currentToken), position: tokenStart)
+        }
+        advance()
+        return try makeStructuralNode(.truthTest(value, value: truth, negated: negated))
     }
 
     private func parseAddExpression() throws -> Expression {
@@ -1888,8 +1928,8 @@ extension SQLParser {
                 }
             }
             try expect(")")
-            if schema == nil, !quoted, distinct, spelling == "COALESCE" || spelling == "NULLIF" {
-                throw ParseError.invalidSyntax(message: "DISTINCT is not allowed in COALESCE or NULLIF syntax", position: start)
+            if schema == nil, !quoted, distinct, ["COALESCE", "NULLIF", "GREATEST", "LEAST"].contains(spelling) {
+                throw ParseError.invalidSyntax(message: "DISTINCT is not allowed in conditional expression syntax", position: start)
             }
             if schema == nil, !quoted, spelling == "COALESCE" {
                 guard !args.isEmpty else { throw ParseError.invalidSyntax(message: "COALESCE requires at least one argument", position: start) }
@@ -1898,6 +1938,10 @@ extension SQLParser {
             if schema == nil, !quoted, spelling == "NULLIF" {
                 guard args.count == 2 else { throw ParseError.invalidSyntax(message: "NULLIF requires exactly two arguments", position: start) }
                 return try makeStructuralNode(.nullIf(args[0], args[1]), at: start, identifierEnd: identifierEnd)
+            }
+            if schema == nil, !quoted, spelling == "GREATEST" || spelling == "LEAST" {
+                guard !args.isEmpty else { throw ParseError.invalidSyntax(message: "GREATEST/LEAST requires at least one argument", position: start) }
+                return try makeStructuralNode(spelling == "GREATEST" ? .greatest(args) : .least(args), at: start, identifierEnd: identifierEnd)
             }
             return try makeStructuralNode(.function(FunctionCall(name: name, arguments: args, distinct: distinct, schema: schema)), at: start, identifierEnd: identifierEnd)
         }
@@ -2270,6 +2314,10 @@ extension SQLParser {
         let caseStart = tokenStart
         try expect("CASE")
 
+        let operand = isKeyword("WHEN") ? nil : try parseExpression()
+        guard isKeyword("WHEN") else {
+            throw ParseError.unexpectedToken(expected: "WHEN", found: tokenDescription(currentToken), position: tokenStart)
+        }
         var cases: [CaseWhenPair] = []
         while case .keyword("WHEN") = currentToken {
             advance()
@@ -2293,7 +2341,7 @@ extension SQLParser {
         try expect("END")
 
         return try makeStructuralNode(
-            .caseWhen(cases: cases, elseResult: elseResult), at: caseStart
+            .caseWhen(operand: operand, cases: cases, elseResult: elseResult), at: caseStart
         )
     }
 

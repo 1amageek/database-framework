@@ -32,6 +32,7 @@ copyable and could escape without their reservation.
 | [DatabaseEngine](../DESIGN.md) | parent | Aggregate role in the retained flow | Defines cross-component assumptions and outputs. | Any new output must be an explicit destination boundary. |
 | [DatabaseKit Query](../../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md) | depends on | `DataSource.usesSPARQLSemantics` | Supplies SELECT source language applicability for execution dispatch. | Classifies the top-level source; it does not prove executor availability or recursively classify descendants. |
 | [DatabaseKit SQL](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md) | depends on | SQL profile and typed semantic model | Supplies statements, values and ordered column contracts. | Type/equality changes invalidate every relational consumer. |
+| [DatabaseMath](../../DatabaseMath/DESIGN.md) | depends on | Platform scalar math and bounded decimal formatting | Supplies selected float kernels and significant-digit cast formatting. | SQL domains, widths and typed numeric failures remain here. |
 | [QueryAST](../../QueryAST/DESIGN.md) | depends on | Text-to-semantic syntax contract | Canonical execution receives semantic input from the entry layer. | This is a contract relationship, not permission for an engine-to-parser import. |
 | [Core](../Core/DESIGN.md) | used by | Pre-admitted builder append | Produces present and missing entries. | Runtime metadata is validated before append. |
 | [Read](../Read/DESIGN.md) | coordinates with | Exact session work meter | Supplies the meter to builder and destination. | Budget equality is not identity. |
@@ -387,7 +388,9 @@ legal.
 
 The bound expression entry preserves the existing runtime failure boundary:
 scalar evaluation and normalization failures become
-`CanonicalReadError.expressionEvaluation` with the original typed cause.
+`CanonicalReadError.expressionEvaluation` with the original typed cause and optional decisive occurrence.
+The innermost selected failing node attaches the occurrence once; enclosing
+expressions preserve it.
 Resource, cancellation, aggregate and nested-read failures retain their owning
 error types. This boundary does not evaluate additional children or change
 CASE, COALESCE, AND or OR branch selection. The existing
@@ -672,3 +675,173 @@ can measure its persistent binding prefix through pure metadata binding; that
 measurement does not replace the separate exact row-append footprint. Tiny work budgets may reject
 mandatory schema construction even for zero rows; physical cursor bounds and
 stable LIMIT 0 no-read behavior remain separate observable contracts.
+
+### S04 frozen selected-value execution
+
+Consume [S04 SQL](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s04-frozen-numeric-and-conditional-semantics)
+and [Decimal](../../../../database-types/Sources/DatabaseTypes/Decimal/DESIGN.md#s04-frozen-explicit-rounding-boundary).
+This component owns SQL policy; no arithmetic policy moves into Kit or Types.
+The existing CanonicalBoundExpression children/type/occurrence/subqueryBinding
+are the selected signature. Binding coerces children to exact selected input
+types and records the result type before source reads; evaluation never
+re-resolves overloads from row values. Explicit, implicit and assignment cast
+admission are separate decisions, including statically typed NULL.
+
+Searched CASE children are conditions N, results N, then fallback. Simple CASE
+children are the original typed operand once, N independently selected equality
+nodes, results N, then fallback. Each equality node retains its selected left
+coercion declaration and right match child. The runtime evaluates the original
+operand once, coerces that saved value separately for the examined equality,
+and evaluates only that equality's right child. A different WHEN never changes
+another equality's input signature. Lowering retains the semantic simple-CASE
+operand and match-value shape; selected execution consumes the bound equalities.
+All match/result branches bind before reads; NULL equality is unknown and does
+not select a result branch.
+
+```text
+bound children + selected input/result types
+  -> lazy control/subquery owner evaluates required QueryValues
+      -> scalar numeric evaluator (lossless inputs and displayScale)
+      -> aggregate exact workspace (admit before growth)
+          -> QueryValue -> selected declaration validation -> retained output
+```
+
+Planned internal shared entry:
+`CanonicalSQLNumericEvaluator.evaluate(_: CanonicalBoundExpression,
+operands: [QueryValue], workMeter: DatabaseWorkMeter) throws -> QueryValue`.
+It handles selected numeric arithmetic/functions/casts and preserves
+QueryNumericValue.displayScale. CanonicalRows calls it directly with evaluated
+children, never through primitive literal materialization/demotion. Raw
+DatabaseExpressionEvaluator exact/RDF contracts remain unchanged. Other
+selected scalar operations continue through their existing kernel. Existing
+explicit typed-text to unconstrained NUMERIC casts retain their admitted
+lexical kernel and canonical decimal scale; they are distinct from S04
+numeric-source casts. Already-admitted primitive Int8 and unsigned integer
+carriers without a SQL kind use the existing checked Int128 value normalization
+into canonical numeric before the selected CAST kernel. The complete UInt64
+range is retained without an Int64 or floating intermediate; this bridge neither
+selects an overload nor creates an unsigned SQL type. Declared source validation,
+selected-target rounding, displayScale, final width and typed failures stay with
+their existing owners. PostgreSQL lexical display-scale preservation and lexical
+typmod conversion remain S05-owned. Typed-text to numeric-typmod signatures,
+including declared NULL, fail during binding before NULL propagation;
+unknown-string and typed-numeric literal normalization keep their S03 path. Binding
+and final value normalization do not reconstruct numeric scale from canonical
+ExactDecimal.scale. Ordinary scalar comparisons, BETWEEN, IN/NOT IN, conditional matching and
+quantified reduction consume the same metered selected QueryValue comparison.
+Numeric values contribute their exact decimal value for comparison without
+converting result payloads or displayScale through the primitive evaluator.
+BETWEEN and membership preserve SQL three-valued reduction and retain the
+innermost failing occurrence. Raw primitive and RDF execution remain separate.
+SQL source alignment remains the existing independently
+owned checked exact identity contract; changing scalar common type does not
+change VALUES/set source-carrier normalization.
+
+Scale selection and overloads follow the retained REL_18_6 reference linked by
+SQL. In particular divide/AVG use normalized base10000 leading weights/digits;
+SQRT/EXP/LN/LOG/POWER match both decimal value and observable output scale.
+Decimal transcendental computation uses bounded decimal workspace, with no
+floating result fallback. Source estimates used only to select scale/work do
+not authorize a floating calculation. Existing DatabaseMath Float/Double
+wrappers may be extended for float signatures; SQL checks domains, finite
+results, underflow and width. New internal numeric files remain in this
+existing component; an independent module/component requires its own design
+and parent link before creation.
+
+The scalar evaluator delegates selected numeric SQRT/EXP/LN/LOG/LOG10/POWER
+to internal `CanonicalSQLDecimalMath.evaluate(function: String,
+operands: [QueryNumericValue], workMeter: DatabaseWorkMeter) throws ->
+QueryNumericValue`. The caller supplies an already-selected numeric signature;
+this entry does not resolve overloads. Its owner owns decimal computation and
+operation-local workspace. Aggregate state remains independently owned by the
+accumulator; neither owner reads or duplicates the other's internal state.
+
+Integer POWER derives its working significant-digit target from the selected
+final scale and estimated final decimal weight, plus the retained reference's
+exponent-dependent error margin. Each multiplication selects its local fractional
+scale from both operands' current normalized base10000 weights, bounded by the
+product's actual fractional scale and zero. A fixed absolute intermediate scale
+must not erase a nonzero tiny power before a negative exponent takes its
+reciprocal. Positive powers round to the selected result scale at finalization;
+negative powers take the reciprocal at that same selected scale. Weight estimates
+select precision only: all products, rounding and reciprocal computation stay
+decimal and retain the existing metered workspace ownership and typed failures.
+
+#### S04 numeric workspace ownership
+
+`CanonicalSQLDecimalWorkspaceValue` is an immutable copyable signed decimal
+value. Its decimal digits and reservation share a last-owner lifetime through
+an immutable storage owner; copying an accumulator never releases a live
+claim. Methods return new owners and never mutate an existing value.
+
+| Internal entry | Guarantee |
+|---|---|
+| `init(_: ExactDecimal, workMeter:)` | Admits coefficient limbs before construction. |
+| `adding(_:)`, `subtracting(_:)`, `multiplied(by:)`, `remainder(dividingBy:)` | Exact widened signed result; no SQL38 admission. |
+| `divided(by: UInt64, toScale: Int32, rounding: DecimalRoundingRule = .toNearestOrAwayFromZero)` | Rounded widened quotient for aggregate finalization. |
+| `divided(by: Self, toScale: Int32, rounding:)`, `rounded(toScale:rounding:)` | Decimal-only bounded math intermediates. |
+| `exactDecimal()` | Converts only at the final primitive boundary; throws `ExactDecimalError.numericOverflow` for unrepresentable coefficients/scales. |
+| `leadingBase10000`, `decimalDigitCount`, `scale`, `sign`, `isZero`, `comparison(to:)` | Read-only normalized metadata for SQL-owned scale selection. |
+
+The representation retains implicit decimal exponent and expands alignment
+only after deriving capacity and admitting its complete retained/scratch claim.
+Arbitrary Int32 scale gaps may fail the existing memory/work budget before
+allocation; sparse success is not required. Allocation-size overflow is a
+resource failure, never an arithmetic failure. Loops charge work and checkpoint
+through the same meter. Final SQL38 admission and aggregate count/displayScale
+remain consumer responsibilities. Mathematical domain failures belong to
+`DatabaseExpressionEvaluationError`; primitive representation failures use
+`ExactDecimalError`; cancellation/deadline/work/memory failures propagate.
+
+The existing DatabaseNumericAggregateAccumulator migrates its SQL callers to
+`init(inputType: QueryColumnType, workMeter: DatabaseWorkMeter)`,
+`add(_: QueryValue)`, `sum()/average() -> QueryValue?`. It owns widened exact
+signed limb accumulation, non-NULL count and maximum input displayScale, plus
+selected floating width. It validates only the final rounded numeric width,
+allowing cancellation sums and representable AVG through wider intermediates.
+All-null/empty returns nil for the caller's already-bound typed NULL column.
+`CanonicalQueryTypeBinder.numericAggregateInputType(_:)` owns single-operand
+aggregate type selection for both binding and incremental reduction. Composition's
+local operand projection can retain primitive column metadata even when its
+aggregate result is bound by the canonical SQL binder. The accumulator records
+that source declaration, validates its primitive carrier, and consumes the
+binder's existing normalization into the selected SQL input type. This route
+uses the same SQL SUM/AVG result contract for SQL text and direct SelectQuery IR;
+selection is never inferred from row values. Selected SQL declarations retain
+strict carrier validation and rich numeric displayScale. This boundary does not
+change standalone primitive/RDF evaluation or SQL source-carrier alignment.
+Existing non-SQL consumers, if any are found by the foundation migration,
+retain their exact owner contract through a separate explicit path rather
+than silently acquiring SQL promotion.
+
+Variable limb/math workspace is operation-local and pre-admitted through the
+same DatabaseWorkMeter before capacity growth. The owner charges actual
+retained capacity and scratch, consumes work/checkpoints at bounded iteration
+boundaries, and releases on success/failure/cancel/destruction. Operational
+limits come from existing validated work/memory/deadline admission; do not add
+unmeasured constants. Base's fixed aggregate-state reservation covers only
+fixed container state, not dynamic limbs. Partial arithmetic never publishes
+an output or converts resource/cancellation failure into numeric overflow.
+Use typed arithmetic/domain failures and preserve meter failures and decisive
+occurrences through CanonicalReadError; new domain categories extend the
+existing error owner and its server mapping in the same batch.
+The existing DatabaseExpressionEvaluationError owns numericDomain(operation:),
+numericUnderflow and nonFiniteValue alongside divisionByZero/numericOverflow.
+CanonicalReadError.expressionEvaluation carries these unchanged with the
+optional decisive Kit occurrence; the [Read error contract](../Read/DESIGN.md#s04-decisive-scalar-failure-occurrence) owns that public shape. Server maps
+these numeric categories to explicit invalid-request codes; S16 still owns
+SQLSTATE and remote occurrence details. Selected accumulator methods use
+untyped throws so work/deadline/cancellation failures are never converted into
+its nested numeric Failure cases. The SQL SUM/AVG entry consumes QueryValue
+before the primitive-only aggregate path; DISTINCT reduces canonical numeric identities in a pre-admitted operation-local
+set while adding the original selected QueryValue, preserving its displayScale.
+NULL inputs are skipped and empty/all-NULL output uses the bound typed NULL.
+
+S04-C01–C12 assign binder tests to selected metadata/early rejection, scalar
+kernel tests to exact values/scales/domains, aggregate tests to final-width and
+NULL matrices, and actual Database SQL tests to text→binding→execution and
+empty declarations. Resource tests prove exact/one-past/cancel/deadline and
+last-owner release for scalar, ordinary aggregate and Base paths. Existing
+raw exact-division, RDF, source alignment, index/scan equivalence, persistence
+and retained-owner suites remain regressions. Two heavy build lanes maximum;
+focused behavioral tests precede one converged affected/full package run.

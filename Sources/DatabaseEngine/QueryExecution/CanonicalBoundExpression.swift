@@ -70,6 +70,17 @@ struct CanonicalBoundExpression: Sendable {
         }
         let result: DatabaseKit.Expression
         switch expression {
+        case .greatest: result = try .greatest(children.indices.map(child))
+        case .least: result = try .least(children.indices.map(child))
+        case .truthTest(_, let value, let negated): result = try .truthTest(child(0), value: value, negated: negated)
+        case .isDistinctFrom(_, _, let negated): result = try .isDistinctFrom(child(0), child(1), negated: negated)
+        case .quantifiedComparison(_, let comparison, let quantifier, let source):
+            let lowered: QuantifiedComparisonSource
+            switch source {
+            case .array: lowered = try .array(child(1))
+            case .subquery(let query): lowered = .subquery(query)
+            }
+            result = try .quantifiedComparison(child(0), comparison: comparison, quantifier: quantifier, source: lowered)
         case .add: result = try .add(child(0), child(1))
         case .subtract: result = try .subtract(child(0), child(1))
         case .multiply: result = try .multiply(child(0), child(1))
@@ -91,10 +102,19 @@ struct CanonicalBoundExpression: Sendable {
         case .between: result = try .between(child(0), low: child(1), high: child(2))
         case .inList: result = try .inList(child(0), values: children.indices.dropFirst().map(child))
         case .notInList: result = try .notInList(child(0), values: children.indices.dropFirst().map(child))
-        case .caseWhen(let pairs, let fallback):
-            let resultsOffset = pairs.count
-            result = try .caseWhen(cases: pairs.indices.map { index in
-                CaseWhenPair(condition: try child(index), result: try child(resultsOffset + index))
+        case .caseWhen(let operand, let pairs, let fallback):
+            let offset = operand == nil ? 0 : 1
+            let resultsOffset = offset + pairs.count
+            result = try .caseWhen(operand: operand == nil ? nil : child(0), cases: pairs.indices.map { index in
+                let condition: DatabaseKit.Expression
+                if operand != nil {
+                    let comparison = children[offset + index]
+                    guard case .equal = comparison.expression, comparison.children.count == 2 else {
+                        throw DatabaseExpressionEvaluationError.typeMismatch(operation: "simple CASE selected equality")
+                    }
+                    condition = try comparison.children[1].materializing(in: values)
+                } else { condition = try child(offset + index) }
+                return CaseWhenPair(condition: condition, result: try child(resultsOffset + index))
             }, elseResult: fallback == nil ? nil : child(resultsOffset + pairs.count))
         case .coalesce: result = try .coalesce(children.indices.map(child))
         case .nullIf: result = try .nullIf(child(0), child(1))

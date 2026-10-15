@@ -10,6 +10,8 @@ contracts owned by a child design.
 - Parent: the workspace system design at [../DESIGN.md](../DESIGN.md).
 - Direct children: [Database](Sources/Database/DESIGN.md),
   [DatabaseEngine](Sources/DatabaseEngine/DESIGN.md),
+  [DatabaseMath](Sources/DatabaseMath/DESIGN.md),
+  [DecimalFormatting](Sources/DecimalFormatting/DESIGN.md),
   [QueryAST](Sources/QueryAST/DESIGN.md),
   [GraphIndex](Sources/GraphIndex/DESIGN.md),
   [BitmapIndex](Sources/BitmapIndex/DESIGN.md),
@@ -40,6 +42,8 @@ products.
 |---|---|---|---|---|
 | [Database](Sources/Database/DESIGN.md) | child | SQL and SQL-facing SPARQL entry/adaptation | Routes public database calls into the execution and graph contracts. | It must not absorb graph-facing SPARQL physical execution or session authority. |
 | [DatabaseEngine](Sources/DatabaseEngine/DESIGN.md) | child | Session, authorization, transaction, persistence, and resource contracts | Owns the in-process execution boundary consumed by feature modules. | Changes to session or retained ownership require every feature child to revalidate its caller path. |
+| [DatabaseMath](Sources/DatabaseMath/DESIGN.md) | child | Platform-neutral scalar math and bounded decimal formatting | Adapts numeric runtime operations consumed by execution and feature modules. | SQL overload and failure policy remain in QueryExecution. |
+| [DecimalFormatting](Sources/DecimalFormatting/DESIGN.md) | child | Fixed-function bounded C formatting | Owns buffer validation and locale restoration at the C runtime boundary. | It has no external product or SQL policy. |
 | [QueryAST](Sources/QueryAST/DESIGN.md) | child | SQL parsing, building, and canonical serialization | Adapts SQL syntax to DatabaseKit semantic contracts. | Grammar acceptance never proves executable SQL compatibility. |
 | [GraphIndex](Sources/GraphIndex/DESIGN.md) | child | RDF, SPARQL, graph, and graph-table physical execution | Owns physical graph execution above the DatabaseEngine boundary. | SQL entry/adaptation remains in Database. |
 | [BitmapIndex](Sources/BitmapIndex/DESIGN.md) | child | Bitmap read and retained-result contract | Consumes the DatabaseEngine session and result boundary. | Bitmap-specific behavior must not become a package-wide resource contract. |

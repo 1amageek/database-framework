@@ -1,11 +1,7 @@
+import DatabaseKit
 import DatabaseTypes
 
-/// Canonical numeric state used when an aggregate is reduced incrementally.
-/// Integer inputs remain exact through an Int128 accumulator, decimal inputs
-/// use `ExactDecimal`, and floating-point inputs use compensated summation.
-/// Exact integer and decimal inputs may be combined; mixing either exact kind
-/// with floating point is rejected instead of silently changing numeric
-/// semantics.
+/// Incremental numeric reduction using the input type selected by SQL binding.
 @_spi(DatabaseExecution)
 public struct DatabaseNumericAggregateAccumulator: Sendable {
     public enum Failure: Error, Sendable, Equatable {
@@ -16,256 +12,150 @@ public struct DatabaseNumericAggregateAccumulator: Sendable {
         case resultNotRepresentable
     }
 
-    private struct IntegerState: Sendable {
-        var total: Int128 = 0
-        var count: Int128 = 0
-        var sawSigned = false
-        var sawUnsigned = false
+    private let sourceType: QueryColumnType
+    private let inputType: QueryColumnType
+    private let workMeter: DatabaseWorkMeter
+    private var exactSum: CanonicalSQLDecimalWorkspaceValue?
+    private var floatingSum: Double = 0
+    private var realSum: Float = 0
+    private var realSumOverflowed = false
+    private var count: UInt64 = 0
+    private var maximumDisplayScale: Int32 = 0
+
+    public init(inputType: QueryColumnType, workMeter: DatabaseWorkMeter) {
+        self.sourceType = inputType
+        self.inputType = CanonicalQueryTypeBinder.numericAggregateInputType(inputType) ?? inputType
+        self.workMeter = workMeter
     }
 
-    private struct FloatingPointState: Sendable {
-        var sum = 0.0
-        var compensation = 0.0
-        var count: Int128 = 0
-    }
-
-    private struct DecimalState: Sendable {
-        var total: ExactDecimal
-        var count: Int128
-    }
-
-    private enum State: Sendable {
-        case empty
-        case integer(IntegerState)
-        case decimal(DecimalState)
-        case floatingPoint(FloatingPointState)
-    }
-
-    private var state: State = .empty
-
-    public init() {}
-
-    public mutating func add(_ value: FieldValue) throws(Failure) {
-        switch value {
-        case .null:
-            return
-        case .int8(let value):
-            try addInteger(Int128(value), signed: true)
-        case .int16(let value):
-            try addInteger(Int128(value), signed: true)
-        case .int32(let value):
-            try addInteger(Int128(value), signed: true)
-        case .int64(let value):
-            try addInteger(Int128(value), signed: true)
-        case .uint8(let value):
-            try addInteger(Int128(value), signed: false)
-        case .uint16(let value):
-            try addInteger(Int128(value), signed: false)
-        case .uint32(let value):
-            try addInteger(Int128(value), signed: false)
-        case .uint64(let value):
-            try addInteger(Int128(value), signed: false)
-        case .decimal(let value):
-            try addDecimal(value)
-        case .float32(let value):
-            try addFloatingPoint(Double(value))
-        case .float64(let value):
-            try addFloatingPoint(value)
-        default:
-            throw .nonNumericValue
-        }
-    }
-
-    public func sum() throws(Failure) -> FieldValue? {
-        switch state {
-        case .empty:
-            return nil
-        case .integer(let state):
-            return try integerResult(state.total, state: state)
-        case .decimal(let state):
-            return .decimal(state.total)
-        case .floatingPoint(let state):
-            let value = state.sum + state.compensation
-            guard value.isFinite else { throw .numericOverflow }
-            return .float64(value)
-        }
-    }
-
-    public func average() throws(Failure) -> FieldValue? {
-        switch state {
-        case .empty:
-            return nil
-        case .integer(let state):
-            let quotient = state.total / state.count
-            let remainder = state.total % state.count
-            if remainder == 0 {
-                return try integerResult(quotient, state: state)
-            }
-            guard let total = Double(exactly: state.total),
-                  let count = Double(exactly: state.count) else {
-                throw .resultNotRepresentable
-            }
-            let value = total / count
-            guard value.isFinite else { throw .numericOverflow }
-            return .float64(value)
-        case .decimal(let state):
-            do {
-                return .decimal(
-                    try state.total.dividing(
-                        by: ExactDecimal(
-                            coefficient: state.count,
-                            scale: 0
-                        )
-                    )
-                )
-            } catch ExactDecimalError.inexactResult {
-                throw .resultNotRepresentable
-            } catch {
-                throw .numericOverflow
-            }
-        case .floatingPoint(let state):
-            guard let count = Double(exactly: state.count) else {
-                throw .resultNotRepresentable
-            }
-            let value = (state.sum + state.compensation) / count
-            guard value.isFinite else { throw .numericOverflow }
-            return .float64(value)
-        }
-    }
-
-    private mutating func addInteger(
-        _ value: Int128,
-        signed: Bool
-    ) throws(Failure) {
-        switch state {
-        case .empty:
-            var next = IntegerState()
-            try Self.accumulate(value, signed: signed, into: &next)
-            state = .integer(next)
-        case .integer(var next):
-            try Self.accumulate(value, signed: signed, into: &next)
-            state = .integer(next)
-        case .decimal(var next):
-            try Self.accumulate(
-                ExactDecimal(coefficient: value, scale: 0),
-                into: &next
-            )
-            state = .decimal(next)
-        case .floatingPoint:
-            throw .incompatibleNumericKinds
-        }
-    }
-
-    private mutating func addFloatingPoint(
-        _ value: Double
-    ) throws(Failure) {
-        guard value.isFinite else { throw .nonFiniteValue }
-        switch state {
-        case .empty:
-            var next = FloatingPointState()
-            try Self.accumulate(value, into: &next)
-            state = .floatingPoint(next)
-        case .integer:
-            throw .incompatibleNumericKinds
-        case .decimal:
-            throw .incompatibleNumericKinds
-        case .floatingPoint(var next):
-            try Self.accumulate(value, into: &next)
-            state = .floatingPoint(next)
-        }
-    }
-
-    private mutating func addDecimal(
-        _ value: ExactDecimal
-    ) throws(Failure) {
-        switch state {
-        case .empty:
-            state = .decimal(DecimalState(total: value, count: 1))
-        case .integer(let integer):
-            var next = DecimalState(
-                total: ExactDecimal(coefficient: integer.total, scale: 0),
-                count: integer.count
-            )
-            try Self.accumulate(value, into: &next)
-            state = .decimal(next)
-        case .decimal(var next):
-            try Self.accumulate(value, into: &next)
-            state = .decimal(next)
-        case .floatingPoint:
-            throw .incompatibleNumericKinds
-        }
-    }
-
-    private static func accumulate(
-        _ value: ExactDecimal,
-        into state: inout DecimalState
-    ) throws(Failure) {
-        let count = state.count.addingReportingOverflow(1)
-        guard !count.overflow else { throw .numericOverflow }
+    public mutating func add(_ value: QueryValue) throws {
+        try workMeter.consume(at: .aggregateInput)
+        guard !value.isNull else { return }
+        let nextCount = count.addingReportingOverflow(1)
+        guard !nextCount.overflow else { throw Failure.numericOverflow }
         do {
-            state.total = try state.total.adding(value)
-        } catch {
-            throw .numericOverflow
-        }
-        state.count = count.partialValue
-    }
-
-    private static func accumulate(
-        _ value: Int128,
-        signed: Bool,
-        into state: inout IntegerState
-    ) throws(Failure) {
-        let total = state.total.addingReportingOverflow(value)
-        let count = state.count.addingReportingOverflow(1)
-        guard !total.overflow, !count.overflow else {
-            throw .numericOverflow
-        }
-        state.total = total.partialValue
-        state.count = count.partialValue
-        state.sawSigned = state.sawSigned || signed
-        state.sawUnsigned = state.sawUnsigned || !signed
-    }
-
-    private static func accumulate(
-        _ value: Double,
-        into state: inout FloatingPointState
-    ) throws(Failure) {
-        let next = state.sum + value
-        guard next.isFinite else { throw .numericOverflow }
-        if abs(state.sum) >= abs(value) {
-            state.compensation += (state.sum - next) + value
-        } else {
-            state.compensation += (value - next) + state.sum
-        }
-        guard state.compensation.isFinite else { throw .numericOverflow }
-        let count = state.count.addingReportingOverflow(1)
-        guard !count.overflow else { throw .numericOverflow }
-        state.sum = next
-        state.count = count.partialValue
-    }
-
-    private func integerResult(
-        _ value: Int128,
-        state: IntegerState
-    ) throws(Failure) -> FieldValue {
-        if state.sawSigned && !state.sawUnsigned {
-            guard let result = Int64(exactly: value) else {
-                throw .numericOverflow
+            let value = try selectedValue(value)
+            switch (inputType, value) {
+            case (.sql(.smallint), .primitive(.int16(let value))):
+                try addExact(ExactDecimal(coefficient: Int128(value), scale: 0), displayScale: 0)
+            case (.sql(.integer), .primitive(.int32(let value))):
+                try addExact(ExactDecimal(coefficient: Int128(value), scale: 0), displayScale: 0)
+            case (.sql(.bigint), .primitive(.int64(let value))):
+                try addExact(ExactDecimal(coefficient: Int128(value), scale: 0), displayScale: 0)
+            case (.sql(.decimal), .numeric), (.sql(.decimal), .primitive(.decimal)):
+                let numeric = try CanonicalSQLNumericEvaluator.numeric(value)
+                try addExact(numeric.value, displayScale: numeric.displayScale)
+            case (.sql(.real), .primitive(.float32(let value))):
+                guard value.isFinite else { throw Failure.nonFiniteValue }
+                let widened = floatingSum + Double(value)
+                guard widened.isFinite else { throw Failure.numericOverflow }
+                // SUM(real) has a real transition; AVG(real) has a double transition.
+                // Keep the overflow flag independently so AVG remains usable.
+                let narrowed = realSum + value
+                realSumOverflowed = realSumOverflowed || !narrowed.isFinite
+                realSum = narrowed
+                floatingSum = widened
+            case (.sql(.doublePrecision), .primitive(.float64(let value))):
+                guard value.isFinite else { throw Failure.nonFiniteValue }
+                let sum = floatingSum + value
+                guard sum.isFinite else { throw Failure.numericOverflow }
+                floatingSum = sum
+            default:
+                switch value {
+                case .numeric, .primitive(.int8), .primitive(.int16), .primitive(.int32),
+                     .primitive(.int64), .primitive(.uint8), .primitive(.uint16),
+                     .primitive(.uint32), .primitive(.uint64), .primitive(.decimal),
+                     .primitive(.float32), .primitive(.float64):
+                    throw Failure.incompatibleNumericKinds
+                default:
+                    throw Failure.nonNumericValue
+                }
             }
-            return .int64(result)
+        } catch is ExactDecimalError {
+            throw Failure.numericOverflow
+        } catch is QueryValueError {
+            throw Failure.numericOverflow
         }
-        if state.sawUnsigned && !state.sawSigned {
-            guard let result = UInt64(exactly: value) else {
-                throw .numericOverflow
+        count = nextCount.partialValue
+    }
+
+    private func selectedValue(_ value: QueryValue) throws -> QueryValue {
+        guard case .primitive = sourceType else { return value }
+        guard QueryValueValidator.accepts(value, type: sourceType) else { throw Failure.incompatibleNumericKinds }
+        if case .primitive(.float32(let number)) = value, !number.isFinite { throw Failure.nonFiniteValue }
+        if case .primitive(.float64(let number)) = value, !number.isFinite { throw Failure.nonFiniteValue }
+        return try CanonicalQueryTypeBinder.normalize(value, to: inputType)
+    }
+
+    private mutating func addExact(_ value: ExactDecimal, displayScale: Int32) throws {
+        let input = try CanonicalSQLDecimalWorkspaceValue(value, workMeter: workMeter)
+        let sum = try exactSum.map { try $0.adding(input) } ?? input
+        exactSum = sum
+        maximumDisplayScale = max(maximumDisplayScale, displayScale)
+    }
+
+    public func sum() throws -> QueryValue? {
+        try workMeter.checkpoint(at: .aggregateInput)
+        guard count > 0 else { return nil }
+        switch inputType {
+        case .sql(.real):
+            guard !realSumOverflowed else { throw Failure.numericOverflow }
+            return .primitive(.float32(realSum))
+        case .sql(.doublePrecision):
+            return .primitive(.float64(floatingSum))
+        case .sql(.smallint), .sql(.integer):
+            let decimal = try finalDecimal()
+            guard decimal >= ExactDecimal(coefficient: Int128(Int64.min), scale: 0),
+                  decimal <= ExactDecimal(coefficient: Int128(Int64.max), scale: 0),
+                  decimal.scale <= 0 else { throw Failure.numericOverflow }
+            var integer = decimal.coefficient
+            for _ in 0..<(-Int64(decimal.scale)) {
+                try workMeter.consume(at: .aggregateInput)
+                integer *= 10
             }
-            return .uint64(result)
+            guard let result = Int64(exactly: integer) else { throw Failure.numericOverflow }
+            return .primitive(.int64(result))
+        case .sql(.bigint), .sql(.decimal):
+            return try numericResult(finalDecimal(), displayScale: maximumDisplayScale)
+        default:
+            throw Failure.incompatibleNumericKinds
         }
-        if let result = Int64(exactly: value) {
-            return .int64(result)
+    }
+
+    public func average() throws -> QueryValue? {
+        try workMeter.checkpoint(at: .aggregateInput)
+        guard count > 0 else { return nil }
+        switch inputType {
+        case .sql(.real), .sql(.doublePrecision):
+            let result = floatingSum / Double(count)
+            guard result.isFinite else { throw Failure.numericOverflow }
+            return .primitive(.float64(result))
+        case .sql(.smallint), .sql(.integer), .sql(.bigint), .sql(.decimal):
+            guard let exactSum else { throw Failure.resultNotRepresentable }
+            let numerator = exactSum.leadingBase10000
+            let denominator = CanonicalSQLNumericScale.leading(ExactDecimal(coefficient: Int128(count), scale: 0))
+            let scale = CanonicalSQLNumericScale.divisionScale(
+                leftWeight: numerator.weight, leftDigit: numerator.digit, leftDisplayScale: maximumDisplayScale,
+                rightWeight: denominator.weight, rightDigit: denominator.digit, rightDisplayScale: 0)
+            do {
+                let rounded = try exactSum.divided(by: count, toScale: scale)
+                return try numericResult(rounded.exactDecimal(), displayScale: scale)
+            } catch is ExactDecimalError {
+                throw Failure.numericOverflow
+            }
+        default:
+            throw Failure.incompatibleNumericKinds
         }
-        guard let result = UInt64(exactly: value) else {
-            throw .numericOverflow
-        }
-        return .uint64(result)
+    }
+
+    private func finalDecimal() throws -> ExactDecimal {
+        guard let exactSum else { throw Failure.resultNotRepresentable }
+        do { return try exactSum.exactDecimal() }
+        catch is ExactDecimalError { throw Failure.numericOverflow }
+    }
+
+    private func numericResult(_ decimal: ExactDecimal, displayScale: Int32) throws -> QueryValue {
+        do { return .numeric(try QueryNumericValue(value: decimal, displayScale: displayScale)) }
+        catch { throw Failure.numericOverflow }
     }
 }

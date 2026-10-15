@@ -134,3 +134,15 @@ owns RDF primitive values, authorization and provenance. Changes to output
 columns require member executors, retained page consumers, model decoding and
 external operation adapters to use the same schema. Runtime backend evidence
 must exercise MultiBase; a default-trait compile is insufficient.
+
+### S04 selected SQL aggregate composition
+
+[S04 QueryExecution](../QueryExecution/DESIGN.md#s04-frozen-selected-value-execution)
+owns numeric overloads, displayScale and widened accumulator behavior. Base
+consumes its QueryValue input/result and selected input type directly in
+CompositionQueryPlanner. SUM/AVG must not call comparablePrimitive before
+accumulation or rebuild displayScale after finalization. The same operation
+meter pre-admits dynamic limb/math capacity; the existing fixed state claim
+covers only fixed state. Clear/failure/cancel/final-output paths release the
+accumulator exactly at its actual lifetime. S04-C09/C10/C12 require MultiBase
+widened AVG/cancellation SUM, scale retention, budget failure and release.

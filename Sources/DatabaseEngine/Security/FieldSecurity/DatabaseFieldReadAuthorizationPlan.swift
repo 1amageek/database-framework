@@ -383,7 +383,7 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                     .greaterThan(let lhs, let rhs),
                     .greaterThanOrEqual(let lhs, let rhs),
                     .and(let lhs, let rhs), .or(let lhs, let rhs),
-                    .nullIf(let lhs, let rhs):
+                    .nullIf(let lhs, let rhs), .isDistinctFrom(let lhs, let rhs, _):
                 collect(
                     lhs,
                     localBindings: localBindings,
@@ -395,7 +395,7 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                     outerScopes: outerScopes
                 )
             case .negate(let operand), .not(let operand),
-                    .isNull(let operand), .isNotNull(let operand),
+                    .isNull(let operand), .isNotNull(let operand), .truthTest(let operand, _, _),
                     .like(let operand, _), .regex(let operand, _, _),
                     .cast(let operand, _), .isTriple(let operand),
                     .subject(let operand), .predicate(let operand),
@@ -427,6 +427,12 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                         outerScopes: outerScopes
                     )
                 }
+            case .quantifiedComparison(let lhs, _, _, let source):
+                collect(lhs, localBindings: localBindings, outerScopes: outerScopes)
+                switch source {
+                case .array(let value): collect(value, localBindings: localBindings, outerScopes: outerScopes)
+                case .subquery(let query): collect(query, outerScopes: [localBindings] + outerScopes)
+                }
             case .inSubquery(let operand, let query):
                 collect(
                     operand,
@@ -451,7 +457,8 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                         outerScopes: outerScopes
                     )
                 }
-            case .caseWhen(let cases, let elseResult):
+            case .caseWhen(let operand, let cases, let elseResult):
+                if let operand { collect(operand, localBindings: localBindings, outerScopes: outerScopes) }
                 for pair in cases {
                     collect(
                         pair.condition,
@@ -471,7 +478,7 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                         outerScopes: outerScopes
                     )
                 }
-            case .coalesce(let expressions), .array(let expressions), .row(let expressions):
+            case .coalesce(let expressions), .array(let expressions), .row(let expressions), .greatest(let expressions), .least(let expressions):
                 for expression in expressions {
                     collect(
                         expression,

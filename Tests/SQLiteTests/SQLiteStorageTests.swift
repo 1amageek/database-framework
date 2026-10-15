@@ -160,6 +160,22 @@ struct SQLiteStorageTests {
         let emptyBound = try await context.executeSQL(parameterSQL + " WHERE FALSE", parameters: parameters)
         #expect(emptyBound.rows.isEmpty)
         #expect(emptyBound.columns == bound.columns)
+
+        let numericSQL = "SELECT \"exactAmount\" + \"exactAmount\", ROUND(\"exactAmount\", 1), CASE \"exactAmount\" WHEN 4.56 THEN \"exactAmount\" ELSE NULL END, 7 = ANY(\"integerValues\") FROM \"SQLiteStoredRichItem\""
+        let computed = try await context.executeSQL(numericSQL)
+        #expect(computed.rows[0].values == [
+            .numeric(try QueryNumericValue(value: ExactDecimal(coefficient: 912, scale: 2), displayScale: 8)),
+            .numeric(try QueryNumericValue(value: ExactDecimal(coefficient: 46, scale: 1), displayScale: 1)),
+            .numeric(updated.exactAmount), .primitive(.bool(true))])
+        let emptyComputed = try await context.executeSQL(numericSQL + " WHERE FALSE")
+        #expect(emptyComputed.rows.isEmpty)
+        #expect(emptyComputed.columns == computed.columns)
+        let aggregates = try await context.executeSQL(
+            "SELECT SUM(\"exactAmount\"), AVG(\"exactAmount\"), MIN(\"exactAmount\"), MAX(\"exactAmount\") FROM \"SQLiteStoredRichItem\"")
+        #expect(aggregates.rows[0].values == [
+            .numeric(updated.exactAmount),
+            .numeric(try QueryNumericValue(value: updated.exactAmount.value, displayScale: 16)),
+            .numeric(updated.exactAmount), .numeric(updated.exactAmount)])
     }
 
     @Test("SQL syntax preserves exact names and rejects pending execution capabilities", .timeLimit(.minutes(2)))

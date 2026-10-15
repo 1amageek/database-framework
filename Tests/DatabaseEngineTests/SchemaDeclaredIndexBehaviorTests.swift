@@ -328,7 +328,7 @@ struct SchemaDeclaredIndexBehaviorTests {
                 )
             )
             Issue.record("Division by zero must surface as a typed read error")
-        } catch CanonicalReadError.expressionEvaluation(.divisionByZero) {
+        } catch CanonicalReadError.expressionEvaluation(.divisionByZero, _) {
             // Expected.
         }
     }
@@ -677,14 +677,49 @@ struct SchemaDeclaredIndexBehaviorTests {
             )
         )
 
-        #expect(
-            response.rows[0].values[0]
-                == .primitive(.decimal(ExactDecimal(coefficient: 325, scale: 2)))
+        let total = try QueryNumericValue(
+            value: ExactDecimal(coefficient: 325, scale: 2), displayScale: 2
         )
-        #expect(
-            response.rows[0].values[1]
-                == .primitive(.decimal(ExactDecimal(coefficient: 1_625, scale: 3)))
+        let average = try QueryNumericValue(
+            value: ExactDecimal(coefficient: 1_625, scale: 3), displayScale: 16
         )
+        #expect(response.rows[0].values[0] == .numeric(total))
+        #expect(response.rows[0].values[1] == .numeric(average))
+    }
+
+    @Test("S04 selected numeric projections agree across real scan and declared index paths", .timeLimit(.minutes(2)))
+    func selectedNumericScanIndexAgreement() async throws {
+        let scenario = try await makeScenario()
+        defer { await scenario.container.shutdown() }
+        let context = scenario.container.testBaseContext()
+        try context.insert(CatalogItem(id: "first", category: "books", title: "First"))
+        try context.insert(CatalogItem(id: "unrelated", category: "music", title: "Other"))
+        try await context.save()
+        let numeric: Expression = .literal(.queryValue(.numeric(try QueryNumericValue(
+            value: ExactDecimal(coefficient: 123, scale: 2), displayScale: 5)),
+            type: .sql(.decimal(precision: nil, scale: nil))))
+        let projection = Projection.items([
+            ProjectionItem(.column(ColumnRef("id"))),
+            ProjectionItem(.add(numeric, numeric)),
+            ProjectionItem(.greatest([.literal(.null), numeric])),
+            ProjectionItem(.caseWhen(operand: numeric, cases: [
+                CaseWhenPair(condition: numeric, result: numeric)
+            ], elseResult: .literal(.null)))])
+        let indexed = SelectQuery(projection: projection, source: .table(TableRef(CatalogItem.persistableType)),
+            accessPath: .index(IndexScanSource(indexName: scenario.indexName, indexType: .ordered)),
+            filter: .equal(.col("category"), .string("books")))
+        let scanned = SelectQuery(projection: projection, source: .table(TableRef(CatalogItem.persistableType)),
+            filter: .equal(.coalesce([.col("category"), .string("missing")]), .string("books")))
+        let indexResult = try await context.query(indexed)
+        let scanResult = try await context.query(scanned)
+        #expect(indexResult.columns == scanResult.columns)
+        #expect(indexResult.rows.map(\.values) == scanResult.rows.map(\.values))
+        #expect(indexResult.rows[0].values[1] == .numeric(try QueryNumericValue(
+            value: ExactDecimal(coefficient: 246, scale: 2), displayScale: 5)))
+        #expect(indexResult.rows[0].values[2] == indexResult.rows[0].values[3])
+        try await scenario.corruptItems(ids: ["unrelated"])
+        #expect(try await context.query(indexed).rows.count == 1)
+        await #expect(throws: (any Error).self) { _ = try await context.query(scanned) }
     }
 
     private func makeScenario(

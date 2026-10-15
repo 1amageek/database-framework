@@ -85,18 +85,24 @@ struct SQLSourceCaptureCollector {
         switch expression {
         case .literal, .column, .variable, .parameter, .bound: break
         case .add, .subtract, .multiply, .divide, .modulo, .equal, .notEqual,
-             .lessThan, .lessThanOrEqual, .greaterThan, .greaterThanOrEqual, .and, .or, .nullIf:
+             .lessThan, .lessThanOrEqual, .greaterThan, .greaterThanOrEqual, .and, .or, .nullIf, .isDistinctFrom:
             try child(.operand, index: 0, into: &children, ledger: &ledger)
             try child(.operand, index: 1, into: &children, ledger: &ledger)
-        case .negate, .not, .isNull, .isNotNull, .like, .regex, .isTriple, .subject, .predicate, .object:
+        case .negate, .not, .isNull, .isNotNull, .truthTest, .like, .regex, .isTriple, .subject, .predicate, .object:
             try child(.operand, index: 0, into: &children, ledger: &ledger)
         case .between, .triple:
             for index in 0..<3 { try child(.operand, index: index, into: &children, ledger: &ledger) }
-        case .array(let values), .row(let values), .coalesce(let values):
+        case .array(let values), .row(let values), .coalesce(let values), .greatest(let values), .least(let values):
             for index in values.indices { try child(.argument, index: index, into: &children, ledger: &ledger) }
         case .inList(_, let values), .notInList(_, let values):
             try child(.operand, index: 0, into: &children, ledger: &ledger)
             for index in values.indices { try child(.argument, index: index, into: &children, ledger: &ledger) }
+        case .quantifiedComparison(_, _, _, let source):
+            try child(.operand, index: 0, into: &children, ledger: &ledger)
+            switch source {
+            case .array: try child(.operand, index: 1, into: &children, ledger: &ledger)
+            case .subquery: try child(.subquery, kind: .query, into: &children, ledger: &ledger)
+            }
         case .inSubquery:
             try child(.operand, index: 0, into: &children, ledger: &ledger)
             try child(.subquery, kind: .query, into: &children, ledger: &ledger)
@@ -104,7 +110,8 @@ struct SQLSourceCaptureCollector {
             try child(.subquery, kind: .query, into: &children, ledger: &ledger)
         case .function(let function):
             for index in function.arguments.indices { try child(.argument, index: index, into: &children, ledger: &ledger) }
-        case .caseWhen(let cases, let elseResult):
+        case .caseWhen(let operand, let cases, let elseResult):
+            if operand != nil { try child(.operand, index: 0, into: &children, ledger: &ledger) }
             for index in cases.indices {
                 try child(.caseCondition, index: index, into: &children, ledger: &ledger)
                 try child(.caseResult, index: index, into: &children, ledger: &ledger)

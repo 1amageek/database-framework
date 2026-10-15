@@ -119,7 +119,12 @@ let package = Package(
         ),
     ],
     targets: [
-        .target(name: "DatabaseMath"),
+        .target(name: "DecimalFormatting", exclude: ["DESIGN.md"]),
+        .target(
+            name: "DatabaseMath",
+            dependencies: ["DecimalFormatting"],
+            exclude: ["DESIGN.md"]
+        ),
         .target(
             name: "DatabaseEngine",
             dependencies: [

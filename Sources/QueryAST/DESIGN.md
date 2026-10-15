@@ -129,3 +129,11 @@ accepting its current syntax and does not consume diagnostic
 Literal.description. Full rich lexical forms and canonical serializer
 consolidation belong to S02; S01 typed carriage is not evidence those text
 forms are supported.
+
+### S04 composition
+
+[Parser](Parser/DESIGN.md#s04-conditional-and-quantified-grammar) and
+[Builder](Builder/DESIGN.md#s04-conditional-and-quantified-serialization)
+compose the [S04 Kit semantics](../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s04-semantic-additions-and-scope).
+Syntax/source/serialization proof precedes execution integration; parsing
+array-valued ANY/ALL does not claim S07 constructors or S08 ROW semantics.

@@ -284,11 +284,11 @@ extension Expression {
                 .greaterThan(let lhs, let rhs),
                 .greaterThanOrEqual(let lhs, let rhs),
                 .and(let lhs, let rhs), .or(let lhs, let rhs),
-                .nullIf(let lhs, let rhs):
+                .nullIf(let lhs, let rhs), .isDistinctFrom(let lhs, let rhs, _):
             return lhs.referencesOnlySourceQualifier(sourceQualifier)
                 && rhs.referencesOnlySourceQualifier(sourceQualifier)
         case .negate(let operand), .not(let operand),
-                .isNull(let operand), .isNotNull(let operand),
+                .isNull(let operand), .isNotNull(let operand), .truthTest(let operand, _, _),
                 .like(let operand, _), .regex(let operand, _, _),
                 .cast(let operand, _), .isTriple(let operand),
                 .subject(let operand), .predicate(let operand),
@@ -304,6 +304,11 @@ extension Expression {
                 && values.allSatisfy {
                     $0.referencesOnlySourceQualifier(sourceQualifier)
                 }
+        case .quantifiedComparison(let lhs, _, _, let source):
+            switch source {
+            case .array(let value): return lhs.referencesOnlySourceQualifier(sourceQualifier) && value.referencesOnlySourceQualifier(sourceQualifier)
+            case .subquery: return false
+            }
         case .inSubquery, .subquery, .exists:
             return false
         case .aggregate(let aggregate):
@@ -332,13 +337,13 @@ extension Expression {
             return function.arguments.allSatisfy {
                 $0.referencesOnlySourceQualifier(sourceQualifier)
             }
-        case .caseWhen(let cases, let elseResult):
-            return cases.allSatisfy {
+        case .caseWhen(let operand, let cases, let elseResult):
+            return (operand?.referencesOnlySourceQualifier(sourceQualifier) ?? true) && cases.allSatisfy {
                 $0.condition.referencesOnlySourceQualifier(sourceQualifier)
                     && $0.result.referencesOnlySourceQualifier(sourceQualifier)
             } && (elseResult?.referencesOnlySourceQualifier(sourceQualifier)
                 ?? true)
-        case .coalesce(let expressions), .array(let expressions), .row(let expressions):
+        case .coalesce(let expressions), .array(let expressions), .row(let expressions), .greatest(let expressions), .least(let expressions):
             return expressions.allSatisfy {
                 $0.referencesOnlySourceQualifier(sourceQualifier)
             }

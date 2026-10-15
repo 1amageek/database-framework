@@ -532,7 +532,7 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
     /// - Returns: New builder with filter added
     public func `where`<Value: FieldValueRepresentable>(
         _ field: Field<T, Value>,
-        _ op: ComparisonOperator,
+        _ op: DatabaseEngine.ComparisonOperator,
         _ value: Value
     ) -> Self {
         let filter = PropertyFilter(
@@ -555,7 +555,7 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
     /// - Returns: New builder with filter added
     public func whereField(
         named fieldName: String,
-        _ op: ComparisonOperator,
+        _ op: DatabaseEngine.ComparisonOperator,
         _ value: FieldValue
     ) -> Self {
         let filter = PropertyFilter(

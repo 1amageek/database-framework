@@ -430,10 +430,10 @@ enum FusionSelectQueryGraphWalker {
              .lessThanOrEqual(let lhs, let rhs),
              .greaterThan(let lhs, let rhs),
              .greaterThanOrEqual(let lhs, let rhs), .and(let lhs, let rhs),
-             .or(let lhs, let rhs), .nullIf(let lhs, let rhs):
+             .or(let lhs, let rhs), .nullIf(let lhs, let rhs), .isDistinctFrom(let lhs, let rhs, _):
             try stack.append(.expression(lhs))
             try stack.append(.expression(rhs))
-        case .negate(let nested), .not(let nested), .isNull(let nested),
+        case .negate(let nested), .not(let nested), .isNull(let nested), .truthTest(let nested, _, _),
              .isNotNull(let nested), .like(let nested, _),
              .regex(let nested, _, _), .cast(let nested, _),
              .isTriple(let nested), .subject(let nested),
@@ -449,6 +449,12 @@ enum FusionSelectQueryGraphWalker {
             for nested in values {
                 try stack.append(.expression(nested))
             }
+        case .quantifiedComparison(let lhs, _, _, let source):
+            try stack.append(.expression(lhs))
+            switch source {
+            case .array(let value): try stack.append(.expression(value))
+            case .subquery(let query): try stack.append(.query(query))
+            }
         case .inSubquery(let value, let query):
             try stack.append(.expression(value))
             try stack.append(.query(query))
@@ -458,7 +464,8 @@ enum FusionSelectQueryGraphWalker {
             for argument in call.arguments {
                 try stack.append(.expression(argument))
             }
-        case .caseWhen(let cases, let fallback):
+        case .caseWhen(let operand, let cases, let fallback):
+            if let operand { try stack.append(.expression(operand)) }
             for pair in cases {
                 try stack.append(.expression(pair.condition))
                 try stack.append(.expression(pair.result))
@@ -466,7 +473,7 @@ enum FusionSelectQueryGraphWalker {
             if let fallback {
                 try stack.append(.expression(fallback))
             }
-        case .coalesce(let expressions), .array(let expressions), .row(let expressions):
+        case .coalesce(let expressions), .array(let expressions), .row(let expressions), .greatest(let expressions), .least(let expressions):
             for nested in expressions {
                 try stack.append(.expression(nested))
             }

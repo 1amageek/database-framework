@@ -27,7 +27,7 @@ public enum CanonicalReadError: Error, Sendable {
     case unsupportedExpression
 
     /// A supported scalar expression failed with a typed evaluation error.
-    case expressionEvaluation(DatabaseExpressionEvaluationError)
+    case expressionEvaluation(DatabaseExpressionEvaluationError, occurrence: QueryOccurrenceID? = nil)
 
     /// A grouped or aggregate expression failed during canonical reduction.
     case aggregateEvaluation(DatabaseAggregateEvaluationError)

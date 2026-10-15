@@ -145,7 +145,11 @@ parent transaction and retained prepared-storage lifetimes are preserved.
 Engine receives only Kit occurrence arena/root, never QueryAST/source-span
 types. Database retains the parse result and maps a decisive typed Engine
 failure address to zero-based UTF-8 source position, preserving the typed
-underlying cause. Repeated identical expressions, parameter uses, normalization
+underlying cause. Runtime scalar failures carry their decisive optional occurrence
+in CanonicalReadError.expressionEvaluation; executeSQL maps that address into
+the existing SQLBindingSourceFailure without treating execution as binding.
+Prepared rewrites remap runtime occurrences through the same explicit origin
+dictionary before source annotation. Repeated identical expressions, parameter uses, normalization
 and alias/ordinal/SPARQL rewrites require explicit provenance; direct semantic
 IR has no invented position. When a SPARQL rewrite changes child structure,
 the existing rewriter explicitly walks original field/index addresses while

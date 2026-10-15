@@ -106,7 +106,13 @@ private extension SPARQLExpressionValidator {
                 expression
             )
 
+            if case .caseWhen(.some, _, _) = expression {
+                throw SPARQLExpressionCompilationError.unsupportedExpression("Simple SQL CASE")
+            }
             switch consume expression {
+        // SQL conditionals and quantified predicates have no RDF interpretation.
+        case .greatest, .least, .truthTest, .isDistinctFrom, .quantifiedComparison:
+            throw SPARQLExpressionCompilationError.unsupportedExpression("SQL conditional or quantified expression")
         // FIXME(INCOMPLETE_IMPLEMENTATION): SPARQL compilation must reject SQL-only constructors.
         // S07/S08 own SQL execution; RDF term semantics cannot be used as their implementation.
         case .array, .row:

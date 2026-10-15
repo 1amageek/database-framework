@@ -6,6 +6,9 @@ public enum DatabaseExpressionEvaluationError: Error, Sendable, Equatable, Custo
     case divisionByZero
     case inexactDecimalResult
     case numericOverflow
+    case numericUnderflow
+    case nonFiniteValue
+    case numericDomain(operation: String)
     case unsupportedExpression(String)
     case unsupportedFunction(String)
     case invalidCast(String)
@@ -27,6 +30,12 @@ public enum DatabaseExpressionEvaluationError: Error, Sendable, Equatable, Custo
             return "Expression produces a decimal that cannot be represented exactly"
         case .numericOverflow:
             return "Expression numeric result is outside the canonical value range"
+        case .numericUnderflow:
+            return "Expression nonzero numeric result underflows its selected type"
+        case .nonFiniteValue:
+            return "Expression contains a non-finite numeric value"
+        case .numericDomain(let operation):
+            return "Expression numeric operand is outside the domain of \(operation)"
         case .unsupportedExpression(let expression):
             return "Expression is not supported by the database evaluator: \(expression)"
         case .unsupportedFunction(let function):

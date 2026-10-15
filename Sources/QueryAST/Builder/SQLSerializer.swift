@@ -351,15 +351,47 @@ extension SQLTextWriter {
             try append("(")
             if call.distinct { try append("DISTINCT ") }
             try list(call.arguments) { (writer: inout SQLTextWriter, value: Expression) throws(SQLSerializationError) -> Void in try writer.expression(value) }; try append(")")
-        case .caseWhen(let pairs, let otherwise):
+        case .caseWhen(let operand, let pairs, let otherwise):
             guard !pairs.isEmpty else { throw .invalidStructure("CASE requires a WHEN arm") }
             try collection(pairs.count); try append("CASE")
+            if let operand { try append(" "); try expression(operand) }
             for pair in pairs { try append(" WHEN "); try expression(pair.condition); try append(" THEN "); try expression(pair.result) }
             if let otherwise { try append(" ELSE "); try expression(otherwise) }
             try append(" END")
         case .coalesce(let values):
             guard !values.isEmpty else { throw .invalidStructure("COALESCE requires arguments") }
             try append("COALESCE("); try list(values) { (writer: inout SQLTextWriter, value: Expression) throws(SQLSerializationError) -> Void in try writer.expression(value) }; try append(")")
+        case .greatest(let values), .least(let values):
+            guard !values.isEmpty else { throw .invalidStructure("GREATEST/LEAST requires arguments") }
+            if case .greatest = value { try append("GREATEST(") } else { try append("LEAST(") }
+            try list(values) { (writer: inout SQLTextWriter, value: Expression) throws(SQLSerializationError) -> Void in try writer.expression(value) }
+            try append(")")
+        case .truthTest(let operand, let truth, let negated):
+            try append("("); try expression(operand); try append(negated ? " IS NOT " : " IS ")
+            switch truth {
+            case .true: try append("TRUE")
+            case .false: try append("FALSE")
+            case .unknown: try append("UNKNOWN")
+            }
+            try append(")")
+        case .isDistinctFrom(let left, let right, let negated):
+            try binary(left, negated ? "IS NOT DISTINCT FROM" : "IS DISTINCT FROM", right)
+        case .quantifiedComparison(let left, let comparison, let quantifier, let source):
+            try append("("); try expression(left)
+            switch comparison {
+            case .equal: try append(" = ")
+            case .notEqual: try append(" <> ")
+            case .lessThan: try append(" < ")
+            case .lessThanOrEqual: try append(" <= ")
+            case .greaterThan: try append(" > ")
+            case .greaterThanOrEqual: try append(" >= ")
+            }
+            try append(quantifier == .any ? "ANY (" : "ALL (")
+            switch source {
+            case .array(let operand): try expression(operand)
+            case .subquery(let query): try select(query)
+            }
+            try append("))")
         case .nullIf(let left, let right):
             try append("NULLIF("); try expression(left); try append(", "); try expression(right); try append(")")
         case .cast(let value, let target):

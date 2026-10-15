@@ -1,3 +1,4 @@
+import Foundation
 import DatabaseKit
 import DatabaseRuntime
 import DatabaseTypes
@@ -38,8 +39,8 @@ struct SQLRowExecutionTests {
         )
 
         #expect(response.rows.count == 1)
-        #expect(response.columns[0].type == .sql(.bigint))
-        #expect(response.rows[0].values[0] == .primitive(.int64(3)))
+        #expect(response.columns[0].type == .sql(.integer))
+        #expect(response.rows[0].values[0] == .primitive(.int32(3)))
         let cast = try await container.testBaseContext().query(SelectQuery(
             projection: .items([
                 ProjectionItem(.cast(.literal(.double(0.1)), targetType: .real), alias: "rounded"),
@@ -176,7 +177,8 @@ struct SQLRowExecutionTests {
         #expect(response.rows[0].values[0] == .primitive(.string("books")))
         #expect(response.rows[0].values[1] == .primitive(.int64(2)))
         #expect(response.rows[0].values[2] == .numeric(try QueryNumericValue(value: ExactDecimal(coefficient: 4, scale: 0), displayScale: 0)))
-        #expect(response.rows[0].values[3] == .primitive(.float64(2)))
+        #expect(response.rows[0].values[3] == .numeric(try QueryNumericValue(
+            value: ExactDecimal(coefficient: 2, scale: 0), displayScale: 16)))
         #expect(response.rows[0].values[4] == .primitive(.int64(1)))
         #expect(response.rows[0].values[5] == .primitive(.int64(3)))
     }
@@ -632,7 +634,7 @@ struct SQLRowExecutionTests {
         #expect(set.columns[0].isNullable)
         #expect(set.rows.map { $0.values[0] } == [.primitive(.null), .primitive(.int64(1))])
 
-        func singleton(_ expression: Expression) -> SelectQuery {
+        func singleton(_ expression: DatabaseKit.Expression) -> SelectQuery {
             SelectQuery(projection: .items([ProjectionItem(expression, alias: "value")]),
                         source: .values([[]], columnNames: []))
         }
@@ -718,17 +720,272 @@ struct SQLRowExecutionTests {
         #expect(throws: QueryRowCodecError.self) {
             try result.rows[0].primitiveFields(columns: result.columns)
         }
-        await #expect(throws: CanonicalReadError.self) {
-            _ = try await context.query(SelectQuery(projection: projection, source: source,
-                filter: .equal(.column(ColumnRef(column: "numeric")),
-                               .column(ColumnRef(column: "numeric")))))
+        let compared = try await context.executeSQL(
+            "SELECT numeric FROM \"SQLRichItem\" WHERE numeric = numeric")
+        #expect(compared.rows.map(\.values) == [[.numeric(item.numeric)]])
+        let calculated = try await context.executeSQL(
+            "SELECT numeric + numeric FROM \"SQLRichItem\"")
+        #expect(calculated.rows[0].values == [try sqlNumeric(246, scale: 2, displayScale: 6)])
+    }
+
+
+    @Test("S04 selected arithmetic, casts and functions retain numeric value and scale", .timeLimit(.minutes(2)))
+    func selectedNumericSQLValues() async throws {
+        let container = try await makeContainer()
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        let sql = "SELECT 1::SMALLINT + 2::SMALLINT, 7::INTEGER / 2::INTEGER, 7::BIGINT % 2::BIGINT, 1.5::REAL + 2.5::REAL, 1::REAL + 2::INTEGER, 1.20 + 2.300, 1.20 * 2.300, 1::NUMERIC / 3::NUMERIC, 2.5::NUMERIC::INTEGER, (-2.5)::NUMERIC::INTEGER, 1250::NUMERIC(3,-1), SQRT(4.0000), LN(1.000), POWER(2.000, 3.00), ROUND(2.55, 1), SCALE(1.2300), TRIM_SCALE(1.2300)"
+        let response = try await context.executeSQL(sql)
+        #expect(response.rows.count == 1)
+        #expect(Array(response.columns.prefix(5)).map(\.type) == [
+            .sql(.smallint), .sql(.integer), .sql(.bigint), .sql(.real), .sql(.doublePrecision)])
+        #expect(response.rows[0].values == [
+            .primitive(.int16(3)), .primitive(.int32(3)), .primitive(.int64(1)),
+            .primitive(.float32(4)), .primitive(.float64(3)),
+            try sqlNumeric(35, scale: 1, displayScale: 3),
+            try sqlNumeric(276, scale: 2, displayScale: 5),
+            try sqlNumeric(33_333_333_333_333_333_333, scale: 20, displayScale: 20),
+            .primitive(.int32(3)), .primitive(.int32(-3)),
+            try sqlNumeric(125, scale: -1, displayScale: 0),
+            try sqlNumeric(2, displayScale: 15), try sqlNumeric(0, displayScale: 16),
+            try sqlNumeric(8, displayScale: 16), try sqlNumeric(26, scale: 1, displayScale: 1),
+            .primitive(.int32(4)), try sqlNumeric(123, scale: 2, displayScale: 2)])
+        let empty = try await context.executeSQL(sql + " WHERE FALSE")
+        #expect(empty.rows.isEmpty)
+        #expect(empty.columns == response.columns)
+        let comparisons = try await context.executeSQL("SELECT 1.200 = 1.20, 1.200 <> 2.0, 1.200 < 2, 1.200 <= 1.20, 2.0 > 1.200, 2.0 >= 2, 1.200 BETWEEN 1.0 AND 2.0, 1.200 BETWEEN 2.0 AND NULL::NUMERIC, 1.200 BETWEEN NULL::NUMERIC AND 2.0, 1.200 IN (2.0, 1.20, NULL), 1.200 NOT IN (2.0, NULL), NULL::NUMERIC = 1.0")
+        #expect(comparisons.rows[0].values == [
+            .primitive(.bool(true)), .primitive(.bool(true)), .primitive(.bool(true)),
+            .primitive(.bool(true)), .primitive(.bool(true)), .primitive(.bool(true)),
+            .primitive(.bool(true)), .primitive(.bool(false)), .primitive(.null),
+            .primitive(.bool(true)), .primitive(.null), .primitive(.null)])
+        let lexical = try await context.executeSQL("SELECT :text::NUMERIC, :absent::NUMERIC", parameters: [
+            QueryParameter(position: 1, name: "text", value: .primitive(.string("1.2300")), type: .sql(.text)),
+            QueryParameter(position: 2, name: "absent", value: .primitive(.null), type: .sql(.text))])
+        let lexicalValue = lexical.rows[0].values[0]
+        guard case .primitive(.decimal(let lexicalDecimal)) = lexicalValue else {
+            Issue.record("The existing S03 lexical kernel must preserve its primitive decimal carrier: \(String(reflecting: lexicalValue))")
+            return
         }
-        await #expect(throws: CanonicalReadError.self) {
-            _ = try await context.query(SelectQuery(projection: .items([
-                ProjectionItem(.add(.column(ColumnRef(column: "numeric")),
-                                    .column(ColumnRef(column: "numeric"))))
-            ]), source: source))
+        #expect(lexicalDecimal.coefficient == 123)
+        #expect(lexicalDecimal.scale == 2)
+        #expect(lexical.rows[0].values[1] == .primitive(.null))
+    }
+
+    @Test("S04 control flow binds every branch and evaluates only selected lazy branches", .timeLimit(.minutes(2)))
+    func selectedConditionalSQLValues() async throws {
+        let container = try await makeContainer()
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        let response = try await context.executeSQL("SELECT CASE WHEN TRUE THEN 1.2300 ELSE 1::NUMERIC / 0 END, CASE 2 WHEN 1 THEN 1::NUMERIC / 0 WHEN 2 THEN 2.500 ELSE 3.0 END, COALESCE(4.200, 1::NUMERIC / 0), NULLIF(1.200, 2.00), NULLIF(1.200, 1.20), GREATEST(NULL, 1.200, 2.300), LEAST(1.200, NULL, 2.300), GREATEST(NULL::NUMERIC, NULL::NUMERIC), FALSE AND 1 / 0 = 0, TRUE OR 1 / 0 = 0")
+        #expect(response.rows[0].values == [
+            try sqlNumeric(123, scale: 2, displayScale: 4), try sqlNumeric(25, scale: 1, displayScale: 3),
+            try sqlNumeric(42, scale: 1, displayScale: 3), try sqlNumeric(12, scale: 1, displayScale: 3),
+            .primitive(.null), try sqlNumeric(23, scale: 1, displayScale: 3),
+            try sqlNumeric(12, scale: 1, displayScale: 3), .primitive(.null),
+            .primitive(.bool(false)), .primitive(.bool(true))])
+        #expect(response.columns[7].type == .sql(.decimal(precision: nil, scale: nil)))
+        let independentMatches = try await context.executeSQL("SELECT CASE 9007199254740993::NUMERIC WHEN 0::DOUBLE PRECISION THEN 1 WHEN 9007199254740992::NUMERIC THEN 2 ELSE 3 END")
+        #expect(independentMatches.rows[0].values == [.primitive(.int32(3))])
+        for sql in [
+            "SELECT CASE WHEN TRUE THEN 1 ELSE missing END FROM \"SQLRowItem\" WHERE FALSE",
+            "SELECT CASE 1 WHEN 1 THEN 1 ELSE missing END FROM \"SQLRowItem\" WHERE FALSE",
+            "SELECT COALESCE(1, missing) FROM \"SQLRowItem\" WHERE FALSE",
+        ] {
+            await #expect(throws: SQLBindingSourceFailure.self) { _ = try await context.executeSQL(sql) }
         }
+        for sql in ["SELECT NULLIF(NULL::INTEGER, 1 / 0)", "SELECT GREATEST(2, 1 / 0)",
+                    "SELECT LEAST(1, 1 / 0)"] {
+            do {
+                _ = try await context.executeSQL(sql)
+                Issue.record("Eager conditional operands must retain arithmetic failure")
+            } catch let failure as SQLBindingSourceFailure {
+                guard case .expression(.divisionByZero) = failure.cause else {
+                    Issue.record("Expected division by zero, got \(failure)")
+                    continue
+                }
+                #expect(failure.position != nil)
+            }
+        }
+    }
+
+    @Test("S04 truth and null-safe distinct predicates implement Boolean NULL tables", .timeLimit(.minutes(2)))
+    func selectedTruthSQLValues() async throws {
+        let container = try await makeContainer()
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        for (literal, expected): (String, [Bool]) in [
+            ("TRUE", [true, false, false, false, true, true]),
+            ("FALSE", [false, true, false, true, false, true]),
+            ("NULL::BOOLEAN", [false, false, true, true, true, false]),
+        ] {
+            let result = try await context.executeSQL("SELECT \(literal) IS TRUE, \(literal) IS FALSE, \(literal) IS UNKNOWN, \(literal) IS NOT TRUE, \(literal) IS NOT FALSE, \(literal) IS NOT UNKNOWN")
+            #expect(result.rows[0].values == expected.map { .primitive(.bool($0)) })
+            #expect(result.columns.allSatisfy { $0.type == .sql(.boolean) && !$0.isNullable })
+        }
+        let literals = ["TRUE", "FALSE", "NULL::BOOLEAN"]
+        let andResults: [Bool?] = [true, false, nil, false, false, false, nil, false, nil]
+        let orResults: [Bool?] = [true, true, true, true, false, nil, true, nil, nil]
+        let notResults: [Bool?] = [false, true, nil]
+        for left in literals.indices {
+            for right in literals.indices {
+                let index = left * literals.count + right
+                let result = try await context.executeSQL(
+                    "SELECT \(literals[left]) AND \(literals[right]), \(literals[left]) OR \(literals[right])")
+                let andValue = andResults[index].map { QueryValue.primitive(.bool($0)) } ?? .primitive(.null)
+                let orValue = orResults[index].map { QueryValue.primitive(.bool($0)) } ?? .primitive(.null)
+                #expect(result.rows[0].values == [andValue, orValue])
+            }
+            let negated = try await context.executeSQL("SELECT NOT \(literals[left])")
+            let expected = notResults[left].map { QueryValue.primitive(.bool($0)) } ?? .primitive(.null)
+            #expect(negated.rows[0].values == [expected])
+        }
+        let distinct = try await context.executeSQL("SELECT NULL IS DISTINCT FROM NULL, NULL IS NOT DISTINCT FROM NULL, 1.00 IS DISTINCT FROM 1::INTEGER, 1.00 IS NOT DISTINCT FROM 1::INTEGER, NULL IS DISTINCT FROM 1, FALSE AND NULL::BOOLEAN, TRUE OR NULL::BOOLEAN, TRUE AND NULL::BOOLEAN, FALSE OR NULL::BOOLEAN, NOT NULL::BOOLEAN")
+        #expect(distinct.rows[0].values == [
+            .primitive(.bool(false)), .primitive(.bool(true)), .primitive(.bool(false)),
+            .primitive(.bool(true)), .primitive(.bool(true)), .primitive(.bool(false)),
+            .primitive(.bool(true)), .primitive(.null), .primitive(.null), .primitive(.null)])
+    }
+
+    @Test("S04 ANY and ALL reduce typed arrays and single-column subqueries with three-valued logic", .timeLimit(.minutes(2)))
+    func selectedQuantifiedSQLValues() async throws {
+        let container = try await makeContainer()
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        func parameter(_ elements: [QueryValue]?) throws -> QueryParameter {
+            let value: QueryValue
+            if let elements {
+                value = .array(try QueryArrayValue(elementType: .integer,
+                    dimensions: elements.isEmpty ? [] : [QueryArrayDimension(lowerBound: -2, length: Int32(elements.count))],
+                    elements: elements, limits: QueryValueLimits(maximumRetainedBytes: 16_384,
+                        maximumTotalNodes: 1_024, maximumNestingDepth: 32, maximumCollectionElements: 256)))
+            } else { value = .primitive(.null) }
+            return QueryParameter(position: 1, name: "values", value: value, type: .sql(.array(.integer)))
+        }
+        let arrays: [([QueryValue]?, [QueryValue])] = [
+            ([], [.primitive(.bool(false)), .primitive(.bool(true)), .primitive(.bool(false)), .primitive(.bool(true))]),
+            (nil, [.primitive(.null), .primitive(.null), .primitive(.null), .primitive(.null)]),
+            ([.primitive(.int32(1)), .primitive(.null)], [.primitive(.bool(true)), .primitive(.bool(false)), .primitive(.null), .primitive(.null)]),
+            ([.primitive(.int32(2)), .primitive(.null)], [.primitive(.null), .primitive(.null), .primitive(.null), .primitive(.null)]),
+            ([.primitive(.int32(2))], [.primitive(.bool(false)), .primitive(.bool(true)), .primitive(.null), .primitive(.null)]),
+        ]
+        for (elements, expected) in arrays {
+            let result = try await context.executeSQL("SELECT 1::NUMERIC = ANY(:values), 1 < ALL(:values), NULL::INTEGER = ANY(:values), NULL::INTEGER = ALL(:values)", parameters: [try parameter(elements)])
+            #expect(result.rows[0].values == expected)
+        }
+        let empty = try await context.executeSQL("SELECT NULL::INTEGER = ANY(SELECT rank FROM \"SQLRowItem\"), NULL::INTEGER = ALL(SELECT rank FROM \"SQLRowItem\")")
+        #expect(empty.rows[0].values == [.primitive(.bool(false)), .primitive(.bool(true))])
+        try context.insert(SQLRowItem(id: "one", category: "x", rank: 1))
+        try context.insert(SQLRowItem(id: "two", category: "x", rank: 2))
+        try await context.save()
+        let subqueries = try await context.executeSQL("SELECT 1.00 = ANY(SELECT rank FROM \"SQLRowItem\"), 0 < ALL(SELECT rank FROM \"SQLRowItem\"), 3 = ANY(SELECT CASE WHEN rank = 1 THEN NULL ELSE rank END FROM \"SQLRowItem\"), 1 = ALL(SELECT CASE WHEN rank = 1 THEN NULL ELSE rank END FROM \"SQLRowItem\")")
+        #expect(subqueries.rows[0].values == [.primitive(.bool(true)), .primitive(.bool(true)), .primitive(.null), .primitive(.bool(false))])
+        await #expect(throws: SQLBindingSourceFailure.self) {
+            _ = try await context.executeSQL("SELECT 1 = ANY(SELECT id, rank FROM \"SQLRowItem\") WHERE FALSE")
+        }
+
+        let numericType = DataType.decimal(precision: nil, scale: nil)
+        let overflowValue = try sqlNumeric(1, scale: -400)
+        let comparisonLimits = QueryValueLimits(maximumRetainedBytes: 16_384,
+            maximumTotalNodes: 1_024, maximumNestingDepth: 32, maximumCollectionElements: 256)
+        func numericArray(_ elements: [QueryValue]) throws -> QueryParameter {
+            QueryParameter(position: 1, name: "numbers", value: .array(try QueryArrayValue(
+                elementType: numericType, dimensions: [QueryArrayDimension(lowerBound: 1, length: Int32(elements.count))],
+                elements: elements, limits: comparisonLimits)), type: .sql(.array(numericType)))
+        }
+        for quantifier in ["ANY", "ALL"] {
+            for (sql, parameters) in [
+                ("SELECT 1::DOUBLE PRECISION = \(quantifier)(:numbers)", [try numericArray([overflowValue])]),
+                ("SELECT 1::DOUBLE PRECISION = \(quantifier)(SELECT :number)",
+                    [QueryParameter(position: 1, name: "number", value: overflowValue, type: .sql(numericType))]),
+            ] {
+                do {
+                    _ = try await context.executeSQL(sql, parameters: parameters)
+                    Issue.record("An examined numeric comparison must preserve its floating conversion overflow")
+                } catch let failure as SQLBindingSourceFailure {
+                    guard case .expression(.numericOverflow) = failure.cause else {
+                        Issue.record("Expected the selected comparison's numeric overflow, got \(failure)")
+                        continue
+                    }
+                    #expect(failure.position == 7)
+                    #expect(failure.occurrence != nil)
+                }
+            }
+        }
+    }
+
+    @Test("S04 SUM AVG and DISTINCT preserve selected types, exact values and scales", .timeLimit(.minutes(2)))
+    func selectedNumericSQLAggregates() async throws {
+        let container = try await makeContainer()
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        try context.insert(SQLRowItem(id: "first", category: "x", rank: 1))
+        try context.insert(SQLRowItem(id: "second", category: "x", rank: 1))
+        try context.insert(SQLRowItem(id: "third", category: "x", rank: 2))
+        try await context.save()
+        let sql = "SELECT SUM(n), AVG(n), SUM(DISTINCT n), AVG(DISTINCT n), MIN(n), MAX(n) FROM (SELECT CASE rank WHEN 1 THEN 1.200 ELSE 2.400 END AS n FROM \"SQLRowItem\") AS samples"
+        let result = try await context.executeSQL(sql)
+        #expect(result.rows[0].values == [
+            try sqlNumeric(48, scale: 1, displayScale: 3), try sqlNumeric(16, scale: 1, displayScale: 16),
+            try sqlNumeric(36, scale: 1, displayScale: 3), try sqlNumeric(18, scale: 1, displayScale: 16),
+            try sqlNumeric(12, scale: 1, displayScale: 3), try sqlNumeric(24, scale: 1, displayScale: 3)])
+        let typed = try await context.executeSQL("SELECT SUM(1::SMALLINT), SUM(1::INTEGER), SUM(1::BIGINT), AVG(1::INTEGER), SUM(1::REAL), AVG(1::REAL) WHERE FALSE")
+        #expect(typed.columns.map(\.type) == [.sql(.bigint), .sql(.bigint), .sql(.decimal(precision: nil, scale: nil)),
+            .sql(.decimal(precision: nil, scale: nil)), .sql(.real), .sql(.doublePrecision)])
+        #expect(typed.rows.count == 1)
+        #expect(typed.rows[0].values.allSatisfy { $0.isNull })
+        let nulls = try await context.executeSQL("SELECT SUM(DISTINCT NULL::NUMERIC), AVG(DISTINCT NULL::NUMERIC) FROM \"SQLRowItem\"")
+        #expect(nulls.rows[0].values == [.primitive(.null), .primitive(.null)])
+        let maximum = "99999999999999999999999999999999999999"
+        let average = try await context.executeSQL("SELECT AVG(\(maximum)::NUMERIC) FROM \"SQLRowItem\" WHERE rank = 1")
+        #expect(average.rows[0].values == [try sqlNumeric(99_999_999_999_999_999_999_999_999_999_999_999_999)])
+        await #expect(throws: CanonicalReadError.self) {
+            _ = try await context.executeSQL("SELECT SUM(\(maximum)::NUMERIC) FROM \"SQLRowItem\" WHERE rank = 1")
+        }
+        let cancelled = try await context.executeSQL("SELECT SUM(CASE WHEN id = 'first' THEN -\(maximum)::NUMERIC ELSE \(maximum)::NUMERIC END) FROM \"SQLRowItem\"")
+        #expect(cancelled.rows[0].values == average.rows[0].values)
+    }
+
+    @Test("S04 scalar failures preserve decisive source occurrence and permit subsequent execution", .timeLimit(.minutes(2)))
+    func selectedNumericSQLFailureSource() async throws {
+        let container = try await makeContainer()
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        let sql = "SELECT CASE WHEN FALSE THEN 1 / 0 ELSE COALESCE(NULL, 2 + 3 / 0) END"
+        do {
+            _ = try await context.executeSQL(sql)
+            Issue.record("The selected division must fail")
+        } catch let failure as SQLBindingSourceFailure {
+            guard case .expression(.divisionByZero) = failure.cause else {
+                Issue.record("Expected the original typed scalar cause")
+                return
+            }
+            #expect(failure.position == sql.range(of: "3 / 0").map { sql.utf8.distance(from: sql.utf8.startIndex, to: $0.lowerBound) })
+            #expect(failure.occurrence != nil)
+        }
+        for sql in ["SELECT 32767::SMALLINT + 1::SMALLINT", "SELECT ABS((-32768)::SMALLINT)",
+                    "SELECT SQRT((-1)::NUMERIC)", "SELECT LN(0::NUMERIC)",
+                    "SELECT 999.5::NUMERIC(3,0)"] {
+            await #expect(throws: SQLBindingSourceFailure.self) { _ = try await context.executeSQL(sql) }
+        }
+        let budget = ExecutionBudget(maximumRows: 10, maximumWorkUnits: 10,
+            maximumIntermediateRows: 100, maximumIntermediateBytes: 1_000_000, timeoutMilliseconds: 30_000)
+        await #expect(throws: DatabaseWorkLimitError.self) {
+            _ = try await context.executeSQL("SELECT SQRT(2.000)", options: ReadExecutionOptions(budget: budget))
+        }
+        await #expect(throws: CancellationError.self) {
+            try await withThrowingTaskGroup(of: QueryResponse.self) { group in
+                group.cancelAll()
+                group.addTask { try await context.executeSQL("SELECT SQRT(2.000)") }
+                _ = try await group.next()
+            }
+        }
+        let successful = try await context.executeSQL("SELECT 1.200 + 2.300")
+        #expect(successful.rows[0].values == [try sqlNumeric(35, scale: 1, displayScale: 3)])
+    }
+
+    private func sqlNumeric(_ coefficient: Int128, scale: Int32 = 0, displayScale: Int32 = 0) throws -> QueryValue {
+        .numeric(try QueryNumericValue(value: ExactDecimal(coefficient: coefficient, scale: scale), displayScale: displayScale))
     }
 
     private func makeContainer() async throws -> DBContainer {

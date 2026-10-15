@@ -69,6 +69,9 @@ public struct DatabasePreparedSQLSelect: Sendable {
             )
         } catch let failure as CanonicalSQLBindingFailure {
             throw originalFailure(failure)
+        } catch CanonicalReadError.expressionEvaluation(let cause, let occurrence) {
+            let origin = originalOccurrences == nil ? occurrence : occurrence.flatMap { occurrenceOrigins[$0] }
+            throw CanonicalReadError.expressionEvaluation(cause, occurrence: origin)
         }
     }
 
@@ -108,6 +111,9 @@ public struct DatabasePreparedSQLSelect: Sendable {
             )
         } catch let failure as CanonicalSQLBindingFailure {
             throw originalFailure(failure)
+        } catch CanonicalReadError.expressionEvaluation(let cause, let occurrence) {
+            let origin = originalOccurrences == nil ? occurrence : occurrence.flatMap { occurrenceOrigins[$0] }
+            throw CanonicalReadError.expressionEvaluation(cause, occurrence: origin)
         }
         guard page.continuation == nil else {
             throw DatabasePreparedSQLSelectError.stagedResultIsIncomplete

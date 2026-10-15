@@ -262,3 +262,14 @@ unsupported wrapped rich values fail explicitly rather than reaching a
 nonthrowing builder or diagnostic Literal.description. Direct generator
 callers handle the typed failure. PropertyPath-only generation remains pure
 and nonthrowing because it contains no query literal.
+
+### S04 conditional and quantified serialization
+
+The canonical SQL serializer consumes [S04 semantic forms](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s04-semantic-additions-and-scope).
+Emit simple CASE operand once, dedicated GREATEST/LEAST syntax, truth tests,
+null-safe DISTINCT predicates, and scalar comparison ANY/ALL with array-valued
+expression or subquery. Preserve generic quoted/schema-qualified function
+identity and operator precedence. Structural/parameter walks charge each new
+child once; unsupported forms return typed errors instead of placeholders.
+S04-C11 requires semantic parse/serialize/parse identity including operand
+count and quoted versus special-syntax distinctions.

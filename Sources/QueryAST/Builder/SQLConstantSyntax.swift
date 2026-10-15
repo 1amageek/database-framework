@@ -188,6 +188,21 @@ enum SQLConstantSyntax {
             }
             return .queryValue(.primitive(.null), type: .sql(type))
         }
+        // Selected numeric rounding belongs to execution, not lexical integer input.
+        switch type {
+        case .smallint, .integer, .bigint:
+            switch literal {
+            case .decimal, .double, .queryValue(.numeric, _),
+                 .queryValue(.primitive(.float32), _), .queryValue(.primitive(.float64), _): return nil
+            default: break
+            }
+        case .decimal:
+            switch literal {
+            case .double, .queryValue(.primitive(.float32), _), .queryValue(.primitive(.float64), _): return nil
+            default: break
+            }
+        default: break
+        }
         let text: String?
         switch literal {
         case .sqlUnknownString(let value), .string(let value): text = value

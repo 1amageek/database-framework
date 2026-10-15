@@ -22,6 +22,11 @@ package struct DatabaseExpressionEvaluator: Sendable {
 
     package func evaluate(_ expression: Expression) throws -> FieldValue {
         switch expression {
+        // FIXME(INCOMPLETE_IMPLEMENTATION): This callable SQL path reaches new S04 expression forms.
+        // Selected typing/control/quantification and its behavioral proof must precede successful execution.
+        case .greatest, .least, .truthTest, .isDistinctFrom, .quantifiedComparison:
+            throw DatabaseExpressionEvaluationError.unsupportedExpression("S04 conditional or quantified expression requires selected SQL execution")
+
         // FIXME(INCOMPLETE_IMPLEMENTATION): SQL scalar evaluation reaches constructor expressions here.
         // S07 ARRAY and S08 ROW evaluation must be implemented before returning a value.
         case .array, .row:
@@ -102,7 +107,10 @@ package struct DatabaseExpressionEvaluator: Sendable {
             return try listMembership(nested, values: values, negated: false)
         case .notInList(let nested, let values):
             return try listMembership(nested, values: values, negated: true)
-        case .caseWhen(let pairs, let fallback):
+        case .caseWhen(let operand, let pairs, let fallback):
+            // FIXME(INCOMPLETE_IMPLEMENTATION): Simple CASE reaches this existing searched-CASE path.
+            // Operand-once matching must use the selected SQL comparison before a value can be returned.
+            guard operand == nil else { throw DatabaseExpressionEvaluationError.unsupportedExpression("Simple SQL CASE requires selected execution") }
             for pair in pairs where try predicate(pair.condition) {
                 return try evaluate(pair.result)
             }

@@ -199,3 +199,14 @@ logical ORDER key + admitted schema
 The existing public SQL ordinal test covers reordered rows, direct table
 wildcards and explicit constant CAST keys; the source-position assertions keep
 invalid references at the binding owner's original occurrences.
+
+### S04 decisive scalar failure occurrence
+
+`CanonicalReadError.expressionEvaluation` retains the original
+`DatabaseExpressionEvaluationError` and an optional Kit `QueryOccurrenceID`.
+QueryExecution attaches its selected node's address only when an inner failure
+has no address; enclosing expressions preserve an already decisive address.
+Direct semantic IR may have no occurrence. Meter, cancellation, aggregate and
+subquery failures retain their existing owners and are never converted into
+scalar errors. Database maps a retained address through its own source map;
+Read does not import parser ranges or retain source text.

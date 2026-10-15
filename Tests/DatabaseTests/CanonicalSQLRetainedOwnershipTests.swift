@@ -1503,6 +1503,36 @@ struct CanonicalSQLRetainedOwnershipTests {
         )
     }
 
+    @Test("S04 simple CASE and quantified operands execute nested sources once", .timeLimit(.minutes(2)))
+    func conditionalOperandsReadOnce() async throws {
+        let (container, control) = try await makeControlledContainer()
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        try context.insert(DecodeProbeItem(id: "one", value: "first"))
+        try await context.save()
+        let before = control.rangeCursorLimits.count
+        let simple = try await context.executeSQL("SELECT CASE (SELECT value FROM \"DecodeProbeItem\") WHEN 'absent' THEN 0 WHEN 'first' THEN 2 ELSE 3 END")
+        #expect(simple.rows[0].values == [.primitive(.int32(2))])
+        #expect(control.rangeCursorLimits.count - before == 1)
+        let beforeMixed = control.rangeCursorLimits.count
+        let mixed = try await context.executeSQL("SELECT CASE (SELECT 9007199254740993::NUMERIC FROM \"DecodeProbeItem\") WHEN 0::DOUBLE PRECISION THEN 1 WHEN 9007199254740992::NUMERIC THEN 2 ELSE 3 END")
+        #expect(mixed.rows[0].values == [.primitive(.int32(3))])
+        #expect(control.rangeCursorLimits.count - beforeMixed == 1)
+        let beforeQuantified = control.rangeCursorLimits.count
+        let quantified = try await context.executeSQL("SELECT (SELECT 2 FROM \"DecodeProbeItem\") > ANY(SELECT 1 FROM \"DecodeProbeItem\")")
+        #expect(quantified.rows[0].values == [.primitive(.bool(true))])
+        #expect(control.rangeCursorLimits.count - beforeQuantified == 2)
+        let bindingMeter = makeMeter(maximumIntermediateRows: 100, maximumIntermediateBytes: 1_000_000)
+        try await context.withReadSnapshot(workMeter: bindingMeter) { _ in
+            // Partition authority/catalog admission precedes binding; no source reads may follow a binding failure.
+            let beforeInvalid = control.dataReadOperationCount
+            await #expect(throws: SQLBindingSourceFailure.self) {
+                _ = try await context.executeSQL("SELECT CASE (SELECT value FROM \"DecodeProbeItem\") WHEN 'first' THEN 1 ELSE missing END FROM \"DecodeProbeItem\"")
+            }
+            #expect(control.dataReadOperationCount == beforeInvalid)
+        }
+    }
+
     private func makeControlledContainer(
         runtimeConfiguration: DatabaseRuntimeConfiguration? = nil
     ) async throws -> (

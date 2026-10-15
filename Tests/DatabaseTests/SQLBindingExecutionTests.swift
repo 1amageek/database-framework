@@ -202,7 +202,7 @@ struct SQLBindingExecutionTests {
             _ = try await context.executeSQL(duplicateAliasSQL)
             Issue.record("Expected distinct duplicate output aliases to reject ORDER BY")
         } catch let failure as SQLBindingSourceFailure {
-            guard case .read(.expressionEvaluation(.ambiguousColumn("x"))) = failure.cause else {
+            guard case .read(.expressionEvaluation(.ambiguousColumn("x"), _)) = failure.cause else {
                 Issue.record("Expected the typed duplicate output alias ambiguity")
                 return
             }
