@@ -3,6 +3,8 @@ import DatabaseKit
 enum SPARQLExpressionSemanticName {
     static func describe(_ expression: DatabaseKit.Expression) -> String {
         switch expression {
+        case .array: return "SQL ARRAY constructor"
+        case .row: return "SQL ROW constructor"
         case .literal: return "literal"
         case .column: return "column"
         case .variable: return "variable"

@@ -160,10 +160,10 @@ struct SPARQLFunctionTransactionTests {
         let transactionCountBeforeRead = scenario.engine.transactionCount
         let users = try await context.executeSQL(
             """
-            SELECT * FROM SPARQLTransactionUser
+            SELECT * FROM "SPARQLTransactionUser"
             WHERE resource IN (
                 SPARQL(
-                    SPARQLTransactionStatement,
+                    "SPARQLTransactionStatement",
                     'SELECT ?s WHERE { ?s <urn:predicate:active> "true" }'
                 )
             )
@@ -342,10 +342,10 @@ struct SPARQLFunctionTransactionTests {
         do {
             _ = try await context.executeSQL(
                 """
-                SELECT * FROM SPARQLTransactionUser
+                SELECT * FROM "SPARQLTransactionUser"
                 WHERE id IN (
                     SPARQL(
-                        SPARQLTransactionStatement,
+                        "SPARQLTransactionStatement",
                         'SELECT ?s WHERE { ?s <urn:predicate:active> "true" }'
                     )
                 )
@@ -359,10 +359,10 @@ struct SPARQLFunctionTransactionTests {
 
         let users = try await context.executeSQL(
             """
-            SELECT * FROM SPARQLTransactionUser
+            SELECT * FROM "SPARQLTransactionUser"
             WHERE resource IN (
                 SPARQL(
-                    SPARQLTransactionStatement,
+                    "SPARQLTransactionStatement",
                     'SELECT ?s WHERE { ?s <urn:predicate:active> "true" }'
                 )
             )

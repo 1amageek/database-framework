@@ -197,12 +197,14 @@ public enum CanonicalRowFingerprint {
             updateOptionalInteger(length, hasher: &hasher)
         case .text: updateByte(9, hasher: &hasher)
         case .date: updateByte(10, hasher: &hasher)
-        case .time(let withTimeZone):
-            updateByte(11, hasher: &hasher)
+        case .time(let withTimeZone, let precision):
+            updateByte(precision == nil ? 11 : 22, hasher: &hasher)
             updateByte(withTimeZone ? 1 : 0, hasher: &hasher)
-        case .timestamp(let withTimeZone):
-            updateByte(12, hasher: &hasher)
+            if let precision { updateInteger(Int64(precision), hasher: &hasher) }
+        case .timestamp(let withTimeZone, let precision):
+            updateByte(precision == nil ? 12 : 23, hasher: &hasher)
             updateByte(withTimeZone ? 1 : 0, hasher: &hasher)
+            if let precision { updateInteger(Int64(precision), hasher: &hasher) }
         case .interval: updateByte(13, hasher: &hasher)
         case .binary(let length):
             updateByte(14, hasher: &hasher)

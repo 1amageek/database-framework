@@ -1,4 +1,5 @@
 import Testing
+import DatabaseKit
 import TestHeartbeat
 @testable import QueryAST
 
@@ -8,7 +9,7 @@ struct SQLParserStrictnessTests {
     func rejectsUnterminatedStringLiteral() {
         #expect(
             throws: SQLParser.ParseError.invalidSyntax(
-                message: "Unterminated string literal",
+                message: "Unterminated quoted value",
                 position: 7
             )
         ) {
@@ -48,7 +49,7 @@ struct SQLParserStrictnessTests {
         let query = try SQLParser().parseSelect(
             "SELECT CAST('12.50' AS DECIMAL(10, 2)), "
                 + "CAST(1 AS DOUBLE PRECISION), "
-                + "CAST('x' AS VARCHAR(32) ARRAY), "
+                + "CAST('{1}' AS INTEGER ARRAY), "
                 + "CAST('POINT(0 0)' AS geography)"
         )
         guard case .items(let items) = query.projection,
@@ -57,36 +58,37 @@ struct SQLParserStrictnessTests {
             return
         }
 
-        guard case .cast(_, let decimalType) = items[0].expression else {
-            Issue.record("Expected DECIMAL CAST")
+        guard case .literal(.queryValue(.numeric(let numeric), let decimalType)) = items[0].expression else {
+            Issue.record("Expected normalized DECIMAL constant")
             return
         }
-        #expect(decimalType == .decimal(precision: 10, scale: 2))
+        #expect(decimalType == .sql(.decimal(precision: 10, scale: 2)))
+        #expect(numeric.displayScale == 2)
 
-        guard case .cast(_, let doubleType) = items[1].expression else {
-            Issue.record("Expected DOUBLE PRECISION CAST")
+        guard case .literal(.queryValue(.primitive(.float64(1)), let doubleType)) = items[1].expression else {
+            Issue.record("Expected normalized DOUBLE PRECISION constant")
             return
         }
-        #expect(doubleType == .doublePrecision)
+        #expect(doubleType == .sql(.doublePrecision))
 
-        guard case .cast(_, let arrayType) = items[2].expression else {
-            Issue.record("Expected ARRAY CAST")
+        guard case .literal(.queryValue(.array, let arrayType)) = items[2].expression else {
+            Issue.record("Expected normalized ARRAY constant")
             return
         }
-        #expect(arrayType == .array(.varchar(length: 32)))
+        #expect(arrayType == .sql(.array(.integer)))
 
         guard case .cast(_, let customType) = items[3].expression else {
             Issue.record("Expected custom CAST")
             return
         }
-        #expect(customType == .custom("GEOGRAPHY"))
+        #expect(customType == .custom("geography"))
     }
 
     @Test("CAST rejects invalid intrinsic type parameters")
     func rejectsInvalidCastTypeParameters() {
         #expect(throws: (any Error).self) {
             _ = try SQLParser().parseSelect(
-                "SELECT CAST(1 AS DECIMAL(2, 3))"
+                "SELECT CAST(1 AS DECIMAL(39, 3))"
             )
         }
         #expect(throws: (any Error).self) {

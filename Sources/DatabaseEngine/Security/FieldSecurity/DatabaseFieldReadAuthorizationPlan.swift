@@ -471,7 +471,7 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                         outerScopes: outerScopes
                     )
                 }
-            case .coalesce(let expressions):
+            case .coalesce(let expressions), .array(let expressions), .row(let expressions):
                 for expression in expressions {
                     collect(
                         expression,

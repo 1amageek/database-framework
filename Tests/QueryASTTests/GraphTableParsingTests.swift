@@ -13,7 +13,7 @@ struct GraphTableParsingTests {
         let sql = """
         SELECT *
         FROM GRAPH_TABLE(social,
-          MATCH (a:Person)-[r:KNOWS]->(b:Person)
+          MATCH (a:"Person")-[r:"KNOWS"]->(b:"Person")
         )
         """
 
@@ -171,7 +171,7 @@ struct GraphTableParsingTests {
         let sql = """
         SELECT *
         FROM GRAPH_TABLE(social,
-          MATCH (a)<-[r:KNOWS]-(b)
+          MATCH (a)<-[r:"KNOWS"]-(b)
         )
         """
 
@@ -224,7 +224,7 @@ struct GraphTableParsingTests {
         let sql = """
         SELECT *
         FROM GRAPH_TABLE(social,
-          MATCH (a:Person {age: 30, city: 'Tokyo'})-[r]->(b)
+          MATCH (a:"Person" {age: 30, city: 'Tokyo'})-[r]->(b)
         )
         """
 
@@ -252,7 +252,7 @@ struct GraphTableParsingTests {
         let sql = """
         SELECT *
         FROM GRAPH_TABLE(social,
-          MATCH (a)-[r:KNOWS {since: 2020}]->(b)
+          MATCH (a)-[r:"KNOWS" {since: 2020}]->(b)
         )
         """
 
@@ -320,9 +320,9 @@ struct GraphTableParsingTests {
     func testGraphTableInJoin() throws {
         let sql = """
         SELECT u.name, g.friend
-        FROM User u
+        FROM "User" u
         JOIN GRAPH_TABLE(social,
-          MATCH (a)-[r:KNOWS]->(b)
+          MATCH (a)-[r:"KNOWS"]->(b)
           COLUMNS (a.id AS user_id, b.name AS friend)
         ) AS g ON u.id = g.user_id
         """
@@ -350,7 +350,7 @@ struct GraphTableParsingTests {
         let sql = """
         SELECT *
         FROM GRAPH_TABLE(social,
-          MATCH (a:Person {id: :personID})
+          MATCH (a:"Person" {id: :personID})
         ) people
         """
 
@@ -434,7 +434,7 @@ struct NodePatternParsingTests {
 
     @Test("Parse node with label")
     func testNodeWithLabel() throws {
-        let sql = "SELECT * FROM GRAPH_TABLE(g, MATCH (a:Person))"
+        let sql = "SELECT * FROM GRAPH_TABLE(g, MATCH (a:\"Person\"))"
         let parser = SQLParser()
         let query = try parser.parseSelect(sql)
 
@@ -524,7 +524,7 @@ struct EdgePatternParsingTests {
 
     @Test("Parse edge with label")
     func testEdgeWithLabel() throws {
-        let sql = "SELECT * FROM GRAPH_TABLE(g, MATCH (a)-[r:KNOWS]->(b))"
+        let sql = "SELECT * FROM GRAPH_TABLE(g, MATCH (a)-[r:\"KNOWS\"]->(b))"
         let parser = SQLParser()
         let query = try parser.parseSelect(sql)
 
@@ -744,9 +744,9 @@ struct ComplexGraphTableQueryTests {
         // Find friends of friends who share common interests
         let sql = """
         SELECT u.name, friend2.friend_name AS recommendation
-        FROM User u
-        INNER JOIN GRAPH_TABLE(SocialGraph,
-               MATCH (p1:Person {id: u.id})-[f1:FRIEND]->(p2:Person)-[f2:FRIEND]->(p3:Person)
+        FROM "User" u
+        INNER JOIN GRAPH_TABLE("SocialGraph",
+               MATCH (p1:"Person" {id: u.id})-[f1:"FRIEND"]->(p2:"Person")-[f2:"FRIEND"]->(p3:"Person")
                WHERE p1.id != p3.id
                COLUMNS (p3.id AS friend_id, p3.name AS friend_name)
              ) AS friend2 ON 1=1
@@ -869,11 +869,11 @@ struct ComplexGraphTableQueryTests {
         // Check if user has permission through role hierarchy
         let sql = """
         SELECT u.username, p.resource, p.action
-        FROM User u
-        INNER JOIN GRAPH_TABLE(PermissionGraph,
-               MATCH (user:User {id: u.id})-[has:HAS_ROLE]->(role:Role)
-                     -[inherits:INHERITS]->(parent:Role)
-                     -[grants:GRANTS]->(perm:Permission)
+        FROM "User" u
+        INNER JOIN GRAPH_TABLE("PermissionGraph",
+               MATCH ("user":"User" {id: u.id})-[has:"HAS_ROLE"]->(role:"Role")
+                     -[inherits:"INHERITS"]->(parent:"Role")
+                     -[grants:"GRANTS"]->(perm:"Permission")
                WHERE perm.resource = 'sensitive_data'
                COLUMNS (perm.resource AS resource, perm.action AS action)
              ) AS p ON 1=1
@@ -924,10 +924,10 @@ struct ComplexGraphTableQueryTests {
         // Find products frequently bought together
         let sql = """
         SELECT p1.name AS product, p2.prod_name AS recommended_product
-        FROM Product p1
-        INNER JOIN GRAPH_TABLE(PurchaseGraph,
-               MATCH (prod1:Product {id: p1.id})<-[in1:IN_ORDER]-(o:PurchaseOrder)
-                     -[in2:IN_ORDER]->(prod2:Product)
+        FROM "Product" p1
+        INNER JOIN GRAPH_TABLE("PurchaseGraph",
+               MATCH (prod1:"Product" {id: p1.id})<-[in1:"IN_ORDER"]-(o:"PurchaseOrder")
+                     -[in2:"IN_ORDER"]->(prod2:"Product")
                WHERE prod1.id != prod2.id
                COLUMNS (prod2.id AS prod_id, prod2.name AS prod_name, o.id AS order_id)
              ) AS p2 ON 1=1
@@ -976,13 +976,13 @@ struct ComplexGraphTableQueryTests {
         // Join results from multiple graph patterns
         let sql = """
         SELECT u.name, colleagues.colleague_name, projects.project_name
-        FROM User u
-        INNER JOIN GRAPH_TABLE(OrgChart,
-               MATCH (emp:Employee {id: u.id})-[w:WORKS_WITH]->(colleague:Employee)
+        FROM "User" u
+        INNER JOIN GRAPH_TABLE("OrgChart",
+               MATCH (emp:"Employee" {id: u.id})-[w:"WORKS_WITH"]->(colleague:"Employee")
                COLUMNS (colleague.id AS colleague_id, colleague.name AS colleague_name)
              ) AS colleagues ON 1=1
-        INNER JOIN GRAPH_TABLE(ProjectGraph,
-               MATCH (emp2:Employee {id: colleagues.id})-[a:ASSIGNED_TO]->(proj:Project)
+        INNER JOIN GRAPH_TABLE("ProjectGraph",
+               MATCH (emp2:"Employee" {id: colleagues.id})-[a:"ASSIGNED_TO"]->(proj:"Project")
                WHERE proj.status = 'active'
                COLUMNS (proj.name AS project_name)
              ) AS projects ON 1=1
@@ -1008,9 +1008,9 @@ struct ComplexGraphTableQueryTests {
         // Find mutual relationships with relationship properties
         let sql = """
         SELECT p1.name, p2.name
-        FROM GRAPH_TABLE(SocialGraph,
-               MATCH (p1:Person)-[r1:FRIEND {strength: 'strong'}]->(p2:Person)
-                     -[r2:FRIEND {strength: 'strong'}]->(p1)
+        FROM GRAPH_TABLE("SocialGraph",
+               MATCH (p1:"Person")-[r1:"FRIEND" {strength: 'strong'}]->(p2:"Person")
+                     -[r2:"FRIEND" {strength: 'strong'}]->(p1)
                WHERE p1.id < p2.id
                COLUMNS (p1.name AS name1, p2.name AS name2)
              ) AS mutual
@@ -1050,8 +1050,8 @@ struct ComplexGraphTableQueryTests {
         // Complex filtering on graph traversal results
         let sql = """
         SELECT author.name, paper.title
-        FROM GRAPH_TABLE(CitationGraph,
-               MATCH (author:Author)-[w:WROTE]->(paper:Paper)<-[cite:CITES]-(citing:Paper)
+        FROM GRAPH_TABLE("CitationGraph",
+               MATCH (author:"Author")-[w:"WROTE"]->(paper:"Paper")<-[cite:"CITES"]-(citing:"Paper")
                WHERE paper.year >= 2020
                COLUMNS (author.name AS author_name, paper.title AS paper_title)
              ) AS citations
@@ -1090,8 +1090,8 @@ struct ComplexGraphTableQueryTests {
         // Find clusters using undirected edges
         let sql = """
         SELECT c1.name, c2.name, c3.name
-        FROM GRAPH_TABLE(CollaborationGraph,
-               MATCH (c1:Company)-[p1:PARTNER]-(c2:Company)-[p2:PARTNER]-(c3:Company)-[p3:PARTNER]-(c1)
+        FROM GRAPH_TABLE("CollaborationGraph",
+               MATCH (c1:"Company")-[p1:"PARTNER"]-(c2:"Company")-[p2:"PARTNER"]-(c3:"Company")-[p3:"PARTNER"]-(c1)
                WHERE c1.id < c2.id AND c2.id < c3.id
                  AND p1.type = 'strategic'
                  AND p2.type = 'strategic'

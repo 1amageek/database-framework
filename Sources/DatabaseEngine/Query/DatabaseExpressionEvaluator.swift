@@ -22,6 +22,10 @@ package struct DatabaseExpressionEvaluator: Sendable {
 
     package func evaluate(_ expression: Expression) throws -> FieldValue {
         switch expression {
+        // FIXME(INCOMPLETE_IMPLEMENTATION): SQL scalar evaluation reaches constructor expressions here.
+        // S07 ARRAY and S08 ROW evaluation must be implemented before returning a value.
+        case .array, .row:
+            throw DatabaseExpressionEvaluationError.unsupportedExpression("SQL ARRAY/ROW constructor")
         case .literal(let literal):
             return try value(literal)
         case .column(let column):
@@ -114,6 +118,10 @@ package struct DatabaseExpressionEvaluator: Sendable {
             let comparison = try equalityValues(left, evaluate(rhs))
             return comparison == true ? .null : left
         case .cast(let nested, let target):
+            guard QueryValueValidator.accepts(.primitive(.null), type: .sql(target)) else {
+                throw invalidCast(target)
+            }
+            if case .literal(let literal) = nested, literal.isNull { return .null }
             return try cast(evaluate(nested), to: target)
         case .function(let function):
             return try evaluate(function)
@@ -561,6 +569,15 @@ package struct DatabaseExpressionEvaluator: Sendable {
         _ value: FieldValue,
         to target: DataType
     ) throws -> FieldValue {
+        var scalarType = target
+        while case .array(let element) = scalarType { scalarType = element }
+        // FIXME(INCOMPLETE_IMPLEMENTATION): SQL scalar CAST reaches nonliteral/non-NULL temporal precision here.
+        // S06 must implement temporal rounding/conversion before these casts can succeed.
+        switch scalarType {
+        case .time(_, .some), .timestamp(_, .some):
+            throw DatabaseExpressionEvaluationError.unsupportedExpression("temporal precision conversion")
+        default: break
+        }
         if value.isNull { return .null }
         switch target {
         case .boolean:

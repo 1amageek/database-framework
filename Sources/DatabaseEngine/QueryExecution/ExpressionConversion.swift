@@ -338,7 +338,7 @@ extension Expression {
                     && $0.result.referencesOnlySourceQualifier(sourceQualifier)
             } && (elseResult?.referencesOnlySourceQualifier(sourceQualifier)
                 ?? true)
-        case .coalesce(let expressions):
+        case .coalesce(let expressions), .array(let expressions), .row(let expressions):
             return expressions.allSatisfy {
                 $0.referencesOnlySourceQualifier(sourceQualifier)
             }

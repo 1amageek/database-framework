@@ -61,7 +61,7 @@ struct GraphTableSQLExecutionContractTests {
             SELECT *
             FROM GRAPH_TABLE(
                 graph_table_sql_index,
-                MATCH (source)-[relation:KNOWS]->(target)
+                MATCH (source)-[relation:"KNOWS"]->(target)
                 COLUMNS (
                     source.id AS source_id,
                     target.id AS target_id,

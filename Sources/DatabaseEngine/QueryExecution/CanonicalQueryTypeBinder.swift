@@ -54,6 +54,10 @@ struct CanonicalQueryTypeBinder {
         contextualType: QueryColumnType? = nil
     ) throws -> CanonicalBoundExpression {
         switch expression {
+        // FIXME(INCOMPLETE_IMPLEMENTATION): Canonical SQL binding reaches constructor expressions here.
+        // S07 ARRAY typing and S08 ROW typing must be implemented before execution can succeed.
+        case .array, .row:
+            throw DatabaseExpressionEvaluationError.unsupportedExpression("SQL ARRAY/ROW constructor")
         case .literal(let literal):
             let type = try literalType(literal, contextualType: contextualType)
             return node(expression, type, literal.isNull)
@@ -138,6 +142,18 @@ struct CanonicalQueryTypeBinder {
         case .cast(let operand, let target):
             let type = QueryColumnType.sql(target)
             try validate(type)
+            if case .literal(let literal) = operand, literal.isNull {
+                return node(expression, type, true, [try bind(operand, contextualType: type)])
+            }
+            var scalarType = target
+            while case .array(let element) = scalarType { scalarType = element }
+            // FIXME(INCOMPLETE_IMPLEMENTATION): SQL CAST binding reaches nonliteral/non-NULL temporal typmods here.
+            // S06 must implement precision conversion and rounding before these casts can succeed.
+            switch scalarType {
+            case .time(_, .some), .timestamp(_, .some):
+                throw DatabaseExpressionEvaluationError.unsupportedExpression("temporal precision conversion")
+            default: break
+            }
             let child = try bind(operand, contextualType: type)
             try validateCast(from: child.type, to: type)
             return node(expression, type, child.isNullable, [child])
@@ -481,9 +497,9 @@ struct CanonicalQueryTypeBinder {
             case .char, .varchar, .text: return .string
             case .binary, .varbinary, .blob: return .bytes
             case .date: return .date
-            case .time(false): return .time
-            case .timestamp(false): return .dateTime
-            case .timestamp(true): return .timestamp
+            case .time(false, _): return .time
+            case .timestamp(false, _): return .dateTime
+            case .timestamp(true, _): return .timestamp
             case .uuid: return .uuid
             default: return nil
             }

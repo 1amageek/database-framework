@@ -764,7 +764,7 @@ private func prospectiveExpressionStringInputBytes(
             )
         }
         return result
-    case .coalesce(let values):
+    case .coalesce(let values), .array(let values), .row(let values):
         return values.reduce(into: UInt64(0)) { result, value in
             result = max(
                 result,
@@ -1029,7 +1029,7 @@ private func preadmitExpressionPayload(
         if let elseResult {
             try retainChild(elseResult)
         }
-    case .coalesce(let values):
+    case .coalesce(let values), .array(let values), .row(let values):
         for value in values {
             try retainChild(value)
         }
@@ -1313,7 +1313,7 @@ private func canonicalExpressionContainsAggregate(
             canonicalExpressionContainsAggregate($0.condition)
                 || canonicalExpressionContainsAggregate($0.result)
         } || fallback.map(canonicalExpressionContainsAggregate) == true
-    case .coalesce(let values):
+    case .coalesce(let values), .array(let values), .row(let values):
         return values.contains(where: canonicalExpressionContainsAggregate)
     case .triple(let subject, let predicate, let object):
         return canonicalExpressionContainsAggregate(subject)
@@ -1861,7 +1861,7 @@ extension DatabaseContext {
                     collect(pair.result)
                 }
                 if let elseResult { collect(elseResult) }
-            case .coalesce(let expressions):
+            case .coalesce(let expressions), .array(let expressions), .row(let expressions):
                 expressions.forEach(collect)
             case .triple(let subject, let predicate, let object):
                 collect(subject)
@@ -2195,7 +2195,7 @@ extension DatabaseContext {
                 try validate(pair.result)
             }
             if let fallback { try validate(fallback) }
-        case .coalesce(let values):
+        case .coalesce(let values), .array(let values), .row(let values):
             for value in values { try validate(value) }
         case .triple(let subject, let predicate, let object):
             try validate(subject)
@@ -2319,7 +2319,7 @@ extension DatabaseContext {
                 try validate(pair.result)
             }
             if let elseResult { try validate(elseResult) }
-        case .coalesce(let expressions):
+        case .coalesce(let expressions), .array(let expressions), .row(let expressions):
             for expression in expressions { try validate(expression) }
         case .triple(let subject, let predicate, let object):
             try validate(subject)
@@ -6345,6 +6345,10 @@ extension DatabaseContext {
                 cases: rewrittenPairs,
                 elseResult: fallback == nil ? nil : rewritten.last
             )
+        // FIXME(INCOMPLETE_IMPLEMENTATION): Canonical SQL expression execution reaches constructors here.
+        // S07 ARRAY and S08 ROW semantics must be implemented before this path can produce values.
+        case .array, .row:
+            throw CanonicalReadError.expressionEvaluation(.unsupportedExpression("SQL ARRAY/ROW constructor"))
         case .coalesce(let values):
             return .coalesce(try await rewriteList(values))
         case .nullIf(let lhs, let rhs):
@@ -7272,6 +7276,10 @@ extension DatabaseContext {
                 cases: resolvedPairs,
                 elseResult: fallback == nil ? nil : resolved.last
             )
+        // FIXME(INCOMPLETE_IMPLEMENTATION): Canonical SQL expression execution reaches constructors here.
+        // S07 ARRAY and S08 ROW semantics must be implemented before this path can produce values.
+        case .array, .row:
+            throw CanonicalReadError.expressionEvaluation(.unsupportedExpression("SQL ARRAY/ROW constructor"))
         case .coalesce(let values):
             return .coalesce(try await resolveList(values))
         case .nullIf(let lhs, let rhs):

@@ -551,7 +551,7 @@ struct GraphTableExecutionTests {
 
     // MARK: - SQL Integration Tests
 
-    @Test("GraphTableSource toSQL output")
+    @Test("GraphTableSource canonical SQL output")
     func testToSQLOutput() throws {
         let source = GraphTableSource.match(
             graph: "social",
@@ -564,11 +564,13 @@ struct GraphTableExecutionTests {
             (.column(ColumnRef(table: "b", column: "name")), "target_name")
         ])
 
-        let sql = try source.toSQL()
+        let sql = try SQLSerializer().serialize(source)
 
-        #expect(sql.contains("GRAPH_TABLE(social"))
+        #expect(sql.contains(#"GRAPH_TABLE("social""#))
         #expect(sql.contains("MATCH"))
         #expect(sql.contains("COLUMNS"))
+        let query = SelectQuery(projection: .all, source: .graphTable(source))
+        #expect(try SQLParser().parseSelect(SQLSerializer().serialize(query)) == query)
     }
 
     @Test("GraphTableSource in SelectQuery")

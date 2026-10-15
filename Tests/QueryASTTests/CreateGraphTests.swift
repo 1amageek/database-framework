@@ -246,7 +246,7 @@ struct VertexReferenceBuilderTests {
 @Suite("CreateGraph SQL Generation Tests", .heartbeat)
 struct CreateGraphSQLGenerationTests {
 
-    @Test("CreateGraphStatement toSQL basic")
+    @Test("CreateGraphStatement canonical SQL")
     func testBasicToSQL() throws {
         let create = CreateGraphStatement(
             graphName: "social",
@@ -256,13 +256,14 @@ struct CreateGraphSQLGenerationTests {
             edgeTables: []
         )
 
-        let sql = create.toSQL()
-        #expect(sql.contains("CREATE PROPERTY GRAPH social"))
+        let sql = try SQLSerializer().serialize(create)
+        #expect(sql.contains(#"CREATE PROPERTY GRAPH "social""#))
         #expect(sql.contains("VERTEX TABLES"))
         #expect(sql.contains("persons"))
+        #expect(try SQLParser().parse(sql) == .createGraph(create))
     }
 
-    @Test("CreateGraphStatement toSQL with IF NOT EXISTS")
+    @Test("CreateGraphStatement SQL with IF NOT EXISTS")
     func testToSQLWithIfNotExists() throws {
         let create = CreateGraphStatement(
             graphName: "test",
@@ -271,11 +272,12 @@ struct CreateGraphSQLGenerationTests {
             edgeTables: []
         )
 
-        let sql = create.toSQL()
+        let sql = try SQLSerializer().serialize(create)
         #expect(sql.contains("IF NOT EXISTS"))
+        #expect(try SQLParser().parse(sql) == .createGraph(create))
     }
 
-    @Test("VertexTableDefinition toSQL")
+    @Test("VertexTableDefinition canonical SQL")
     func testVertexToSQL() throws {
         let vertex = VertexTableDefinition(
             tableName: "persons",
@@ -285,14 +287,14 @@ struct CreateGraphSQLGenerationTests {
             propertiesSpec: .all
         )
 
-        let sql = vertex.toSQL()
-        #expect(sql.contains("persons AS p"))
-        #expect(sql.contains("KEY (id)"))
-        #expect(sql.contains("LABEL Person"))
+        let sql = try SQLSerializer().serialize(vertex)
+        #expect(sql.contains(#""persons" AS "p""#))
+        #expect(sql.contains(#"KEY ("id")"#))
+        #expect(sql.contains(#"LABEL "Person""#))
         #expect(sql.contains("PROPERTIES ALL COLUMNS"))
     }
 
-    @Test("EdgeTableDefinition toSQL")
+    @Test("EdgeTableDefinition canonical SQL")
     func testEdgeToSQL() throws {
         let edge = EdgeTableDefinition(
             tableName: "friendships",
@@ -308,36 +310,36 @@ struct CreateGraphSQLGenerationTests {
             labelExpression: .single("FRIEND")
         )
 
-        let sql = edge.toSQL()
+        let sql = try SQLSerializer().serialize(edge)
         #expect(sql.contains("friendships"))
-        #expect(sql.contains("KEY (id)"))
+        #expect(sql.contains(#"KEY ("id")"#))
         #expect(sql.contains("SOURCE KEY"))
         #expect(sql.contains("DESTINATION KEY"))
-        #expect(sql.contains("REFERENCES persons"))
-        #expect(sql.contains("LABEL FRIEND"))
+        #expect(sql.contains(#"REFERENCES "persons""#))
+        #expect(sql.contains(#"LABEL "FRIEND""#))
     }
 
-    @Test("LabelExpression toSQL")
+    @Test("LabelExpression canonical SQL")
     func testLabelExpressionToSQL() throws {
         let single = LabelExpression.single("Person")
-        #expect(single.toSQL() == "Person")
+        #expect(try SQLSerializer().serialize(single) == #""Person""#)
 
         let column = LabelExpression.column("type")
-        #expect(column.toSQL() == "(type)")
+        #expect(try SQLSerializer().serialize(column) == #"("type")"#)
 
         let orExpr = LabelExpression.or([.single("A"), .single("B")])
-        #expect(orExpr.toSQL().contains("|"))
+        #expect(try SQLSerializer().serialize(orExpr).contains("|"))
 
         let andExpr = LabelExpression.and([.single("X"), .single("Y")])
-        #expect(andExpr.toSQL().contains("&"))
+        #expect(try SQLSerializer().serialize(andExpr).contains("&"))
     }
 
-    @Test("PropertiesSpec toSQL")
+    @Test("PropertiesSpec canonical SQL")
     func testPropertiesSpecToSQL() throws {
-        #expect(PropertiesSpec.all.toSQL() == "PROPERTIES ALL COLUMNS")
-        #expect(PropertiesSpec.none.toSQL() == "NO PROPERTIES")
-        #expect(PropertiesSpec.columns(["a", "b"]).toSQL() == "PROPERTIES (a, b)")
-        #expect(PropertiesSpec.allExcept(["x"]).toSQL() == "PROPERTIES ALL COLUMNS EXCEPT (x)")
+        #expect(try SQLSerializer().serialize(PropertiesSpec.all) == "PROPERTIES ALL COLUMNS")
+        #expect(try SQLSerializer().serialize(PropertiesSpec.none) == "NO PROPERTIES")
+        #expect(try SQLSerializer().serialize(PropertiesSpec.columns(["a", "b"])) == #"PROPERTIES ("a", "b")"#)
+        #expect(try SQLSerializer().serialize(PropertiesSpec.allExcept(["x"])) == #"PROPERTIES ALL COLUMNS EXCEPT ("x")"#)
     }
 }
 

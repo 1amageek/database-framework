@@ -12,9 +12,10 @@ public final class SQLParser {
     /// Parser errors
     public enum ParseError: Error, Sendable, Equatable {
         case unexpectedToken(expected: String, found: String, position: Int)
-        case unexpectedEndOfInput(expected: String)
+        case unexpectedEndOfInput(expected: String, position: Int)
         case invalidSyntax(message: String, position: Int)
         case unsupportedFeature(String)
+        case literalError(message: String, position: Int)
     }
 
     /// Token types
@@ -27,6 +28,11 @@ public final class SQLParser {
         case invalidParameter(String)
         case symbol(String)
         case eof
+
+        var isString: Bool {
+            if case .string = self { return true }
+            return false
+        }
     }
 
     private enum PositionalParameterStyle: Sendable {
@@ -62,8 +68,47 @@ public final class SQLParser {
         "REFERENCES", "PROPERTIES", "NO", "LATERAL", "NATURAL",
     ]
 
-    private var input: String
-    private var position: String.Index
+    // PostgreSQL 18 lexical categories: src/include/parser/kwlist.h.
+    // Grammar contexts distinguish ColId, type_function_name and ColLabel.
+    private static let reservedWords: Set<String> = [
+        "ALL", "ANALYSE", "ANALYZE", "AND", "ANY", "ARRAY", "AS",
+        "ASC", "ASYMMETRIC", "BOTH", "CASE", "CAST", "CHECK", "COLLATE",
+        "COLUMN", "CONSTRAINT", "CREATE", "CURRENT_CATALOG", "CURRENT_DATE", "CURRENT_ROLE", "CURRENT_TIME",
+        "CURRENT_TIMESTAMP", "CURRENT_USER", "DEFAULT", "DEFERRABLE", "DESC", "DISTINCT", "DO",
+        "ELSE", "END", "EXCEPT", "FALSE", "FETCH", "FOR", "FOREIGN",
+        "FROM", "GRANT", "GROUP", "HAVING", "IN", "INITIALLY", "INTERSECT",
+        "INTO", "LATERAL", "LEADING", "LIMIT", "LOCALTIME", "LOCALTIMESTAMP", "NOT",
+        "NULL", "OFFSET", "ON", "ONLY", "OR", "ORDER", "PLACING",
+        "PRIMARY", "REFERENCES", "RETURNING", "SELECT", "SESSION_USER", "SOME", "SYMMETRIC",
+        "SYSTEM_USER", "TABLE", "THEN", "TO", "TRAILING", "TRUE", "UNION",
+        "UNIQUE", "USER", "USING", "VARIADIC", "WHEN", "WHERE", "WINDOW",
+        "WITH",
+    ]
+
+    private static let typeFunctionWords: Set<String> = [
+        "AUTHORIZATION", "BINARY", "COLLATION", "CONCURRENTLY", "CROSS", "CURRENT_SCHEMA", "FREEZE",
+        "FULL", "ILIKE", "INNER", "IS", "ISNULL", "JOIN", "LEFT",
+        "LIKE", "NATURAL", "NOTNULL", "OUTER", "OVERLAPS", "RIGHT", "SIMILAR",
+        "TABLESAMPLE", "VERBOSE",
+    ]
+
+    private static let columnNameWords: Set<String> = [
+        "BETWEEN", "BIGINT", "BIT", "BOOLEAN", "CHAR", "CHARACTER", "COALESCE",
+        "DEC", "DECIMAL", "EXISTS", "EXTRACT", "FLOAT", "GREATEST", "GROUPING",
+        "INOUT", "INT", "INTEGER", "INTERVAL", "JSON", "JSON_ARRAY", "JSON_ARRAYAGG",
+        "JSON_EXISTS", "JSON_OBJECT", "JSON_OBJECTAGG", "JSON_QUERY", "JSON_SCALAR", "JSON_SERIALIZE", "JSON_TABLE",
+        "JSON_VALUE", "LEAST", "MERGE_ACTION", "NATIONAL", "NCHAR", "NONE", "NORMALIZE",
+        "NULLIF", "NUMERIC", "OUT", "OVERLAY", "POSITION", "PRECISION", "REAL",
+        "ROW", "SETOF", "SMALLINT", "SUBSTRING", "TIME", "TIMESTAMP", "TREAT",
+        "TRIM", "VALUES", "VARCHAR", "XMLATTRIBUTES", "XMLCONCAT", "XMLELEMENT", "XMLEXISTS",
+        "XMLFOREST", "XMLNAMESPACES", "XMLPARSE", "XMLPI", "XMLROOT", "XMLSERIALIZE", "XMLTABLE",
+    ]
+
+    private var position: Int
+    private var sourceBytes: [UInt8] = []
+    private var tokenStart = 0
+    private var tokenEnd = 0
+    private var tokenIsQuoted = false
     private var currentToken: Token
     private var anonymousParameterPosition: UInt32
     private var positionalParameterStyle: PositionalParameterStyle?
@@ -75,8 +120,7 @@ public final class SQLParser {
     public init(
         structuralLimits: QueryStructuralLimits = .default
     ) {
-        self.input = ""
-        self.position = "".startIndex
+        self.position = 0
         self.currentToken = .eof
         self.anonymousParameterPosition = 0
         self.positionalParameterStyle = nil
@@ -90,7 +134,7 @@ public final class SQLParser {
 
     /// Parse a SQL SELECT query
     public func parseSelect(_ sql: String) throws -> SelectQuery {
-        resetParserState(for: sql)
+        try resetParserState(for: sql)
         return try withStructuralErrorPrecedence {
             advance()
             let query = try parseSelectQuery()
@@ -105,7 +149,7 @@ public final class SQLParser {
 
     /// Parse any SQL statement
     public func parse(_ sql: String) throws -> QueryStatement {
-        resetParserState(for: sql)
+        try resetParserState(for: sql)
         return try withStructuralErrorPrecedence {
             advance()
             let statement = try parseStatement()
@@ -118,16 +162,46 @@ public final class SQLParser {
         }
     }
 
-    private func resetParserState(for sql: String) {
-        input = sql
-        position = input.startIndex
+    /// Parse a bounded, ordered collection of complete statements.
+    public func parseStatements(_ sql: String) throws -> [QueryStatement] {
+        try resetParserState(for: sql)
+        return try withStructuralErrorPrecedence {
+            advance()
+            var statements: [QueryStatement] = []
+            while currentToken != .eof {
+                if isSymbol(";") { advance(); continue }
+                try admitCollectionElement()
+                let statement = try parseStatement()
+                try QueryStructuralValidator.validate(statement, limits: structuralLimits)
+                statements.append(statement)
+                guard currentToken == .eof || isSymbol(";") else {
+                    throw ParseError.unexpectedToken(expected: "statement separator", found: tokenDescription(currentToken), position: tokenStart)
+                }
+            }
+            return statements
+        }
+    }
+
+    private func resetParserState(for sql: String) throws {
+        sourceBytes = []
+        position = 0
+        tokenStart = 0
+        tokenEnd = 0
+        tokenIsQuoted = false
+        currentToken = .eof
         anonymousParameterPosition = 0
         positionalParameterStyle = nil
-        structuralLedger = QueryStructuralResourceLedger(
-            limits: structuralLimits
-        )
+        structuralLedger = QueryStructuralResourceLedger(limits: structuralLimits)
         structuralError = nil
         lexicalError = nil
+        var sourceCount: UInt64 = 0
+        for _ in sql.utf8 {
+            sourceCount += 1
+            guard sourceCount <= structuralLimits.maximumRetainedBytes else {
+                throw QueryStructuralValidationError.resourceLimitExceeded(resource: .retainedBytes, actual: sourceCount, maximum: structuralLimits.maximumRetainedBytes)
+            }
+        }
+        sourceBytes = Array(sql.utf8)
     }
 
     private func withStructuralErrorPrecedence<Result>(
@@ -177,8 +251,44 @@ public final class SQLParser {
     private func makeLiteralExpression(
         _ literal: Literal
     ) throws -> Expression {
+        if case .queryValue(let value, let type) = literal {
+            let footprint = try QueryValueValidator.measure(value)
+            var nodes = footprint.nodeCount
+            if case .primitive = value { nodes += 1 }
+            if case .sql(let dataType) = type { nodes += 1 + dataTypeNodeCount(dataType) }
+            try structuralLedger.consume(.totalNodes, amount: nodes)
+            try structuralLedger.consume(.collectionElements, amount: footprint.collectionElementCount)
+            try structuralLedger.consume(.retainedBytes, amount: footprint.retainedByteCount)
+            let remainingDepth = structuralLedger.remainingLimits.maximumNestingDepth
+            let currentDepth = structuralLimits.maximumNestingDepth - remainingDepth
+            try structuralLedger.validateNestingDepth(currentDepth + 2 + footprint.maximumNestingDepth)
+        }
         let admittedLiteral = try makeStructuralNode(literal)
         return try makeStructuralNode(.literal(admittedLiteral))
+    }
+
+    private func dataTypeNodeCount(_ type: DataType) -> UInt64 {
+        var count: UInt64 = 1
+        var current = type
+        while case .array(let element) = current { count += 1; current = element }
+        return count
+    }
+
+    private func constantLimits(reservingNodes reserved: UInt64) throws -> QueryStructuralLimits {
+        let available = structuralLedger.remainingLimits
+        return QueryStructuralLimits(
+            maximumNestingDepth: available.maximumNestingDepth > 2 ? available.maximumNestingDepth - 2 : 0,
+            maximumRetainedBytes: available.maximumRetainedBytes,
+            maximumInputTokens: available.maximumInputTokens,
+            maximumTotalNodes: available.maximumTotalNodes > reserved ? available.maximumTotalNodes - reserved : 0,
+            maximumCollectionElements: available.maximumCollectionElements,
+            maximumBasicGraphPatterns: available.maximumBasicGraphPatterns,
+            maximumTriplePatterns: available.maximumTriplePatterns,
+            maximumValuesRows: available.maximumValuesRows,
+            maximumValuesVariables: available.maximumValuesVariables,
+            maximumValuesCells: available.maximumValuesCells,
+            maximumReifiedTripleExpansions: available.maximumReifiedTripleExpansions
+        )
     }
 
     private func makeAggregateExpression(
@@ -198,224 +308,377 @@ public final class SQLParser {
 // MARK: - Tokenizer
 
 extension SQLParser {
-    private func admitToken(_ token: Token) {
-        guard structuralError == nil else {
+    private func admitToken(_ token: Token, quoted: Bool = false) {
+        guard structuralError == nil, lexicalError == nil else {
             currentToken = .eof
             return
         }
-        do {
-            try structuralLedger.consume(.inputTokens)
-            currentToken = token
-        } catch {
-            structuralError = error
-            currentToken = .eof
+        currentToken = token
+        tokenEnd = position
+        tokenIsQuoted = quoted
+    }
+
+    private func asciiUppercase(_ value: String) -> String {
+        String(decoding: value.utf8.map { (97...122).contains($0) ? $0 - 32 : $0 }, as: UTF8.self)
+    }
+
+    private func byte(_ offset: Int = 0) -> UInt8? {
+        let index = position + offset
+        return index < sourceBytes.count ? sourceBytes[index] : nil
+    }
+
+    private func isDigit(_ value: UInt8?) -> Bool {
+        guard let value else { return false }
+        return value >= 48 && value <= 57
+    }
+
+    private func isNameStart(_ value: UInt8?) -> Bool {
+        guard let value else { return false }
+        return value >= 128 || value == 95 || (65...90).contains(value) || (97...122).contains(value)
+    }
+
+    private func isNameContinuation(_ value: UInt8?) -> Bool {
+        isNameStart(value) || isDigit(value) || value == 36
+    }
+
+    private func decoded(_ range: Range<Int>) throws -> String {
+        try structuralLedger.consume(.retainedBytes, amount: UInt64(range.count))
+        return String(decoding: sourceBytes[range], as: UTF8.self)
+    }
+
+    private func appendDecoded(_ bytes: some Collection<UInt8>, to output: inout [UInt8]) throws {
+        try structuralLedger.consume(.retainedBytes, amount: UInt64(bytes.count))
+        output.append(contentsOf: bytes)
+    }
+
+    private func appendScalar(_ value: UInt32, to output: inout [UInt8]) throws {
+        guard value != 0, let scalar = Unicode.Scalar(value) else {
+            throw ParseError.invalidSyntax(message: "Invalid Unicode escape", position: tokenStart)
         }
+        try appendDecoded(String(scalar).utf8, to: &output)
     }
 
     private func advance() {
-        skipWhitespace()
-
-        guard lexicalError == nil else {
-            currentToken = .eof
-            return
-        }
-
-        guard position < input.endIndex else {
-            currentToken = .eof
-            return
-        }
-
-        let char = input[position]
-
-        if char == "?" {
-            position = input.index(after: position)
-            guard positionalParameterStyle != .explicit else {
-                admitToken(.invalidParameter("Cannot mix '?' and '$n' positional parameters"))
-                return
+        guard structuralError == nil, lexicalError == nil else { currentToken = .eof; return }
+        do {
+            _ = try skipWhitespace()
+            tokenStart = position
+            tokenEnd = position
+            tokenIsQuoted = false
+            guard let value = byte() else { currentToken = .eof; return }
+            try structuralLedger.consume(.inputTokens)
+            guard value != 0 else {
+                throw ParseError.invalidSyntax(message: "U+0000 is not accepted in SQL input", position: tokenStart)
             }
-            positionalParameterStyle = .anonymous
-            guard anonymousParameterPosition < UInt32.max else {
-                admitToken(.invalidParameter("Anonymous parameter position overflow"))
-                return
+            if value == 63 {
+                position += 1
+                admitToken(.symbol("?")); return
             }
-            anonymousParameterPosition += 1
-            admitToken(.parameter(.position(anonymousParameterPosition)))
-            return
-        }
-
-        if char == "$" {
-            let marker = position
-            position = input.index(after: position)
-            let start = position
-            while position < input.endIndex, input[position].isNumber {
-                position = input.index(after: position)
-            }
-            if position < input.endIndex,
-               input[position].isLetter || input[position] == "_" {
-                while position < input.endIndex,
-                      input[position].isLetter || input[position].isNumber || input[position] == "_" {
-                    position = input.index(after: position)
-                }
-                admitToken(.symbol(String(input[marker..<position])))
-            } else if start < position,
-               let value = UInt32(String(input[start..<position])),
-               value > 0 {
-                if positionalParameterStyle == .anonymous {
-                    admitToken(.invalidParameter("Cannot mix '?' and '$n' positional parameters"))
-                } else {
+            if value == 36 {
+                let opening = position
+                position += 1
+                if isDigit(byte()) {
+                    let start = position
+                    while isDigit(byte()) { position += 1 }
+                    let text = try decoded(start..<position)
+                    guard !isNameContinuation(byte()), let number = UInt32(text), number > 0 else {
+                        admitToken(.invalidParameter("Invalid positional parameter")); return
+                    }
+                    guard positionalParameterStyle != .anonymous else {
+                        admitToken(.invalidParameter("Cannot mix '?' and '$n' positional parameters")); return
+                    }
                     positionalParameterStyle = .explicit
-                    admitToken(.parameter(.position(value)))
+                    admitToken(.parameter(.position(number))); return
                 }
-            } else {
-                admitToken(.invalidParameter(String(input[marker..<position])))
-            }
-            return
-        }
-
-        // Keywords and identifiers
-        if char.isLetter || char == "_" {
-            let start = position
-            while position < input.endIndex && (input[position].isLetter || input[position].isNumber || input[position] == "_") {
-                position = input.index(after: position)
-            }
-            let word = String(input[start..<position])
-            let upper = word.uppercased()
-
-            if Self.keywords.contains(upper) {
-                admitToken(.keyword(upper))
-            } else {
-                admitToken(.identifier(word))
-            }
-            return
-        }
-
-        // Numbers
-        if char.isNumber {
-            let start = position
-            var hasDecimalPoint = false
-            var hasExponent = false
-            while position < input.endIndex {
-                let current = input[position]
-                if current.isNumber {
-                    position = input.index(after: position)
-                } else if current == "." && !hasDecimalPoint && !hasExponent {
-                    hasDecimalPoint = true
-                    position = input.index(after: position)
-                } else if (current == "e" || current == "E") && !hasExponent {
-                    hasExponent = true
-                    position = input.index(after: position)
-                    if position < input.endIndex,
-                       input[position] == "+" || input[position] == "-" {
-                        position = input.index(after: position)
+                if isNameStart(byte()) {
+                    while isNameStart(byte()) || isDigit(byte()) { position += 1 }
+                }
+                guard byte() == 36 else {
+                    throw ParseError.invalidSyntax(message: "Invalid dollar delimiter", position: opening)
+                }
+                position += 1
+                let delimiter = sourceBytes[opening..<position]
+                let body = position
+                while position < sourceBytes.count {
+                    var matched = 0
+                    if byte() == 36 {
+                        while matched < delimiter.count, position + matched < sourceBytes.count,
+                              sourceBytes[position + matched] == delimiter[delimiter.startIndex + matched] { matched += 1 }
                     }
-                } else {
-                    break
-                }
-            }
-            admitToken(.number(String(input[start..<position])))
-            return
-        }
-
-        // Strings - SQL standard: use '' to escape single quotes
-        // Reference: ISO/IEC 9075:2023 Section 5.3 <character string literal>
-        if char == "'" {
-            let literalStart = position
-            position = input.index(after: position)
-            var value = ""
-            var isTerminated = false
-            while position < input.endIndex {
-                let c = input[position]
-                if c == "'" {
-                    // Check for escaped quote ('')
-                    let next = input.index(after: position)
-                    if next < input.endIndex && input[next] == "'" {
-                        // Escaped quote: '' -> '
-                        value.append("'")
-                        position = input.index(after: next)
-                    } else {
-                        // End of string
-                        position = next
-                        isTerminated = true
-                        break
+                    if matched == delimiter.count {
+                        let text = try decoded(body..<position)
+                        guard !text.utf8.contains(0) else {
+                            throw ParseError.invalidSyntax(message: "U+0000 in dollar string", position: opening)
+                        }
+                        position += delimiter.count
+                        admitToken(.string(text)); return
                     }
-                } else {
-                    value.append(c)
-                    position = input.index(after: position)
+                    // A delimiter tag contains no '$', so its matched prefix can be skipped.
+                    position += max(1, matched)
                 }
+                throw ParseError.invalidSyntax(message: "Unterminated dollar string", position: opening)
             }
-            guard isTerminated else {
-                recordLexicalError(
-                    message: "Unterminated string literal",
-                    at: literalStart
-                )
+            if value == 39 || value == 34 || ((value == 69 || value == 101) && byte(1) == 39)
+                || ((value == 85 || value == 117) && byte(1) == 38 && (byte(2) == 39 || byte(2) == 34)) {
+                let escapeString = (value == 69 || value == 101)
+                let unicode = value == 85 || value == 117
+                if escapeString { position += 1 }
+                if unicode { position += 2 }
+                let quote = byte()!
+                var output: [UInt8] = []
+                try scanQuoted(quote: quote, escapeString: escapeString, output: &output)
+                var spanEnd = position
+                if quote == 39 {
+                    while true {
+                        let hadNewline = try skipWhitespace(includeBlockComments: false)
+                        guard hadNewline, byte() == 39 else { break }
+                        try scanQuoted(quote: 39, escapeString: escapeString, output: &output)
+                        spanEnd = position
+                    }
+                }
+                if unicode {
+                    let beforeEscape = position
+                    let escape = try scanUnicodeEscapeCharacter()
+                    var decodedOutput: [UInt8] = []
+                    try decodeUnicode(output, escape: escape, output: &decodedOutput)
+                    output = decodedOutput
+                    if position != beforeEscape {
+                        spanEnd = position
+                    }
+                }
+                guard let text = String(validating: output, as: UTF8.self), !output.contains(0), quote != 34 || !output.isEmpty else {
+                    throw ParseError.invalidSyntax(message: "Invalid UTF-8, empty identifier or U+0000 in quoted value", position: tokenStart)
+                }
+                admitToken(quote == 34 ? .identifier(text) : .string(text), quoted: quote == 34)
+                tokenEnd = spanEnd
                 return
             }
-            admitToken(.string(value))
-            return
+            if isNameStart(value) {
+                let start = position
+                while isNameContinuation(byte()) { position += 1 }
+                let word = try decoded(start..<position)
+                let upper = asciiUppercase(word)
+                let folded = String(decoding: word.utf8.map { (65...90).contains($0) ? $0 + 32 : $0 }, as: UTF8.self)
+                admitToken(Self.keywords.contains(upper) || Self.reservedWords.contains(upper) || Self.typeFunctionWords.contains(upper) ? .keyword(upper) : .identifier(folded)); return
+            }
+            if isDigit(value) || value == 46 && isDigit(byte(1)) {
+                let start = position
+                let radix = value == 48 && [66, 79, 88, 98, 111, 120].contains(byte(1) ?? 0)
+                if radix {
+                    position += 2
+                    while let digit = byte(), isDigit(digit) || (65...70).contains(digit) || (97...102).contains(digit) || digit == 95 { position += 1 }
+                } else {
+                    while isDigit(byte()) || byte() == 95 { position += 1 }
+                    if byte() == 46 {
+                        position += 1
+                        while isDigit(byte()) || byte() == 95 { position += 1 }
+                    }
+                    if byte() == 69 || byte() == 101 {
+                        position += 1
+                        if byte() == 43 || byte() == 45 { position += 1 }
+                        while isDigit(byte()) || byte() == 95 { position += 1 }
+                    }
+                }
+                guard !isNameStart(byte()) else {
+                    throw ParseError.invalidSyntax(message: "Invalid numeric suffix", position: start)
+                }
+                admitToken(.number(try decoded(start..<position))); return
+            }
+            if let next = byte(1) {
+                let pair = String(decoding: [value, next], as: UTF8.self)
+                if ["<=", ">=", "<>", "!=", "||", "&&", "->", "<-", "::"].contains(pair) {
+                    position += 2; admitToken(.symbol(pair)); return
+                }
+            }
+            position += 1
+            admitToken(.symbol(String(decoding: [value], as: UTF8.self)))
+        } catch let error as QueryStructuralValidationError {
+            structuralError = error
+            currentToken = .eof
+        } catch let error as ParseError {
+            lexicalError = error
+            currentToken = .eof
+        } catch {
+            lexicalError = .invalidSyntax(message: "Invalid lexical input", position: tokenStart)
+            currentToken = .eof
         }
-
-        // Multi-character symbols
-        let twoChar = String(input[position...].prefix(2))
-        if ["<=", ">=", "<>", "!=", "||", "&&", "->", "<-"].contains(twoChar) {
-            position = input.index(position, offsetBy: 2)
-            admitToken(.symbol(twoChar))
-            return
-        }
-
-        // Single character symbols
-        position = input.index(after: position)
-        admitToken(.symbol(String(char)))
     }
 
-    private func skipWhitespace() {
-        while position < input.endIndex {
-            let char = input[position]
-            if char.isWhitespace {
-                position = input.index(after: position)
-            } else if char == "-" && input.index(after: position) < input.endIndex && input[input.index(after: position)] == "-" {
-                // Single-line comment
-                while position < input.endIndex && input[position] != "\n" {
-                    position = input.index(after: position)
-                }
-            } else if char == "/" && input.index(after: position) < input.endIndex && input[input.index(after: position)] == "*" {
-                // Multi-line comment
-                let commentStart = position
-                position = input.index(position, offsetBy: 2)
-                var isTerminated = false
-                while position < input.endIndex {
-                    if input[position] == "*" && input.index(after: position) < input.endIndex && input[input.index(after: position)] == "/" {
-                        position = input.index(position, offsetBy: 2)
-                        isTerminated = true
-                        break
-                    }
-                    position = input.index(after: position)
-                }
-                guard isTerminated else {
-                    recordLexicalError(
-                        message: "Unterminated block comment",
-                        at: commentStart
-                    )
+    private func scanQuoted(quote: UInt8, escapeString: Bool, output: inout [UInt8]) throws {
+        let opening = tokenStart
+        position += 1
+        // All adjacent raw chunks are collected before Unicode UESCAPE decoding.
+        var raw: [UInt8] = []
+        while let value = byte() {
+            if value == quote {
+                position += 1
+                if byte() == quote {
+                    position += 1
+                    try appendDecoded([quote], to: &raw)
+                } else {
+                    // Raw content was already admitted before growth.
+                    output.append(contentsOf: raw)
                     return
                 }
+            } else if escapeString, value == 92 {
+                position += 1
+                guard let escaped = byte() else { break }
+                position += 1
+                switch escaped {
+                case 98: try appendDecoded([8], to: &raw)
+                case 102: try appendDecoded([12], to: &raw)
+                case 110: try appendDecoded([10], to: &raw)
+                case 114: try appendDecoded([13], to: &raw)
+                case 116: try appendDecoded([9], to: &raw)
+                case 48...55:
+                    var number = UInt32(escaped - 48)
+                    for _ in 0..<2 {
+                        guard let digit = byte(), (48...55).contains(digit) else { break }
+                        number = number * 8 + UInt32(digit - 48); position += 1
+                    }
+                    try appendDecoded([UInt8(truncatingIfNeeded: number)], to: &raw)
+                case 120:
+                    var number: UInt32 = 0
+                    var count = 0
+                    while count < 2, let digit = byte(), isHexDigit(digit) {
+                        number = number * 16 + hexValue(digit); position += 1; count += 1
+                    }
+                    try appendDecoded([count == 0 ? escaped : UInt8(number)], to: &raw)
+                case 117, 85:
+                    var scalar = try scanHex(count: escaped == 117 ? 4 : 8)
+                    if (0xD800...0xDBFF).contains(scalar) {
+                        guard byte() == 92, byte(1) == 117 || byte(1) == 85 else {
+                            throw ParseError.invalidSyntax(message: "Unpaired Unicode surrogate", position: opening)
+                        }
+                        let lowWidth = byte(1) == 117 ? 4 : 8
+                        position += 2
+                        let low = try scanHex(count: lowWidth)
+                        guard (0xDC00...0xDFFF).contains(low) else {
+                            throw ParseError.invalidSyntax(message: "Unpaired Unicode surrogate", position: opening)
+                        }
+                        scalar = 0x10000 + ((scalar - 0xD800) << 10) + low - 0xDC00
+                    }
+                    try appendScalar(scalar, to: &raw)
+                default: try appendDecoded([escaped], to: &raw)
+                }
             } else {
-                break
+                guard value != 0 else { throw ParseError.invalidSyntax(message: "U+0000 in quoted value", position: opening) }
+                position += 1
+                try appendDecoded([value], to: &raw)
             }
+        }
+        throw ParseError.invalidSyntax(message: "Unterminated quoted value", position: opening)
+    }
+
+    private func scanUnicodeEscapeCharacter() throws -> UInt8 {
+        let afterQuote = position
+        _ = try skipWhitespace()
+        guard sourceBytes.count - position >= 7,
+              asciiUppercase(String(decoding: sourceBytes[position..<(position + 7)], as: UTF8.self)) == "UESCAPE",
+              position + 7 == sourceBytes.count || !isNameContinuation(sourceBytes[position + 7]) else {
+            position = afterQuote
+            return 92
+        }
+        try structuralLedger.consume(.inputTokens, amount: 2)
+        position += 7
+        _ = try skipWhitespace()
+        guard byte() == 39, let candidate = byte(1), byte(2) == 39,
+              candidate < 128, candidate != 43, candidate != 34, candidate != 39,
+              !isHexDigit(candidate), ![9, 10, 11, 12, 13, 32].contains(candidate) else {
+            throw ParseError.invalidSyntax(message: "Invalid UESCAPE character", position: position)
+        }
+        position += 3
+        return candidate
+    }
+
+    private func isHexDigit(_ value: UInt8) -> Bool {
+        (48...57).contains(value) || (65...70).contains(value) || (97...102).contains(value)
+    }
+
+    private func hexValue(_ value: UInt8) -> UInt32 {
+        UInt32(value <= 57 ? value - 48 : (value <= 70 ? value - 65 : value - 97) + 10)
+    }
+
+    private func scanHex(count: Int) throws -> UInt32 {
+        var value: UInt32 = 0
+        for _ in 0..<count {
+            guard let digit = byte(), isHexDigit(digit) else {
+                throw ParseError.invalidSyntax(message: "Invalid Unicode escape", position: tokenStart)
+            }
+            value = value * 16 + hexValue(digit)
+            position += 1
+        }
+        return value
+    }
+
+    private func decodeUnicode(_ raw: [UInt8], escape: UInt8, output: inout [UInt8]) throws {
+        var index = 0
+        func codeUnit(_ count: Int, from offset: inout Int) throws -> UInt32 {
+            var result: UInt32 = 0
+            for _ in 0..<count {
+                guard offset < raw.count, isHexDigit(raw[offset]) else {
+                    throw ParseError.invalidSyntax(message: "Invalid Unicode escape", position: tokenStart)
+                }
+                result = result * 16 + hexValue(raw[offset]); offset += 1
+            }
+            return result
+        }
+        while index < raw.count {
+            if raw[index] != escape {
+                try appendDecoded([raw[index]], to: &output); index += 1; continue
+            }
+            index += 1
+            guard index < raw.count else { throw ParseError.invalidSyntax(message: "Incomplete Unicode escape", position: tokenStart) }
+            if raw[index] == escape {
+                try appendDecoded([escape], to: &output); index += 1; continue
+            }
+            let long = raw[index] == 43
+            if long { index += 1 }
+            var scalar = try codeUnit(long ? 6 : 4, from: &index)
+            if (0xD800...0xDBFF).contains(scalar) {
+                guard index < raw.count, raw[index] == escape else {
+                    throw ParseError.invalidSyntax(message: "Unpaired Unicode surrogate", position: tokenStart)
+                }
+                index += 1
+                let lowLong = index < raw.count && raw[index] == 43
+                if lowLong { index += 1 }
+                let low = try codeUnit(lowLong ? 6 : 4, from: &index)
+                guard (0xDC00...0xDFFF).contains(low) else { throw ParseError.invalidSyntax(message: "Unpaired Unicode surrogate", position: tokenStart) }
+                scalar = 0x10000 + ((scalar - 0xD800) << 10) + low - 0xDC00
+            }
+            try appendScalar(scalar, to: &output)
         }
     }
 
-    private func recordLexicalError(
-        message: String,
-        at errorPosition: String.Index
-    ) {
-        guard lexicalError == nil else { return }
-        lexicalError = .invalidSyntax(
-            message: message,
-            position: input.distance(
-                from: input.startIndex,
-                to: errorPosition
-            )
-        )
-        currentToken = .eof
+    @discardableResult
+    private func skipWhitespace(includeBlockComments: Bool = true) throws -> Bool {
+        var newline = false
+        while let value = byte() {
+            if [9, 10, 11, 12, 13, 32].contains(value) {
+                newline = newline || value == 10 || value == 13
+                position += 1
+            } else if value == 45, byte(1) == 45 {
+                position += 2
+                while let character = byte(), character != 10, character != 13 { position += 1 }
+            } else if includeBlockComments, value == 47, byte(1) == 42 {
+                let opening = position
+                position += 2
+                var depth: UInt64 = 1
+                try structuralLedger.validateNestingDepth(depth)
+                while depth > 0 {
+                    guard let character = byte() else { throw ParseError.invalidSyntax(message: "Unterminated block comment", position: opening) }
+                    newline = newline || character == 10 || character == 13
+                    if character == 47, byte(1) == 42 {
+                        depth += 1
+                        try structuralLedger.validateNestingDepth(depth)
+                        position += 2
+                    } else if character == 42, byte(1) == 47 {
+                        depth -= 1; position += 2
+                    } else { position += 1 }
+                }
+            } else { break }
+        }
+        return newline
     }
 
     private func expect(_ tokenType: String) throws {
@@ -424,12 +687,30 @@ extension SQLParser {
             advance()
         case .symbol(let s) where s == tokenType:
             advance()
+        case .eof:
+            throw ParseError.unexpectedEndOfInput(expected: tokenType, position: tokenStart)
         default:
             throw ParseError.unexpectedToken(
                 expected: tokenType,
                 found: tokenDescription(currentToken),
-                position: input.distance(from: input.startIndex, to: position)
+                position: tokenStart
             )
+        }
+    }
+
+    private var identifierText: String? {
+        switch currentToken {
+        case .identifier(let name): return name
+        case .keyword(let word) where !Self.reservedWords.contains(word) && !Self.typeFunctionWords.contains(word): return word.lowercased()
+        default: return nil
+        }
+    }
+
+    private var labelText: String? {
+        switch currentToken {
+        case .identifier(let name): return name
+        case .keyword(let word): return word.lowercased()
+        default: return nil
         }
     }
 
@@ -463,7 +744,7 @@ extension SQLParser {
     @discardableResult
     private func consumeContextualWord(_ word: String) -> Bool {
         switch currentToken {
-        case .identifier(let value) where value.uppercased() == word:
+        case .identifier(let value) where !tokenIsQuoted && asciiUppercase(value) == word:
             advance()
             return true
         case .keyword(let value) where value == word:
@@ -479,7 +760,7 @@ extension SQLParser {
             throw ParseError.unexpectedToken(
                 expected: word,
                 found: tokenDescription(currentToken),
-                position: input.distance(from: input.startIndex, to: position)
+                position: tokenStart
             )
         }
     }
@@ -492,7 +773,7 @@ extension SQLParser {
             throw ParseError.unexpectedToken(
                 expected: "end of input",
                 found: tokenDescription(currentToken),
-                position: input.distance(from: input.startIndex, to: position)
+                position: tokenStart
             )
         }
     }
@@ -503,7 +784,7 @@ extension SQLParser {
 extension SQLParser {
     private func parseStatement() throws -> QueryStatement {
         switch currentToken {
-        case .keyword("SELECT"):
+        case .keyword("SELECT"), .keyword("WITH"):
             return .select(try parseSelectQuery())
         case .keyword("INSERT"):
             return .insert(try parseInsertQuery())
@@ -521,14 +802,11 @@ extension SQLParser {
             advance()
             try expect("PROPERTY")
             try expect("GRAPH")
-            guard case .identifier(let graphName) = currentToken else {
+            guard let graphName = identifierText else {
                 throw ParseError.unexpectedToken(
                     expected: "property graph name",
                     found: tokenDescription(currentToken),
-                    position: input.distance(
-                        from: input.startIndex,
-                        to: position
-                    )
+                    position: tokenStart
                 )
             }
             advance()
@@ -536,7 +814,7 @@ extension SQLParser {
         default:
             throw ParseError.invalidSyntax(
                 message: "Expected statement keyword",
-                position: input.distance(from: input.startIndex, to: position)
+                position: tokenStart
             )
         }
     }
@@ -615,10 +893,7 @@ extension SQLParser {
                   let value = UInt64(lexicalForm) else {
                 throw ParseError.invalidSyntax(
                     message: "LIMIT requires a non-negative UInt64 integer",
-                    position: input.distance(
-                        from: input.startIndex,
-                        to: position
-                    )
+                    position: tokenStart
                 )
             }
             limit = value
@@ -633,10 +908,7 @@ extension SQLParser {
                   let value = UInt64(lexicalForm) else {
                 throw ParseError.invalidSyntax(
                     message: "OFFSET requires a non-negative UInt64 integer",
-                    position: input.distance(
-                        from: input.startIndex,
-                        to: position
-                    )
+                    position: tokenStart
                 )
             }
             offset = value
@@ -673,11 +945,11 @@ extension SQLParser {
             if !first { advance() }
             first = false
 
-            guard case .identifier(let name) = currentToken else {
+            guard let name = identifierText else {
                 throw ParseError.unexpectedToken(
                     expected: "CTE name",
                     found: tokenDescription(currentToken),
-                    position: input.distance(from: input.startIndex, to: position)
+                    position: tokenStart
                 )
             }
             advance()
@@ -691,10 +963,12 @@ extension SQLParser {
                 while colFirst || isSymbol(",") {
                     if !colFirst { advance() }
                     colFirst = false
-                    if case .identifier(let col) = currentToken {
+                    if let col = identifierText {
                         try admitCollectionElement()
                         columnList?.append(col)
                         advance()
+                    } else {
+                        throw ParseError.unexpectedToken(expected: "CTE column name", found: tokenDescription(currentToken), position: tokenStart)
                     }
                 }
                 try expect(")")
@@ -739,6 +1013,13 @@ extension SQLParser {
             return .all
         }
 
+        if let qualifier = identifierText, peekNextToken() == .symbol("."), peekNextToken(2) == .symbol("*") {
+            advance()
+            try expect(".")
+            try expect("*")
+            return .allFrom(qualifier)
+        }
+
         var items: [ProjectionItem] = []
         var first = true
         while first || isSymbol(",") {
@@ -750,10 +1031,7 @@ extension SQLParser {
             var alias: String?
             if case .keyword("AS") = currentToken {
                 advance()
-                if case .identifier(let name) = currentToken {
-                    alias = name
-                    advance()
-                }
+                alias = try parseRequiredIdentifier("projection alias", allowsKeywordLabel: true)
             }
             try admitCollectionElement()
             items.append(
@@ -775,6 +1053,7 @@ extension SQLParser {
               ["INNER", "LEFT", "RIGHT", "FULL", "CROSS", "JOIN", "NATURAL"]
                 .contains(kw) {
             var joinType = try parseJoinType()
+            let crossJoin = joinType == .cross
             if case .keyword("LATERAL") = currentToken {
                 switch joinType {
                 case .inner, .cross:
@@ -802,22 +1081,19 @@ extension SQLParser {
                 while first || isSymbol(",") {
                     if !first { advance() }
                     first = false
-                    if case .identifier(let name) = currentToken {
+                    if let name = identifierText {
                         try admitCollectionElement()
                         cols.append(name)
                         advance()
                     } else {
-                        break
+                        throw ParseError.unexpectedToken(expected: "USING column", found: tokenDescription(currentToken), position: tokenStart)
                     }
                 }
                 try expect(")")
                 guard !cols.isEmpty else {
                     throw ParseError.invalidSyntax(
                         message: "JOIN USING requires at least one column",
-                        position: input.distance(
-                            from: input.startIndex,
-                            to: position
-                        )
+                        position: tokenStart
                     )
                 }
                 condition = .using(cols)
@@ -833,20 +1109,18 @@ extension SQLParser {
             if naturalJoin, condition != nil {
                 throw ParseError.invalidSyntax(
                     message: "NATURAL JOIN cannot declare ON or USING",
-                    position: input.distance(
-                        from: input.startIndex,
-                        to: position
-                    )
+                    position: tokenStart
                 )
             }
-            if joinType == .cross, condition != nil {
+            if crossJoin, condition != nil {
                 throw ParseError.invalidSyntax(
                     message: "CROSS JOIN cannot declare ON or USING",
-                    position: input.distance(
-                        from: input.startIndex,
-                        to: position
-                    )
+                    position: tokenStart
                 )
+            }
+
+            if !naturalJoin, !crossJoin, condition == nil {
+                throw ParseError.invalidSyntax(message: "JOIN requires ON or USING", position: tokenStart)
             }
 
             result = try makeStructuralNode(
@@ -866,23 +1140,22 @@ extension SQLParser {
 
     private func parseTableRef() throws -> DataSource {
         // Check for GRAPH_TABLE
-        if case .keyword("GRAPH_TABLE") = currentToken {
+        if case .keyword("GRAPH_TABLE") = currentToken, peekNextToken() == .symbol("(") {
             return try parseGraphTable()
         }
 
         // Check for subquery: (SELECT ...) or (WITH ...)
         if isSymbol("(") {
+            try enterStructuralNesting()
+            defer { leaveStructuralNesting() }
             advance()
-
-            // Verify it's a subquery (starts with SELECT or WITH)
-            switch currentToken {
-            case .keyword("SELECT"), .keyword("WITH"):
-                break  // Valid subquery start
-            default:
-                throw ParseError.invalidSyntax(
-                    message: "Expected SELECT or WITH after '(' in FROM clause",
-                    position: input.distance(from: input.startIndex, to: position)
-                )
+            if !isKeyword("SELECT"), !isKeyword("WITH") {
+                let grouped = try parseDataSource()
+                try expect(")")
+                if isKeyword("AS") || identifierText != nil {
+                    throw ParseError.unsupportedFeature("Joined-table group alias")
+                }
+                return grouped
             }
 
             let subquery = try parseSelectQuery()
@@ -893,7 +1166,7 @@ extension SQLParser {
             if case .keyword("AS") = currentToken {
                 advance()
             }
-            if case .identifier(let a) = currentToken {
+            if let a = identifierText {
                 alias = a
                 advance()
             }
@@ -901,7 +1174,7 @@ extension SQLParser {
             guard let subqueryAlias = alias else {
                 throw ParseError.invalidSyntax(
                     message: "Subquery in FROM clause requires an alias",
-                    position: input.distance(from: input.startIndex, to: position)
+                    position: tokenStart
                 )
             }
 
@@ -910,20 +1183,21 @@ extension SQLParser {
             )
         }
 
-        let table = try parseNamedTableReference(allowsAlias: true)
+        let table = try parseNamedTableReference()
         return try makeStructuralNode(
             .table(table)
         )
     }
 
     private func parseNamedTableReference(
-        allowsAlias: Bool
+        allowsImplicitAlias: Bool = true,
+        implicitAliasTerminators: Set<String> = []
     ) throws -> TableRef {
-        guard case .identifier(let firstName) = currentToken else {
+        guard let firstName = identifierText else {
             throw ParseError.unexpectedToken(
                 expected: "table name",
                 found: tokenDescription(currentToken),
-                position: input.distance(from: input.startIndex, to: position)
+                position: tokenStart
             )
         }
         advance()
@@ -932,14 +1206,11 @@ extension SQLParser {
         let table: String
         if isSymbol(".") {
             advance()
-            guard case .identifier(let tableName) = currentToken else {
+            guard let tableName = labelText else {
                 throw ParseError.unexpectedToken(
                     expected: "table name after schema qualifier",
                     found: tokenDescription(currentToken),
-                    position: input.distance(
-                        from: input.startIndex,
-                        to: position
-                    )
+                    position: tokenStart
                 )
             }
             schema = firstName
@@ -951,21 +1222,19 @@ extension SQLParser {
         }
 
         var alias: String?
-        if allowsAlias, isKeyword("AS") {
+        if isKeyword("AS") {
             advance()
-            guard case .identifier(let name) = currentToken else {
+            guard let name = identifierText else {
                 throw ParseError.unexpectedToken(
                     expected: "table alias",
                     found: tokenDescription(currentToken),
-                    position: input.distance(
-                        from: input.startIndex,
-                        to: position
-                    )
+                    position: tokenStart
                 )
             }
             alias = name
             advance()
-        } else if allowsAlias, case .identifier(let name) = currentToken {
+        } else if allowsImplicitAlias, let name = identifierText,
+                  tokenIsQuoted || !implicitAliasTerminators.contains(asciiUppercase(name)) {
             alias = name
             advance()
         }
@@ -1002,14 +1271,14 @@ extension SQLParser {
             break
         }
 
+        if joinType == .left || joinType == .right || joinType == .full {
+            _ = consumeContextualWord("OUTER")
+        }
         guard case .keyword("JOIN") = currentToken else {
             throw ParseError.unexpectedToken(
                 expected: "JOIN",
                 found: tokenDescription(currentToken),
-                position: input.distance(
-                    from: input.startIndex,
-                    to: position
-                )
+                position: tokenStart
             )
         }
         advance()
@@ -1115,7 +1384,7 @@ extension SQLParser {
                 advance()
                 return try makeStructuralNode(.like(left, pattern: pattern))
             }
-            throw ParseError.invalidSyntax(message: "Expected string pattern after LIKE", position: input.distance(from: input.startIndex, to: position))
+            throw ParseError.invalidSyntax(message: "Expected string pattern after LIKE", position: tokenStart)
         case .keyword("IN"):
             advance()
             try expect("(")
@@ -1197,10 +1466,7 @@ extension SQLParser {
                 guard case .string(let pattern) = currentToken else {
                     throw ParseError.invalidSyntax(
                         message: "Expected string pattern after NOT LIKE",
-                        position: input.distance(
-                            from: input.startIndex,
-                            to: position
-                        )
+                        position: tokenStart
                     )
                 }
                 advance()
@@ -1212,10 +1478,7 @@ extension SQLParser {
                 throw ParseError.unexpectedToken(
                     expected: "IN, BETWEEN, or LIKE after NOT",
                     found: tokenDescription(currentToken),
-                    position: input.distance(
-                        from: input.startIndex,
-                        to: position
-                    )
+                    position: tokenStart
                 )
             }
         case .keyword("BETWEEN"):
@@ -1261,25 +1524,84 @@ extension SQLParser {
     }
 
     private func parseUnaryExpression() throws -> Expression {
-        var operatorCount = 0
-        while case .symbol("-") = currentToken {
+        var signs: [Bool] = []
+        while isSymbol("-") || isSymbol("+") {
             try enterStructuralNesting()
-            operatorCount += 1
+            try admitCollectionElement()
+            signs.append(isSymbol("-"))
             advance()
         }
-        defer {
-            for _ in 0..<operatorCount {
-                leaveStructuralNesting()
-            }
+        let signCount = signs.count
+        defer { for _ in 0..<signCount { leaveStructuralNesting() } }
+        var expression: Expression
+        if case .number(let text) = currentToken, let negative = signs.popLast() {
+            let start = tokenStart
+            advance()
+            expression = try numericExpression((negative ? "-" : "+") + text, at: start)
+        } else {
+            expression = try parsePrimaryExpression()
         }
-        var expression = try parsePrimaryExpression()
-        for _ in 0..<operatorCount {
-            expression = try makeStructuralNode(.negate(expression))
+        while isSymbol("::") {
+            let start = tokenStart
+            advance()
+            expression = try normalizedCast(expression, as: parseDataType(), at: start)
+        }
+        for negative in signs.reversed() {
+            if negative { expression = try makeStructuralNode(.negate(expression)) }
         }
         return expression
     }
 
+    private func numericExpression(_ text: String, at start: Int) throws -> Expression {
+        do {
+            return try makeLiteralExpression(SQLConstantSyntax.numericLiteral(text, limits: constantLimits(reservingNodes: 4)))
+        } catch let error as SQLConstantError {
+            throw ParseError.literalError(message: String(describing: error), position: start)
+        }
+    }
+
+    private func normalizedCast(_ expression: Expression, as type: DataType, at start: Int) throws -> Expression {
+        do {
+            if let literal = try SQLConstantSyntax.normalize(expression, as: type, limits: constantLimits(reservingNodes: 3 + dataTypeNodeCount(type))) {
+                return try makeLiteralExpression(literal)
+            }
+            return try makeStructuralNode(.cast(expression, targetType: type))
+        } catch let error as SQLConstantError {
+            throw ParseError.literalError(message: String(describing: error), position: start)
+        }
+    }
+
     private func parsePrimaryExpression() throws -> Expression {
+        if !tokenIsQuoted, let word = labelText {
+            let upper = asciiUppercase(word)
+            let next = peekNextToken()
+            if ["ARRAY", "ROW"].contains(upper), next == .symbol(upper == "ARRAY" ? "[" : "(") {
+                advance()
+                return try parseConstructor(array: upper == "ARRAY")
+            }
+            if Self.literalTypeWords.contains(upper),
+               next.isString || next == .symbol("(") && (Self.columnNameWords.contains(upper) || isTypedLiteralPrefix()) || next == .keyword("WITH") || next == .identifier("without") || next == .identifier("precision") || next == .identifier("varying") {
+                let start = tokenStart
+                let type = try parseDataType()
+                if case .array = type {
+                    throw ParseError.invalidSyntax(message: "Array typed prefixes require CAST or ::", position: start)
+                }
+                guard case .string(let text) = currentToken else {
+                    throw ParseError.unexpectedToken(expected: "typed string literal", found: tokenDescription(currentToken), position: tokenStart)
+                }
+                advance()
+                let value = try makeLiteralExpression(.string(text))
+                return try normalizedCast(value, as: type, at: start)
+            }
+            let aggregates = ["COUNT", "SUM", "AVG", "MIN", "MAX", "ARRAY_AGG", "GROUP_CONCAT"]
+            if aggregates.contains(upper), next == .symbol("(") { return try parseAggregate() }
+            let syntaxExpression = ["EXISTS", "CASE", "CAST"].contains(upper)
+            if !syntaxExpression || upper == "EXISTS" && next != .symbol("(") {
+                if identifierText != nil || Self.typeFunctionWords.contains(upper) && next == .symbol("(") {
+                    return try parseIdentifierExpression(word)
+                }
+            }
+        }
         switch currentToken {
         case .symbol("("):
             advance()
@@ -1307,27 +1629,26 @@ extension SQLParser {
             return try makeStructuralNode(.exists(subquery))
 
         case .number(let n):
+            let start = tokenStart
             advance()
-            if n.contains("e") || n.contains("E") {
-                guard let value = Double(n), value.isFinite else {
-                    throw invalidNumericLiteral(n)
-                }
-                return try makeLiteralExpression(.double(value))
-            }
-            if n.contains(".") {
-                guard let value = Literal.parseDecimal(n) else {
-                    throw invalidNumericLiteral(n)
-                }
-                return try makeLiteralExpression(value)
-            }
-            guard let value = Literal.parseInteger(n) else {
-                throw invalidNumericLiteral(n)
-            }
-            return try makeLiteralExpression(value)
+            return try numericExpression(n, at: start)
 
         case .string(let s):
             advance()
             return try makeLiteralExpression(.string(s))
+
+        case .symbol("?"):
+            guard positionalParameterStyle != .explicit else {
+                throw ParseError.invalidSyntax(message: "Cannot mix '?' and '$n' positional parameters", position: tokenStart)
+            }
+            guard anonymousParameterPosition < UInt32.max else {
+                throw ParseError.invalidSyntax(message: "Anonymous parameter position overflow", position: tokenStart)
+            }
+            positionalParameterStyle = .anonymous
+            anonymousParameterPosition += 1
+            let reference = QueryParameterReference.position(anonymousParameterPosition)
+            advance()
+            return try makeStructuralNode(.parameter(reference))
 
         case .parameter(let reference):
             advance()
@@ -1335,11 +1656,12 @@ extension SQLParser {
 
         case .symbol(":"):
             advance()
-            guard case .identifier(let name) = currentToken else {
-                throw ParseError.invalidSyntax(
-                    message: "Expected a named parameter identifier after ':'",
-                    position: input.distance(from: input.startIndex, to: position)
-                )
+            let name: String
+            switch currentToken {
+            case .identifier(let value), .keyword(let value):
+                name = tokenIsQuoted ? value : try decoded(tokenStart..<tokenEnd)
+            default:
+                throw ParseError.invalidSyntax(message: "Expected a named parameter identifier after ':'", position: tokenStart)
             }
             advance()
             return try makeStructuralNode(.parameter(.name(name)))
@@ -1347,7 +1669,7 @@ extension SQLParser {
         case .invalidParameter(let reason):
             throw ParseError.invalidSyntax(
                 message: reason,
-                position: input.distance(from: input.startIndex, to: position)
+                position: tokenStart
             )
 
         case .keyword("TRUE"):
@@ -1374,90 +1696,154 @@ extension SQLParser {
             return try parseCastExpression()
 
         case .identifier(let name):
-            advance()
-            // Check for function call
-            if case .symbol("(") = currentToken {
-                advance()
-                var args: [Expression] = []
-                if !isSymbol(")") {
-                    var first = true
-                    while first || isSymbol(",") {
-                        if !first { advance() }
-                        first = false
-                        try admitCollectionElement()
-                        args.append(try parseExpression())
-                    }
-                }
-                try expect(")")
-                return try makeStructuralNode(
-                    .function(FunctionCall(name: name, arguments: args))
-                )
-            }
-            // Check for qualified name
-            if case .symbol(".") = currentToken {
-                advance()
-                if case .identifier(let col) = currentToken {
-                    advance()
-                    return try makeStructuralNode(
-                        .column(ColumnRef(table: name, column: col))
-                    )
-                }
-            }
-            return try makeStructuralNode(
-                .column(ColumnRef(column: name))
-            )
+            return try parseIdentifierExpression(name)
 
         default:
             throw ParseError.unexpectedToken(
                 expected: "expression",
                 found: tokenDescription(currentToken),
-                position: input.distance(from: input.startIndex, to: position)
+                position: tokenStart
             )
         }
     }
 
-    private func invalidNumericLiteral(_ value: String) -> ParseError {
-        .invalidSyntax(
-            message: "Invalid or out-of-range numeric literal: \(value)",
-            position: input.distance(from: input.startIndex, to: position)
+    private func parseIdentifierExpression(_ name: String) throws -> Expression {
+        let quoted = tokenIsQuoted
+        let spelling = asciiUppercase(name)
+        let start = tokenStart
+        advance()
+        // Check for function call
+        if case .symbol("(") = currentToken {
+            guard !name.contains(".") else { throw ParseError.unsupportedFeature("Ambiguous function name") }
+            let expressionFunctions: Set<String> = ["COALESCE", "NULLIF", "GREATEST", "LEAST", "GROUPING", "JSON_ARRAY", "JSON_OBJECT", "JSON_QUERY", "JSON_SCALAR", "JSON_SERIALIZE", "JSON_VALUE", "JSON_EXISTS", "NORMALIZE", "SUBSTRING", "TRIM", "XMLCONCAT", "XMLFOREST"]
+            guard quoted || !Self.columnNameWords.contains(spelling) || expressionFunctions.contains(spelling) else {
+                throw ParseError.invalidSyntax(message: "Keyword is not a function name", position: start)
+            }
+            advance()
+            let distinct = isKeyword("DISTINCT")
+            if distinct {
+                advance()
+                guard !isSymbol(")") else {
+                    throw ParseError.invalidSyntax(message: "DISTINCT function call requires arguments", position: tokenStart)
+                }
+            }
+            var args: [Expression] = []
+            if !isSymbol(")") {
+                var first = true
+                while first || isSymbol(",") {
+                    if !first { advance() }
+                    first = false
+                    try admitCollectionElement()
+                    args.append(try parseExpression())
+                }
+            }
+            try expect(")")
+            if !quoted, distinct, spelling == "COALESCE" || spelling == "NULLIF" {
+                throw ParseError.invalidSyntax(message: "DISTINCT is not allowed in COALESCE or NULLIF syntax", position: start)
+            }
+            if !quoted, spelling == "COALESCE" {
+                guard !args.isEmpty else { throw ParseError.invalidSyntax(message: "COALESCE requires at least one argument", position: start) }
+                return try makeStructuralNode(.coalesce(args))
+            }
+            if !quoted, spelling == "NULLIF" {
+                guard args.count == 2 else { throw ParseError.invalidSyntax(message: "NULLIF requires exactly two arguments", position: start) }
+                return try makeStructuralNode(.nullIf(args[0], args[1]))
+            }
+            return try makeStructuralNode(
+                .function(FunctionCall(name: name, arguments: args, distinct: distinct))
+            )
+        }
+        // Check for qualified name
+        if case .symbol(".") = currentToken {
+            advance()
+            let col = try parseRequiredIdentifier("column after qualifier", allowsKeywordLabel: true)
+            if isSymbol("(") || isSymbol(".") {
+                throw ParseError.unsupportedFeature("Qualified function or multi-part column names")
+            }
+            return try makeStructuralNode(.column(ColumnRef(table: name, column: col)))
+        }
+        return try makeStructuralNode(
+            .column(ColumnRef(column: name))
         )
+
+    }
+
+    private static let literalTypeWords: Set<String> = [
+        "DATE", "TIME", "TIMETZ", "TIMESTAMP", "TIMESTAMPTZ", "INTERVAL", "UUID", "BYTEA",
+        "JSON", "JSONB", "NUMERIC", "DECIMAL", "DEC", "BOOLEAN", "BOOL", "SMALLINT", "INT2",
+        "INT", "INTEGER", "INT4", "BIGINT", "INT8", "REAL", "FLOAT4", "FLOAT8", "DOUBLE",
+        "CHAR", "CHARACTER", "VARCHAR", "TEXT", "BINARY", "VARBINARY", "BLOB"
+    ]
+
+    private func parseConstructor(array: Bool) throws -> Expression {
+        try enterStructuralNesting()
+        defer { leaveStructuralNesting() }
+        try expect(array ? "[" : "(")
+        let end = array ? "]" : ")"
+        var elements: [Expression] = []
+        if !isSymbol(end) {
+            while true {
+                try admitCollectionElement()
+                if array && isSymbol("[") {
+                    elements.append(try parseConstructor(array: true))
+                } else {
+                    elements.append(try parseExpression())
+                }
+                guard isSymbol(",") else { break }
+                advance()
+            }
+        }
+        try expect(end)
+        return try makeStructuralNode(array ? .array(elements) : .row(elements))
     }
 
     private func parseCastExpression() throws -> Expression {
+        let start = tokenStart
         try expect("CAST")
         try expect("(")
         let value = try parseExpression()
         try expect("AS")
         let targetType = try parseDataType()
         try expect(")")
-        return try makeStructuralNode(
-            .cast(value, targetType: targetType)
-        )
+        return try normalizedCast(value, as: targetType, at: start)
     }
 
     private func parseDataType() throws -> DataType {
+        let exactName: String
+        let quoted = tokenIsQuoted
+        switch currentToken {
+        case .identifier(let name): exactName = name
+        case .keyword(let name): exactName = name.lowercased()
+        default: exactName = ""
+        }
+        if !quoted, case .keyword(let word) = currentToken,
+           Self.reservedWords.contains(word) || Self.columnNameWords.contains(word) && !Self.literalTypeWords.contains(word) {
+            throw ParseError.unexpectedToken(expected: "SQL data type", found: tokenDescription(currentToken), position: tokenStart)
+        }
         guard let firstWord = consumeDataTypeWord() else {
             throw ParseError.unexpectedToken(
                 expected: "SQL data type",
                 found: tokenDescription(currentToken),
-                position: input.distance(from: input.startIndex, to: position)
+                position: tokenStart
             )
         }
 
         let baseType: DataType
-        switch firstWord {
+        switch quoted ? "" : firstWord {
         case "BOOLEAN", "BOOL":
             baseType = .boolean
-        case "SMALLINT":
+        case "SMALLINT", "INT2":
             baseType = .smallint
-        case "INTEGER", "INT":
+        case "INTEGER", "INT", "INT4":
             baseType = .integer
-        case "BIGINT":
+        case "BIGINT", "INT8":
             baseType = .bigint
-        case "REAL":
+        case "REAL", "FLOAT4":
             baseType = .real
+        case "FLOAT8":
+            baseType = .doublePrecision
         case "DOUBLE":
-            _ = consumeContextualWord("PRECISION")
+            try expectContextualWord("PRECISION")
             baseType = .doublePrecision
         case "DECIMAL", "DEC", "NUMERIC":
             baseType = try parseDecimalType()
@@ -1485,14 +1871,14 @@ extension SQLParser {
             baseType = .text
         case "DATE":
             baseType = .date
-        case "TIME":
-            baseType = .time(
-                withTimeZone: try parseOptionalTimeZoneQualifier()
-            )
-        case "TIMESTAMP":
-            baseType = .timestamp(
-                withTimeZone: try parseOptionalTimeZoneQualifier()
-            )
+        case "TIME", "TIMETZ":
+            let precision = try parseTemporalPrecision()
+            let withTimeZone = firstWord == "TIMETZ" ? true : try parseOptionalTimeZoneQualifier()
+            baseType = .time(withTimeZone: withTimeZone, precision: precision)
+        case "TIMESTAMP", "TIMESTAMPTZ":
+            let precision = try parseTemporalPrecision()
+            let withTimeZone = firstWord == "TIMESTAMPTZ" ? true : try parseOptionalTimeZoneQualifier()
+            baseType = .timestamp(withTimeZone: withTimeZone, precision: precision)
         case "INTERVAL":
             baseType = .interval
         case "BINARY":
@@ -1507,7 +1893,7 @@ extension SQLParser {
                     for: firstWord
                 )
             )
-        case "BLOB":
+        case "BLOB", "BYTEA":
             baseType = .blob
         case "JSON":
             baseType = .json
@@ -1516,19 +1902,23 @@ extension SQLParser {
         case "UUID":
             baseType = .uuid
         default:
-            baseType = .custom(firstWord)
+            guard !exactName.contains("."), !isSymbol(".") else {
+                throw ParseError.unsupportedFeature("Qualified or ambiguous custom type name")
+            }
+            baseType = .custom(exactName)
         }
 
         var type = try makeStructuralNode(baseType)
         while true {
             if consumeContextualWord("ARRAY") {
-                type = try makeStructuralNode(.array(type))
+                if case .array = type {} else { type = try makeStructuralNode(.array(type)) }
                 continue
             }
             if isSymbol("[") {
                 advance()
+                if case .number = currentToken { _ = try parseTypeParameter(named: "array dimension", allowsZero: false) }
                 try expect("]")
-                type = try makeStructuralNode(.array(type))
+                if case .array = type {} else { type = try makeStructuralNode(.array(type)) }
                 continue
             }
             return type
@@ -1539,7 +1929,7 @@ extension SQLParser {
         switch currentToken {
         case .identifier(let value), .keyword(let value):
             advance()
-            return value.uppercased()
+            return asciiUppercase(value)
         default:
             return nil
         }
@@ -1550,27 +1940,24 @@ extension SQLParser {
             return .decimal(precision: nil, scale: nil)
         }
         advance()
+        let precisionPosition = tokenStart
         let precision = try parseTypeParameter(
             named: "DECIMAL precision",
             allowsZero: false
         )
+        guard precision <= 38 else { throw ParseError.invalidSyntax(message: "NUMERIC precision must be in 1...38", position: precisionPosition) }
         var scale: Int?
         if isSymbol(",") {
             advance()
-            let parsedScale = try parseTypeParameter(
+            let negative = isSymbol("-")
+            if negative || isSymbol("+") { advance() }
+            let scalePosition = tokenStart
+            let magnitude = try parseTypeParameter(
                 named: "DECIMAL scale",
                 allowsZero: true
             )
-            guard parsedScale <= precision else {
-                throw ParseError.invalidSyntax(
-                    message: "DECIMAL scale cannot exceed its precision",
-                    position: input.distance(
-                        from: input.startIndex,
-                        to: position
-                    )
-                )
-            }
-            scale = parsedScale
+            guard magnitude <= 1000 else { throw ParseError.invalidSyntax(message: "NUMERIC scale must be in -1000...1000", position: scalePosition) }
+            scale = negative ? -magnitude : magnitude
         }
         try expect(")")
         return .decimal(precision: precision, scale: scale)
@@ -1599,11 +1986,21 @@ extension SQLParser {
               allowsZero || result > 0 else {
             throw ParseError.invalidSyntax(
                 message: "\(name) must be \(allowsZero ? "a non-negative" : "a positive") integer",
-                position: input.distance(from: input.startIndex, to: position)
+                position: tokenStart
             )
         }
         advance()
         return result
+    }
+
+    private func parseTemporalPrecision() throws -> Int? {
+        guard isSymbol("(") else { return nil }
+        advance()
+        let precisionPosition = tokenStart
+        let value = try parseTypeParameter(named: "temporal precision", allowsZero: true)
+        guard value <= 6 else { throw ParseError.invalidSyntax(message: "Temporal precision must be in 0...6", position: precisionPosition) }
+        try expect(")")
+        return value
     }
 
     private func parseOptionalTimeZoneQualifier() throws -> Bool {
@@ -1644,10 +2041,7 @@ extension SQLParser {
             guard case .string(let value) = currentToken else {
                 throw ParseError.invalidSyntax(
                     message: "GROUP_CONCAT separator must be a string literal",
-                    position: input.distance(
-                        from: input.startIndex,
-                        to: position
-                    )
+                    position: tokenStart
                 )
             }
             separator = value
@@ -1667,19 +2061,13 @@ extension SQLParser {
         if arg == nil, funcName != .keyword("COUNT") {
             throw ParseError.invalidSyntax(
                 message: "Only COUNT may use '*' as its aggregate argument",
-                position: input.distance(
-                    from: input.startIndex,
-                    to: position
-                )
+                position: tokenStart
             )
         }
         if arg == nil, distinct {
             throw ParseError.invalidSyntax(
                 message: "COUNT(DISTINCT *) is not valid",
-                position: input.distance(
-                    from: input.startIndex,
-                    to: position
-                )
+                position: tokenStart
             )
         }
 
@@ -1723,7 +2111,7 @@ extension SQLParser {
                 )
             )
         default:
-            throw ParseError.invalidSyntax(message: "Unknown aggregate function", position: input.distance(from: input.startIndex, to: position))
+            throw ParseError.invalidSyntax(message: "Unknown aggregate function", position: tokenStart)
         }
     }
 
@@ -1792,6 +2180,8 @@ extension SQLParser {
                 } else if case .keyword("LAST") = currentToken {
                     nulls = .last
                     advance()
+                } else {
+                    throw ParseError.unexpectedToken(expected: "FIRST or LAST", found: tokenDescription(currentToken), position: tokenStart)
                 }
             }
             try admitCollectionElement()
@@ -1807,7 +2197,7 @@ extension SQLParser {
     private func parseInsertQuery() throws -> InsertQuery {
         try expect("INSERT")
         try expect("INTO")
-        let target = try parseNamedTableReference(allowsAlias: false)
+        let target = try parseNamedTableReference(allowsImplicitAlias: false)
 
         let columns: [String]?
         if isSymbol("(") {
@@ -1830,10 +2220,7 @@ extension SQLParser {
                 guard !isSymbol(")") else {
                     throw ParseError.invalidSyntax(
                         message: "INSERT VALUES rows cannot be empty",
-                        position: input.distance(
-                            from: input.startIndex,
-                            to: position
-                        )
+                        position: tokenStart
                     )
                 }
                 while true {
@@ -1860,7 +2247,7 @@ extension SQLParser {
             throw ParseError.unexpectedToken(
                 expected: "VALUES, SELECT, WITH, or DEFAULT VALUES",
                 found: tokenDescription(currentToken),
-                position: input.distance(from: input.startIndex, to: position)
+                position: tokenStart
             )
         }
 
@@ -1893,10 +2280,7 @@ extension SQLParser {
                 throw ParseError.unexpectedToken(
                     expected: "NOTHING or UPDATE after ON CONFLICT DO",
                     found: tokenDescription(currentToken),
-                    position: input.distance(
-                        from: input.startIndex,
-                        to: position
-                    )
+                    position: tokenStart
                 )
             }
         }
@@ -1915,7 +2299,7 @@ extension SQLParser {
 
     private func parseUpdateQuery() throws -> UpdateQuery {
         try expect("UPDATE")
-        let target = try parseNamedTableReference(allowsAlias: true)
+        let target = try parseNamedTableReference(implicitAliasTerminators: ["SET"])
         try expect("SET")
         let assignments = try parseAssignments()
 
@@ -1950,7 +2334,7 @@ extension SQLParser {
     private func parseDeleteQuery() throws -> DeleteQuery {
         try expect("DELETE")
         try expect("FROM")
-        let target = try parseNamedTableReference(allowsAlias: true)
+        let target = try parseNamedTableReference(implicitAliasTerminators: ["USING", "WHERE", "RETURNING"])
 
         let source: DataSource?
         if isKeyword("USING") {
@@ -1993,11 +2377,11 @@ extension SQLParser {
             ifNotExists = false
         }
 
-        guard case .identifier(let graphName) = currentToken else {
+        guard let graphName = identifierText else {
             throw ParseError.unexpectedToken(
                 expected: "property graph name",
                 found: tokenDescription(currentToken),
-                position: input.distance(from: input.startIndex, to: position)
+                position: tokenStart
             )
         }
         advance()
@@ -2009,7 +2393,7 @@ extension SQLParser {
         guard !isSymbol(")") else {
             throw ParseError.invalidSyntax(
                 message: "CREATE PROPERTY GRAPH requires at least one vertex table",
-                position: input.distance(from: input.startIndex, to: position)
+                position: tokenStart
             )
         }
         while true {
@@ -2028,10 +2412,7 @@ extension SQLParser {
             guard !isSymbol(")") else {
                 throw ParseError.invalidSyntax(
                     message: "EDGE TABLES cannot be empty",
-                    position: input.distance(
-                        from: input.startIndex,
-                        to: position
-                    )
+                    position: tokenStart
                 )
             }
             while true {
@@ -2120,7 +2501,7 @@ extension SQLParser {
         guard sourceColumns.count == targetColumns.count else {
             throw ParseError.invalidSyntax(
                 message: "\(role.displayName) key and referenced key widths must match",
-                position: input.distance(from: input.startIndex, to: position)
+                position: tokenStart
             )
         }
 
@@ -2240,13 +2621,14 @@ extension SQLParser {
     }
 
     private func parseRequiredIdentifier(
-        _ expected: String
+        _ expected: String,
+        allowsKeywordLabel: Bool = false
     ) throws -> String {
-        guard case .identifier(let identifier) = currentToken else {
+        guard let identifier = allowsKeywordLabel ? labelText : identifierText else {
             throw ParseError.unexpectedToken(
                 expected: expected,
                 found: tokenDescription(currentToken),
-                position: input.distance(from: input.startIndex, to: position)
+                position: tokenStart
             )
         }
         advance()
@@ -2256,14 +2638,11 @@ extension SQLParser {
     private func parseAssignments() throws -> [Assignment] {
         var assignments: [Assignment] = []
         while true {
-            guard case .identifier(let column) = currentToken else {
+            guard let column = identifierText else {
                 throw ParseError.unexpectedToken(
                     expected: "assignment column",
                     found: tokenDescription(currentToken),
-                    position: input.distance(
-                        from: input.startIndex,
-                        to: position
-                    )
+                    position: tokenStart
                 )
             }
             advance()
@@ -2291,14 +2670,11 @@ extension SQLParser {
             let alias: String?
             if isKeyword("AS") {
                 advance()
-                guard case .identifier(let name) = currentToken else {
+                guard let name = labelText else {
                     throw ParseError.unexpectedToken(
                         expected: "RETURNING alias",
                         found: tokenDescription(currentToken),
-                        position: input.distance(
-                            from: input.startIndex,
-                            to: position
-                        )
+                        position: tokenStart
                     )
                 }
                 alias = name
@@ -2327,14 +2703,11 @@ extension SQLParser {
         }
         var identifiers: [String] = []
         while true {
-            guard case .identifier(let identifier) = currentToken else {
+            guard let identifier = identifierText else {
                 throw ParseError.unexpectedToken(
                     expected: expected,
                     found: tokenDescription(currentToken),
-                    position: input.distance(
-                        from: input.startIndex,
-                        to: position
-                    )
+                    position: tokenStart
                 )
             }
             try admitCollectionElement()
@@ -2361,11 +2734,11 @@ extension SQLParser {
         try expect("(")
 
         // Graph name
-        guard case .identifier(let graphName) = currentToken else {
+        guard let graphName = identifierText else {
             throw ParseError.unexpectedToken(
                 expected: "graph name",
                 found: tokenDescription(currentToken),
-                position: input.distance(from: input.startIndex, to: position)
+                position: tokenStart
             )
         }
         advance()
@@ -2386,16 +2759,16 @@ extension SQLParser {
         let alias: String?
         if case .keyword("AS") = currentToken {
             advance()
-            guard case .identifier(let name) = currentToken else {
+            guard let name = identifierText else {
                 throw ParseError.unexpectedToken(
                     expected: "GRAPH_TABLE alias",
                     found: tokenDescription(currentToken),
-                    position: input.distance(from: input.startIndex, to: position)
+                    position: tokenStart
                 )
             }
             alias = name
             advance()
-        } else if case .identifier(let name) = currentToken {
+        } else if let name = identifierText {
             alias = name
             advance()
         } else {
@@ -2451,7 +2824,7 @@ extension SQLParser {
         var mode: PathMode?
 
         // Check for path variable: p = ...
-        if case .identifier(let name) = currentToken {
+        if let name = identifierText {
             let next = peekNextToken()
             if case .symbol("=") = next {
                 pathVariable = name
@@ -2461,7 +2834,12 @@ extension SQLParser {
         }
 
         // Check for path mode
-        if case .keyword(let kw) = currentToken {
+        if consumeContextualWord("ANY") {
+            try expect("SHORTEST")
+            _ = consumeContextualWord("PATH")
+            mode = .anyShortest
+        }
+        if mode == nil, case .keyword(let kw) = currentToken {
             switch kw {
             case "WALK":
                 mode = .walk
@@ -2478,7 +2856,9 @@ extension SQLParser {
             case "SHORTEST":
                 // Check for ALL SHORTEST
                 advance()
-                if consumeContextualWord("PATH") {
+                if case .number = currentToken {
+                    mode = .shortestK(try parseTypeParameter(named: "shortest path count", allowsZero: false))
+                } else if consumeContextualWord("PATH") {
                     mode = .anyShortest
                 } else if case .keyword("ALL") = currentToken {
                     advance()
@@ -2498,23 +2878,20 @@ extension SQLParser {
             }
         }
 
-        // Parse path elements
         var elements: [PathElement] = []
-
-        // First element must be a node
-        let firstNode = try parseNodePattern()
         try admitCollectionElement()
-        elements.append(try makeStructuralNode(.node(firstNode)))
-
-        // Parse edge-node pairs
-        while isSymbol("-") || isSymbol("<") || isSymbol("<-") || isSymbol("->") {
-            let edge = try parseEdgePattern()
-            try admitCollectionElement()
-            elements.append(try makeStructuralNode(.edge(edge)))
-
-            let node = try parseNodePattern()
-            try admitCollectionElement()
-            elements.append(try makeStructuralNode(.node(node)))
+        elements.append(try parsePathNodeOrGroup())
+        while isSymbol("-") || isSymbol("<") || isSymbol("<-") || isSymbol("->") || isSymbol("(") {
+            if isSymbol("(") {
+                try admitCollectionElement()
+                elements.append(try parsePathNodeOrGroup())
+            } else {
+                let edge = try parseEdgePattern()
+                try admitCollectionElement()
+                elements.append(try makeStructuralNode(.edge(edge)))
+                try admitCollectionElement()
+                elements.append(try parsePathNodeOrGroup())
+            }
         }
 
         return try makeStructuralNode(
@@ -2524,6 +2901,71 @@ extension SQLParser {
                 mode: mode
             )
         )
+    }
+
+    private func parsePathNodeOrGroup() throws -> PathElement {
+        guard isSymbol("(") else {
+            throw ParseError.unexpectedToken(expected: "node or grouped path", found: tokenDescription(currentToken), position: tokenStart)
+        }
+        let next = peekNextToken()
+        let grouped: Bool
+        switch next {
+        case .symbol("("): grouped = true
+        case .keyword(let word) where ["WALK", "TRAIL", "ACYCLIC", "SIMPLE", "SHORTEST", "ALL", "ANY"].contains(word):
+            let following = peekNextToken(2)
+            grouped = following == .symbol("(") || following == .keyword("SHORTEST") || word == "SHORTEST" && { if case .number = following { return true }; return false }()
+        case .identifier: grouped = peekNextToken(2) == .symbol("=")
+        default: grouped = false
+        }
+        guard grouped else {
+            let node = try parseNodePattern()
+            return try makeStructuralNode(.node(node))
+        }
+        try enterStructuralNesting()
+        defer { leaveStructuralNesting() }
+        advance()
+        var alternatives: [PathPattern] = []
+        try admitCollectionElement()
+        alternatives.append(try parsePathPattern())
+        while isSymbol("|") {
+            advance()
+            try admitCollectionElement()
+            alternatives.append(try parsePathPattern())
+        }
+        try expect(")")
+        let quantifier: PathQuantifier?
+        if isSymbol("*") { advance(); quantifier = .zeroOrMore }
+        else if isSymbol("+") { advance(); quantifier = .oneOrMore }
+        else if isSymbol("?") { advance(); quantifier = .zeroOrOne }
+        else if isSymbol("{") {
+            advance()
+            let minimum: Int?
+            if isSymbol(",") { minimum = nil }
+            else { minimum = try parseTypeParameter(named: "path quantifier", allowsZero: true) }
+            if isSymbol(",") {
+                advance()
+                let maximum = isSymbol("}") ? nil : try parseTypeParameter(named: "path quantifier", allowsZero: true)
+                guard minimum != nil || maximum != nil, minimum == nil || maximum == nil || minimum! <= maximum! else {
+                    throw ParseError.invalidSyntax(message: "Invalid path quantifier range", position: tokenStart)
+                }
+                quantifier = .range(min: minimum, max: maximum)
+            } else {
+                guard let minimum else { throw ParseError.invalidSyntax(message: "Missing path quantifier", position: tokenStart) }
+                quantifier = .exactly(minimum)
+            }
+            try expect("}")
+        } else { quantifier = nil }
+        let inner: PathPattern
+        if alternatives.count == 1 { inner = alternatives[0] }
+        else {
+            let alternate = try makeStructuralNode(PathElement.alternation(alternatives))
+            if quantifier == nil { return alternate }
+            inner = try makeStructuralNode(PathPattern(elements: [alternate]))
+        }
+        guard let quantifier else {
+            throw ParseError.invalidSyntax(message: "Grouped path requires a quantifier or alternation", position: tokenStart)
+        }
+        return try makeStructuralNode(.quantified(inner, quantifier: quantifier))
     }
 
     /// Parse node pattern
@@ -2538,23 +2980,16 @@ extension SQLParser {
         var labels: [String]?
         var properties: [PropertyBinding]?
 
-        // Parse variable and/or label
-        if case .identifier(let name) = currentToken {
+        if let name = identifierText {
+            variable = name
             advance()
-
-            // Check for label: var:Label
-            if isSymbol(":") {
-                variable = name
-                advance()
-
-                if case .identifier(let label) = currentToken {
-                    labels = [label]
-                    advance()
-                }
-            } else {
-                // Just variable, no label
-                variable = name
-            }
+        }
+        while isSymbol(":") {
+            advance()
+            let label = try parseRequiredIdentifier("graph label")
+            try admitCollectionElement()
+            if labels == nil { labels = [] }
+            labels?.append(label)
         }
 
         // Parse properties: {prop: val, ...}
@@ -2567,7 +3002,7 @@ extension SQLParser {
                 if !first { advance() }
                 first = false
 
-                guard case .identifier(let propName) = currentToken else {
+                guard let propName = identifierText else {
                     break
                 }
                 advance()
@@ -2637,7 +3072,7 @@ extension SQLParser {
             throw ParseError.unexpectedToken(
                 expected: "edge pattern start (-, <-, <, or ->)",
                 found: tokenDescription(currentToken),
-                position: input.distance(from: input.startIndex, to: position)
+                position: tokenStart
             )
         }
 
@@ -2652,30 +3087,23 @@ extension SQLParser {
             if start == .rightArrow {
                 throw ParseError.invalidSyntax(
                     message: "Edge brackets must come before arrow direction (use -[...]->, not ->[...])",
-                    position: input.distance(from: input.startIndex, to: position)
+                    position: tokenStart
                 )
             }
 
             hasDetails = true
             advance()
 
-            // Parse variable and/or label
-            if case .identifier(let name) = currentToken {
+            if let name = identifierText {
+                variable = name
                 advance()
-
-                // Check for label: var:Label
-                if isSymbol(":") {
-                    variable = name
-                    advance()
-
-                    if case .identifier(let label) = currentToken {
-                        labels = [label]
-                        advance()
-                    }
-                } else {
-                    // Just variable, no label
-                    variable = name
-                }
+            }
+            while isSymbol(":") {
+                advance()
+                let label = try parseRequiredIdentifier("graph label")
+                try admitCollectionElement()
+                if labels == nil { labels = [] }
+                labels?.append(label)
             }
 
             // Parse properties: {prop: val, ...}
@@ -2688,7 +3116,7 @@ extension SQLParser {
                     if !first { advance() }
                     first = false
 
-                    guard case .identifier(let propName) = currentToken else {
+                    guard let propName = identifierText else {
                         break
                     }
                     advance()
@@ -2725,7 +3153,7 @@ extension SQLParser {
                 // Defensive check (should have been caught above)
                 throw ParseError.invalidSyntax(
                     message: "Internal error: -> with details",
-                    position: input.distance(from: input.startIndex, to: position)
+                    position: tokenStart
                 )
             }
             end = .none
@@ -2782,7 +3210,7 @@ extension SQLParser {
         default:
             throw ParseError.invalidSyntax(
                 message: "Invalid edge pattern combination",
-                position: input.distance(from: input.startIndex, to: position)
+                position: tokenStart
             )
         }
 
@@ -2813,11 +3241,11 @@ extension SQLParser {
 
             try expect("AS")
 
-            guard case .identifier(let alias) = currentToken else {
+            guard let alias = labelText else {
                 throw ParseError.unexpectedToken(
                     expected: "column alias",
                     found: tokenDescription(currentToken),
-                    position: input.distance(from: input.startIndex, to: position)
+                    position: tokenStart
                 )
             }
             advance()
@@ -2835,22 +3263,48 @@ extension SQLParser {
         return columns
     }
 
-    /// Peek at the next token without consuming current token
-    private func peekNextToken() -> Token {
+    private func isTypedLiteralPrefix() -> Bool {
+        do {
+            return try withLookahead {
+                _ = try parseDataType()
+                return currentToken.isString
+            }
+        } catch {
+            return false
+        }
+    }
+
+    /// Peek at the next token without consuming current token.
+    private func peekNextToken(_ distance: Int = 1) -> Token {
+        withLookahead {
+            for _ in 0..<distance { advance() }
+            return currentToken
+        }
+    }
+
+    private func withLookahead<Result>(_ operation: () throws -> Result) rethrows -> Result {
         let savedPosition = position
+        let savedStart = tokenStart
+        let savedEnd = tokenEnd
+        let savedQuoted = tokenIsQuoted
+        let savedLexicalError = lexicalError
         let savedToken = currentToken
         let savedAnonymousParameterPosition = anonymousParameterPosition
         let savedPositionalParameterStyle = positionalParameterStyle
         let savedStructuralLedger = structuralLedger
         let savedStructuralError = structuralError
-        advance()
-        let next = currentToken
-        position = savedPosition
-        currentToken = savedToken
-        anonymousParameterPosition = savedAnonymousParameterPosition
-        positionalParameterStyle = savedPositionalParameterStyle
-        structuralLedger = savedStructuralLedger
-        structuralError = savedStructuralError
-        return next
+        defer {
+            position = savedPosition
+            tokenStart = savedStart
+            tokenEnd = savedEnd
+            tokenIsQuoted = savedQuoted
+            lexicalError = savedLexicalError
+            currentToken = savedToken
+            anonymousParameterPosition = savedAnonymousParameterPosition
+            positionalParameterStyle = savedPositionalParameterStyle
+            structuralLedger = savedStructuralLedger
+            structuralError = savedStructuralError
+        }
+        return try operation()
     }
 }

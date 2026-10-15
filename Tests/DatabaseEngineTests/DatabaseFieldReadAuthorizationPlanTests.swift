@@ -4,6 +4,16 @@ import Testing
 
 @Suite("Canonical query field authorization scope")
 struct DatabaseFieldReadAuthorizationPlanTests {
+
+    @Test("Fields inside SQL constructor children remain in the authorization plan")
+    func constructorFieldsAreAuthorized() throws {
+        let query = SelectQuery(projection: .items([ProjectionItem(.array([
+            .row([.col("parent", "token"), .col("parent", "groupID")])
+        ]))]), source: .table(TableRef(table: "Parent", alias: "parent")))
+        let plan = DatabaseFieldReadAuthorizationPlan.make(query: query, schema: try makeSchema())
+        #expect(plan.fieldsByEntity["Parent"] == ["token", "groupID"])
+    }
+
     @Test("Authorization coverage requires every entity and field")
     func authorizationCoverageRequiresEveryEntityAndField() {
         let plan = DatabaseFieldReadAuthorizationPlan(

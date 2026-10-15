@@ -87,6 +87,27 @@ transaction.
 - The module does not silently coerce RDF terms, missing graph/index state,
   cancellation, or backend failures into synthetic SQL success.
 
+### S02 exact static SQL namespace
+
+Static schema entity and field names are exact SQL logical names, equivalent
+to quoted identifiers. The parser folds unquoted ASCII names and preserves
+quoted names; runtime resolution still uses exact admitted registration keys.
+SQLQueryBuilder inputs are exact names and canonical serialization quotes
+those names. Existing camelCase SQL fixtures must quote their registered names
+rather than renaming registries, adding case-insensitive lookup or silently
+falling back after a missing name. Directory/Partition, authorization and
+stored field identity do not change, and S11's dynamic SQL catalog is not
+introduced early to implement this rule.
+
+The public single-statement SELECT entry continues to reject non-SELECT and
+multiple statements. Parser.parseStatements is a syntax capability only;
+S12/S16/S17 own transaction blocks, control syntax and their public execution.
+S02 preserves syntax errors with zero-based UTF-8 token-start positions.
+S03 later owns propagation of parsed source annotations into binding failures;
+no S02 success claim includes that deferred boundary. Typed ARRAY/ROW and
+unimplemented temporal conversion paths return explicit marked unsupported
+failures rather than successful synthetic values.
+
 ## Runtime Flows
 
 For a SQL request, parsing and binding happen before plan execution. A plain

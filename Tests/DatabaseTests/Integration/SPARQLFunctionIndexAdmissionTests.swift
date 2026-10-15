@@ -157,10 +157,10 @@ struct SPARQLFunctionIndexAdmissionTests {
         let scenario = try await makeScenario()
         defer { await scenario.container.shutdown() }
         let sql = """
-            SELECT * FROM SPARQLFunctionAdmissionUser
+            SELECT * FROM "SPARQLFunctionAdmissionUser"
             WHERE resource IN (
                 SPARQL(
-                    SPARQLFunctionAdmissionUser,
+                    "SPARQLFunctionAdmissionUser",
                     'SELECT ?s WHERE { ?s <urn:predicate:missing> "value" }'
                 )
             )
@@ -188,10 +188,10 @@ struct SPARQLFunctionIndexAdmissionTests {
         let container = try await makeAmbiguousScenario()
         defer { await container.shutdown() }
         let sql = """
-            SELECT * FROM SPARQLFunctionAdmissionUser
+            SELECT * FROM "SPARQLFunctionAdmissionUser"
             WHERE resource IN (
                 SPARQL(
-                    SPARQLFunctionAmbiguousStatement,
+                    "SPARQLFunctionAmbiguousStatement",
                     'SELECT ?s WHERE { ?s <urn:predicate:any> "value" }'
                 )
             )
@@ -218,10 +218,10 @@ struct SPARQLFunctionIndexAdmissionTests {
     }
 
     private static let sql = """
-        SELECT * FROM SPARQLFunctionAdmissionUser
+        SELECT * FROM "SPARQLFunctionAdmissionUser"
         WHERE resource IN (
             SPARQL(
-                SPARQLFunctionAdmissionStatement,
+                "SPARQLFunctionAdmissionStatement",
                 'SELECT ?s WHERE { ?s <urn:predicate:admitted> "value" }'
             )
         )

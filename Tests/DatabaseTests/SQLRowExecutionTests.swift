@@ -57,7 +57,7 @@ struct SQLRowExecutionTests {
         try await context.save()
 
         let response = try await context.executeSQL(
-            "SELECT id, rank + :increment AS adjusted FROM SQLRowItem WHERE category = :category",
+            "SELECT id, rank + :increment AS adjusted FROM \"SQLRowItem\" WHERE category = :category",
             parameters: [
                 QueryParameter(
                     position: 1,
@@ -82,7 +82,7 @@ struct SQLRowExecutionTests {
         let container = try await makeContainer()
         await #expect(throws: QueryParameterBindingError.self) {
             _ = try await container.testBaseContext().executeSQL(
-                "SELECT id FROM SQLRowItem WHERE category = :category"
+                "SELECT id FROM \"SQLRowItem\" WHERE category = :category"
             )
         }
     }
@@ -94,17 +94,17 @@ struct SQLRowExecutionTests {
 
         await #expect(throws: CanonicalReadError.self) {
             _ = try await context.executeSQL(
-                "SELECT wrong.id FROM SQLRowItem item"
+                "SELECT wrong.id FROM \"SQLRowItem\" item"
             )
         }
         await #expect(throws: CanonicalReadError.self) {
             _ = try await context.executeSQL(
-                "SELECT (SELECT id, rank FROM SQLRowItem) AS invalid FROM SQLRowItem"
+                "SELECT (SELECT id, rank FROM \"SQLRowItem\") AS invalid FROM \"SQLRowItem\""
             )
         }
         await #expect(throws: CanonicalReadError.self) {
             _ = try await context.executeSQL(
-                "SELECT * FROM SQLRowItem lhs JOIN SQLRowItem rhs ON wrong.id = rhs.id"
+                "SELECT * FROM \"SQLRowItem\" lhs JOIN \"SQLRowItem\" rhs ON wrong.id = rhs.id"
             )
         }
         await #expect(throws: CanonicalReadError.self) {
@@ -133,12 +133,12 @@ struct SQLRowExecutionTests {
 
         await #expect(throws: CanonicalReadError.self) {
             _ = try await context.executeSQL(
-                "SELECT item.id FROM SQLRowItem item WHERE wrong.category = 'books'"
+                "SELECT item.id FROM \"SQLRowItem\" item WHERE wrong.category = 'books'"
             )
         }
         await #expect(throws: CanonicalReadError.self) {
             _ = try await context.executeSQL(
-                "SELECT item.id FROM SQLRowItem item ORDER BY wrong.rank"
+                "SELECT item.id FROM \"SQLRowItem\" item ORDER BY wrong.rank"
             )
         }
     }
@@ -152,7 +152,7 @@ struct SQLRowExecutionTests {
         try await context.save()
 
         let response = try await context.executeSQL(
-            "SELECT id FROM SQLRowItem WHERE rank NOT IN (1, NULL)"
+            "SELECT id FROM \"SQLRowItem\" WHERE rank NOT IN (1, NULL)"
         )
 
         #expect(response.rows.isEmpty)
@@ -168,7 +168,7 @@ struct SQLRowExecutionTests {
         try await context.save()
 
         let response = try await context.executeSQL(
-            "SELECT category, COUNT(*) AS item_count, SUM(rank) AS total, AVG(rank) AS average, MIN(rank) AS minimum, MAX(rank) AS maximum FROM SQLRowItem GROUP BY category HAVING COUNT(*) > 1 ORDER BY total DESC"
+            "SELECT category, COUNT(*) AS item_count, SUM(rank) AS total, AVG(rank) AS average, MIN(rank) AS minimum, MAX(rank) AS maximum FROM \"SQLRowItem\" GROUP BY category HAVING COUNT(*) > 1 ORDER BY total DESC"
         )
 
         #expect(response.rows.count == 1)
@@ -184,7 +184,7 @@ struct SQLRowExecutionTests {
     func globalAggregatesProduceEmptyInputIdentity() async throws {
         let container = try await makeContainer()
         let response = try await container.testBaseContext().executeSQL(
-            "SELECT COUNT(*) AS item_count, SUM(rank) AS total, AVG(rank) AS average, MIN(rank) AS minimum, MAX(rank) AS maximum FROM SQLRowItem"
+            "SELECT COUNT(*) AS item_count, SUM(rank) AS total, AVG(rank) AS average, MIN(rank) AS minimum, MAX(rank) AS maximum FROM \"SQLRowItem\""
         )
 
         #expect(response.rows.count == 1)
@@ -204,7 +204,7 @@ struct SQLRowExecutionTests {
         try await context.save()
 
         let response = try await context.executeSQL(
-            "SELECT ARRAY_AGG(id ORDER BY rank DESC) AS ids, GROUP_CONCAT(id, '|') AS joined FROM SQLRowItem"
+            "SELECT ARRAY_AGG(id ORDER BY rank DESC) AS ids, GROUP_CONCAT(id, '|') AS joined FROM \"SQLRowItem\""
         )
 
         #expect(response.rows.count == 1)
@@ -226,7 +226,7 @@ struct SQLRowExecutionTests {
         let container = try await makeContainer()
         await #expect(throws: CanonicalReadError.self) {
             _ = try await container.testBaseContext().executeSQL(
-                "SELECT category, COUNT(*) FROM SQLRowItem"
+                "SELECT category, COUNT(*) FROM \"SQLRowItem\""
             )
         }
     }
@@ -241,7 +241,7 @@ struct SQLRowExecutionTests {
         try await context.save()
 
         let response = try await context.executeSQL(
-            "SELECT item.category, COUNT(*) AS item_count FROM SQLRowItem item GROUP BY category"
+            "SELECT item.category, COUNT(*) AS item_count FROM \"SQLRowItem\" item GROUP BY category"
         )
 
         #expect(response.rows.count == 1)
@@ -253,14 +253,14 @@ struct SQLRowExecutionTests {
     func emptyGroupedProjectionPreservesDuplicateNames() async throws {
         let container = try await makeContainer()
         let duplicate = try await container.testBaseContext().executeSQL(
-            "SELECT category AS value, COUNT(*) AS value FROM SQLRowItem GROUP BY category"
+            "SELECT category AS value, COUNT(*) AS value FROM \"SQLRowItem\" GROUP BY category"
         )
         #expect(duplicate.rows.isEmpty)
         #expect(duplicate.columns.map(\.name) == ["value", "value"])
         #expect(duplicate.columns.map(\.number) == [1, 2])
         await #expect(throws: CanonicalReadError.self) {
             _ = try await container.testBaseContext().executeSQL(
-                "SELECT * FROM SQLRowItem GROUP BY category"
+                "SELECT * FROM \"SQLRowItem\" GROUP BY category"
             )
         }
     }
@@ -275,7 +275,7 @@ struct SQLRowExecutionTests {
         try await context.save()
 
         let grouped = try await context.executeSQL(
-            "SELECT parent.category, COUNT(*) AS item_count, (SELECT parent.category FROM SQLRowItem candidate WHERE candidate.id = 'first' LIMIT 1) AS grouped_category FROM SQLRowItem parent GROUP BY parent.category ORDER BY parent.category"
+            "SELECT parent.category, COUNT(*) AS item_count, (SELECT parent.category FROM \"SQLRowItem\" candidate WHERE candidate.id = 'first' LIMIT 1) AS grouped_category FROM \"SQLRowItem\" parent GROUP BY parent.category ORDER BY parent.category"
         )
         #expect(grouped.rows.count == 2)
         #expect(grouped.rows.map { $0.values[2] } == [
@@ -284,7 +284,7 @@ struct SQLRowExecutionTests {
 
         do {
             _ = try await context.executeSQL(
-                "SELECT parent.category, COUNT(*) AS item_count, (SELECT parent.rank FROM SQLRowItem candidate WHERE candidate.id = 'first' LIMIT 1) AS arbitrary_rank FROM SQLRowItem parent GROUP BY parent.category"
+                "SELECT parent.category, COUNT(*) AS item_count, (SELECT parent.rank FROM \"SQLRowItem\" candidate WHERE candidate.id = 'first' LIMIT 1) AS arbitrary_rank FROM \"SQLRowItem\" parent GROUP BY parent.category"
             )
             Issue.record("Expected a non-grouped correlated column failure")
         } catch let error as CanonicalReadError {
@@ -299,7 +299,7 @@ struct SQLRowExecutionTests {
 
         do {
             _ = try await context.executeSQL(
-                "SELECT parent.id, (SELECT COUNT(*) + (SELECT parent.rank FROM SQLRowItem candidate WHERE candidate.id = 'first' LIMIT 1) FROM SQLRowItem parent) AS leaked_rank FROM SQLRowItem parent"
+                "SELECT parent.id, (SELECT COUNT(*) + (SELECT parent.rank FROM \"SQLRowItem\" candidate WHERE candidate.id = 'first' LIMIT 1) FROM \"SQLRowItem\" parent) AS leaked_rank FROM \"SQLRowItem\" parent"
             )
             Issue.record("Expected the current aggregate scope to shadow its ancestor")
         } catch let error as CanonicalReadError {
@@ -324,40 +324,40 @@ struct SQLRowExecutionTests {
 
         await #expect(throws: CanonicalReadError.self) {
             _ = try await context.executeSQL(
-                "SELECT (SELECT candidate.rank FROM SQLRowItem candidate) AS invalid"
+                "SELECT (SELECT candidate.rank FROM \"SQLRowItem\" candidate) AS invalid"
             )
         }
         let emptyScalar = try await context.executeSQL(
-            "SELECT (SELECT candidate.rank FROM SQLRowItem candidate WHERE candidate.id = 'missing') AS absent"
+            "SELECT (SELECT candidate.rank FROM \"SQLRowItem\" candidate WHERE candidate.id = 'missing') AS absent"
         )
         #expect(emptyScalar.rows[0].values[0] == .primitive(.null))
 
         let scalar = try await context.executeSQL(
-            "SELECT parent.id, (SELECT MAX(candidate.rank) FROM SQLRowItem candidate WHERE candidate.category = parent.category) AS category_max FROM SQLRowItem parent ORDER BY parent.id"
+            "SELECT parent.id, (SELECT MAX(candidate.rank) FROM \"SQLRowItem\" candidate WHERE candidate.category = parent.category) AS category_max FROM \"SQLRowItem\" parent ORDER BY parent.id"
         )
         #expect(scalar.rows.map { $0.values[1] } == [
             .primitive(.int64(3)), .primitive(.int64(3)), .primitive(.int64(8)),
         ])
 
         let membership = try await context.executeSQL(
-            "SELECT parent.id FROM SQLRowItem parent WHERE parent.rank IN (SELECT candidate.rank FROM SQLRowItem candidate WHERE candidate.category = 'books') ORDER BY parent.id"
+            "SELECT parent.id FROM \"SQLRowItem\" parent WHERE parent.rank IN (SELECT candidate.rank FROM \"SQLRowItem\" candidate WHERE candidate.category = 'books') ORDER BY parent.id"
         )
         #expect(membership.rows.map { $0.values[0] } == [
             .primitive(.string("first")), .primitive(.string("second")),
         ])
 
         let unknownMembership = try await context.executeSQL(
-            "SELECT parent.id FROM SQLRowItem parent WHERE parent.rank NOT IN (SELECT CASE WHEN candidate.rank = 1 THEN NULL ELSE 99 END FROM SQLRowItem candidate)"
+            "SELECT parent.id FROM \"SQLRowItem\" parent WHERE parent.rank NOT IN (SELECT CASE WHEN candidate.rank = 1 THEN NULL ELSE 99 END FROM \"SQLRowItem\" candidate)"
         )
         #expect(unknownMembership.rows.isEmpty)
 
         let existence = try await context.executeSQL(
-            "SELECT parent.id FROM SQLRowItem parent WHERE EXISTS (SELECT candidate.id FROM SQLRowItem candidate WHERE candidate.category = parent.category AND candidate.rank > parent.rank) ORDER BY parent.id"
+            "SELECT parent.id FROM \"SQLRowItem\" parent WHERE EXISTS (SELECT candidate.id FROM \"SQLRowItem\" candidate WHERE candidate.category = parent.category AND candidate.rank > parent.rank) ORDER BY parent.id"
         )
         #expect(existence.rows.map { $0.values[0] } == [.primitive(.string("first"))])
 
         let shadowed = try await context.executeSQL(
-            "SELECT parent.id FROM SQLRowItem parent WHERE EXISTS (SELECT candidate.id FROM SQLRowItem candidate WHERE category = 'music') ORDER BY parent.id"
+            "SELECT parent.id FROM \"SQLRowItem\" parent WHERE EXISTS (SELECT candidate.id FROM \"SQLRowItem\" candidate WHERE category = 'music') ORDER BY parent.id"
         )
         #expect(shadowed.rows.map { $0.values[0] } == [
             .primitive(.string("first")), .primitive(.string("second")), .primitive(.string("third")),
@@ -374,7 +374,7 @@ struct SQLRowExecutionTests {
         try await context.save()
 
         let response = try await context.executeSQL(
-            "SELECT parent.id, top_item.id AS top_id FROM SQLRowItem parent JOIN LATERAL (SELECT candidate.id FROM SQLRowItem candidate WHERE candidate.category = parent.category ORDER BY candidate.rank DESC LIMIT 1) AS top_item ON TRUE ORDER BY parent.id"
+            "SELECT parent.id, top_item.id AS top_id FROM \"SQLRowItem\" parent JOIN LATERAL (SELECT candidate.id FROM \"SQLRowItem\" candidate WHERE candidate.category = parent.category ORDER BY candidate.rank DESC LIMIT 1) AS top_item ON TRUE ORDER BY parent.id"
         )
 
         #expect(response.rows.map { $0.values[1] } == [
@@ -382,7 +382,7 @@ struct SQLRowExecutionTests {
         ])
 
         let leftResponse = try await context.executeSQL(
-            "SELECT parent.id, missing.id AS missing_id FROM SQLRowItem parent LEFT JOIN LATERAL (SELECT candidate.id FROM SQLRowItem candidate WHERE candidate.rank > parent.rank + 100) AS missing ON TRUE ORDER BY parent.id"
+            "SELECT parent.id, missing.id AS missing_id FROM \"SQLRowItem\" parent LEFT JOIN LATERAL (SELECT candidate.id FROM \"SQLRowItem\" candidate WHERE candidate.rank > parent.rank + 100) AS missing ON TRUE ORDER BY parent.id"
         )
         #expect(leftResponse.rows.map { $0.values[1] } == [
             .primitive(.null), .primitive(.null), .primitive(.null),
@@ -398,7 +398,7 @@ struct SQLRowExecutionTests {
         try await context.save()
 
         let response = try await context.executeSQL(
-            "SELECT * FROM SQLRowItem lhs NATURAL JOIN SQLRowItem rhs ORDER BY id"
+            "SELECT * FROM \"SQLRowItem\" lhs NATURAL JOIN \"SQLRowItem\" rhs ORDER BY id"
         )
 
         #expect(response.rows.count == 2)
@@ -556,13 +556,14 @@ struct SQLRowExecutionTests {
         let source = "FROM (SELECT 1 AS id, 10 AS a) lhs JOIN (SELECT 1 AS id, 20 AS b) rhs USING(id) CROSS JOIN (SELECT 2 AS id, 30 AS c) third"
         let wildcard = try await context.executeSQL("SELECT * \(source)")
         #expect(wildcard.columns.map(\.name) == ["id", "a", "b", "id", "c"])
+        #expect(wildcard.columns.map(\.type) == Array(repeating: .sql(.integer), count: 5))
         #expect(wildcard.rows.count == 1)
         #expect(wildcard.rows[0].values == [
-            .primitive(.int64(1)), .primitive(.int64(10)), .primitive(.int64(20)),
-            .primitive(.int64(2)), .primitive(.int64(30))
+            .primitive(.int32(1)), .primitive(.int32(10)), .primitive(.int32(20)),
+            .primitive(.int32(2)), .primitive(.int32(30))
         ])
         let qualified = try await context.executeSQL("SELECT lhs.id, rhs.id, third.id \(source)")
-        #expect(qualified.rows[0].values == [.primitive(.int64(1)), .primitive(.int64(1)), .primitive(.int64(2))])
+        #expect(qualified.rows[0].values == [.primitive(.int32(1)), .primitive(.int32(1)), .primitive(.int32(2))])
         await #expect(throws: CanonicalReadError.self) {
             _ = try await context.executeSQL("SELECT id \(source)")
         }
@@ -575,7 +576,8 @@ struct SQLRowExecutionTests {
         let derived = try await context.executeSQL("SELECT * FROM (SELECT 1 AS same, 2 AS same) nested")
         #expect(derived.columns.map(\.name) == ["same", "same"])
         #expect(derived.rows.count == 1)
-        #expect(derived.rows[0].values == [.primitive(.int64(1)), .primitive(.int64(2))])
+        #expect(derived.columns.map(\.type) == [.sql(.integer), .sql(.integer)])
+        #expect(derived.rows[0].values == [.primitive(.int32(1)), .primitive(.int32(2))])
         #expect(throws: QueryRowCodecError.duplicateColumn("same")) {
             try derived.rows[0].namedValues(columns: derived.columns)
         }
@@ -595,6 +597,7 @@ struct SQLRowExecutionTests {
         ])))
         #expect(set.columns.map(\.name) == ["same", "same"])
         #expect(set.rows.count == 2)
+        #expect(set.columns.map(\.type) == [.sql(.bigint), .sql(.bigint)])
         #expect(set.rows[1].values == [.primitive(.int64(3)), .primitive(.int64(4))])
     }
 

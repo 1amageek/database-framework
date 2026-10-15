@@ -31,24 +31,29 @@ lexical/syntax/limit failure ------------------------------> typed failure
 
 ## Contracts and Invariants
 
-### Current facts
+### Current implementation and evidence boundary
 
-[SQLParser](SQLParser.swift) provides `parseSelect` and `parse`. The first
-accepts a WITH-leading SELECT; statement dispatch in `parse` recognizes
-SELECT/INSERT/UPDATE/DELETE and property-graph DDL but does not dispatch WITH.
-Both finish with statement-terminator consumption and structural validation.
-These are source facts, not a successful runtime verification of the plan.
+[SQLParser](SQLParser.swift) provides complete `parseSelect` and `parse` entries
+and the bounded `parseStatements` syntax batch entry. SELECT and general
+statement dispatch share WITH-leading SELECT grammar; existing INSERT, UPDATE,
+DELETE and property-graph DDL remain supported. Every entry resets invocation
+state, admits bounded UTF-8 source before copying, consumes complete input and
+validates its resulting semantic structures.
 
-### S01 execution evidence boundary
+The S02 lexer recognizes quoted/folded identifiers and the supported lexical
+forms. Builder owns the canonical SQL serializer and the shared intrinsic
+constant adapter; Parser consumes their semantic contract and does not use
+former Kit SQL emitters. S01 set-operation execution evidence used semantic
+ASTs. Set-source text grammar and nonsingleton VALUES sources remain S08 work;
+S02 parsing or serialization never claims their runtime implementation.
 
-S01 validates positional set alignment and contextual NULL through canonical
-`SelectQuery`/`DataSource.unionAll` execution. The current `parseSelectQuery`
-returns after SELECT modifiers and does not parse UNION; `advance` does not
-recognize double-quoted identifiers. Their implementation and text round-trip
-evidence remain S02. New S01 fixtures therefore use semantic ASTs for set
-operations and rich fields with reserved names, while SQLite persistence uses
-nonreserved camelCase fields to execute the currently supported SQL text path.
-This boundary does not claim parser support from successful AST execution.
+Generic function syntax preserves its exact semantic name and DISTINCT flag.
+Quoted calls remain generic even when their name matches a grammar form;
+unquoted COALESCE/NULLIF use their dedicated expression cases. A qualified
+wildcard projection maps to the existing `Projection.allFrom` case. Type-modifier
+range failures retain the offending number token's original UTF-8 start before
+advancing. These are syntax and value-carriage obligations, not evidence of
+function execution or name binding.
 
 ### Planned contracts
 
@@ -70,6 +75,62 @@ This boundary does not claim parser support from successful AST execution.
   as to the completed tree, so invalid input cannot first allocate unbounded
   intermediate tokens or nodes.
 
+### S02 strict lexical and grammar contract
+
+The [Kit SQL contract](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s02-frozen-syntax-to-value-boundary)
+fixes semantic normalization; [Builder](../Builder/DESIGN.md#s02-canonical-sql-and-constant-normalization)
+owns canonical constant decoding/encoding shared by parser and serializer.
+This component owns token recognition, clause grammar, input positions and
+complete-input rejection. Parser and Builder do not implement competing rich
+literal adapters.
+
+| Area | Required S02 behavior |
+|---|---|
+| Identifiers | Quoted and Unicode-escaped quoted names preserve exact identity, doubled quotes and valid escapes; reject empty names and U+0000. Unquoted identifiers include legal non-ASCII letters, underscores and subsequent digits/$; fold ASCII case as PostgreSQL UTF-8 scanning does. Keywords are contextual where the grammar allows names. No silent 63-byte truncation or exact-name fallback: existing product name limits remain authoritative. |
+| Strings | Ordinary strings use standard_conforming_strings=on, doubled quotes and PostgreSQL newline concatenation. String-token continuation admits whitespace and line comments containing a newline; a block comment between quoted fragments ends that continuation and cannot splice the fragments. E strings support PostgreSQL byte/Unicode escapes and validate resulting UTF-8; an otherwise unrecognized escaped character is taken literally, including x when no hexadecimal digit follows. U& strings and identifiers support UESCAPE, surrogate pairs and six-digit escapes. Dollar quoting uses an exact case-sensitive delimiter, recognizes $n parameters separately, and treats its body as uninterpreted string content. Invalid Unicode escapes, invalid resulting UTF-8, U+0000 and unfinished forms fail. |
+| Numeric tokens | Decimal point, exponent, leading/trailing decimal point, base-2/8/16 integer prefixes and legal digit underscores are accepted. A direct unary +/- is folded before SQL-width selection. Exponent/digit scanning is checked and linear; never use Double or unbounded decimal expansion. Typed literal normalization preserves dscale. |
+| Comments | Line comments and nested block comments are whitespace between SQL tokens; string-token continuation follows the separate Strings contract. Bounded nesting and byte scans apply before growth. Comment/string/dollar bodies do not expose statement delimiters or parameter markers. |
+| Type and literal grammar | Typed DATE/TIME/TIMESTAMP/INTERVAL/UUID/BYTEA plus JSON/JSONB canonical forms, ARRAY[...] and ROW(...), CAST and postfix :: share canonical DataType parsing. Preserve temporal precision and zone qualifiers, signed numeric scale and all accepted aliases. PostgreSQL type'...' does not admit array types; array text uses CAST/::. |
+| Existing query grammar | General parse and parseSelect share the WITH-leading SELECT path; preserve CTE hints, LATERAL ordering, DISTINCT, sort NULLS and supported DML/SQL-PGQ semantics. Require AS aliases, qualified-name components, NULLS FIRST/LAST, nonempty WHERE/ON expressions, valid USING lists and required ordinary JOIN conditions. CROSS/NATURAL cannot acquire ON/USING. |
+| Complete input | Existing parse/parseSelect return one complete statement and reject additional statements. Add parseStatements for bounded ordered existing statements; accept trailing separators/empty separators as delimiters without creating empty statements. Quoted/comment semicolons never split input. This API performs syntax only, not transactional SQL blocks. Unsupported BEGIN/DDL/new query features remain typed unsupported until their owning sprint. |
+
+TableRef schema/table and ColumnRef table/column already distinguish
+qualification from an exact quoted name. FunctionCall.name and DataType.custom
+do not; forms whose qualification cannot be preserved by that existing String
+representation fail as unsupported until S03/S11 rather than losing the distinction.
+
+Invocation starts with checked UTF-8 source-size admission before retained
+source/token copying. The existing maximumRetainedBytes policy bounds source
+and aggregate decoded semantic/token content independently; a single token
+cannot exceed that cap. Source counting stops at one-past without allocating a
+source byte array. Token/node/collection/nesting work is charged before growth;
+a statement batch shares one cumulative ledger rather than resetting limits
+per statement. Overflow and malformed UTF-8/escape/input are typed failures.
+Keep the current invocation-local stateful parser model: sequential reuse must
+reset source, offsets, parameters, errors and every ledger; concurrent use is
+not a supported contract and no unchecked Sendable conformance is introduced.
+
+Every token retains a zero-based UTF-8 start and half-open source range.
+Syntax diagnostics use the offending token's start, or the opening delimiter
+for an unfinished literal/comment; EOF is the source UTF-8 count. Multibyte
+characters, CRLF, comments and escaped text cannot change that unit. Source
+length is bounded, so conversion to public Int positions is checked. Existing
+ParseError positions migrate to this convention and unexpected EOF retains its
+position; callers preserve the typed underlying failure. Line/column display
+is derived at the presentation boundary, not stored as a second authority.
+
+S02 does not add a parsed-document source-map API or claim binding positions.
+S03 owns the later diagnostic sidecar and its sequential parse -> binding
+failure annotation boundary. Likewise L04 syntax does not claim temporal
+interpretation (S06), general ARRAY execution (S07) or row semantics (S08).
+New unsupported execution branches are marked and explicitly fail.
+
+S02 tests cover every L01-L08 success, malformed and exact/one-past boundary,
+parser reuse, token-start positions, multibyte input, huge single tokens and
+nested comments, and cumulative batch limits. Previous tests expecting SQL
+UInt64 literal selection or rejecting DECIMAL scale>precision migrate to the
+accepted profile; primitive/SPARQL fixtures retain their previous semantics.
+
 ## Runtime Flows
 
 One entry resets source, position, parameter-style state, lexical failure and
@@ -86,8 +147,8 @@ Returned semantic values own their data and retain no parser pointer.
 ## Failure, Concurrency, and Constraints
 
 All malformed, unsupported and budget-exhausted input fails explicitly.
-Typed source diagnostics retain character/byte-offset conventions defined by
-the semantic error contract. Parser instances must not concurrently mutate
+Typed source diagnostics use the zero-based UTF-8 token-start convention
+defined above. Parser instances must not concurrently mutate
 state. Native/WASM/Embedded share grammar and synchronization assumptions.
 
 ## Verification and Change Impact

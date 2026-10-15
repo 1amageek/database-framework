@@ -540,8 +540,8 @@ extension SQLQueryBuilder {
     }
 
     /// Generate SQL, preserving typed failures for unsupported literals.
-    public func toSQL() throws(QueryLiteralConversionError) -> String {
-        try buildAST().toSQL()
+    public func toSQL() throws(SQLSerializationError) -> String {
+        try SQLSerializer().serialize(buildAST())
     }
 }
 

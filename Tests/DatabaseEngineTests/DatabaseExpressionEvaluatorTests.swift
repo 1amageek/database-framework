@@ -6,6 +6,33 @@ import Testing
 
 @Suite("Database expression evaluator")
 struct DatabaseExpressionEvaluatorTests {
+
+    @Test("Only literal NULL casts bypass deferred temporal precision conversion")
+    func deferredSQLSemanticsFailEvaluation() throws {
+        let evaluator = DatabaseExpressionEvaluator(fields: ["missing": .null])
+        for expression: Expression in [.array([]), .row([.null])] {
+            #expect(throws: DatabaseExpressionEvaluationError.unsupportedExpression("SQL ARRAY/ROW constructor")) {
+                try evaluator.evaluate(expression)
+            }
+        }
+        for type: DataType in [.time(withTimeZone: false, precision: 0),
+                               .timestamp(withTimeZone: true, precision: 6)] {
+            for operand: Expression in [.null, .literal(.queryValue(.primitive(.null), type: .sql(.integer)))] {
+                #expect(try evaluator.evaluate(.cast(operand, targetType: type)) == .null)
+            }
+            for operand: Expression in [.string("12:00"), .col("missing")] {
+                #expect(throws: DatabaseExpressionEvaluationError.unsupportedExpression("temporal precision conversion")) {
+                    try evaluator.evaluate(.cast(operand, targetType: type))
+                }
+            }
+        }
+        for precision in [-1, 7] {
+            #expect(throws: DatabaseExpressionEvaluationError.invalidCast("TIME")) {
+                try evaluator.evaluate(.cast(.null, targetType: .time(withTimeZone: false, precision: precision)))
+            }
+        }
+    }
+
     @Test("arithmetic and SQL null logic are deterministic")
     func arithmeticAndNullLogic() throws {
         let evaluator = DatabaseExpressionEvaluator(fields: [

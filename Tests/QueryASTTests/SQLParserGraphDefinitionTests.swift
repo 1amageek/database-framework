@@ -50,8 +50,8 @@ struct SQLParserGraphDefinitionTests {
         ])
         #expect(edge.destinationVertex.tableName == "companies")
         #expect(edge.labelExpression == .or([
-            .single("WORKS_AT"),
-            .single("CONTRACTOR"),
+            .single("works_at"),
+            .single("contractor"),
         ]))
         #expect(edge.propertiesSpec == PropertiesSpec.none)
     }

@@ -18,7 +18,7 @@ struct SQLParserMutationTests {
             return
         }
         #expect(query.target.schema == "app")
-        #expect(query.target.table == "Event")
+        #expect(query.target.table == "event")
         #expect(query.columns == ["id", "title"])
         guard case .values(let rows) = query.source else {
             Issue.record("Expected INSERT VALUES source")
@@ -33,7 +33,7 @@ struct SQLParserMutationTests {
         #expect(assignments.count == 1)
         #expect(predicate != nil)
         #expect(query.returning?.count == 2)
-        #expect(query.returning?[1].alias == "eventTitle")
+        #expect(query.returning?[1].alias == "eventtitle")
     }
 
     @Test("INSERT SELECT and DEFAULT VALUES are canonical sources")
@@ -47,7 +47,23 @@ struct SQLParserMutationTests {
             return
         }
         #expect(selectInsert.columns == ["id"])
-        #expect(select.source == .table(TableRef("Event")))
+        #expect(select.source == .table(TableRef("event")))
+        for sql in [
+            "INSERT INTO values VALUES (:value)",
+            "INSERT INTO values DEFAULT VALUES",
+            "INSERT INTO values SELECT :value",
+            "INSERT INTO values WITH q AS (SELECT :value AS v) SELECT v FROM q",
+        ] {
+            guard case .insert(let insert) = try SQLParser().parse(sql) else { Issue.record("Expected INSERT"); continue }
+            #expect(insert.target.table == "values")
+            #expect(insert.target.alias == nil)
+        }
+        guard case .insert(let aliased) = try SQLParser().parse("INSERT INTO values AS set VALUES (:value)") else {
+            Issue.record("Expected INSERT with AS alias")
+            return
+        }
+        #expect(aliased.target.alias == "set")
+        #expect(throws: SQLParser.ParseError.self) { _ = try SQLParser().parse("INSERT INTO items target VALUES (:value)") }
 
         let defaulted = try SQLParser().parse(
             "INSERT INTO Event DEFAULT VALUES"
@@ -73,14 +89,28 @@ struct SQLParserMutationTests {
             Issue.record("Expected UPDATE statement")
             return
         }
-        #expect(query.target.table == "Event")
+        #expect(query.target.table == "event")
         #expect(query.target.alias == "event")
         #expect(query.assignments.map(\.column) == ["title", "revision"])
         #expect(query.from == .table(
-            TableRef(table: "ImportRow", alias: "row")
+            TableRef(table: "importrow", alias: "row")
         ))
         #expect(query.filter != nil)
         #expect(query.returning?.first?.alias == "id")
+        let scenarios: [(String, String, String?)] = [
+            ("UPDATE \"items\" SET \"value\" = :value", "items", nil),
+            ("UPDATE set SET value = :value", "set", nil),
+            ("UPDATE values SET value = :value", "values", nil),
+            ("UPDATE items \"SET\" SET value = :value", "items", "SET"),
+            ("UPDATE items AS SET SET value = :value", "items", "set"),
+        ]
+        for (sql, table, alias) in scenarios {
+            guard case .update(let update) = try SQLParser().parse(sql) else { Issue.record("Expected UPDATE"); continue }
+            #expect(update.target.table == table)
+            #expect(update.target.alias == alias)
+            #expect(update.assignments == [Assignment(column: "value", value: .parameter(.name("value")))])
+        }
+        #expect(try SQLParser().parseSelect("SELECT id FROM items SET").source == .table(TableRef(table: "items", alias: "set")))
     }
 
     @Test("DELETE preserves USING, predicate, and RETURNING")
@@ -98,10 +128,21 @@ struct SQLParserMutationTests {
         }
         #expect(query.target.alias == "event")
         #expect(query.using == .table(
-            TableRef(table: "ExpiredEvent", alias: "expired")
+            TableRef(table: "expiredevent", alias: "expired")
         ))
         #expect(query.filter != nil)
         #expect(query.returning?.count == 1)
+        guard case .delete(let aliased) = try SQLParser().parse("DELETE FROM items SET WHERE SET.id = :id RETURNING id") else {
+            Issue.record("Expected DELETE with an unreserved alias")
+            return
+        }
+        #expect(aliased.target.alias == "set")
+        guard case .delete(let unaliased) = try SQLParser().parse("DELETE FROM values WHERE id = :id RETURNING id") else {
+            Issue.record("Expected DELETE without alias")
+            return
+        }
+        #expect(unaliased.target.table == "values")
+        #expect(unaliased.target.alias == nil)
     }
 
     @Test("Malformed mutation syntax is never rounded into a successful AST")

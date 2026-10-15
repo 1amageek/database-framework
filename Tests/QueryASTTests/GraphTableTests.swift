@@ -166,7 +166,7 @@ struct GraphTableSourceTests {
         }))
     }
 
-    @Test("GraphTableSource toSQL")
+    @Test("GraphTableSource canonical SQL")
     func testToSQL() throws {
         let pattern = MatchPattern(paths: [
             PathPattern(elements: [
@@ -184,10 +184,12 @@ struct GraphTableSourceTests {
             ]
         )
 
-        let sql = try source.toSQL()
-        #expect(sql.contains("GRAPH_TABLE(social"))
+        let sql = try SQLSerializer().serialize(source)
+        #expect(sql.contains(#"GRAPH_TABLE("social""#))
         #expect(sql.contains("MATCH"))
         #expect(sql.contains("COLUMNS"))
+        let query = SelectQuery(projection: .all, source: .graphTable(source))
+        #expect(try SQLParser().parseSelect(SQLSerializer().serialize(query)) == query)
     }
 }
 

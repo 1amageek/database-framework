@@ -5,15 +5,19 @@ import Testing
 
 @Suite("Exact numeric parser", .heartbeat)
 struct ExactNumericParserTests {
-    @Test("SQL preserves unsigned and decimal literals")
+    @Test("SQL preserves signed widths and numeric display scale")
     func sqlPreservesExactNumerics() throws {
         let query = try SQLParser().parseSelect(
             "SELECT 18446744073709551615, 123.4500 FROM Event"
         )
 
         #expect(query.projection == .items([
-            ProjectionItem(.literal(.uint(UInt64.max))),
-            ProjectionItem(.literal(.decimal(coefficient: 12_345, scale: 2))),
+            ProjectionItem(.literal(.queryValue(.numeric(try QueryNumericValue(
+                value: .init(coefficient: 18_446_744_073_709_551_615, scale: 0), displayScale: 0
+            )), type: .sql(.decimal(precision: nil, scale: nil))))),
+            ProjectionItem(.literal(.queryValue(.numeric(try QueryNumericValue(
+                value: .init(coefficient: 12_345, scale: 2), displayScale: 4
+            )), type: .sql(.decimal(precision: nil, scale: nil))))),
         ]))
     }
 
@@ -45,7 +49,7 @@ struct ExactNumericParserTests {
     func overflowIsRejected() {
         #expect(throws: SQLParser.ParseError.self) {
             _ = try SQLParser().parseSelect(
-                "SELECT 18446744073709551616 FROM Event"
+                "SELECT 123456789012345678901234567890123456789 FROM Event"
             )
         }
         #expect(throws: SPARQLParser.ParseError.self) {

@@ -3,9 +3,9 @@
 ## Purpose and Scope
 
 Builder owns fluent SQL/SPARQL semantic construction and the canonical SQL
-serializer. Parent: [QueryAST](../DESIGN.md). Children: none. The serializer
-is a planned S02 consolidation; current SQL generation remains in
-[SQLQueryBuilder](SQLQueryBuilder.swift) and semantic `toSQL` paths.
+serializer. Parent: [QueryAST](../DESIGN.md). Children: none.
+[SQLSerializer](SQLSerializer.swift) owns executable SQL emission;
+[SQLQueryBuilder](SQLQueryBuilder.swift) delegates to that owner.
 
 ## Responsibilities and Boundaries
 
@@ -47,6 +47,119 @@ fluent input -> DatabaseKit semantic value -> structural validation
 - SQL text and semantic structures respect validated limits. Emission size
   and recursion are bounded before growth; configuration owns defaults.
 
+### S02 canonical SQL and constant normalization
+
+This component is the sole owner of executable SQL text, including SQL/PGQ
+MATCH/GRAPH_TABLE/property-graph DDL and type/identifier escaping formerly in
+Kit. SQLQueryBuilder.toSQL delegates to this serializer. A public pure
+SQLSerializing protocol declares the required root serialization operations;
+the immutable SQLSerializer implementation accepts existing QueryStatement/SelectQuery/Expression/
+Literal/DataType roots as required by callers; all roots share one bounded
+writer and one typed SQLSerializationError contract. Unsupported language,
+source, metadata, type, literal, invalid structure and output-budget failures
+are distinguishable. No SQL generation remains in Kit, and no compatibility
+alias points back to the removed owner. Value formatting and SPARQL generation
+remain with their existing Kit owners.
+
+| Canonical input | Emitted SQL and normalized parse meaning |
+|---|---|
+| Identifier | Always double-quote exact semantic names and double embedded quotes. This includes field/table/schema names, aliases and graph names; keyword/function/operator spelling follows its grammar rather than identifier interpolation. Reject empty/U+0000 names where the declaration requires an identifier. |
+| Integer/finite floating primitive | Preserve the declared SQL width using CAST where bare SQL classification differs. A floating primitive uses an explicit REAL/DOUBLE PRECISION cast so its text is not silently numeric. An unsigned/non-SQL primitive declaration with no SQL type-preserving representation fails explicitly rather than changing the result type. |
+| Rich numeric | Emit an exact numeric lexical form preserving displayScale, including scaled zero. Fixed decimal spelling includes a decimal point or explicit NUMERIC cast when necessary to avoid integer classification. Expansion is checked against output bytes and PostgreSQL numeric bounds before allocation. |
+| JSON | Emit JSON followed by one escaped SQL string containing the byte-identical validated UTF-8 lexical value; SQL string escaping does not normalize JSON whitespace or duplicate keys. |
+| JSONB | Emit JSONB followed by canonical JSON text. Preserve canonical keys, scalar distinctions and exact numeric display scales; use iterative owner traversal and bounded escaping. Parsing normalizes through the existing intrinsic JSONB constructors. |
+| Mixed interval | Emit INTERVAL followed by one SQL string of signed integer months with mons, signed integer days with days, and signed Int64 microseconds with microseconds. Each component remains separate; avoid abs(Int64.min) overflow and no calendar/timezone inference. |
+| SQL array | Emit CAST of PostgreSQL array input text AS the exact element DataType[]. Include explicit [lower:upper] bounds for every nonempty dimension and nested braces in row-major order; empty shape is '{}', with explicit element type. Quote/escape element text, distinguish unquoted NULL from the text NULL, preserve JSON/JSONB/numeric/interval element metadata and multidimensional bounds. Checked dimension products and the existing six-dimension limit apply before traversal. |
+| Opaque typed input | DATE/TIME/TIMESTAMP and general type-prefixed string syntax lower to existing cast(string, canonical type) where conversion requires runtime policy. Serializer emits CAST without host conversion. Canonical intrinsically decidable constant casts can normalize to an owned QueryValue literal while preserving value and declared type. |
+| Constructor and parameter | Emit ARRAY[...] and ROW(...) from their ordered expression children; emit explicit $n, retaining product named-parameter identity. Explicit parameter/literal type uses CAST where required. Preserve all nested declared type metadata. |
+
+FunctionCall.name and DataType.custom currently store one String, not a
+qualified-name structure. A custom name containing qualification ambiguity
+(such as a dot) is a typed unsupported name, never split or emitted as raw SQL.
+Dedicated expression and aggregate variants own built-in grammar spellings.
+Every generic FunctionCall name uses exact identifier quoting, including names
+that collide with COALESCE or NULLIF; serialization never changes their case or
+lowers them into a different expression variant. Custom type identifiers also
+use exact validated quoting. Full qualified function
+and type-name representation/binding belongs to S03/S11. No SQLIdentifier
+algebra or quoted-state field is introduced solely for this serializer.
+
+One internal constant adapter in this Builder component supplies both canonical
+rich constant encoding and pure intrinsic decoding to Parser. It normalizes
+NUMERIC, JSON, JSONB, the canonical mixed interval and typed array constant
+forms to existing Literal.queryValue values with their declaration. It never
+uses Foundation DateFormatter, locale, current time, host timezone or database
+state. Broader temporal/interval input remains a lexical cast for its runtime
+owner. Invalid canonical constant input is a typed parse/value failure, not a
+fallback to an untyped string. General expression casts remain casts.
+
+The parser-facing internal contract is SQLConstantSyntax.numericLiteral(_:limits:)
+returning Literal and SQLConstantSyntax.normalize(_:as:limits:) accepting an
+Expression plus DataType and returning Literal?. Both accept
+QueryStructuralLimits and throw SQLConstantError. Constant NULL casts normalize
+to a typed null query literal without a temporal conversion, including explicit
+precision; the execution owner defines the same literal-NULL identity in
+[existing-syntax output typing](../../DatabaseEngine/QueryExecution/DESIGN.md#existing-syntax-output-typing).
+The target descriptor must be valid, and nonliteral/non-NULL conversion remains
+with its runtime owner. This preserves builder-to-text agreement without claiming rounding.
+Normalization returns nil only for input whose conversion is explicitly owned
+by a later runtime phase; malformed supported intrinsic input throws. Parser
+adds the source-token span to that typed failure. The same adapter supplies
+canonical rich emission to the serializer's bounded writer; no second numeric,
+array-text, JSON or interval normalization implementation is introduced.
+
+Semantic round trip permits canonical lowering of equivalent syntax (typed
+prefix versus CAST/::, folded unary sign and numeric width, bare versus typed
+constant); it requires identical value, explicit type/typmod, dscale, lexical
+JSON, normalized JSONB, array bounds/cells and mixed interval components.
+Repeated parse -> serialize -> parse must stabilize; raw AST equality is not
+used to erase or invent metadata during normalization.
+
+Statement serialization preserves represented precedence, exact aliases and
+qualified scopes, projection order, CTE column lists and MATERIALIZED hints,
+LATERAL after JOIN, ordinary DISTINCT, sort directions/NULLS, supported DML
+and SQL/PGQ clauses. Supported nested/set source forms preserve operand and
+outer modifier meaning; a source requiring a later unsupported grammar fails
+with typed unsupported source rather than '<source>'. SQL serializer rejects
+SPARQL variables/RDF operators, dataset/update forms, graph service sources,
+Fusion/physical access hints, nondefault product execution metadata and
+MultiBase target annotations that text cannot retain. It never substitutes
+regex with LIKE or JSON functions with RDF-star operations.
+
+Use caller-provided QueryStructuralLimits for tree depth/node/collection and
+maximumRetainedBytes for output UTF-8. Check escaping/decimal/array expansion
+before appending. Shared source/value owners are borrowed; copying occurs only
+at the required final String boundary, with checked output allocation.
+Multi-statement serialization uses the same cumulative budgets and one writer.
+Array constant decoding owns a cumulative payload ledger. Before decoding a
+cell it reserves that array element and supplies only the remaining node,
+collection, nesting and retained-byte budgets to the common constant adapter.
+It measures and admits the child before retaining it in the array. A later
+malformed cell cannot mask an earlier resource violation. Array text scanning
+also checks decoded cell-byte growth against the remaining retention budget.
+
+Explicit scalar CHAR/VARCHAR declarations preserve the owned string exactly.
+Serialization rejects a CHAR declaration that would pad or truncate the string,
+and rejects a VARCHAR declaration that would truncate it, as typed unsupported
+metadata. Exact compatible strings retain their declared typmod. This is the
+same carriage requirement applied to typed array cells; runtime casts from
+lexical expressions retain their runtime conversion contract.
+
+The no-FROM singleton relation remains the existing zero-column VALUES row.
+Other VALUES data sources require S08's alias and scope grammar, so their
+serializer branch returns typed unsupportedSource and is marked incomplete
+until source-scope round trips prove that grammar. INSERT VALUES retains its
+separate, supported statement contract.
+
+Migrate generation tests from Kit to QueryAST and assert literal fidelity,
+semantic round trips, unsupported language/metadata failures and output limits.
+Previously S01-required rich toSQL failures become positive S02 round trips;
+unsupported variants retain explicit failures. Public Database tests compare
+builder and emitted SQL through the real executable subset, including quoted
+static names, exact numeric types and zero-row metadata. Future ARRAY/ROW/
+temporal runtime capability is tested as explicit failure until its owner
+implements it; serializer success is not execution success.
+
 ## Runtime Flows
 
 Builder state produces a semantic tree, the shared validator checks it, and
@@ -77,9 +190,9 @@ builder execution and emitted SQL execution, including error behavior and
 empty typed results. Semantic model changes require Parser, DatabaseKit
 validator/codecs, serializer callers, and QueryExecution revalidation.
 
-### S01 rich-literal generation boundary
+### Historical S01 rich-literal generation boundary (superseded by S02)
 
-Actual current SQL generation is SQLQueryBuilder.toSQL -> expression.toSQL ->
+The pre-S02 SQL generation path was SQLQueryBuilder.toSQL -> expression.toSQL ->
 DatabaseKit Query/SQL/MatchPattern.swift Literal.toSQL. Literal.description
 is a separate nonthrowing CustomStringConvertible diagnostic path; it is not
 an executable SQL representation. S01 does not require a rich value to pass

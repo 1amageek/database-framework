@@ -319,7 +319,13 @@ CAST, arithmetic/comparison/logical, function, CASE/COALESCE/NULLIF,
 aggregate and subquery forms. It produces the same schema on empty and
 nonempty inputs. A bare NULL acquires a contextual type, or text at a final
 SQL output with no stronger context; explicit typed NULL retains its CAST or
-parameter declaration. Column metadata comes from admitted FieldSchema,
+parameter declaration. A CAST of a literal NULL is a pure typed-NULL identity:
+validate the target descriptor and retain its complete type, including temporal
+precision 0...6, without invoking conversion or rounding. This is the same
+contract as Builder constant normalization; the explicit NULL remains NULL,
+not a synthetic result for an unsupported operand. Nonliteral or non-NULL
+temporal precision conversions still fail explicitly until S06 implements
+rounding. Invalid target descriptors fail even for NULL. Column metadata comes from admitted FieldSchema,
 never persisted object shape. Outer joins widen nullability. Scalar
 subqueries retain their sole declared output type and become nullable;
 multiple output columns fail before execution and multiple rows fail at

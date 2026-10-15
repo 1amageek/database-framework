@@ -218,12 +218,14 @@ enum SchemaEntityEntryCodec {
             try writeOptionalInt(length, into: &writer)
         case .text: writer.writeUInt8(9)
         case .date: writer.writeUInt8(10)
-        case .time(let withTimeZone):
-            writer.writeUInt8(11)
+        case .time(let withTimeZone, let precision):
+            writer.writeUInt8(precision == nil ? 11 : 22)
             writer.writeBool(withTimeZone)
-        case .timestamp(let withTimeZone):
-            writer.writeUInt8(12)
+            if let precision { writer.writeUInt8(UInt8(precision)) }
+        case .timestamp(let withTimeZone, let precision):
+            writer.writeUInt8(precision == nil ? 12 : 23)
             writer.writeBool(withTimeZone)
+            if let precision { writer.writeUInt8(UInt8(precision)) }
         case .interval: writer.writeUInt8(13)
         case .binary(let length):
             writer.writeUInt8(14)
@@ -830,7 +832,8 @@ enum SchemaEntityEntryCodec {
     private static func readDataType(
         from reader: inout StorageFrameDecoder
     ) throws(StorageFrameError) -> DataType {
-        switch try reader.readUInt8() {
+        let tag = try reader.readUInt8()
+        switch tag {
         case 0: return .boolean
         case 1: return .smallint
         case 2: return .integer
@@ -845,6 +848,12 @@ enum SchemaEntityEntryCodec {
         case 10: return .date
         case 11: return .time(withTimeZone: try reader.readBool())
         case 12: return .timestamp(withTimeZone: try reader.readBool())
+        case 22, 23:
+            let withTimeZone = try reader.readBool()
+            let precision = try reader.readUInt8()
+            guard precision <= 6 else { throw .invalidValue }
+            return tag == 22 ? .time(withTimeZone: withTimeZone, precision: Int(precision))
+                : .timestamp(withTimeZone: withTimeZone, precision: Int(precision))
         case 13: return .interval
         case 14: return .binary(length: try readOptionalInt(from: &reader))
         case 15: return .varbinary(length: try readOptionalInt(from: &reader))

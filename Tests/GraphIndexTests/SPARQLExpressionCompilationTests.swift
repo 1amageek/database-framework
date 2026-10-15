@@ -5,6 +5,22 @@ import Testing
 
 @Suite("SPARQL expression compilation", .heartbeat)
 struct SPARQLExpressionCompilationTests {
+
+    @Test("SQL constructors fail SPARQL compilation and cannot become false or unbound")
+    func sqlConstructorsFailCompilation() {
+        for expression: Expression in [.array([.int(1)]), .row([.null])] {
+            #expect(throws: SPARQLExpressionCompilationError.unsupportedExpression("SQL ARRAY/ROW constructor")) {
+                try SPARQLExpressionValidator.validate(expression)
+            }
+            #expect(throws: SPARQLExpressionEvaluationError.self) {
+                try ExpressionEvaluator.evaluateAsBoolean(expression, binding: VariableBinding())
+            }
+            #expect(throws: SPARQLExpressionEvaluationError.self) {
+                try ExpressionEvaluator.evaluateForOrdering(expression, binding: VariableBinding())
+            }
+        }
+    }
+
     @Test("Every valid absolute IRI scheme can identify an extension function")
     func extensionFunctionIRIClassification() throws {
         for identifier in [

@@ -114,7 +114,7 @@ struct SQLiteStorageTests {
         #expect(restored.lexicalDocument.bytes == updated.lexicalDocument.bytes)
         #expect(restored.integerValues.arrayValue.dimensions[0].lowerBound == 3)
 
-        let projection = "SELECT exactAmount, lexicalDocument, binaryDocument, durationValue, integerValues FROM SQLiteStoredRichItem"
+        let projection = "SELECT \"exactAmount\", \"lexicalDocument\", \"binaryDocument\", \"durationValue\", \"integerValues\" FROM \"SQLiteStoredRichItem\""
         let selected = try await context.executeSQL(projection)
         #expect(selected.rows.count == 1)
         #expect(selected.rows[0].values == expected)
@@ -135,12 +135,23 @@ struct SQLiteStorageTests {
         #expect(literals.rows[0].values == expected)
         #expect(literals.columns == selected.columns)
 
+        let literalBuilder = SQLQueryBuilder(source: literalQuery.source).select(
+            ProjectionItem(.literal(.queryValue(expected[0], type: types[0])), alias: names[0]),
+            ProjectionItem(.literal(.queryValue(expected[1], type: types[1])), alias: names[1]),
+            ProjectionItem(.literal(.queryValue(expected[2], type: types[2])), alias: names[2]),
+            ProjectionItem(.literal(.queryValue(expected[3], type: types[3])), alias: names[3]),
+            ProjectionItem(.literal(.queryValue(expected[4], type: types[4])), alias: names[4])
+        )
+        let emitted = try await context.executeSQL(literalBuilder.toSQL())
+        #expect(emitted.columns == literals.columns)
+        #expect(emitted.rows.map(\.values) == literals.rows.map(\.values))
+
         var parameters = expected.indices.map { index in
             QueryParameter(position: UInt32(index + 1), name: names[index],
                            value: expected[index], type: types[index])
         }
         parameters.append(QueryParameter(position: 6, name: "absent", value: .primitive(.null), type: .sql(.json)))
-        let parameterSQL = "SELECT :exactAmount AS exactAmount, :lexicalDocument AS lexicalDocument, :binaryDocument AS binaryDocument, :durationValue AS durationValue, :integerValues AS integerValues, :absent AS absent"
+        let parameterSQL = "SELECT :exactAmount AS \"exactAmount\", :lexicalDocument AS \"lexicalDocument\", :binaryDocument AS \"binaryDocument\", :durationValue AS \"durationValue\", :integerValues AS \"integerValues\", :absent AS absent"
         let bound = try await context.executeSQL(parameterSQL, parameters: parameters)
         #expect(bound.rows.count == 1)
         #expect(bound.rows[0].values == expected + [.primitive(.null)])
@@ -149,6 +160,58 @@ struct SQLiteStorageTests {
         let emptyBound = try await context.executeSQL(parameterSQL + " WHERE FALSE", parameters: parameters)
         #expect(emptyBound.rows.isEmpty)
         #expect(emptyBound.columns == bound.columns)
+    }
+
+    @Test("SQL syntax preserves exact names and rejects pending execution capabilities", .timeLimit(.minutes(2)))
+    func syntaxCarriagePreservesPublicExecutionContract() async throws {
+        let container = try await makeItemContainer()
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        try context.insert(SQLiteStoredItem(id: "syntax", name: "quoted", age: 7))
+        try await context.save()
+        let builder = SQLQueryBuilder(from: "SQLiteStoredItem")
+            .select("id", "name").where("age", .greaterThanOrEqual, .int(7))
+        let direct = try await context.query(builder.buildAST())
+        let emitted = try await context.executeSQL(builder.toSQL())
+        #expect(emitted.columns == direct.columns)
+        #expect(emitted.rows.map(\.values) == direct.rows.map(\.values))
+        #expect(emitted.rows.count == 1)
+        await #expect(throws: CanonicalReadError.self) {
+            _ = try await context.executeSQL("SELECT id FROM SQLiteStoredItem")
+        }
+        for (sql, reason) in [
+            ("SELECT ARRAY[1] WHERE FALSE", "SQL ARRAY/ROW constructor"),
+            ("SELECT ROW(1, NULL)", "SQL ARRAY/ROW constructor"),
+            ("SELECT TIMESTAMP(3) '2026-10-15 10:20:30'", "temporal precision conversion"),
+        ] {
+            do {
+                _ = try await context.executeSQL(sql)
+                Issue.record("Expected an explicit pending SQL execution failure")
+            } catch CanonicalReadError.expressionEvaluation(.unsupportedExpression(let message)) {
+                #expect(message == reason)
+            } catch {
+                Issue.record("Unexpected SQL execution failure: \(error)")
+            }
+        }
+        for type: DataType in [
+            .time(withTimeZone: false, precision: 0),
+            .time(withTimeZone: true, precision: 3),
+            .timestamp(withTimeZone: false, precision: 3),
+            .timestamp(withTimeZone: true, precision: 6),
+        ] {
+            let nullBuilder = SQLQueryBuilder(source: .values([[]], columnNames: nil))
+                .select(ProjectionItem(.cast(.null, targetType: type), alias: "clock"))
+            let directNull = try await context.query(nullBuilder.buildAST())
+            let emittedNull = try await context.executeSQL(nullBuilder.toSQL())
+            #expect(directNull.columns == emittedNull.columns)
+            #expect(directNull.rows.map(\.values) == emittedNull.rows.map(\.values))
+            #expect(emittedNull.columns.map(\.type) == [.sql(type)])
+            #expect(emittedNull.rows.map(\.values) == [[.primitive(.null)]])
+            #expect(emittedNull.columns[0].isNullable)
+        }
+        let typedNull = try await context.executeSQL("SELECT NULL::TIMESTAMP(3)")
+        #expect(typedNull.columns.map(\.type) == [.sql(.timestamp(withTimeZone: false, precision: 3))])
+        #expect(typedNull.rows.map(\.values) == [[.primitive(.null)]])
     }
 
     private func richValues(_ item: SQLiteStoredRichItem) -> [QueryValue] {

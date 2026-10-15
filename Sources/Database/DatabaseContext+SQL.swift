@@ -67,8 +67,8 @@ extension DatabaseContext {
     /// **Example**:
     /// ```swift
     /// let sql = """
-    ///     SELECT * FROM User
-    ///     WHERE id IN (SPARQL(RDFTriple, 'SELECT ?s WHERE { ?s <knows> "Alice" }'))
+    ///     SELECT * FROM "User"
+    ///     WHERE id IN (SPARQL("RDFTriple", 'SELECT ?s WHERE { ?s <knows> "Alice" }'))
     /// """
     /// let users = try await context.executeSQL(sql, as: User.self)
     /// ```

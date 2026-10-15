@@ -46,7 +46,7 @@ struct CanonicalSQLRetainedOwnershipTests {
         let decodeCountAfterWrite = DecodeProbeItem.decodeCount
 
         let response = try await context.executeSQL(
-            "SELECT id, value FROM DecodeProbeItem"
+            "SELECT id, value FROM \"DecodeProbeItem\""
         )
 
         #expect(response.rows.count == 1)

@@ -192,7 +192,7 @@ struct SPARQLNotInTests {
             .column(ColumnRef(column: "status")),
             values: [.literal(.string("deleted")), .literal(.string("archived"))]
         )
-        let sql = try expr.toSQL()
+        let sql = try SQLSerializer().serialize(expr)
         #expect(sql.contains("NOT IN"))
     }
 

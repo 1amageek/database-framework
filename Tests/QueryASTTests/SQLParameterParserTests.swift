@@ -15,8 +15,8 @@ struct SQLParameterParserTests {
         }
 
         #expect(query.projection == .items([
-            ProjectionItem(.parameter(.position(1)), alias: "firstValue"),
-            ProjectionItem(.parameter(.position(2)), alias: "secondValue"),
+            ProjectionItem(.parameter(.position(1)), alias: "firstvalue"),
+            ProjectionItem(.parameter(.position(2)), alias: "secondvalue"),
         ]))
         #expect(query.filter == .equal(.col("id"), .parameter(.position(3))))
     }

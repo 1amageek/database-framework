@@ -1,10 +1,64 @@
 import DatabaseTypes
 import DatabaseKit
+import StorageKitSystemClock
 import Testing
 @_spi(DatabaseExecution) @testable import DatabaseEngine
 
 @Suite("Canonical SQL expression type binding")
 struct CanonicalQueryTypeBinderTests {
+
+    @Test("SQL constructors reject binding while temporal literal NULL casts retain their declared type")
+    func deferredSQLSemanticsFailBinding() throws {
+        for expression: Expression in [.array([.int(1)]), .row([.null])] {
+            let query = SelectQuery(projection: .items([ProjectionItem(expression)]),
+                                    source: .values([], columnNames: nil))
+            #expect(throws: DatabaseExpressionEvaluationError.unsupportedExpression("SQL ARRAY/ROW constructor")) {
+                try binder().bind(query)
+            }
+        }
+        for type: DataType in [.time(withTimeZone: false, precision: 0),
+                               .timestamp(withTimeZone: true, precision: 6)] {
+            for operand: Expression in [.null, .literal(.queryValue(.primitive(.null), type: .sql(.integer)))] {
+                let bound = try binder().bind(.cast(operand, targetType: type))
+                #expect(bound.type == .sql(type))
+                #expect(bound.isNullable)
+                #expect(try bound.normalize(.primitive(.null)) == .primitive(.null))
+            }
+            #expect(throws: DatabaseExpressionEvaluationError.unsupportedExpression("temporal precision conversion")) {
+                try binder().bind(.cast(.string("12:00"), targetType: type))
+            }
+            #expect(throws: DatabaseExpressionEvaluationError.unsupportedExpression("temporal precision conversion")) {
+                try binder(parameters: [QueryParameter(position: 1, value: .primitive(.null), type: .sql(type))])
+                    .bind(.cast(.parameter(.position(1)), targetType: type))
+            }
+            let declared = try binder(parameters: [QueryParameter(position: 1, value: .primitive(.null), type: .sql(type))])
+                .bind(.parameter(.position(1)))
+            #expect(declared.type == .sql(type))
+            let fieldType: FieldSchemaType
+            if case .time = type { fieldType = .time } else { fieldType = .timestamp }
+            let entity = try Schema.Entity(name: "Temporal", identifierType: .string, fields: [
+                FieldSchema(name: "id", fieldNumber: 1, type: .string),
+                FieldSchema(name: "clock", fieldNumber: 2, type: fieldType, isOptional: true, queryType: .sql(type)),
+            ], directoryComponents: [.staticPath("temporal")])
+            #expect(try SchemaEntityEntryCodec.decode(SchemaEntityEntryCodec.encode(entity)) == entity)
+        }
+        for precision in [-1, 7] {
+            #expect(throws: DatabaseExpressionEvaluationError.typeMismatch(operation: "unresolved type")) {
+                try binder().bind(.cast(.null, targetType: .time(withTimeZone: false, precision: precision)))
+            }
+        }
+        var fingerprints: Set<ByteString> = []
+        let meter = DatabaseWorkMeter(budget: ExecutionBudget(maximumRows: 100, maximumWorkUnits: 1_000,
+            timeoutMilliseconds: 30_000), monotonicClock: SystemStorageClock())
+        for precision: Int? in [nil, 0, 3, 6] {
+            let column = try QueryColumn(number: 1, name: "clock",
+                type: .sql(.timestamp(withTimeZone: true, precision: precision)), isNullable: true)
+            let row = try DatabaseEngine.QueryRow(values: [.primitive(.null)], columns: [column])
+            fingerprints.insert(try CanonicalRowFingerprint.compute(row, columns: [column], workMeter: meter))
+        }
+        #expect(fingerprints.count == 4)
+    }
+
     @Test("An empty input preserves duplicate output labels and declared NULL types")
     func emptyInputHasOrderedTypes() throws {
         let query = SelectQuery(

@@ -281,7 +281,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
                     pendingExpressions.append(elseResult)
                 }
 
-            case .coalesce(let expressions):
+            case .coalesce(let expressions), .array(let expressions), .row(let expressions):
                 pendingExpressions.append(contentsOf: expressions)
 
             case .triple(let subject, let predicate, let object):
@@ -740,6 +740,12 @@ internal struct SPARQLFunctionRewriter: Sendable {
             }
             let rewrittenElse = try await elseResult.asyncMap { try await rewriteExpression($0) }
             return .caseWhen(cases: rewrittenCases, elseResult: rewrittenElse)
+
+        case .array(let exprs), .row(let exprs):
+            var rewrittenExprs: [DatabaseKit.Expression] = []
+            for expr in exprs { rewrittenExprs.append(try await rewriteExpression(expr)) }
+            if case .array = expr { return .array(rewrittenExprs) }
+            return .row(rewrittenExprs)
 
         case .coalesce(let exprs):
             var rewrittenExprs: [DatabaseKit.Expression] = []

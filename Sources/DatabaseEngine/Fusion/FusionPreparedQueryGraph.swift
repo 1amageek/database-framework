@@ -415,7 +415,7 @@ enum FusionSelectQueryGraphWalker {
             if let fallback {
                 try stack.append(.expression(fallback))
             }
-        case .coalesce(let expressions):
+        case .coalesce(let expressions), .array(let expressions), .row(let expressions):
             for nested in expressions {
                 try stack.append(.expression(nested))
             }

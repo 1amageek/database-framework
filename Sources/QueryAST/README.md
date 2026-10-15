@@ -16,28 +16,41 @@ QueryAST provides the following capabilities:
 
 ## Architecture
 
+```text
+SQL text -> Parser/SQLParser -> DatabaseKit semantic values
+                                      ^              |
+Builder/SQLQueryBuilder ---------------+              v
+                                  Builder/SQLSerializer
+                                      -> bounded SQLTextWriter -> owned SQL text
+
+SPARQL text -> Parser/SPARQLParser -> DatabaseKit SPARQL models
+Builder/SPARQLQueryBuilder ----------> DatabaseKit SPARQL serialization
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         QueryAST                                 │
-├─────────────────────────────────────────────────────────────────┤
-│  Parser/                   │  Builder/                          │
-│  ├── SQLParser             │  ├── SQLQueryBuilder               │
-│  └── SPARQLParser          │  └── SPARQLQueryBuilder            │
-├────────────────────────────┼────────────────────────────────────┤
-│  SQL/                      │  SPARQL/                           │
-│  ├── MatchPattern          │  ├── GraphPattern                  │
-│  ├── PathPattern           │  ├── PropertyPath                  │
-│  └── GraphTable            │  └── SPARQLTerm                    │
-├────────────────────────────┴────────────────────────────────────┤
-│  DatabaseKit query models (re-exported)                          │
-│  ├── Expression            ├── DataSource                       │
-│  ├── SelectQuery           ├── Literal                          │
-│  └── QueryStatement        └── Projection                       │
-├─────────────────────────────────────────────────────────────────┤
-│  Utils/                                                          │
-│  └── SQLEscape (identifier/string escaping)                      │
-└─────────────────────────────────────────────────────────────────┘
-```
+
+`QueryIRExport.swift` re-exports `DatabaseKit`. SQL/PGQ, SPARQL and shared
+query models remain in that package; QueryAST's implementation directories
+are `Parser/` and `Builder/`.
+
+### Canonical SQL Serialization
+
+`SQLSerializing` declares the pure serialization contract. Its immutable
+implementation, `SQLSerializer(limits:)`, accepts `QueryStructuralLimits`
+(default: `.default`). Each `serialize` invocation uses one bounded writer
+for nested values and, for `[QueryStatement]`, the complete statement block.
+Depth, node and collection budgets are checked while traversing; escaped
+UTF-8 output is checked against `maximumRetainedBytes` before growth.
+
+| Public entry | Result |
+|---|---|
+| `SQLParser.parseSelect(_:)` | `SelectQuery` |
+| `SQLParser.parse(_:)` / `parseStatements(_:)` | `QueryStatement` / `[QueryStatement]` |
+| `SQLQueryBuilder.buildAST()` | `SelectQuery` |
+| `SQLQueryBuilder.toSQL()` | Delegates to `SQLSerializer().serialize(buildAST())` |
+| `SQLSerializer.serialize(_:)` | SQL for statements, SELECT, expressions, literals, types, sources, aggregates and SQL/PGQ roots |
+
+All serialization roots throw `SQLSerializationError` for unsupported
+language, source, metadata, type or literal, invalid structures, and resource
+limits. They never use diagnostic `description` text as executable SQL.
 
 ## Key Types
 
@@ -127,7 +140,12 @@ let query = SelectQuery(
 )
 
 // Convert to SQL
-print(try query.toSQL())
+let serializer = SQLSerializer()
+print(try serializer.serialize(query))
+
+// Fluent construction uses the same serializer.
+let builder = SQLQueryBuilder(from: "users").select("name")
+print(try builder.toSQL())
 ```
 
 ### Parsing SPARQL Queries
@@ -161,33 +179,28 @@ let graphQuery = GraphTableSource.match(
     (.column(ColumnRef(table: "p2", column: "name")), "friend")
 ])
 
-print(try graphQuery.toSQL())
-// GRAPH_TABLE(social_network,
-//   MATCH (p1:Person)-[f:FRIEND]->(p2:Person)
-//   COLUMNS (p1.name AS person, p2.name AS friend)
-// )
+print(try SQLSerializer().serialize(graphQuery))
+// GRAPH_TABLE("social_network", MATCH ("p1":"Person")-["f":"FRIEND"]->("p2":"Person") COLUMNS ("p1"."name" AS "person", "p2"."name" AS "friend"))
 ```
 
 ## Security
 
 ### SQL Injection Prevention
 
-All identifiers and string literals are properly escaped:
+The canonical writer always double-quotes exact logical identifiers and
+doubles embedded quotes. SQL strings double single quotes. Empty or
+U+0000-containing identifiers and U+0000-containing strings fail explicitly.
+Values enter through typed literals or parameters rather than raw SQL fragments.
 
 ```swift
-// Identifier escaping (double quotes)
-SQLEscape.identifier("user name")  // "\"user name\""
-SQLEscape.identifier("table\"name") // "\"table\"\"name\""
+let serializer = SQLSerializer()
+try serializer.serialize(Expression.column(ColumnRef("user name"))) // "\"user name\""
+try serializer.serialize(Expression.column(ColumnRef("table\"name"))) // "\"table\"\"name\""
+try serializer.serialize(Literal.string("O'Brien")) // "'O''Brien'"
 
-// String literal escaping (single quotes)
-SQLEscape.string("O'Brien")  // "'O''Brien'"
-
-// SPARQL NCName validation
-try SPARQLEscape.ncName("validName")  // "validName"
-try SPARQLEscape.ncName("invalid name")  // throws SPARQLEscapeError.invalidNCName
-
-// IRI escaping
-SPARQLEscape.iri("http://example.org/path")  // "<http://example.org/path>"
+// SPARQL escaping remains owned by DatabaseKit.
+try SPARQLEscape.ncName("validName")
+SPARQLEscape.iri("http://example.org/path")
 ```
 
 ### Reference Standards
@@ -225,7 +238,7 @@ part of the `QueryAST` syntax product.
 - [x] Columns, expressions, aliases
 - [x] DISTINCT / ALL
 - [x] Aggregate functions (COUNT, SUM, AVG, MIN, MAX, GROUP_CONCAT, ARRAY_AGG)
-- [x] Window functions (OVER, PARTITION BY)
+- [ ] Window functions (OVER, PARTITION BY): later profile sprint
 
 ### FROM Clause
 - [x] Table references (schema-qualified, aliases)
@@ -247,7 +260,14 @@ part of the `QueryAST` syntax product.
 - [x] ORDER BY (ASC, DESC, NULLS FIRST/LAST)
 - [x] LIMIT / OFFSET
 - [x] WITH (CTE)
-- [x] Set operations (UNION, INTERSECT, EXCEPT)
+- [ ] Set operations (UNION, INTERSECT, EXCEPT): represented source forms
+  throw a typed unsupported-source error until their grammar is implemented
+
+Parsing and serialization establish syntax and retained semantic meaning;
+they do not establish runtime support. ARRAY/ROW constructors, temporal
+conversion policy, and later statement forms remain with their execution
+owners. The accepted profile and staged boundaries are defined in
+[DatabaseKit SQL design](../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md).
 
 ## Supported SPARQL Features
 
@@ -316,12 +336,11 @@ The parser emits `Expression.aggregate` for every aggregate represented by
 
 ## Testing
 
-```bash
-xcodebuild test \
-  -scheme database-framework-Package \
-  -destination 'platform=macOS,arch=arm64' \
-  -only-testing:QueryASTTests
-```
+Use the package-owned [Xcode harness](../../scripts/xcode-test-harness)
+for focused `QueryASTTests` verification. It owns the fixed toolchain,
+external timeouts, isolated source copy, testing-runtime injection and result
+collection. Trait selection and exact reviewed counts follow the package's
+[verification contract](../../AGENTS.md).
 
 ## Reference Standards
 

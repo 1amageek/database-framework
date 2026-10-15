@@ -59,6 +59,25 @@ semantic input -> DatabaseEngine (outside this module)
 - SPARQL and graph extensions remain explicit product syntax and retain their
   existing semantic owner. SQL expansion must preserve their current tests.
 
+### S02 composition and completion boundary
+
+S02 first updates [Kit semantic declarations](../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s02-frozen-syntax-to-value-boundary)
+and [Wire](../../../database-kit/Sources/DatabaseWire/DESIGN.md#s02-type-and-constructor-wire-grammar),
+then composes the [Parser](Parser/DESIGN.md#s02-strict-lexical-and-grammar-contract)
+with [Builder's canonical constant adapter](Builder/DESIGN.md#s02-canonical-sql-and-constant-normalization).
+The dependency is Parser -> Builder's pure constant adapter, never Builder ->
+Parser production code; parser round trips are behavioral tests. Public builder
+SQL generation has one implementation owner. Existing SQL/PGQ declarations,
+SPARQL generation, typed values and standard/MultiBase guards retain their
+semantic owners.
+
+S02 proves full L01-L08 lexical/carriage/strictness behavior and executable
+agreement for the already-supported public SQL subset. It does not label L04
+ROW/ARRAY construction or temporal typmods fully executable from syntax-only
+proofs. Unsupported runtime branches explicitly identify the S03/S06/S07/S08
+owner. Source diagnostics in this sprint use UTF-8 token ranges; the binding
+sidecar and binder diagnostic integration remain explicit S03 work.
+
 ## Runtime Flows
 
 Parser consumes request-local lexer state, validates syntax and the final

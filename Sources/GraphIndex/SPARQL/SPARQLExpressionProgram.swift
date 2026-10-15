@@ -238,6 +238,10 @@ struct SPARQLExpressionProgram: Sendable {
         existsPatterns: inout [CompiledExistsPattern]
     ) throws(SPARQLExpressionCompilationError) -> Decomposition {
         switch consume expression {
+        // FIXME(INCOMPLETE_IMPLEMENTATION): SPARQL compilation must reject SQL-only constructors.
+        // S07/S08 own SQL execution; RDF term semantics cannot be used as their implementation.
+        case .array, .row:
+            throw SPARQLExpressionCompilationError.unsupportedExpression("SQL ARRAY/ROW constructor")
         case .literal(let value):
             return Decomposition(opcode: .literal(value), children: [])
         case .column(let value):
