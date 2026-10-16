@@ -32,6 +32,8 @@ enum SQLConstantError: Error, Sendable, Equatable, CustomStringConvertible {
             case .invalidJSON(let offset, let reason): return "Invalid JSON at byte \(offset): " + reason
             case .invalidUTF8(let offset): return "Invalid UTF-8 at byte \(offset)"
             case .nonCanonicalJSONB: return "Noncanonical JSONB value"
+            case .malformedArrayInput(let offset, let reason): return "Invalid array input at byte \(offset): " + reason
+            case .invalidArrayInputIndex(let index, let count): return "Invalid array input index: \(index), count \(count)"
             case .invalidDimensionCount(let count): return "Invalid array dimension count: \(count)"
             case .invalidDimension(let lower, let length): return "Invalid array dimension: lower \(lower), length \(length)"
             case .dimensionProductOverflow: return "Array dimension product overflow"

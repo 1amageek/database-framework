@@ -27,10 +27,11 @@ package struct DatabaseExpressionEvaluator: Sendable {
         case .greatest, .least, .truthTest, .isDistinctFrom, .quantifiedComparison:
             throw DatabaseExpressionEvaluationError.unsupportedExpression("S04 conditional or quantified expression requires selected SQL execution")
 
-        // FIXME(INCOMPLETE_IMPLEMENTATION): SQL scalar evaluation reaches constructor expressions here.
-        // S07 ARRAY and S08 ROW evaluation must be implemented before returning a value.
+        // SQL constructors require the selected execution path rather than this primitive evaluator.
         case .array, .row:
             throw DatabaseExpressionEvaluationError.unsupportedExpression("SQL ARRAY/ROW constructor")
+        case .arrayAccess, .collectionOperation:
+            throw DatabaseExpressionEvaluationError.unsupportedExpression("SQL collection expression requires selected SQL execution")
         case .currentValue:
             throw DatabaseExpressionEvaluationError.missingTemporalEnvironment
         case .concatenate:
@@ -156,6 +157,9 @@ package struct DatabaseExpressionEvaluator: Sendable {
             if case .literal(let literal) = nested, literal.isNull { return .null }
             return try cast(evaluate(nested), to: target)
         case .function(let function):
+            guard !function.finalArrayIsVariadic else {
+                throw DatabaseExpressionEvaluationError.unsupportedExpression("SQL VARIADIC requires selected SQL execution")
+            }
             return try evaluate(function)
         case .inSubquery, .aggregate, .triple, .isTriple, .subject, .predicate,
              .object, .subquery, .exists:

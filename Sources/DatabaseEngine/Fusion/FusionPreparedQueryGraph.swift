@@ -423,7 +423,8 @@ enum FusionSelectQueryGraphWalker {
         switch expression {
         case .literal, .currentValue, .column, .variable, .parameter, .bound:
             break
-        case .add(let lhs, let rhs), .subtract(let lhs, let rhs),
+        case .collectionOperation(_, let lhs, let rhs),
+             .add(let lhs, let rhs), .subtract(let lhs, let rhs),
              .multiply(let lhs, let rhs), .divide(let lhs, let rhs),
              .modulo(let lhs, let rhs), .concatenate(let lhs, let rhs), .equal(let lhs, let rhs),
              .notEqual(let lhs, let rhs), .lessThan(let lhs, let rhs),
@@ -439,6 +440,16 @@ enum FusionSelectQueryGraphWalker {
              .isTriple(let nested), .subject(let nested),
              .predicate(let nested), .object(let nested):
             try stack.append(.expression(nested))
+        case .arrayAccess(let base, let subscripts):
+            try stack.append(.expression(base))
+            for subscriptValue in subscripts {
+                switch subscriptValue {
+                case .index(let value): try stack.append(.expression(value))
+                case .slice(let lower, let upper):
+                    if let lower { try stack.append(.expression(lower)) }
+                    if let upper { try stack.append(.expression(upper)) }
+                }
+            }
         case .patternMatch(let subject, let pattern, let escape, _):
             try stack.append(.expression(subject))
             try stack.append(.expression(pattern))

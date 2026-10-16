@@ -309,7 +309,8 @@ internal struct SPARQLFunctionRewriter: Sendable {
                 }
                 pendingExpressions.append(contentsOf: call.arguments)
 
-            case .add(let left, let right),
+            case .collectionOperation(_, let left, let right),
+                 .add(let left, let right),
                  .subtract(let left, let right),
                  .multiply(let left, let right),
                  .divide(let left, let right),
@@ -340,6 +341,16 @@ internal struct SPARQLFunctionRewriter: Sendable {
                  .object(let inner):
                 pendingExpressions.append(inner)
 
+            case .arrayAccess(let base, let subscripts):
+                pendingExpressions.append(base)
+                for subscriptValue in subscripts {
+                    switch subscriptValue {
+                    case .index(let value): pendingExpressions.append(value)
+                    case .slice(let lower, let upper):
+                        if let lower { pendingExpressions.append(lower) }
+                        if let upper { pendingExpressions.append(upper) }
+                    }
+                }
             case .patternMatch(let subject, let pattern, let escape, _):
                 pendingExpressions.append(subject)
                 pendingExpressions.append(pattern)
@@ -881,6 +892,27 @@ internal struct SPARQLFunctionRewriter: Sendable {
             let rewrittenElse = try await elseResult.asyncMap { try await rewriteExpression($0, provenance: try provenance?.child(.caseElse)) }
             return .caseWhen(operand: rewrittenOperand, cases: rewrittenCases, elseResult: rewrittenElse)
 
+        case .arrayAccess(let base, let subscripts):
+            let rewrittenBase = try await rewriteExpression(base, provenance: try provenance?.child(.operand))
+            var rewrittenSubscripts: [ArraySubscript] = []
+            for (dimension, subscriptValue) in subscripts.enumerated() {
+                switch subscriptValue {
+                case .index(let value):
+                    rewrittenSubscripts.append(.index(try await rewriteExpression(value,
+                        provenance: try provenance?.child(.argument, 2 * dimension))))
+                case .slice(let lower, let upper):
+                    let rewrittenLower = try await rewriteOptionalExpression(lower,
+                        provenance: try provenance?.child(.argument, 2 * dimension))
+                    let rewrittenUpper = try await rewriteOptionalExpression(upper,
+                        provenance: try provenance?.child(.argument, 2 * dimension + 1))
+                    rewrittenSubscripts.append(.slice(lower: rewrittenLower, upper: rewrittenUpper))
+                }
+            }
+            return .arrayAccess(rewrittenBase, subscripts: rewrittenSubscripts)
+        case .collectionOperation(let operation, let left, let right):
+            return .collectionOperation(operation,
+                left: try await rewriteExpression(left, provenance: try provenance?.child(.left)),
+                right: try await rewriteExpression(right, provenance: try provenance?.child(.right)))
         case .array(let exprs), .row(let exprs):
             var rewrittenExprs: [DatabaseKit.Expression] = []
             for (index, expr) in exprs.enumerated() { rewrittenExprs.append(try await rewriteExpression(expr, provenance: try provenance?.child(.argument, index))) }
@@ -930,7 +962,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
             for (index, arg) in call.arguments.enumerated() {
                 rewrittenArgs.append(try await rewriteExpression(arg, provenance: try provenance?.child(.argument, index)))
             }
-            return .function(FunctionCall(name: call.name, arguments: rewrittenArgs, distinct: call.distinct, schema: call.schema))
+            return .function(FunctionCall(name: call.name, arguments: rewrittenArgs, distinct: call.distinct, schema: call.schema, finalArrayIsVariadic: call.finalArrayIsVariadic))
 
         case .aggregate(let aggregate):
             return .aggregate(try await rewriteAggregate(aggregate, provenance: provenance))
@@ -1177,6 +1209,9 @@ internal struct SPARQLFunctionRewriter: Sendable {
     /// - Returns: Tuple of (typeName, sparqlQuery, optionalVariable)
     /// - Throws: `SPARQLFunctionError.invalidArguments` if format is incorrect
     private func extractArguments(_ call: FunctionCall) throws -> (typeName: String, sparqlQuery: String, variable: String?) {
+        guard !call.finalArrayIsVariadic else {
+            throw SPARQLFunctionError.invalidArguments("SPARQL() does not support SQL VARIADIC")
+        }
         guard call.arguments.count >= 2, call.arguments.count <= 3 else {
             throw SPARQLFunctionError.invalidArguments(
                 "SPARQL() requires 2-3 arguments: SPARQL(TypeName, 'query', ['?variable'])"

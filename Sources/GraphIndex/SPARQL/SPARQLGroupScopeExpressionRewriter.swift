@@ -14,20 +14,29 @@ struct SPARQLGroupScopeExpressionRewriter {
         _ expression: Expression,
         aggregateRewriter: inout SPARQLAggregateRewriter
     ) throws -> Expression {
+        switch expression {
+        case .arrayAccess, .collectionOperation:
+            throw SPARQLExpressionCompilationError.unsupportedExpression("SQL collection expression")
+        case .function(let call) where call.finalArrayIsVariadic:
+            throw SPARQLExpressionCompilationError.unsupportedExpression("SQL VARIADIC")
+        default:
+            break
+        }
         if let variable = groupedExpressions[expression] {
             return .variable(Variable(variable))
         }
 
         switch expression {
         // SQL conditionals and quantified predicates have no RDF interpretation.
+        case .arrayAccess, .collectionOperation:
+            throw SPARQLExpressionCompilationError.unsupportedExpression("SQL collection expression")
         case .currentValue:
             throw SPARQLExpressionCompilationError.unsupportedExpression("SQL current value")
         case .concatenate:
             throw SPARQLExpressionCompilationError.unsupportedExpression("SQL concatenation")
         case .greatest, .least, .truthTest, .isDistinctFrom, .quantifiedComparison:
             throw SPARQLExpressionCompilationError.unsupportedExpression("SQL conditional or quantified expression")
-        // FIXME(INCOMPLETE_IMPLEMENTATION): SPARQL compilation must reject SQL-only constructors.
-        // S07/S08 own SQL execution; RDF term semantics cannot be used as their implementation.
+        // SQL constructors have no RDF term interpretation.
         case .array, .row:
             throw SPARQLExpressionCompilationError.unsupportedExpression("SQL ARRAY/ROW constructor")
         case .literal, .parameter:
@@ -211,6 +220,9 @@ struct SPARQLGroupScopeExpressionRewriter {
         case .aggregate:
             return try aggregateRewriter.rewrite(expression)
         case .function(let call):
+            guard !call.finalArrayIsVariadic else {
+                throw SPARQLExpressionCompilationError.unsupportedExpression("SQL VARIADIC")
+            }
             return .function(
                 FunctionCall(
                     name: call.name,
@@ -218,7 +230,8 @@ struct SPARQLGroupScopeExpressionRewriter {
                         try rewrite($0, aggregateRewriter: &aggregateRewriter)
                     },
                     distinct: call.distinct,
-                    schema: call.schema
+                    schema: call.schema,
+                    finalArrayIsVariadic: call.finalArrayIsVariadic
                 )
             )
         case .caseWhen(let operand, let pairs, let elseResult):

@@ -10,6 +10,8 @@ final public output.
 - Parent: [DatabaseEngine](../DESIGN.md).
 - Child: [SQLPatternMatching](SQLPatternMatching/DESIGN.md), the bounded SQL pattern language implementation.
 - Child: [SQLTemporal](SQLTemporal/DESIGN.md), the S06 temporal evaluation design; S06 contract and completion are tracked by the workspace progress record.
+- Child: [SQLArray](SQLArray/DESIGN.md), selected array algorithms and bounded row cursors.
+- Child: [SQLJSON](SQLJSON/DESIGN.md), lexical JSON and semantic JSONB algorithms and bounded row cursors.
 - Planned S01–S10 SQL execution obligations are recorded below; implementation
   completeness remains tracked by the workspace progress record.
 
@@ -40,6 +42,8 @@ copyable and could escape without their reservation.
 | [Read](../Read/DESIGN.md) | coordinates with | Exact session work meter | Supplies the meter to builder and destination. | Budget equality is not identity. |
 | [SQLPatternMatching](SQLPatternMatching/DESIGN.md) | child | Immutable pattern programs and retained match/split results | Supplies SQL pattern algorithms without inheriting Graph XPath regex semantics. | Parent owns selected SQL types, NULL and public result adaptation. |
 | [SQLTemporal](SQLTemporal/DESIGN.md) | child | Temporal evaluation and explicit clock/zone environment | Owns T07/T08/F07 execution design. | Consumes the explicit operation-owned environment; no ambient clock/zone. |
+| [SQLArray](SQLArray/DESIGN.md) | child | Selected array evaluate/cast/compare and noncopyable row cursor | Implements the array layer over existing selected scalar policy. | Parent owns types, lazy selection and every referenced input claim. |
+| [SQLJSON](SQLJSON/DESIGN.md) | child | JSON conversion/extraction, JSONB compare/edit and noncopyable row cursor | Implements the JSON layer over the existing Kit owners. | Semantic identity is distinct from Kit representation hashing. |
 
 ## Architecture
 
@@ -699,6 +703,30 @@ measurement does not replace the separate exact row-append footprint. Tiny work 
 mandatory schema construction even for zero rows; physical cursor bounds and
 stable LIMIT 0 no-read behavior remain separate observable contracts.
 
+#### Binding-plan footprint traversal
+
+The prospective binding-plan meter traverses expressions, sources and SELECT
+statements with one operation-local LIFO work array. Configured valid query
+depth must not consume one native call frame per syntax node. This traversal
+does not change structural limits, the prospective 1024-byte allowance per
+visited node, or the existing depth-first visit order and work-unit charges.
+VALUES cells retain their existing byte-only allowance rather than becoming
+additional expression visits.
+
+The work array references the immutable input syntax; it creates no payload
+copies or shared mutable state. Its container and capacity are admitted through
+the same work meter at `bindingCandidate`, using `DatabaseRetainedArrayLayout`.
+Growth is admitted before allocation and actual capacity is reconciled before
+append. Popping an entry does not release retained capacity. One scoped
+reservation releases all traversal storage on success, overflow, cancellation
+or admission failure, before the caller reserves the final binding plan. This
+temporary storage consumes bytes, not relation-row quota.
+
+The Server `configuredStructuralLimitsReachSPARQLCompiler` behavioral test
+owns the demonstrated valid-depth regression. Focused plan-budget/release
+tests and exact ordinary/Embedded runtime cases verify the changed traversal;
+unchanged collection kernels retain their existing evidence.
+
 ### S04 frozen selected-value execution
 
 Consume [S04 SQL](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s04-frozen-numeric-and-conditional-semantics)
@@ -995,3 +1023,130 @@ reports range overflow. SQL NUMERIC results retain their rich representation.
 Explicit bare CHAR still executes its default length-one conversion when its
 input has the same typmod-free CHAR declaration. Existing temporal CASTs remain
 on the primitive evaluator path; this does not admit S06 precision conversion.
+
+### S07 selected collections and relational identity
+
+The semantic authority is [Kit S07-C01...C12](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s07-frozen-array-and-json-contract).
+The lower algorithm/resource interfaces are owned by [SQLArray](SQLArray/DESIGN.md)
+and [SQLJSON](SQLJSON/DESIGN.md); syntax and canonical emission remain
+[QueryAST](../../QueryAST/DESIGN.md). This section owns their composition, not
+a second semantic table. No new value carrier, persistence envelope, scalar
+ROW, dependency package or ambient runtime service is introduced.
+
+```text
+QueryAST / Wire expressions and declared source schema
+    -> CanonicalQueryTypeBinder: selected overload / coercions / capabilities
+        -> CanonicalBoundExpression: selected children and occurrence edges
+            -> Rows: evaluate selected children and retain producer leases
+                +-> SQLArray / SQLJSON -> admitted value + destination lease
+                +-> selected comparison -> metered child comparator
+                +-> admitted canonical identity -> metered hash/probe table
+            -> bound.normalize -> retained positional/result destination
+```
+
+#### Binding and selected execution
+
+| Owner | Required behavior |
+|---|---|
+| Binder | Select array element common types across scalar leaves, contextual empty types and registered function/operator signatures before source reads. Distinguish unknown NULL overloads from typed NULL elements. Rank is value metadata. Existing numeric/character/temporal selection remains authoritative. |
+| Binder capability | Reject equality/order on JSON, including arrays of JSON, before reading even an empty relation. Apply capability checks to comparisons, DISTINCT, GROUP, set equality, aggregate DISTINCT/min/max and ORDER BY as appropriate. JSON extraction/conversion does not require equality. |
+| BoundExpression | Rebuild ARRAY, access groups, collection operators and function calls from selected children. Preserve omitted bounds, finalArrayIsVariadic and source occurrences. Never return the original uncoerced ARRAY tree as a substitute. |
+| Rows | Dispatch selected ARRAY/access/F08 to SQLArray and JSON/F09/F10 to SQLJSON. Existing subtract/concatenate overloads dispatch by bound declarations. Compute one QueryValueLimits from operation structural limits and budget, and pass the same temporal environment/meter. |
+| Scalar conversion | Selected rich casts delegate to the owning child; scalar cell casts reuse the current scalar caster. Rich text output delegates to the owning child rather than FieldValue.description. Pure unknown constant failures remain pre-read; context-dependent temporal conversion retains its existing runtime boundary. |
+| Result placement | Combine every referenced child lease with the optional new destination lease before normalization and publication. A nil destination lease never authorizes releasing aliased input. Preserve innermost occurrence wrapping and lazy branch selection. |
+| Language visitors | Walk every actual child under Kit's occurrence layout; preserve explicit variadic metadata during rebuilds. SQL-only forms reject through existing SPARQL/raw-expression capability boundaries instead of becoming opaque terminals or plausible success. |
+
+VARIADIC expansion belongs to the selected registered signature. The final array
+is not expanded by the parser, serializer or generic function materializer.
+Fixed-plus-path arguments and homogeneous variadic builders retain selected
+types, SQL NULL/empty distinctions and limits. Unknown names or unsupported
+variadic signatures fail before reads. Existing zero-argument ordinary builders
+remain distinct. Explicit scalar ROW and ARRAY(subquery) relation construction
+are mandatory S08 work; general cursor invocation with FROM/LATERAL/ordinality
+is mandatory S10 work. S07 implements and tests the bounded lower cursors, and
+rejects these unimplemented public composition paths before reads with the
+required incomplete-implementation markers. These gates preserve the fixed
+inventory rather than remove features from it.
+
+#### Metered SQL identity
+
+CanonicalSQLValueIdentity adds an internal prepared collection case for selected
+array/JSONB values. Preparation measures and writes an unambiguous flat byte key
+under the operation meter, admits the final ByteString before allocation and
+retains its reservation plus the original typed value for ordering. Lengths,
+kind tags and boundaries are explicit. Numeric keys omit displayScale and use
+canonical ExactDecimal value; character and temporal cells use the existing
+selected scalar identity, including CHAR padding and interval/TIMETZ identity.
+Array keys include dimensions/bounds and cell NULL markers. JSONB keys preserve
+canonical member order, scalar kinds and semantic numbers. JSON is never given
+a fabricated equality key. Primitive/RDF identity and CanonicalRowFingerprint
+remain unchanged.
+
+The cached digest selects a bucket and does not establish equality. Rich keys
+must not enter standard Set/Dictionary callbacks that perform unmetered token
+scans. A task-local CanonicalSQLIdentitySet uses fixed-size digest lookup plus
+explicit throwing, metered candidate equality. Its row-key and single-key
+insert/contains paths retain complete key owners, reserve table growth before
+allocation, and charge collision scans before exact comparison. GROUP's
+existing open-addressing probe likewise becomes throwing/metered. Duplicate,
+failure, cancellation and table destruction release claims at their actual
+last-owner boundary. Forced digest collisions must still distinguish values.
+
+Token byte ordering is not SQL ordering. GROUP tie ordering passes the explicit
+meter/environment and uses the prepared original declarations with the same
+SQLArray/SQLJSON comparator as ORDER BY. Stored-key pushdown and the existing
+primitive hash-JOIN optimization exclude selected arrays/JSONB until their
+key equivalence is proved; the normal selected nested JOIN remains executable.
+S15 owns index equivalence. This selection does not reinterpret primitive
+arrays, RDF values or physical stored key bytes.
+
+#### Typed collection failures
+
+QueryExecution owns one public SQLCollectionError, carried by the existing
+DatabaseExpressionEvaluationError.collection case. Child kernels do not define
+competing error enums. Exact cases are:
+
+| Cases | Meaning |
+|---|---|
+| invalidArrayShape; arraySubscriptOutOfRange | Incompatible shape/rank or checked SQL subscript arithmetic failure. Ordinary missing/out-of-range reads remain NULL/empty under Kit semantics. |
+| invalidArrayInput(offset: UInt64, reason: String) | Kit malformedArrayInput mapped with the original UTF-8 offset. |
+| invalidArrayArgument(function: String); nullArraySubscript(function: String) | Selected rank/argument failure and the specified reached NULL start argument. |
+| jsonArrayRootRequired(function: String); jsonObjectRootRequired(function: String); jsonContainerRootRequired(operation: String) | A function or mutation requires that root shape. Extraction's normal missing/wrong-shape NULL is separate. |
+| oddJSONObjectArgumentCount(actual: Int); nullJSONObjectKey(argument: Int); invalidJSONObjectKey(argument: Int) | Object-builder arity and selected key constraints. |
+| multidimensionalJSONMutationPath(rank: Int); nullJSONMutationPathElement(position: Int); invalidJSONMutationPathIndex(position: Int, text: String); existingJSONInsertKey(key: String) | Mutation-only path failures, raised only when the corresponding path step is reached. |
+
+Argument/path positions in these causes are one-based SQL positions; lexical
+UTF-8 offsets are zero-based. They are separate from outer source occurrences.
+
+Other intrinsic QueryValueError, scalar, numeric, work-limit, cancellation,
+deadline and temporal failures preserve their original typed cause. Internal
+signature/ROW arity mismatches retain existing typeMismatch. Server maps the
+collection wrapper to a nonretryable invalid-request error; SQLSTATE remains
+S16. Neither malformed input nor failed admission becomes NULL, empty rows or
+an unchanged JSONB result.
+
+The existing expression failure algebra also carries queryValue(QueryValueError).
+Binder and Rows attach occurrences through this case when an intrinsic value
+failure crosses their boundary; direct intrinsic/child callers retain the
+original QueryValueError. Work/cancellation failures are not value failures.
+Server maps the intrinsic wrapper to INVALID_QUERY_VALUE, invalidRequest and
+never retry, preserving the typed cause description through source wrappers.
+
+#### S07 completion evidence and change impact
+
+| Case owner | Decisive proof |
+|---|---|
+| S07-B01...B04 / Binder and Bound | Actual public parsing/binding, typed empty/nested ARRAY, every selected overload and VARIADIC mode, native-array access/VARIADIC canonical coercion with nullable source slots preserved, empty-relation capability failures and source occurrence. |
+| S07-C01...C12 / children | Child designs' native and separately identified ordinary/Embedded runtime success, malformed/NULL/boundary/cancel/deadline/lifecycle evidence. |
+| S07-I01...I04 / identity | Numeric display variants, CHAR/temporal array cells, dimensions/NULLs, JSONB semantic keys, forced collision, DISTINCT/GROUP/set/JOIN results and metered sorting. |
+| S07-R01...R03 / result composition | Exact/one-past row/byte input/output/scratch budgets, retained full external owners, independent rows after cursor close, failure cleanup and a successful subsequent operation. |
+| S07-P01...P03 / public consumers | SQL executed results and exact metadata, persisted native-array access/VARIADIC and rich-value roundtrip, canonical text roundtrip in the same environment and typed Server failures. |
+
+Source owners are disjoint: Kit values/IR/Wire; QueryAST syntax/emission;
+SQLArray; SQLJSON; Binder/Bound/scalar dispatch; selected identity helpers;
+other language/security/Fusion visitors and public failure relay; Rows/public
+integration. Each owner verifies its changed target and behavior after the
+coherent source batch. One comprehensive review and finding-limited recheck
+precede the single affected/full sprint lanes and local commits. Existing
+user-deferred URL, FoundationDB and Graph-enabled portable integration remain
+S18; their absence is never reported as S07 coverage.

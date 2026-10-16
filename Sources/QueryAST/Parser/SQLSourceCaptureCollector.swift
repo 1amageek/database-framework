@@ -101,6 +101,20 @@ struct SQLSourceCaptureCollector {
              .lessThan, .lessThanOrEqual, .greaterThan, .greaterThanOrEqual, .and, .or, .nullIf, .isDistinctFrom, .concatenate:
             try child(.operand, index: 0, into: &children, ledger: &ledger)
             try child(.operand, index: 1, into: &children, ledger: &ledger)
+        case .collectionOperation:
+            try child(.left, into: &children, ledger: &ledger)
+            try child(.right, into: &children, ledger: &ledger)
+        case .arrayAccess(_, let subscripts):
+            try child(.operand, into: &children, ledger: &ledger)
+            for (dimension, subscriptValue) in subscripts.enumerated() {
+                switch subscriptValue {
+                case .index:
+                    try child(.argument, index: 2 * dimension, into: &children, ledger: &ledger)
+                case .slice(let lower, let upper):
+                    if lower != nil { try child(.argument, index: 2 * dimension, into: &children, ledger: &ledger) }
+                    if upper != nil { try child(.argument, index: 2 * dimension + 1, into: &children, ledger: &ledger) }
+                }
+            }
         case .negate, .not, .isNull, .isNotNull, .truthTest, .regex, .isTriple, .subject, .predicate, .object:
             try child(.operand, index: 0, into: &children, ledger: &ledger)
         case .patternMatch(_, _, let escape, _):

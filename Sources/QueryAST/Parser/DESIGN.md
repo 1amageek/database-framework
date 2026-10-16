@@ -319,3 +319,116 @@ S06-SYN04 covers all interval qualifiers, precision, malformed syntax and NULL;
 S06-SYN05 covers MAKE_INTERVAL named/default argument order and source positions;
 S06-SYN06 covers lexical temporal casts and canonical repeated round trips.
 These are completion obligations, not runtime evidence.
+
+### S07 collection grammar and occurrence boundaries
+
+Consume [Query's collection carriage](../../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md#s07-collection-expression-carriage),
+[Wire's tags 53/54](../../../../database-kit/Sources/DatabaseWire/DESIGN.md#s07-collection-expression-carriage)
+and [SQL S07-C01...C12](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s07-frozen-array-and-json-contract).
+These links own value and execution semantics; this section owns text grammar,
+normalization and provenance. No QueryAST dependency on DatabaseEngine is added.
+
+```text
+primary -> postfix casts / contiguous subscript groups -> unary / AT TIME ZONE
+    -> multiplicative -> additive -> generic operators (left fold)
+    -> comparisons / predicates -> NOT -> AND -> OR
+```
+
+The diagram retains the detailed S06 ordering of unary signs, casts and AT TIME
+ZONE. Subscripts and postfix casts are consumed in source order before outer
+unary signs. The generic level extends the current concatenate parser, below
+arithmetic and above comparisons. All operators at that level associate left,
+including mixed collection operators and concatenation. Existing symbolic ERE
+operators use that same generic level; LIKE/ILIKE/SIMILAR retain their predicate
+grammar and ESCAPE handling. JSONB `-` retains ordinary additive precedence,
+because it reuses subtract; type binding selects its overload.
+
+| Token | Expression carriage |
+|---|---|
+| @>, <@, && | collectionOperation contains, containedBy, overlaps |
+| ->, ->>, #>, #>> | collectionOperation jsonField, jsonFieldText, jsonPath, jsonPathText |
+| ?, ?\u007c, ?&, #- | collectionOperation jsonHasKey, jsonHasAnyKey, jsonHasAllKeys, jsonDeletePath |
+| \u007c\u007c | existing concatenate |
+| - | existing subtract at additive precedence |
+
+Lexing selects the longest admitted token before a shorter prefix: ->> before
+-> or -, #>> before #>, and ?\u007c/?& before ?. Preserve existing !~*, comparison,
+cast ::, named-call =>/:= and SQL/PGQ arrow <- tokens. The token -> remains a
+complete anonymous graph arrow in graph grammar; expression grammar gives it
+its collection meaning. Prefix ? remains an anonymous positional parameter;
+infix ? is the collection operator. Existing anonymous/$n mixing rejection and
+numbering remain unchanged. No operator spelling is inferred from whitespace
+or operand types, and missing operands fail at their actual token positions.
+
+One or more directly consecutive [subscript] suffixes construct one arrayAccess
+with one through six entries. Each entry is an index expression or a slice
+with independently optional lower and upper expressions. A seventh entry fails
+structural admission. Parentheses terminate a group: an access on a
+parenthesized access constructs a nested base and never merges their entries.
+Postfix casts also separate groups. The parser must retain this boundary during
+construction even though parentheses do not themselves create an IR node.
+
+Colon lexing stays uniform. At the immediate subscript level a colon is the
+slice separator and takes precedence over product named-parameter syntax:
+`a[:p]` has omitted lower bound and upper column p. A named operand must be
+explicitly grouped, as in `a[(:p)]` or `a[(:lo):(:hi)]`; ordinary prefix named
+parameters outside that immediate level remain supported. Grouped expressions
+use ordinary expression grammar. Preserve exact existing named identity,
+including keyword/quoted names, and UTF-8 offsets for old unambiguous syntax.
+Neither omitted bounds nor explicit NULL bounds normalize into the other.
+
+Source capture uses the exact Query operand/argument(2*d)/argument(2*d+1) and
+left/right edges. Omitted bounds create no capture. A nested access retains its
+base occurrence rather than flattening or matching by semantic equality.
+Operator, group and expression ranges use original UTF-8 token boundaries;
+normalizing a constant uses the existing explicit replacement capture path.
+
+ARRAY[...] remains an ordered scalar constructor, including nested bracket
+constructors; common-type selection and rectangularity belong to binding and
+execution. ARRAY(SELECT...) requires S08 relation/array-subquery carriage and
+binding and fails explicitly until that gate; a scalar constructor does not
+claim that surface. ROW and public composite conversion remain required S08;
+general SRF/FROM/LATERAL composition remains required S10 under C06/C11.
+
+#### Explicit variadic argument carriage
+
+The inspected FunctionCall originally represented only schema, name, ordered
+arguments and distinct. That form cannot distinguish an array argument from
+PostgreSQL explicit VARIADIC array expansion, including a NULL final array.
+The [S07 Query contract](../../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md#s07-explicit-variadic-function-carriage)
+adds finalArrayIsVariadic: Bool, default false. Generic
+call parsing admits VARIADIC only immediately before the final argument, which
+must be present; no later argument or repeated marker is accepted. Preserve
+schema/name/DISTINCT and every argument expression. The marker is metadata,
+not a synthetic expression, name rewrite or eager array expansion. It retains
+the final child's ordinary argument index and captures that child's actual
+range; the call range includes VARIADIC. Existing false-mode calls, including
+zero-argument builders, remain unchanged. Structural validation rejects true
+mode with no final argument; binding validates admitted catalog identity,
+argument shape/type and applicable DISTINCT legality.
+
+The [Wire production](../../../../database-kit/Sources/DatabaseWire/DESIGN.md#s07-explicit-variadic-function-layout)
+owns tag55 for true mode and unchanged tags28/43 for false. Query identity and
+all argument-preserving rebuilds must preserve the flag. This carriage is
+required for the registered S07 JSON builder and
+path function forms; it does not open unrestricted catalog resolution. Unknown
+or unsupported function binding retains its explicit typed failure.
+SPARQL adaptation rejects unsupported SQL-only collection/explicit-variadic
+forms through its existing typed language boundary.
+
+Builder's [S07 constant capability boundary](../Builder/DESIGN.md#s07-collection-emission-and-intrinsic-constant-capability)
+selects intrinsic normalization or lexical CAST before conversion. Parser uses
+the same adapter and preserves runtime-owned CAST edges; malformed supported
+intrinsic input remains a positioned failure, never a deferred success.
+
+| Evidence ID | Required behavior |
+|---|---|
+| S07-SYN01 | Every operator, longest-prefix collision, arithmetic/generic/comparison mixing and left association; existing graph arrows, ERE and anonymous parameters retain their grammar. |
+| S07-SYN02 | Index/slice/mixed/omitted/NULL bounds, nested groups, cast-separated groups and six/seven dimensions; repeated serialization preserves distinct groups. |
+| S07-SYN03 | Named subscript grouping and slice-colon priority; old parameter identities, parser reuse and multibyte source ranges; every present child has the canonical occurrence edge exactly once. |
+| S07-SYN04 | Shared array-input grammar, unchanged intrinsic constants, runtime-owned CAST distinction and typed malformed/limit failures; exact/one-past cumulative admission. |
+| S07-SYN06 | Explicit VARIADIC versus ordinary final array, zero ordinary arguments, NULL/empty variadic arrays and fixed-plus-path arguments; final-only grammar, flag-preserving repeated round trips/substitution and exact child source ranges. |
+
+These are planned behavioral obligations in QueryASTTests and public scalar SQL
+tests, not evidence of execution from successful parsing. Kit/Wire changes
+require revalidation of these consumers; S08/S10 own their explicit public gates.

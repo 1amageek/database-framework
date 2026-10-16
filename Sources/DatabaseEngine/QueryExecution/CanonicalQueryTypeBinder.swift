@@ -87,6 +87,11 @@ struct CanonicalQueryTypeBinder {
         let groupBy = try (query.groupBy ?? []).enumerated().map { try childBinder(.groupBy, $0.offset).bind($0.element) }
         let having = try query.having.map { try childBinder(.having).boolean($0) }
         let orderBy = try (query.orderBy ?? []).enumerated().map { try childBinder(.orderBy, $0.offset).bind($0.element.expression) }
+        for child in groupBy { try requireSQLComparison(child.type, operation: "GROUP BY") }
+        for child in orderBy { try requireSQLComparison(child.type, operation: "ORDER BY") }
+        let distinct: Bool
+        if case .distinctItems = query.projection { distinct = true } else { distinct = query.distinct }
+        if distinct { for column in output { try requireSQLComparison(column.type, operation: "DISTINCT") } }
         if ownsParameterState { try parameterState.finalize() }
         return CanonicalBoundSelect(columns: output, projection: projection, filter: filter,
                                     groupBy: groupBy, having: having, orderBy: orderBy)
@@ -104,6 +109,11 @@ struct CanonicalQueryTypeBinder {
             let result = try scoped.bindExpression(expression, contextualType: contextualType, parameterContext: parameterContext)
             if ownsParameterState && !isNested { try parameterState.finalize() }
             return result
+        }
+        catch let cause as QueryValueError {
+            let failure = DatabaseExpressionEvaluationError.queryValue(cause)
+            guard occurrences != nil else { throw failure }
+            throw CanonicalSQLBindingFailure(cause: .expression(failure), occurrence: scoped.currentOccurrence, root: root)
         }
         catch let cause as DatabaseExpressionEvaluationError {
             guard occurrences != nil else { throw cause }
@@ -171,13 +181,25 @@ struct CanonicalQueryTypeBinder {
         case .quantifiedComparison(let lhs, _, _, let source):
             return try bindQuantified(lhs, source: source, expression: expression)
 
-        // FIXME(INCOMPLETE_IMPLEMENTATION): Canonical SQL binding reaches constructor expressions here.
-        // S07 ARRAY typing and S08 ROW typing must be implemented before execution can succeed.
-        case .array, .row:
+        case .array(let elements):
+            return try bindArrayConstructor(elements, expression: expression, contextualType: contextualType)
+        case .arrayAccess(let base, let subscripts):
+            return try bindArrayAccess(base, subscripts: subscripts, expression: expression)
+        case .collectionOperation(let operation, let left, let right):
+            return try bindCollectionOperation(operation, left: left, right: right, expression: expression)
+        // FIXME(INCOMPLETE_IMPLEMENTATION): Selected SQL reaches scalar ROW here.
+        // S08 must supply a typed composite carrier and public row execution before success.
+        case .row:
             throw DatabaseExpressionEvaluationError.unsupportedExpression("SQL ARRAY/ROW constructor")
         case .literal(let literal):
             let type = try literalType(literal, contextualType: contextualType)
             if case .sqlUnknownString(let text) = literal {
+                if Self.isCollection(type), case .sql(let target) = type {
+                    try validateCollectionText(text, to: type)
+                    let input = node(.literal(.queryValue(.primitive(.string(text)), type: .sql(.text))), .sql(.text), false)
+                    return CanonicalBoundExpression(expression: .cast(input.expression, targetType: target), type: type,
+                        isNullable: false, children: [input], occurrence: currentOccurrence, castContext: .implicit)
+                }
                 if let target = Self.temporalType(type) {
                     let input = node(.literal(.queryValue(.primitive(.string(text)), type: .sql(.text))), .sql(.text), false)
                     return CanonicalBoundExpression(expression: .cast(input.expression, targetType: target), type: type,
@@ -205,6 +227,7 @@ struct CanonicalQueryTypeBinder {
         case .add(let lhs, let rhs), .subtract(let lhs, let rhs),
              .multiply(let lhs, let rhs), .divide(let lhs, let rhs),
              .modulo(let lhs, let rhs):
+            if case .subtract = expression, let selected = try bindCollectionBinary(expression, left: lhs, right: rhs) { return selected }
             var known: [CanonicalBoundExpression?] = []
             if let temporal = try bindTemporalArithmetic(expression, operands: [lhs, rhs], inputs: &known) { return temporal }
             let inputs = try bindInputs([lhs, rhs], defaultType: .sql(.bigint), known: known)
@@ -252,6 +275,7 @@ struct CanonicalQueryTypeBinder {
             if let escape { children.append(try selectedText(escape, binder: childBinder(.argument, 1))) }
             return node(expression, .sql(.boolean), children.contains { $0.isNullable }, children)
         case .concatenate(let lhs, let rhs):
+            if let selected = try bindCollectionBinary(expression, left: lhs, right: rhs) { return selected }
             let inputs = try bindInputs([lhs, rhs])
             if inputs.allSatisfy({ Self.isBytes($0.type) }) {
                 return node(expression, .sql(.blob), inputs.contains { $0.isNullable },
@@ -318,12 +342,10 @@ struct CanonicalQueryTypeBinder {
             let addresses = [childBinder(.caseElse).currentOccurrence] + pairs.indices.map { childBinder(.caseResult, $0).currentOccurrence }
             let ordered = try bindCommon(results, defaultType: contextualType ?? .sql(.text), addresses: addresses)
             let branches = Array(ordered.dropFirst()) + [ordered[0]]
-            try requirePrimitiveOperation(branches, operation: "CASE")
             return node(expression, ordered[0].type, branches.contains { $0.isNullable }, conditions + branches)
         case .coalesce(let expressions):
             guard !expressions.isEmpty else { throw mismatch("COALESCE") }
             let children = try bindCommon(expressions, defaultType: contextualType ?? .sql(.text), field: .argument)
-            try requirePrimitiveOperation(children, operation: "COALESCE")
             return node(expression, try commonType(children.map { $0.type }), children.allSatisfy { $0.isNullable }, children)
         case .nullIf(let lhs, let rhs):
             let children = try bindComparison([lhs, rhs])
@@ -334,16 +356,17 @@ struct CanonicalQueryTypeBinder {
             catch let cause as DatabaseExpressionEvaluationError { throw located(cause, at: childBinder(.castType).currentOccurrence) }
             let inputType: QueryColumnType
             if case .decimal = target { inputType = .sql(.decimal(precision: nil, scale: nil)) }
-            else if Self.isText(type) || Self.temporalType(type) != nil { inputType = .sql(.text) }
+            else if Self.arrayElement(type) != nil, case .array = operand { inputType = type }
+            else if Self.isText(type) || Self.temporalType(type) != nil || Self.isCollection(type) { inputType = .sql(.text) }
             else { inputType = type }
             let child = try childBinder(.operand, 0).bind(operand, contextualType: inputType)
             do { try validateCast(from: child.type, to: type) }
             catch let cause as DatabaseExpressionEvaluationError { throw located(cause, at: childBinder(.castType).currentOccurrence) }
+            if Self.isCollection(type), let text = Self.constantText(child.expression) { try validateCollectionText(text, to: type) }
             if Self.isStaticallyNull(child.expression) {
                 return node(.literal(.queryValue(.primitive(.null), type: type)), type, true)
             }
             if child.type == type, type != .sql(.char(length: nil)), Self.temporalType(type) == nil { return child }
-            try requirePrimitiveOperation([child], operation: "CAST")
             return node(expression, type, child.isNullable, [child])
         case .function(let function):
             return try bindFunction(function, expression: expression)
@@ -362,11 +385,341 @@ struct CanonicalQueryTypeBinder {
             let column = try scalarColumn(query, binding: binding)
             let child = try childBinder(.operand, 0).bind(operand, contextualType: column.type)
             _ = try commonType([child.type, column.type])
-            try requirePrimitiveOperation([child], operation: "IN subquery")
+            try requireSQLComparison(column.type, operation: "IN subquery")
+            try requireComparable([child], operation: "IN subquery")
             return node(expression, .sql(.boolean), true, [child], subqueryBinding: binding)
         case .variable, .bound, .regex, .triple, .isTriple, .subject, .predicate, .object:
             throw DatabaseExpressionEvaluationError.unsupportedExpression("SQL binding does not admit this expression")
         }
+    }
+
+    private static func constantText(_ expression: Expression) -> String? {
+        switch expression {
+        case .literal(.string(let text)), .literal(.sqlUnknownString(let text)),
+             .literal(.queryValue(.primitive(.string(let text)), _)): return text
+        default: return nil
+        }
+    }
+
+    private func validateCollectionText(_ text: String, to type: QueryColumnType) throws {
+        let structural = QueryStructuralLimits.default
+        let limits = workMeter.map(CanonicalSQLScalarCast.collectionLimits) ?? QueryValueLimits(
+            maximumRetainedBytes: structural.maximumRetainedBytes, maximumTotalNodes: structural.maximumTotalNodes,
+            maximumNestingDepth: structural.maximumNestingDepth, maximumCollectionElements: structural.maximumCollectionElements)
+        if Self.isJSON(type) {
+            if let workMeter {
+                let result = try CanonicalSQLJSONEvaluator.cast(.primitive(.string(text)), from: .sql(.text), to: type,
+                    context: .explicit, temporalEnvironment: nil, workMeter: workMeter, limits: limits)
+                withExtendedLifetime(result) {}
+            } else {
+                let json = try QueryJSONValue(bytes: ByteString(utf8: text), limits: limits)
+                if type == .sql(.jsonb) { _ = try QueryJSONBValue(json: json, limits: limits) }
+            }
+            return
+        }
+        guard let element = Self.arrayElement(type) else { return }
+        func validate(_ input: borrowing QueryArrayInput) throws {
+            for index in 0..<input.count {
+                // The public requested-cell API can materialize at most the complete input.
+                let claim = try workMeter?.reserveIntermediate(bytes: UInt64(text.utf8.count), at: .bindingCandidate)
+                defer { claim?.release() }
+                guard let value = try input.elementText(at: index) else { continue }
+                if Self.temporalType(element) != nil { continue }
+                if Self.isCollection(element) { try validateCollectionText(value, to: element) }
+                else { _ = try unknownString(value, to: element) }
+            }
+        }
+        do {
+            if let workMeter {
+                try SQLArrayInputWorkspace.withInput(sqlLexicalForm: text, limits: limits, workMeter: workMeter, validate)
+            } else { try validate(QueryArrayInput(sqlLexicalForm: text, limits: limits)) }
+        } catch QueryValueError.malformedArrayInput(let offset, let reason) {
+            throw DatabaseExpressionEvaluationError.collection(.invalidArrayInput(offset: offset, reason: reason))
+        }
+    }
+
+    static func arrayElement(_ type: QueryColumnType) -> QueryColumnType? {
+        switch type {
+        case .sql(.array(let element)): return .sql(element)
+        case .primitive(let kind, true):
+            guard let scalar = sqlScalar(.primitive(kind)) else { return nil }
+            return .sql(scalar)
+        default: return nil
+        }
+    }
+
+    static func isJSON(_ type: QueryColumnType) -> Bool { type == .sql(.json) || type == .sql(.jsonb) }
+    static func isCollection(_ type: QueryColumnType) -> Bool { arrayElement(type) != nil || isJSON(type) }
+
+    private func sqlElement(_ type: QueryColumnType) throws -> DataType {
+        if case .sql(let type) = type { return type }
+        guard let scalar = Self.sqlScalar(type) else { throw mismatch("SQL array element type") }
+        return scalar
+    }
+
+    private func bindArrayConstructor(_ elements: [Expression], expression: Expression,
+        contextualType: QueryColumnType?) throws -> CanonicalBoundExpression {
+        var known: [[Int]: CanonicalBoundExpression] = [:]
+        var leaves: [QueryColumnType] = []
+        func scan(_ items: [Expression], scope: Self, path: [Int]) throws {
+            for (index, item) in items.enumerated() {
+                let child = scope.childBinder(.argument, index), address = path + [index]
+                if case .array(let nested) = item { try scan(nested, scope: child, path: address) }
+                else if try !child.isContextualUnknown(item) {
+                    let bound = try child.bind(item)
+                    known[address] = bound
+                    leaves.append(Self.arrayElement(bound.type) ?? bound.type)
+                }
+            }
+        }
+        try scan(elements, scope: self, path: [])
+        let contextualElement = contextualType.flatMap(Self.arrayElement)
+        guard !elements.isEmpty || contextualElement != nil else { throw mismatch("empty ARRAY requires an element declaration") }
+        let common = try leaves.isEmpty ? (contextualElement ?? .sql(.text)) : commonType(leaves)
+        let element = try sqlElement(common), scalar = QueryColumnType.sql(element), array = QueryColumnType.sql(.array(element))
+        func build(_ items: [Expression], scope: Self, path: [Int], expression: Expression) throws -> CanonicalBoundExpression {
+            let nested = items.enumerated().contains { index, item in
+                if case .array = item { return true }
+                return known[path + [index]].flatMap { Self.arrayElement($0.type) } != nil
+            }
+            let children = try items.enumerated().map { index, item in
+                let child = scope.childBinder(.argument, index), address = path + [index]
+                if case .array(let values) = item { return try build(values, scope: child, path: address, expression: item) }
+                let target = nested ? array : scalar
+                let selected = try known[address] ?? child.bind(item, contextualType: target)
+                return try scope.coerce(selected, to: target)
+            }
+            return scope.node(expression, array, false, children)
+        }
+        return try build(elements, scope: self, path: [], expression: expression)
+    }
+
+    private func bindArrayAccess(_ base: Expression, subscripts: [ArraySubscript],
+        expression: Expression) throws -> CanonicalBoundExpression {
+        let boundArray = try childBinder(.operand).bind(base)
+        guard let element = Self.arrayElement(boundArray.type), !subscripts.isEmpty else { throw mismatch("array access") }
+        let array = try coerce(boundArray, to: .sql(.array(try sqlElement(element))))
+        var children = [array], slicing = false
+        func append(_ value: Expression, address: Int) throws {
+            let child = try childBinder(.argument, address).bind(value, contextualType: .sql(.integer))
+            children.append(try coerce(child, to: .sql(.integer)))
+        }
+        for (index, dimension) in subscripts.enumerated() {
+            switch dimension {
+            case .index(let value): try append(value, address: 2 * index)
+            case .slice(let lower, let upper):
+                slicing = true
+                if let lower { try append(lower, address: 2 * index) }
+                if let upper { try append(upper, address: 2 * index + 1) }
+            }
+        }
+        return node(expression, slicing ? .sql(.array(try sqlElement(element))) : element, true, children)
+    }
+
+    private func collectionArguments(_ arguments: [Expression], targets: [QueryColumnType]) throws -> [CanonicalBoundExpression] {
+        guard arguments.count == targets.count else { throw mismatch("collection arity") }
+        return try arguments.indices.map { index in
+            let child = try childBinder(.argument, index).bind(arguments[index], contextualType: targets[index])
+            return try coerce(child, to: targets[index])
+        }
+    }
+
+    private func polymorphicArrayArguments(_ arguments: [Expression], arraySlots: Set<Int>,
+        elementSlots: Set<Int>, textSlots: Set<Int> = []) throws -> (children: [CanonicalBoundExpression], element: DataType) {
+        var known: [Int: CanonicalBoundExpression] = [:], types: [QueryColumnType] = []
+        for index in arraySlots.union(elementSlots).sorted() {
+            let value = arguments[index]
+            if case .array(let elements) = value, elements.isEmpty { continue }
+            if try isContextualUnknown(value) { continue }
+            let child = try childBinder(.argument, index).bind(value)
+            known[index] = child
+            if arraySlots.contains(index) {
+                guard let element = Self.arrayElement(child.type) else { throw mismatch("array argument") }
+                types.append(element)
+            } else { types.append(child.type) }
+        }
+        let element = try sqlElement(commonType(types)), scalar = QueryColumnType.sql(element), array = QueryColumnType.sql(.array(element))
+        let children = try arguments.indices.map { index in
+            let target: QueryColumnType
+            if arraySlots.contains(index) { target = array }
+            else if elementSlots.contains(index) { target = scalar }
+            else if textSlots.contains(index) { target = .sql(.text) }
+            else { target = .sql(.integer) }
+            let child = try known[index] ?? childBinder(.argument, index).bind(arguments[index], contextualType: target)
+            return try coerce(child, to: target)
+        }
+        return (children, element)
+    }
+
+    private func bindCollectionBinary(_ expression: Expression, left: Expression, right: Expression) throws -> CanonicalBoundExpression? {
+        func emptyArray(_ expression: Expression) -> Bool { if case .array(let values) = expression { return values.isEmpty }; return false }
+        let lhs = try isContextualUnknown(left) || emptyArray(left) ? nil : childBinder(.operand, 0).bind(left)
+        let rhs = try isContextualUnknown(right) || emptyArray(right) ? nil : childBinder(.operand, 1).bind(right)
+        let jsonConcatenation: Bool
+        if case .concatenate = expression { jsonConcatenation = lhs?.type == .sql(.jsonb) || rhs?.type == .sql(.jsonb) }
+        else { jsonConcatenation = false }
+        if lhs?.type == .sql(.jsonb) || jsonConcatenation {
+            let target: QueryColumnType
+            if case .concatenate = expression { target = .sql(.jsonb) }
+            else {
+                let signatures: [[DataType]] = [[.text], [.integer], [.array(.text)]]
+                target = .sql(try selectFunction(signatures, inputs: [rhs], name: "JSONB deletion")[0])
+            }
+            let children = try [coerce(lhs ?? childBinder(.operand, 0).bind(left, contextualType: .sql(.jsonb)), to: .sql(.jsonb)), coerce(rhs ?? childBinder(.operand, 1).bind(right, contextualType: target), to: target)]
+            return node(expression, .sql(.jsonb), children.contains { $0.isNullable }, children)
+        }
+        guard case .concatenate = expression else { return nil }
+        guard lhs.map({ Self.arrayElement($0.type) != nil }) == true || rhs.map({ Self.arrayElement($0.type) != nil }) == true || emptyArray(left) || emptyArray(right) else { return nil }
+        guard lhs != nil || rhs != nil else { throw mismatch("empty ARRAY requires an element declaration") }
+        let leftArray = lhs.map { Self.arrayElement($0.type) != nil } ?? true
+        let rightArray = rhs.map { Self.arrayElement($0.type) != nil } ?? true
+        let types = [lhs, rhs].compactMap { $0 }.map { Self.arrayElement($0.type) ?? $0.type }
+        let element = try sqlElement(commonType(types)), array = QueryColumnType.sql(.array(element))
+        let targets: [QueryColumnType] = [leftArray ? array : .sql(element), rightArray ? array : .sql(element)]
+        let children = try [lhs, rhs].enumerated().map { index, known in
+            try coerce(known ?? childBinder(.operand, index).bind(index == 0 ? left : right, contextualType: targets[index]), to: targets[index])
+        }
+        return node(expression, array, leftArray && rightArray && children.allSatisfy { $0.isNullable }, children)
+    }
+
+    private func bindCollectionOperation(_ operation: CollectionOperator, left: Expression,
+        right: Expression, expression: Expression) throws -> CanonicalBoundExpression {
+        let lhs = try isContextualUnknown(left) ? nil : childBinder(.left).bind(left)
+        let rhs = try isContextualUnknown(right) ? nil : childBinder(.right).bind(right)
+        let targets: [QueryColumnType], result: QueryColumnType
+        switch operation {
+        case .contains, .containedBy, .overlaps:
+            if operation != .overlaps, lhs?.type == .sql(.jsonb) || rhs?.type == .sql(.jsonb) {
+                targets = [.sql(.jsonb), .sql(.jsonb)]
+            } else {
+                let known = [lhs, rhs].compactMap { $0 }
+                guard !known.isEmpty, known.allSatisfy({ Self.arrayElement($0.type) != nil }) else { throw mismatch("array collection predicate") }
+                let element = try sqlElement(commonType(known.compactMap { Self.arrayElement($0.type) }))
+                try requireSQLComparison(.sql(element), operation: "array collection predicate")
+                targets = [.sql(.array(element)), .sql(.array(element))]
+            }
+            result = .sql(.boolean)
+        case .jsonField, .jsonFieldText, .jsonPath, .jsonPathText:
+            guard let json = lhs?.type, Self.isJSON(json) else { throw mismatch("JSON extraction source") }
+            let field: QueryColumnType
+            if operation == .jsonField || operation == .jsonFieldText {
+                field = .sql(try selectFunction([[.text], [.integer]], inputs: [rhs], name: "JSON field")[0])
+            } else { field = .sql(.array(.text)) }
+            targets = [json, field]
+            result = operation == .jsonFieldText || operation == .jsonPathText ? .sql(.text) : json
+        case .jsonHasKey: targets = [.sql(.jsonb), .sql(.text)]; result = .sql(.boolean)
+        case .jsonHasAnyKey, .jsonHasAllKeys: targets = [.sql(.jsonb), .sql(.array(.text))]; result = .sql(.boolean)
+        case .jsonDeletePath: targets = [.sql(.jsonb), .sql(.array(.text))]; result = .sql(.jsonb)
+        }
+        let children = try [lhs, rhs].enumerated().map { index, known in
+            try coerce(known ?? childBinder(index == 0 ? .left : .right).bind(index == 0 ? left : right, contextualType: targets[index]), to: targets[index])
+        }
+        return node(expression, result, true, children)
+    }
+
+    private func bindCollectionFunction(_ call: FunctionCall, expression: Expression) throws -> CanonicalBoundExpression? {
+        let name = call.name, args = call.arguments
+        let arrayFunctions = ["array_length", "array_lower", "array_upper", "array_ndims", "array_dims", "cardinality", "array_append", "array_prepend", "array_cat", "array_position", "array_positions", "array_remove", "array_replace", "array_to_string", "string_to_array"]
+        let jsonFunctions = ["to_json", "to_jsonb", "array_to_json", "json_build_array", "jsonb_build_array", "json_build_object", "jsonb_build_object", "json_typeof", "jsonb_typeof", "json_array_length", "jsonb_array_length", "json_extract_path", "jsonb_extract_path", "json_extract_path_text", "jsonb_extract_path_text", "jsonb_set", "jsonb_insert", "jsonb_strip_nulls"]
+        if ["unnest", "generate_subscripts", "json_each", "jsonb_each", "json_each_text", "jsonb_each_text", "json_array_elements", "jsonb_array_elements", "json_array_elements_text", "jsonb_array_elements_text", "json_object_keys", "jsonb_object_keys", "row_to_json"].contains(name) {
+            // FIXME(INCOMPLETE_IMPLEMENTATION): Public selected scalar invocation reaches
+            // relation/ROW functions here. S08 ROW and S10 relation composition must
+            // consume the bounded child kernels before public execution can succeed.
+            throw DatabaseExpressionEvaluationError.unsupportedExpression("collection ROW or relation function requires S08/S10 composition")
+        }
+        guard arrayFunctions.contains(name) || jsonFunctions.contains(name) else { return nil }
+        let builders = ["json_build_array", "jsonb_build_array", "json_build_object", "jsonb_build_object"]
+        let path = ["json_extract_path", "jsonb_extract_path", "json_extract_path_text", "jsonb_extract_path_text"].contains(name)
+        guard !call.finalArrayIsVariadic || builders.contains(name) || path else { throw mismatch("unsupported VARIADIC signature") }
+        if builders.contains(name) {
+            guard !call.finalArrayIsVariadic || !args.isEmpty else { throw mismatch("VARIADIC array argument") }
+            var children: [CanonicalBoundExpression] = []
+            for (index, value) in args.enumerated() {
+                let target: QueryColumnType = call.finalArrayIsVariadic && index == args.count - 1 ? .sql(.array(.text)) : .sql(.text)
+                var child = try childBinder(.argument, index).bind(value, contextualType: target)
+                if call.finalArrayIsVariadic && index == args.count - 1 {
+                    guard let element = Self.arrayElement(child.type) else { throw mismatch("VARIADIC array argument") }
+                    child = try coerce(child, to: .sql(.array(try sqlElement(element))))
+                } else if !Self.isCollection(child.type) && !Self.permitsScalarText(child.type) { throw mismatch("JSON value conversion") }
+                children.append(child)
+            }
+            if name.hasSuffix("object"), !call.finalArrayIsVariadic {
+                guard children.count.isMultiple(of: 2) else { throw DatabaseExpressionEvaluationError.collection(.oddJSONObjectArgumentCount(actual: children.count)) }
+                for index in stride(from: 0, to: children.count, by: 2) {
+                    guard !Self.isCollection(children[index].type), Self.permitsScalarText(children[index].type) else {
+                        throw DatabaseExpressionEvaluationError.collection(.invalidJSONObjectKey(argument: index + 1))
+                    }
+                }
+            }
+            return node(expression, .sql(name.hasPrefix("jsonb") ? .jsonb : .json), call.finalArrayIsVariadic && children.last!.isNullable, children)
+        }
+        if path {
+            guard !args.isEmpty, !call.finalArrayIsVariadic || args.count >= 2 else { throw mismatch(name) }
+            let family: QueryColumnType = .sql(name.hasPrefix("jsonb") ? .jsonb : .json)
+            let targets = args.indices.map { index in index == 0 ? family : (call.finalArrayIsVariadic && index == args.count - 1 ? .sql(.array(.text)) : .sql(.text)) }
+            return node(expression, name.hasSuffix("text") ? .sql(.text) : family, true, try collectionArguments(args, targets: targets))
+        }
+        if arrayFunctions.contains(name) {
+            if name == "string_to_array" {
+                guard (2...3).contains(args.count) else { throw mismatch(name) }
+                let children = try collectionArguments(args, targets: Array(repeating: .sql(.text), count: args.count))
+                return node(expression, .sql(.array(.text)), children[0].isNullable, children)
+            }
+            let arraySlots: Set<Int>, elementSlots: Set<Int>, counts: ClosedRange<Int>
+            switch name {
+            case "array_prepend": arraySlots = [1]; elementSlots = [0]; counts = 2...2
+            case "array_cat": arraySlots = [0, 1]; elementSlots = []; counts = 2...2
+            case "array_append", "array_positions", "array_remove": arraySlots = [0]; elementSlots = [1]; counts = 2...2
+            case "array_position": arraySlots = [0]; elementSlots = [1]; counts = 2...3
+            case "array_replace": arraySlots = [0]; elementSlots = [1, 2]; counts = 3...3
+            case "array_length", "array_lower", "array_upper": arraySlots = [0]; elementSlots = []; counts = 2...2
+            case "array_to_string": arraySlots = [0]; elementSlots = []; counts = 2...3
+            default: arraySlots = [0]; elementSlots = []; counts = 1...1
+            }
+            guard counts.contains(args.count) else { throw mismatch(name) }
+            if elementSlots.isEmpty, name != "array_cat", try isContextualUnknown(args[0]) { throw mismatch("unresolved polymorphic array") }
+            let selected = try polymorphicArrayArguments(args, arraySlots: arraySlots, elementSlots: elementSlots,
+                textSlots: name == "array_to_string" ? Set(args.indices.dropFirst()) : [])
+            if ["array_position", "array_positions", "array_remove", "array_replace"].contains(name) { try requireSQLComparison(.sql(selected.element), operation: name) }
+            let result: DataType
+            switch name {
+            case "array_dims", "array_to_string": result = .text
+            case "array_positions": result = .array(.integer)
+            case "array_append", "array_prepend", "array_cat", "array_remove", "array_replace": result = .array(selected.element)
+            default: result = .integer
+            }
+            let nullable: Bool
+            switch name {
+            case "array_append", "array_prepend": nullable = false
+            case "array_cat": nullable = selected.children.allSatisfy { $0.isNullable }
+            case "array_remove", "array_replace", "array_positions", "cardinality": nullable = selected.children[0].isNullable
+            case "array_to_string": nullable = selected.children[0].isNullable || selected.children[1].isNullable
+            default: nullable = true
+            }
+            return node(expression, .sql(result), nullable, selected.children)
+        }
+        let binaryJSON = name.hasPrefix("jsonb") || name == "to_jsonb"
+        let family: QueryColumnType = .sql(binaryJSON ? .jsonb : .json)
+        if name == "to_json" || name == "to_jsonb" || name == "array_to_json" {
+            guard args.count == 1 || name == "array_to_json" && args.count == 2 else { throw mismatch(name) }
+            guard try !isContextualUnknown(args[0]) else { throw mismatch("unresolved polymorphic JSON conversion") }
+            let input = try childBinder(.argument, 0).bind(args[0], contextualType: .sql(.text))
+            guard Self.isCollection(input.type) || Self.permitsScalarText(input.type) else { throw mismatch(name) }
+            if name == "array_to_json", Self.arrayElement(input.type) == nil { throw mismatch(name) }
+            var children = [input]
+            if args.count == 2 { children.append(try coerce(childBinder(.argument, 1).bind(args[1], contextualType: .sql(.boolean)), to: .sql(.boolean))) }
+            return node(expression, family, children.contains { $0.isNullable }, children)
+        }
+        var arguments = args
+        if name == "jsonb_set" || name == "jsonb_insert", arguments.count == 3 { arguments.append(.literal(.bool(name == "jsonb_set"))) }
+        if name == "jsonb_strip_nulls", arguments.count == 1 { arguments.append(.literal(.bool(false))) }
+        let targets: [QueryColumnType]
+        if name == "jsonb_set" || name == "jsonb_insert" { targets = [.sql(.jsonb), .sql(.array(.text)), .sql(.jsonb), .sql(.boolean)] }
+        else if name == "jsonb_strip_nulls" { targets = [.sql(.jsonb), .sql(.boolean)] }
+        else { targets = [family] }
+        let children = try collectionArguments(arguments, targets: targets)
+        let result: QueryColumnType = name.hasSuffix("typeof") ? .sql(.text) : (name.hasSuffix("array_length") ? .sql(.integer) : family)
+        return node(expression, result, children.contains { $0.isNullable }, children)
     }
 
     static func temporalType(_ type: QueryColumnType) -> DataType? {
@@ -504,6 +857,8 @@ struct CanonicalQueryTypeBinder {
         guard function.schema == nil || function.schema == "pg_catalog", !function.distinct else {
             throw DatabaseExpressionEvaluationError.unsupportedFunction(name)
         }
+        if let selected = try bindCollectionFunction(function, expression: expression) { return selected }
+        guard !function.finalArrayIsVariadic else { throw mismatch("unsupported VARIADIC signature") }
         if let selected = try bindTemporalFunction(function, expression: expression) { return selected }
         if let selected = try bindScalarFunction(function, expression: expression) { return selected }
         if name == "width_bucket", function.arguments.count == 2 {
@@ -559,6 +914,7 @@ struct CanonicalQueryTypeBinder {
     }
 
     private static func permitsScalarText(_ type: QueryColumnType) -> Bool {
+        if isCollection(type) { return true }
         if temporalType(type) != nil { return true }
         if numericKind(type) != nil || isText(type) || isBytes(type) { return true }
         return type == .sql(.boolean) || type == .primitive(.bool)
@@ -677,8 +1033,9 @@ struct CanonicalQueryTypeBinder {
         _ aggregate: AggregateFunction, expression: DatabaseKit.Expression
     ) throws -> CanonicalBoundExpression {
         switch aggregate {
-        case .count(let operand, _):
+        case .count(let operand, let distinct):
             let children = try operand.map { [try childBinder(.aggregateArgument).bind($0)] } ?? []
+            if distinct { for child in children { try requireSQLComparison(child.type, operation: "COUNT DISTINCT") } }
             return node(expression, .sql(.bigint), false, children)
         case .sum(let operand, _), .avg(let operand, _):
             let input = try childBinder(.aggregateArgument).bind(operand, contextualType: .sql(.bigint))
@@ -698,7 +1055,7 @@ struct CanonicalQueryTypeBinder {
             return node(expression, type, true, [child])
         case .min(let operand), .max(let operand), .sample(let operand):
             let child = try childBinder(.aggregateArgument).bind(operand)
-            try requirePrimitiveOperation([child], operation: "aggregate")
+            if case .sample = aggregate {} else { try requireComparable([child], operation: "aggregate") }
             return node(expression, child.type, true, [child])
         case .groupConcat(let operand, _, _):
             let child = try childBinder(.aggregateArgument).bind(operand, contextualType: .sql(.text))
@@ -836,16 +1193,23 @@ struct CanonicalQueryTypeBinder {
         }
     }
 
+    func requireSQLComparison(_ type: QueryColumnType, operation: String) throws {
+        if type == .sql(.json) { throw DatabaseExpressionEvaluationError.unsupportedExpression("\(operation) of JSON has no SQL comparison") }
+        if let element = Self.arrayElement(type) { try requireSQLComparison(element, operation: operation) }
+    }
+
     private func requireComparable(_ children: [CanonicalBoundExpression], operation: String) throws {
-        try requirePrimitiveOperation(children, operation: operation)
-        guard children.allSatisfy({ child in
-            !Self.isPrimitiveArray(child.type) && (Self.primitiveKind(child.type) != nil || Self.temporalType(child.type) != nil)
-        }) else { throw mismatch(operation) }
+        for child in children {
+            try requireSQLComparison(child.type, operation: operation)
+            if Self.isCollection(child.type) { continue }
+            guard !Self.isPrimitiveArray(child.type), Self.primitiveKind(child.type) != nil || Self.temporalType(child.type) != nil else { throw mismatch(operation) }
+        }
     }
 
     private func isContextualUnknown(_ expression: DatabaseKit.Expression) throws -> Bool {
         switch expression {
         case .literal(.null), .literal(.sqlUnknownString), .literal(.queryValue(.primitive(.null), type: nil)): return true
+        case .array(let values) where values.isEmpty: return true
         case .parameter(let reference):
             return try parameterState.declaredType(reference) == nil
         case .coalesce(let children), .greatest(let children), .least(let children): return try children.allSatisfy(isContextualUnknown)
@@ -867,6 +1231,11 @@ struct CanonicalQueryTypeBinder {
     func commonType(_ types: [QueryColumnType]) throws -> QueryColumnType {
         guard let first = types.first else { return .sql(.text) }
         if types.allSatisfy({ $0 == first }) { return first }
+        if types.allSatisfy({ Self.arrayElement($0) != nil }) {
+            let element = try commonType(types.compactMap(Self.arrayElement))
+            guard case .sql(let scalar) = element else { throw mismatch("array element common type") }
+            return .sql(.array(scalar))
+        }
         if types.allSatisfy({ Self.temporalType($0) != nil }) {
             let bases = types.compactMap(Self.temporalType)
             let interval = DataType.interval()
@@ -948,12 +1317,17 @@ struct CanonicalQueryTypeBinder {
         case .float64?: return .doublePrecision
         case .bool?: return .boolean
         case .string?: return .text
+        case .bytes?: return .blob
+        case .uuid?: return .uuid
         default: return nil
         }
     }
 
     private static func permitsImplicit(from source: QueryColumnType, to target: QueryColumnType) -> Bool {
         if source == target { return true }
+        if let source = arrayElement(source), let target = arrayElement(target) {
+            return permitsImplicit(from: source, to: target)
+        }
         if let source = temporalType(source), let target = temporalType(target) {
             return temporalCastAllowed(from: source, to: target, context: .implicit)
         }
@@ -1085,6 +1459,15 @@ struct CanonicalQueryTypeBinder {
 
     func validateCast(from source: QueryColumnType, to target: QueryColumnType, context: CastContext = .explicit) throws {
         if source == target { return }
+        if let sourceElement = Self.arrayElement(source), let targetElement = Self.arrayElement(target) {
+            try validateCast(from: sourceElement, to: targetElement, context: context)
+            return
+        }
+        if context == .explicit, Self.isText(source), Self.isCollection(target) { return }
+        if context != .implicit, Self.isCollection(source), Self.isText(target) { return }
+        if context != .implicit, Self.isJSON(source), Self.isJSON(target) { return }
+        if context == .explicit, source == .sql(.jsonb),
+           Self.numericKind(target) != nil || target == .sql(.boolean) { return }
         if let from = Self.temporalType(source), let to = Self.temporalType(target) {
             guard Self.temporalCastAllowed(from: from, to: to, context: context) else { throw DatabaseExpressionEvaluationError.invalidCast("temporal conversion") }
             return
@@ -1132,7 +1515,8 @@ struct CanonicalQueryTypeBinder {
     private func coerce(_ child: CanonicalBoundExpression, to type: QueryColumnType) throws -> CanonicalBoundExpression {
         guard child.type != type else { return child }
         guard Self.permitsImplicit(from: child.type, to: type),
-              (Self.numericKind(child.type) != nil && Self.numericKind(type) != nil)
+              (Self.arrayElement(child.type) != nil && Self.arrayElement(type) != nil)
+                || (Self.numericKind(child.type) != nil && Self.numericKind(type) != nil)
                 || (Self.temporalType(child.type) != nil && Self.temporalType(type) != nil)
                 || (Self.primitiveKind(child.type) == .bool && Self.primitiveKind(type) == .bool
                     && !Self.isPrimitiveArray(child.type) && !Self.isPrimitiveArray(type))
@@ -1166,7 +1550,7 @@ struct CanonicalQueryTypeBinder {
     }
 
     private func bindSPARQLProducer(_ expression: DatabaseKit.Expression) throws {
-        guard case .function(let function) = expression, (2...3).contains(function.arguments.count), !function.distinct else {
+        guard case .function(let function) = expression, (2...3).contains(function.arguments.count), !function.distinct, !function.finalArrayIsVariadic else {
             throw mismatch("SPARQL arguments")
         }
         for (index, argument) in function.arguments.enumerated() {
@@ -1315,7 +1699,6 @@ struct CanonicalQueryTypeBinder {
 
     private func requirePrimitiveOperation(_ children: [CanonicalBoundExpression], operation: String) throws {
         for child in children {
-            try requirePrimitiveOperation(child.children, operation: operation)
             if Self.temporalType(child.type) != nil { continue }
             if case .literal(.queryValue(let value, _)) = child.expression, !value.isNull {
                 switch value {

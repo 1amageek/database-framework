@@ -276,7 +276,8 @@ extension Expression {
         switch self {
         case .column(let column):
             return column.table == nil || column.table == sourceQualifier
-        case .add(let lhs, let rhs), .subtract(let lhs, let rhs),
+        case .collectionOperation(_, let lhs, let rhs),
+             .add(let lhs, let rhs), .subtract(let lhs, let rhs),
                 .multiply(let lhs, let rhs), .divide(let lhs, let rhs),
                 .modulo(let lhs, let rhs), .concatenate(let lhs, let rhs), .equal(let lhs, let rhs),
                 .notEqual(let lhs, let rhs), .lessThan(let lhs, let rhs),
@@ -294,6 +295,18 @@ extension Expression {
                 .subject(let operand), .predicate(let operand),
                 .object(let operand):
             return operand.referencesOnlySourceQualifier(sourceQualifier)
+        case .arrayAccess(let base, let subscripts):
+            guard base.referencesOnlySourceQualifier(sourceQualifier) else { return false }
+            for subscriptValue in subscripts {
+                switch subscriptValue {
+                case .index(let value):
+                    guard value.referencesOnlySourceQualifier(sourceQualifier) else { return false }
+                case .slice(let lower, let upper):
+                    guard (lower?.referencesOnlySourceQualifier(sourceQualifier) ?? true),
+                          (upper?.referencesOnlySourceQualifier(sourceQualifier) ?? true) else { return false }
+                }
+            }
+            return true
         case .patternMatch(let subject, let pattern, let escape, _):
             return subject.referencesOnlySourceQualifier(sourceQualifier)
                 && pattern.referencesOnlySourceQualifier(sourceQualifier)

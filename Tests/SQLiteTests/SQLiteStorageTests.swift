@@ -176,6 +176,18 @@ struct SQLiteStorageTests {
             .numeric(updated.exactAmount),
             .numeric(try QueryNumericValue(value: updated.exactAmount.value, displayScale: 16)),
             .numeric(updated.exactAmount), .numeric(updated.exactAmount)])
+        let collections = try await context.executeSQL("""
+            SELECT "integerValues"[3], array_lower("integerValues",1), cardinality("integerValues"),
+                "lexicalDocument" ->> 'b', "binaryDocument" ->> 'b',
+                "binaryDocument" @> '{"b":4}'::jsonb,
+                array_to_string("integerValues",',')
+            FROM "SQLiteStoredRichItem"
+            """)
+        #expect(collections.columns.map(\.type) == [.sql(.integer), .sql(.integer), .sql(.integer),
+            .sql(.text), .sql(.text), .sql(.boolean), .sql(.text)])
+        #expect(collections.rows.map(\.values) == [[.primitive(.int32(7)), .primitive(.int32(3)),
+            .primitive(.int32(2)), .primitive(.string("4")), .primitive(.string("4")),
+            .primitive(.bool(true)), .primitive(.string("7,9"))]])
     }
 
     @Test("SQL syntax preserves exact names and rejects pending execution capabilities", .timeLimit(.minutes(2)))
@@ -204,7 +216,6 @@ struct SQLiteStorageTests {
             #expect(failure.occurrence != nil)
         }
         for (sql, reason) in [
-            ("SELECT ARRAY[1] WHERE FALSE", "SQL ARRAY/ROW constructor"),
             ("SELECT ROW(1, NULL)", "SQL ARRAY/ROW constructor"),
         ] {
             do {
@@ -222,6 +233,17 @@ struct SQLiteStorageTests {
                 Issue.record("Unexpected SQL execution failure: \(error)")
             }
         }
+        let array = try await context.executeSQL("SELECT ARRAY[1,NULL] AS values")
+        #expect(array.columns.map(\.type) == [.sql(.array(.integer))])
+        guard case .array(let arrayValue) = array.rows[0].values[0] else {
+            Issue.record("Expected the selected SQL array constructor")
+            return
+        }
+        #expect(arrayValue.elements == [.primitive(.int32(1)), .primitive(.null)])
+        #expect(arrayValue.dimensions == [try QueryArrayDimension(lowerBound: 1, length: 2)])
+        let emptyArray = try await context.executeSQL("SELECT ARRAY[1,NULL] AS values WHERE FALSE")
+        #expect(emptyArray.rows.isEmpty)
+        #expect(emptyArray.columns == array.columns)
         let temporal = try await context.executeSQL("SELECT TIMESTAMP(3) '2026-10-15 10:20:30', CAST(TIMESTAMP(3) '2026-10-15 10:20:30' AS text)")
         let expectedTemporal = CivilDateTime(date: try CivilDate(year: 2026, month: 10, day: 15),
             time: try CivilTime(hour: 10, minute: 20, second: 30))

@@ -394,3 +394,15 @@ locations. Work limits and cancellation retain their original typed failures.
 Server adapts these three failures through its own operation error mapper.
 Focused raw-expression, bounded-pattern, and Server mapper tests verify this
 boundary; selected SQL integration remains QueryExecution-owned.
+
+### S07 collection composition
+
+The module consumes [QueryExecution's selected collection contract](QueryExecution/DESIGN.md#s07-selected-collections-and-relational-identity).
+Its child algorithms preserve existing value/persistence/Wire owners and the
+same request meter, temporal environment and result leases. QueryExecution owns
+the public typed SQLCollectionError carried by DatabaseExpressionEvaluationError;
+raw and non-SQL visitors reject unsupported SQL-only forms explicitly. Read and
+Mutation retain their authority/lifecycle boundaries. Index plans cannot use
+representation keys as SQL array/JSONB identity without an equivalence proof.
+Module verification must execute the selected public path and affected
+language/security visitors, not infer behavior from new enum cases compiling.

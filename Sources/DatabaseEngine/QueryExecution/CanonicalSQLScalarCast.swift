@@ -11,11 +11,34 @@ enum CanonicalSQLScalarCast {
         }
     }
 
+    static func collectionLimits(workMeter: DatabaseWorkMeter) -> QueryValueLimits {
+        let structural = QueryStructuralLimits.default
+        return QueryValueLimits(maximumRetainedBytes: min(structural.maximumRetainedBytes, workMeter.budget.maximumIntermediateBytes),
+            maximumTotalNodes: min(structural.maximumTotalNodes, workMeter.budget.maximumWorkUnits),
+            maximumNestingDepth: min(structural.maximumNestingDepth, workMeter.budget.maximumWorkUnits),
+            maximumCollectionElements: min(structural.maximumCollectionElements, workMeter.budget.maximumWorkUnits))
+    }
+
+    static func evaluateCollection(_ value: QueryValue, from source: QueryColumnType,
+        to target: QueryColumnType, context: CanonicalQueryTypeBinder.CastContext,
+        temporalEnvironment: SQLTemporalEnvironment?, workMeter: DatabaseWorkMeter,
+        limits: QueryValueLimits) throws -> (value: QueryValue, lease: DatabaseQueryPayloadLease?) {
+        try validate(value, source: source, target: target, workMeter: workMeter)
+        if CanonicalQueryTypeBinder.arrayElement(source) != nil || CanonicalQueryTypeBinder.arrayElement(target) != nil {
+            return try CanonicalSQLArrayEvaluator.cast(value, from: source, to: target, context: context,
+                temporalEnvironment: temporalEnvironment, workMeter: workMeter, limits: limits)
+        }
+        guard CanonicalQueryTypeBinder.isJSON(source) || CanonicalQueryTypeBinder.isJSON(target) else { throw invalid("selected collection target") }
+        return try CanonicalSQLJSONEvaluator.cast(value, from: source, to: target, context: context,
+            temporalEnvironment: temporalEnvironment, workMeter: workMeter, limits: limits)
+    }
+
     static func evaluateValue(_ value: QueryValue, from source: QueryColumnType,
         to target: QueryColumnType, context: CanonicalQueryTypeBinder.CastContext,
         temporalEnvironment: SQLTemporalEnvironment? = nil, workMeter: DatabaseWorkMeter) throws -> QueryValue {
         try validate(value, source: source, target: target, workMeter: workMeter)
         if case .primitive = target, source == target { return value }
+        if source == target, CanonicalQueryTypeBinder.isJSON(target) { return value }
         if CanonicalQueryTypeBinder.temporalType(target) != nil {
             guard let temporalEnvironment else { throw DatabaseExpressionEvaluationError.missingTemporalEnvironment }
             return try CanonicalSQLTemporalEvaluator.cast(value, from: source, to: target, context: context,
@@ -92,7 +115,8 @@ enum CanonicalSQLScalarCast {
 
     static func evaluatePayload(_ value: QueryValue, from source: QueryColumnType,
         to target: QueryColumnType, context: CanonicalQueryTypeBinder.CastContext,
-        temporalEnvironment: SQLTemporalEnvironment? = nil, workMeter: DatabaseWorkMeter) throws -> DatabaseQueryScopedFieldValue {
+        temporalEnvironment: SQLTemporalEnvironment? = nil, limits: QueryValueLimits? = nil,
+        workMeter: DatabaseWorkMeter) throws -> DatabaseQueryScopedFieldValue {
         try validate(value, source: source, target: target, workMeter: workMeter)
         guard usesPayload(target) else { throw invalid("selected payload target") }
         if isBinary(target) {
@@ -124,7 +148,7 @@ enum CanonicalSQLScalarCast {
                 context: context, workMeter: workMeter)
         }
         return try CanonicalSQLScalarText.withText(of: value, type: source,
-            preservingCharacterPadding: isCharacter(target), temporalEnvironment: temporalEnvironment, workMeter: workMeter) { text in
+            preservingCharacterPadding: isCharacter(target), temporalEnvironment: temporalEnvironment, limits: limits, workMeter: workMeter) { text in
                 try characterResult(text, target: target, context: context, workMeter: workMeter)
             }
     }
@@ -182,6 +206,7 @@ enum CanonicalSQLScalarCast {
     }
 
     static func supportsTextOutput(_ type: QueryColumnType) -> Bool {
+        if CanonicalQueryTypeBinder.isCollection(type) { return true }
         if CanonicalQueryTypeBinder.temporalType(type) != nil { return true }
         switch type {
         case .sql(.smallint), .sql(.integer), .sql(.bigint), .sql(.real), .sql(.doublePrecision),

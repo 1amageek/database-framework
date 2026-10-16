@@ -1,3 +1,5 @@
+import DatabaseKit
+
 public enum DatabaseExpressionEvaluationError: Error, Sendable, Equatable, CustomStringConvertible {
     case missingColumn(String)
     case ambiguousColumn(String)
@@ -19,6 +21,8 @@ public enum DatabaseExpressionEvaluationError: Error, Sendable, Equatable, Custo
     case temporalValueOutOfRange
     case timeZone(SQLTimeZoneError)
     case missingTemporalEnvironment
+    case collection(SQLCollectionError)
+    case queryValue(QueryValueError)
     case invalidRDFLiteral(datatype: String)
 
     public var description: String {
@@ -63,8 +67,41 @@ public enum DatabaseExpressionEvaluationError: Error, Sendable, Equatable, Custo
             return "Expression cannot resolve its selected time zone"
         case .missingTemporalEnvironment:
             return "Expression requires an explicit temporal environment"
+        case .queryValue(let cause):
+            return Self.queryValueDescription(cause)
+        case .collection(let cause):
+            return "Expression collection operation failed: \(cause.description)"
         case .invalidRDFLiteral(let datatype):
             return "Expression contains an invalid RDF literal for \(datatype)"
+        }
+    }
+
+    private static func queryValueDescription(_ cause: QueryValueError) -> String {
+        switch cause {
+        case .invalidNumeric(let offset, let reason): return "Invalid query numeric at UTF-8 offset \(offset): \(reason)"
+        case .invalidUUID(let offset, let reason): return "Invalid query UUID at UTF-8 offset \(offset): \(reason)"
+        case .invalidBinary(let offset, let reason): return "Invalid query binary at UTF-8 offset \(offset): \(reason)"
+        case .invalidNumericDisplayScale(let scale): return "Invalid query numeric display scale \(scale)"
+        case .numericOutOfRange: return "Query numeric value is outside the supported range"
+        case .invalidJSON(let offset, let reason): return "Invalid query JSON at UTF-8 offset \(offset): \(reason)"
+        case .invalidUTF8(let offset): return "Invalid query UTF-8 at offset \(offset)"
+        case .nonCanonicalJSONB: return "Query JSONB is not canonical"
+        case .malformedArrayInput(let offset, let reason): return "Malformed query array at UTF-8 offset \(offset): \(reason)"
+        case .invalidArrayInputIndex(let index, let count): return "Query array input index \(index) is outside \(count) inputs"
+        case .invalidDimensionCount(let count): return "Invalid query array dimension count \(count)"
+        case .invalidDimension(let lowerBound, let length): return "Invalid query array dimension with lower bound \(lowerBound) and length \(length)"
+        case .dimensionProductOverflow: return "Query array dimension product overflows"
+        case .elementCountMismatch(let expected, let actual): return "Query array requires \(expected) elements; received \(actual)"
+        case .elementTypeMismatch(let index): return "Query array element \(index) has an incompatible type"
+        case .incompatibleType: return "Query value has an incompatible type"
+        case .invalidColumnNumber(let number): return "Invalid query column number \(number)"
+        case .invalidPersistenceDescriptor: return "Invalid query persistence descriptor"
+        case .invalidPersistencePayload(let reason): return "Invalid query persistence payload: \(reason)"
+        case .intervalOutOfRange: return "Query interval is outside the supported range"
+        case .timeOutOfRange: return "Query time is outside the supported range"
+        case .unknownRetainedByteCount: return "Query retained byte count is unknown"
+        case .resourceLimit(let resource, let actual, let maximum): return "Query value resource '\(resource)' requires \(actual), exceeding \(maximum)"
+        case .arithmeticOverflow: return "Query value arithmetic overflows"
         }
     }
 }

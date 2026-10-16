@@ -1,6 +1,33 @@
 import DatabaseKit
+import DatabaseTypes
 
 extension SQLConstantSyntax {
+    static func sqlEraText(_ iso: String) throws(SQLConstantError) -> String {
+        let negative = iso.first == "-"
+        let digits = negative ? iso.dropFirst() : iso[...]
+        guard let separator = digits.firstIndex(of: "-"), let magnitude = Int64(digits[..<separator]) else {
+            throw .invalidConstant("Invalid canonical temporal year")
+        }
+        let year = negative ? -magnitude : magnitude
+        guard year <= 0 else { return iso }
+        let displayYear = Int64(1).subtractingReportingOverflow(year)
+        guard !displayYear.overflow else { throw .invalidConstant("Temporal era year overflow") }
+        let raw = String(displayYear.partialValue)
+        return String(repeating: "0", count: max(0, 4 - raw.count)) + raw + digits[separator...] + " BC"
+    }
+
+    static func civilDateTimeText(_ value: CivilDateTime) throws(SQLConstantError) -> String {
+        guard value.time.nanoseconds.isMultiple(of: 1000) else {
+            throw .unsupportedConstant("SQL timestamps have microsecond resolution")
+        }
+        let micros = Int64(value.time.hour) * 3_600_000_000 + Int64(value.time.minute) * 60_000_000
+            + Int64(value.time.second) * 1_000_000 + Int64(value.time.nanoseconds / 1000)
+        let time: QueryTimeValue
+        do { time = try QueryTimeValue(microsecondsSinceMidnight: micros) }
+        catch { throw .value(error) }
+        return try sqlEraText(QueryLiteralEncoding.iso8601(value.date) + "T" + timeText(time))
+    }
+
     static func timeText(_ value: QueryTimeValue) -> String {
         let micros = value.microsecondsSinceMidnight
         func padded(_ value: Int64, width: Int) -> String {

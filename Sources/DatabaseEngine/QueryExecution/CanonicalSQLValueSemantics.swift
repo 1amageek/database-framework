@@ -12,6 +12,19 @@ enum CanonicalSQLValueSemantics {
     static func compareValues(_ left: QueryValue, _ right: QueryValue,
         leftType: QueryColumnType, rightType: QueryColumnType,
         environment: SQLTemporalEnvironment?, workMeter: DatabaseWorkMeter) throws -> QueryComparison {
+        switch (leftType, rightType) {
+        case (.sql(.array), .sql(.array)):
+            return try CanonicalSQLArrayEvaluator.compare(left, right, leftType: leftType,
+                rightType: rightType, temporalEnvironment: environment, workMeter: workMeter)
+        case (.sql(.jsonb), .sql(.jsonb)):
+            guard case .jsonb(let left) = left, case .jsonb(let right) = right else {
+                throw DatabaseExpressionEvaluationError.typeMismatch(operation: "selected JSONB comparison")
+            }
+            return try CanonicalSQLJSONEvaluator.compare(left, right, workMeter: workMeter)
+        case (.sql(.json), _), (_, .sql(.json)):
+            throw DatabaseExpressionEvaluationError.typeMismatch(operation: "SQL JSON comparison")
+        default: break
+        }
         if isTemporal(leftType) || isTemporal(rightType) {
             guard let environment else { throw DatabaseExpressionEvaluationError.missingTemporalEnvironment }
             return try CanonicalSQLTemporalEvaluator.compare(left, right, leftType: leftType,
@@ -33,6 +46,12 @@ enum CanonicalSQLValueSemantics {
     static func equalValues(_ left: QueryValue, _ right: QueryValue,
         leftType: QueryColumnType, rightType: QueryColumnType,
         environment: SQLTemporalEnvironment?, workMeter: DatabaseWorkMeter) throws -> Bool {
+        switch (leftType, rightType) {
+        case (.sql(.array), _), (_, .sql(.array)), (.sql(.jsonb), _), (_, .sql(.jsonb)), (.sql(.json), _), (_, .sql(.json)):
+            return try compareValues(left, right, leftType: leftType, rightType: rightType,
+                environment: environment, workMeter: workMeter) == .equal
+        default: break
+        }
         if isTemporal(leftType) || isTemporal(rightType) {
             return try compareValues(left, right, leftType: leftType, rightType: rightType,
                 environment: environment, workMeter: workMeter) == .equal
@@ -83,6 +102,10 @@ enum CanonicalSQLValueSemantics {
 
     static func permitsStoredKey(_ expression: CanonicalBoundExpression) -> Bool {
         if isTemporal(expression.type) { return false }
+        switch expression.type {
+        case .sql(.array), .sql(.json), .sql(.jsonb): return false
+        default: break
+        }
         if case .sql(.char) = expression.type { return false }
         return expression.children.allSatisfy(permitsStoredKey)
     }

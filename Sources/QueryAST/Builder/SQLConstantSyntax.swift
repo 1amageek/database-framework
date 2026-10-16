@@ -159,7 +159,8 @@ enum SQLConstantSyntax {
                 guard let interval = try interval(text) else { return nil }
                 value = .interval(interval)
             case .array(let element):
-                value = .array(try parseArray(text, element: element, limits: limits))
+                guard let array = try parseArray(text, element: element, limits: limits) else { return nil }
+                value = .array(array)
             default: return nil
             }
         } catch let error as SQLConstantError { throw error }

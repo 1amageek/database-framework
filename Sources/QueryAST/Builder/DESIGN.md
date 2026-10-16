@@ -331,3 +331,103 @@ Wire, IR and persistence remain lossless for every carrier value. A wide-offset
 TIMETZ array cell has no equivalent lexical array element and also fails typed
 at this text-only boundary; it is not silently transformed into a different
 array value or a future S07 constructor.
+
+### S07 collection emission and intrinsic constant capability
+
+Consume [Query's grouped collection expressions](../../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md#s07-collection-expression-carriage),
+[SQL S07-C01...C12 and QueryArrayInput](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s07-frozen-array-and-json-contract)
+and [Parser's grammar](../Parser/DESIGN.md#s07-collection-grammar-and-occurrence-boundaries).
+Kit owns shape/value invariants; Framework execution owns selected element
+conversion, runtime services and admission. This component owns lossless SQL
+text and its pure intrinsic constant capability only.
+
+The existing private SQLArrayInput in SQLConstantSyntax+Collections.swift mixes
+array shape scanning and selected element conversion. Extract its shape grammar
+to the Kit-owned QueryArrayInput and migrate this adapter to that contract;
+remove the private scanner only after replacement behavior is proven. Builder
+retains its cumulative cell/payload ledger and selected pure scalar adapter.
+There is one shape grammar, no serialize/parse bridge through DatabaseEngine,
+and no Engine dependency in QueryAST. Request individual cell text only at the
+existing scalar input boundary and retain the full immutable input owner while
+borrowing ranges. Kit intrinsic limits do not replace the caller's cumulative
+structural and decoded-value accounting.
+
+```text
+typed array text -> QueryArrayInput (shape / bounds / cell ranges)
+    -> explicit constant-capability decision
+        -> pure selected cell normalization -> typed literal
+        -> runtime-owned conversion -> original lexical CAST
+malformed syntax / supported input / exhausted limit -> typed failure
+```
+
+Choose capability deterministically from the target descriptor and the admitted
+cell forms before attempting a conversion that can fail. Reuse the scalar
+adapter's explicit capability result where conversion is value dependent;
+nil means runtime ownership, not a caught conversion failure. Every non-NULL
+cell must qualify before the entire array can normalize to one literal. A
+valid shape with any context-dependent cell preserves the complete original
+lexical expression and exact array target as CAST. Empty/all-NULL arrays can
+normalize when their resolved descriptor is intrinsically valid. Malformed
+shape, malformed input in a supported intrinsic capability, invalid descriptor
+and resource failure throw; catch-and-retry-as-CAST is forbidden. Runtime CAST
+retention never repairs malformed shape or invents a value.
+
+Preserve existing numeric/Boolean/text/UUID/BYTEA/JSON/JSONB and canonical mixed
+interval constant capabilities, including compatible typmods and their explicit
+runtime-owned cases. General temporal interpretation, timezone configuration,
+typmod adjustment and custom input remain execution responsibilities. Canonical
+temporal/infinity array text emitted by S06 must reparse as an explicit runtime
+CAST when intrinsic decoding needs those services. Semantic round trip compares
+executed value and declaration in that case, as with the S06 wide TIMETZ
+precedent; it never demands a fabricated pure literal or silently drops a CAST.
+The existing wide-offset TIMETZ array-cell text limitation remains explicit.
+Ordinary admitted DATE/TIMESTAMP/TIMESTAMPTZ, primitive TIME, UUID and BYTEA
+array cells use the existing QueryLiteralEncoding ISO/hex, UUID description and
+timeText primitives. CivilDateTime composes that date/time output without a
+timezone lookup. At this SQL text boundary only, astronomical nonpositive ISO
+years become the equivalent positive year plus BC suffix, matching the existing
+SQL input contract; the calendar and instant do not change. BYTEA hex expansion
+and microsecond alignment are checked before output. No host formatting service
+or independent calendar/zone policy is introduced. Required evidence covers
+these cells, lower bounds and BC spelling; temporal values reparse through the
+runtime CAST branch, while UUID/BYTEA retain intrinsic normalization.
+
+Serialize collectionOperation with the fixed token table in Parser and explicit
+binary parentheses, preserving arbitrary mixed operator trees independently of
+precedence. Reuse existing concatenate and subtract output for their new
+overloads. Emit every arrayAccess as a parenthesized base followed by exactly
+that group's suffixes. Parenthesize an arrayAccess base before adding another
+group, never concatenate two groups into one. Index and slice syntax preserve
+omitted versus present bounds; explicit NULL is an expression. Parenthesize
+every present subscript operand, including named parameters, so a leading colon
+cannot become a slice delimiter. Expression and output limits are checked
+before writing parentheses, delimiters, bounds and expanding cell text.
+
+FunctionCall.finalArrayIsVariadic is explicit final-argument metadata under
+Query's S07 contract. Emit VARIADIC immediately before that final argument only
+when true, preserving schema/name/DISTINCT and all argument order. Reject true
+mode with no argument; false-mode zero-argument calls remain valid. Never
+expand an array at serialization time, erase the marker, or invent a different
+function name. This distinction preserves SQL NULL versus empty variadic array
+and ordinary array argument behavior for registered JSON builders and path
+functions. All builder rewrites must copy the flag. Parser owns final-only
+grammar and binding owns registered overload/type legality;
+[Wire](../../../../database-kit/Sources/DatabaseWire/DESIGN.md#s07-explicit-variadic-function-layout)
+owns its lossless production. SPARQL serialization rejects these SQL-only
+collection expressions and unsupported explicit-variadic calls with typed
+language failures rather than emitting plausible SPARQL.
+
+| Evidence ID | Required behavior |
+|---|---|
+| S07-SYN01...03 | Parse/serialize/parse preserves operator trees, exact group boundaries, bound presence, parameters and source-edge shape under Parser's grammar. |
+| S07-SYN04 | Pure constant capability and runtime CAST selection stabilize; existing literal capabilities still succeed; malformed intrinsic input and exact/one-past budgets fail explicitly. |
+| S07-SYN05 | Builder versus emitted public scalar SQL produces equal selected types, values, array bounds, lexical JSON and JSONB meaning; temporal arrays use the same explicit environment. |
+| S07-SYN06 | Emit and reparse final VARIADIC metadata without expansion; ordinary/final-array distinction, malformed true/empty arguments, NULL/empty arrays and argument-preserving rewrites. |
+
+QueryASTTests own syntax, constant capability and output-budget evidence;
+Database tests own executed semantic round trips and typed failures. Public
+ROW/composite conversion remains the required S08 gate and general SRF relation
+composition S10, following the single SQL authority. ARRAY(subquery) requires
+S08 relational carriage; ARRAY[...] does not satisfy it. Function-call argument
+mode follows the explicit carriage above; ordinary FunctionCall syntax alone
+cannot prove that distinction.

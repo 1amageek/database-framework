@@ -167,202 +167,79 @@ extension SQLConstantSyntax {
                 catch let error as SQLConstantError { throw error }
                 catch { throw .invalidConstant("Invalid numeric array element") }
             case .string(let value): return value
+            case .date(let value): return try sqlEraText(QueryLiteralEncoding.iso8601(value))
+            case .dateTime(let value): return try civilDateTimeText(value)
+            case .timestamp(let value):
+                guard value.nanoseconds.isMultiple(of: 1000) else { throw .unsupportedConstant("SQL timestamps have microsecond resolution") }
+                return try sqlEraText(QueryLiteralEncoding.iso8601(value))
+            case .time(let value):
+                guard value.nanoseconds.isMultiple(of: 1000) else { throw .unsupportedConstant("SQL times have microsecond resolution") }
+                let micros = Int64(value.hour) * 3_600_000_000 + Int64(value.minute) * 60_000_000
+                    + Int64(value.second) * 1_000_000 + Int64(value.nanoseconds / 1000)
+                do { return timeText(try QueryTimeValue(microsecondsSinceMidnight: micros)) }
+                catch { throw .value(error) }
+            case .uuid(let value): return value.description
+            case .bytes(let value):
+                let doubled = UInt64(value.count).multipliedReportingOverflow(by: 2)
+                let total = doubled.partialValue.addingReportingOverflow(2)
+                guard !doubled.overflow, !total.overflow, total.partialValue <= limits.maximumRetainedBytes,
+                      doubled.partialValue <= UInt64(Int.max) else { throw .resourceLimit("BYTEA array text budget exceeded") }
+                return "\\x" + QueryLiteralEncoding.hex(value)
             default: throw .unsupportedConstant("Array element has no intrinsic SQL input form")
             }
         case .array: throw .invalidConstant("Nested array values are not array cells")
         }
     }
 
-    static func parseArray(_ text: String, element: DataType, limits: QueryStructuralLimits) throws(SQLConstantError) -> QueryArrayValue {
+    static func parseArray(_ text: String, element: DataType, limits: QueryStructuralLimits) throws(SQLConstantError) -> QueryArrayValue? {
         guard UInt64(text.utf8.count) <= limits.maximumRetainedBytes else { throw .resourceLimit("Array input byte budget exceeded") }
-        var parser = SQLArrayInput(text: text, element: element, limits: limits)
-        return try parser.parse()
-    }
-}
-
-/// PostgreSQL array input syntax; syntax operates on UTF-8 bytes, not graphemes.
-private struct SQLArrayInput {
-    let input: [UInt8]
-    let element: DataType
-    let limits: QueryStructuralLimits
-    var index = 0
-    var elements: [QueryValue] = []
-    var nodeCount: UInt64 = 1
-    var collectionCount: UInt64 = 0
-    var retainedBytes: UInt64 = 0
-
-    init(text: String, element: DataType, limits: QueryStructuralLimits) {
-        input = Array(text.utf8)
-        self.element = element
-        self.limits = limits
-    }
-
-    var peek: UInt8? { index < input.count ? input[index] : nil }
-    func isSpace(_ byte: UInt8) -> Bool { byte == 32 || (9...13).contains(byte) }
-    mutating func spaces() { while let byte = peek, isSpace(byte) { index += 1 } }
-    mutating func consume(_ byte: UInt8) -> Bool {
-        guard peek == byte else { return false }
-        index += 1
-        return true
-    }
-    mutating func require(_ byte: UInt8) throws(SQLConstantError) {
-        guard consume(byte) else { throw .invalidConstant("Malformed PostgreSQL array input") }
-    }
-
-    mutating func parse() throws(SQLConstantError) -> QueryArrayValue {
-        guard limits.maximumTotalNodes >= 1, limits.maximumNestingDepth >= 1 else {
-            throw .resourceLimit("Array root budget exceeded")
+        guard limits.maximumTotalNodes >= 1, limits.maximumNestingDepth >= 1 else { throw .resourceLimit("Array root budget exceeded") }
+        let input: QueryArrayInput
+        do { input = try QueryArrayInput(sqlLexicalForm: text, limits: valueLimits(limits)) }
+        catch { throw .value(error) }
+        if case .custom = element { return nil }
+        guard QueryValueValidator.accepts(.primitive(.null), type: .sql(.array(element))) else {
+            throw .invalidConstant("Invalid array element descriptor")
         }
-        spaces()
-        var declared: [(Int32, Int32)] = []
-        while consume(91) {
-            guard declared.count < 6 else { throw .invalidConstant("Too many array dimensions") }
-            let lower = try bound(until: 58)
-            let upper = try bound(until: 93)
-            guard upper >= lower, let length = Int32(exactly: Int64(upper) - Int64(lower) + 1) else {
-                throw .invalidConstant("Invalid array bounds")
+        var elements: [QueryValue] = []
+        var nodes: UInt64 = 1
+        var collections: UInt64 = 0
+        var retained: UInt64 = 0
+        var requiresRuntime = false
+        for index in 0..<input.count {
+            guard collections < limits.maximumCollectionElements, nodes < limits.maximumTotalNodes,
+                  limits.maximumNestingDepth > 1 else { throw .resourceLimit("Array cell budget exceeded") }
+            collections += 1
+            let childLimits = QueryStructuralLimits(maximumNestingDepth: limits.maximumNestingDepth - 1,
+                maximumRetainedBytes: limits.maximumRetainedBytes - retained,
+                maximumTotalNodes: limits.maximumTotalNodes - nodes,
+                maximumCollectionElements: limits.maximumCollectionElements - collections)
+            let cell: String?
+            do { cell = try input.elementText(at: index) }
+            catch { throw .value(error) }
+            if let cell, UInt64(cell.utf8.count) > childLimits.maximumRetainedBytes {
+                throw .resourceLimit("Array decoded cell byte budget exceeded")
             }
-            declared.append((lower, length))
-        }
-        if !declared.isEmpty { try require(61) }
-        let shape = try group(depth: 1)
-        spaces()
-        guard index == input.count else { throw .invalidConstant("Trailing array input") }
-        guard declared.isEmpty || shape == declared.map({ Int($0.1) }) else { throw .invalidConstant("Array bounds disagree with shape") }
-        var dimensions: [QueryArrayDimension] = []
-        do {
-            if !shape.isEmpty {
-                for (offset, length) in shape.enumerated() {
-                    dimensions.append(try QueryArrayDimension(lowerBound: declared.isEmpty ? 1 : declared[offset].0,
-                                                              length: Int32(length)))
+            let value: QueryValue
+            if let cell {
+                guard let literal = try normalize(.literal(.string(cell)), as: element, limits: childLimits),
+                      case .queryValue(let normalized, _) = literal else {
+                    requiresRuntime = true
+                    continue
                 }
-            }
-            return try QueryArrayValue(elementType: element, dimensions: dimensions, elements: elements,
-                                       limits: SQLConstantSyntax.valueLimits(limits))
-        } catch { throw .value(error) }
-    }
-
-    mutating func bound(until terminator: UInt8) throws(SQLConstantError) -> Int32 {
-        let start = index
-        while let byte = peek, byte != terminator { index += 1 }
-        guard let value = Int32(String(decoding: input[start..<index], as: UTF8.self)) else { throw .invalidConstant("Invalid array bound") }
-        try require(terminator)
-        return value
-    }
-
-    mutating func group(depth: UInt64) throws(SQLConstantError) -> [Int] {
-        guard depth <= 6, depth <= limits.maximumNestingDepth else { throw .resourceLimit("Array nesting budget exceeded") }
-        spaces()
-        try require(123)
-        spaces()
-        if consume(125) {
-            guard depth == 1 else { throw .invalidConstant("Empty nested array dimension") }
-            return []
+                value = normalized
+            } else { value = .primitive(.null) }
+            do {
+                let footprint = try QueryValueValidator.measure(value)
+                try footprint.validate(limits: valueLimits(childLimits))
+                nodes += footprint.nodeCount
+                collections += footprint.collectionElementCount
+                retained += footprint.retainedByteCount
+            } catch { throw .value(error) }
+            elements.append(value)
         }
-        let nested = peek == 123
-        var childShape: [Int]?
-        var count = 0
-        repeat {
-            spaces()
-            guard (peek == 123) == nested else { throw .invalidConstant("Mixed scalar and nested array elements") }
-            if nested {
-                let shape = try group(depth: depth + 1)
-                if let childShape, childShape != shape { throw .invalidConstant("Ragged array shape") }
-                childShape = shape
-            } else {
-                guard collectionCount < limits.maximumCollectionElements,
-                      nodeCount < limits.maximumTotalNodes, limits.maximumNestingDepth > 1 else {
-                    throw .resourceLimit("Array cell budget exceeded")
-                }
-                // Reserve the array cell before giving its payload the remaining ledger.
-                collectionCount += 1
-                let childLimits = remainingChildLimits()
-                let cell = try scalar(maximumByteCount: childLimits.maximumRetainedBytes)
-                let value: QueryValue
-                if let cell {
-                    guard let literal = try SQLConstantSyntax.normalize(.literal(.string(cell)), as: element, limits: childLimits),
-                          case .queryValue(let normalized, _) = literal else {
-                        throw .unsupportedConstant("Array element conversion requires runtime policy")
-                    }
-                    value = normalized
-                } else { value = .primitive(.null) }
-                try admit(value, limits: childLimits)
-                elements.append(value)
-            }
-            count += 1
-            guard UInt64(count) <= limits.maximumCollectionElements else { throw .resourceLimit("Array dimension budget exceeded") }
-            spaces()
-            if !consume(44) { break }
-        } while true
-        try require(125)
-        return [count] + (childShape ?? [])
-    }
-
-    private func remainingChildLimits() -> QueryStructuralLimits {
-        QueryStructuralLimits(maximumNestingDepth: limits.maximumNestingDepth - 1,
-                              maximumRetainedBytes: limits.maximumRetainedBytes - retainedBytes,
-                              maximumTotalNodes: limits.maximumTotalNodes - nodeCount,
-                              maximumCollectionElements: limits.maximumCollectionElements - collectionCount)
-    }
-
-    private mutating func admit(_ value: QueryValue, limits childLimits: QueryStructuralLimits) throws(SQLConstantError) {
-        do {
-            let footprint = try QueryValueValidator.measure(value)
-            try footprint.validate(limits: SQLConstantSyntax.valueLimits(childLimits))
-            nodeCount += footprint.nodeCount
-            collectionCount += footprint.collectionElementCount
-            retainedBytes += footprint.retainedByteCount
-        } catch { throw .value(error) }
-    }
-
-    mutating func scalar(maximumByteCount: UInt64) throws(SQLConstantError) -> String? {
-        spaces()
-        let quoted = consume(34)
-        let start = index
-        var decodedCount: UInt64 = 0
-        var escaped = false
-        var closed = false
-        var contentEnd = index
-        while let byte = peek {
-            if quoted, byte == 34 { contentEnd = index; index += 1; closed = true; break }
-            if !quoted, byte == 44 || byte == 125 { contentEnd = index; break }
-            index += 1
-            if byte == 92 {
-                guard peek != nil else { throw .invalidConstant("Unterminated array escape") }
-                index += 1
-                escaped = true
-            } else {
-                guard quoted || byte != 34 && byte != 123 else { throw .invalidConstant("Invalid unquoted array cell") }
-            }
-            decodedCount += 1
-            contentEnd = index
-        }
-        if quoted {
-            guard closed else { throw .invalidConstant("Unterminated quoted array cell") }
-        } else if !escaped {
-            while contentEnd > start, isSpace(input[contentEnd - 1]) { contentEnd -= 1; decodedCount -= 1 }
-            guard contentEnd > start else { throw .invalidConstant("Empty unquoted array cell") }
-            if decodedCount == 4,
-               input[start] == 78 || input[start] == 110,
-               input[start + 1] == 85 || input[start + 1] == 117,
-               input[start + 2] == 76 || input[start + 2] == 108,
-               input[start + 3] == 76 || input[start + 3] == 108 { return nil }
-        }
-        guard decodedCount <= maximumByteCount else { throw .resourceLimit("Array decoded cell byte budget exceeded") }
-        if !escaped { return String(decoding: input[start..<contentEnd], as: UTF8.self) }
-        // Only escaped input requires a materialized decode buffer, admitted above.
-        var bytes: [UInt8] = []
-        bytes.reserveCapacity(Int(decodedCount))
-        var cursor = start
-        while cursor < contentEnd {
-            if input[cursor] == 92 { cursor += 1 }
-            bytes.append(input[cursor])
-            cursor += 1
-        }
-        if !quoted {
-            while let last = bytes.last, isSpace(last) { bytes.removeLast() }
-            guard !bytes.isEmpty else { throw .invalidConstant("Empty unquoted array cell") }
-        }
-        return String(decoding: bytes, as: UTF8.self)
+        if requiresRuntime { return nil }
+        do { return try QueryArrayValue(elementType: element, dimensions: input.dimensions, elements: elements, limits: valueLimits(limits)) }
+        catch { throw .value(error) }
     }
 }

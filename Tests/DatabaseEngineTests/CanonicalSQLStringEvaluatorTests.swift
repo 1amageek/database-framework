@@ -206,9 +206,8 @@ struct CanonicalSQLStringEvaluatorTests {
         #expect(throws: DatabaseExpressionEvaluationError.typeMismatch(operation: "chr")) {
             try result("chr", [.primitive(.null)], types:[.sql(.text)])
         }
-        #expect(throws: DatabaseExpressionEvaluationError.unsupportedExpression("CONCAT argument output type")) {
-            try result("concat", [.primitive(.null)], types:[.sql(.json)])
-        }
+        #expect(try result("concat", [.primitive(.null)], types:[.sql(.json)]) == .string(""))
+        #expect(try result("concat", [.primitive(.null)], types:[.sql(.jsonb)]) == .string(""))
     }
 
     @Test("Exact output admission and last-owner release reject one byte less")

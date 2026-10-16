@@ -7,9 +7,12 @@ import Testing
 @Suite("Canonical SQL expression type binding")
 struct CanonicalQueryTypeBinderTests {
 
-    @Test("SQL constructors reject binding while temporal casts retain declarations for runtime conversion")
+    @Test("ARRAY constructors select types, ROW stays gated and temporal casts retain declarations")
     func deferredSQLSemanticsFailBinding() throws {
-        for expression: Expression in [.array([.int(1)]), .row([.null])] {
+        let selectedArray = try binder().bind(.array([.int(1)]))
+        #expect(selectedArray.type == .sql(.array(.bigint)))
+        #expect(selectedArray.children[0].type == .sql(.bigint))
+        for expression: Expression in [.row([.null])] {
             let query = SelectQuery(projection: .items([ProjectionItem(expression)]),
                                     source: .values([], columnNames: nil))
             #expect(throws: DatabaseExpressionEvaluationError.unsupportedExpression("SQL ARRAY/ROW constructor")) {
@@ -370,10 +373,18 @@ struct CanonicalQueryTypeBinderTests {
                 try binder().bind(.literal(.sqlUnknownString(text)), contextualType: type)
             }
         }
-        for type: QueryColumnType in [.primitive(.int64, isArray: true), .primitive(.bytes), .sql(.array(.integer))] {
+        for type: QueryColumnType in [.primitive(.int64, isArray: true), .primitive(.bytes)] {
             #expect(throws: DatabaseExpressionEvaluationError.unsupportedExpression("SQL unknown string input for unsupported target type")) {
                 try binder().bind(unknown, contextualType: type)
             }
+        }
+        let selectedArray = try binder().bind(.literal(.sqlUnknownString("{7,NULL}")),
+            contextualType: .sql(.array(.integer)))
+        #expect(selectedArray.type == .sql(.array(.integer)))
+        #expect(selectedArray.children[0].type == .sql(.text))
+        #expect(throws: DatabaseExpressionEvaluationError.collection(.invalidArrayInput(
+            offset: 0, reason: "Malformed PostgreSQL array input"))) {
+            try binder().bind(unknown, contextualType: .sql(.array(.integer)))
         }
         #expect(throws: DatabaseExpressionEvaluationError.self) {
             try binder().bind(.equal(.literal(.string("7")), .literal(.int(7))))

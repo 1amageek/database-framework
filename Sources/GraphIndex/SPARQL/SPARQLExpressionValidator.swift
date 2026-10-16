@@ -111,14 +111,15 @@ private extension SPARQLExpressionValidator {
             }
             switch consume expression {
         // SQL conditionals and quantified predicates have no RDF interpretation.
+        case .arrayAccess, .collectionOperation:
+            throw SPARQLExpressionCompilationError.unsupportedExpression("SQL collection expression")
         case .currentValue:
             throw SPARQLExpressionCompilationError.unsupportedExpression("SQL current value")
         case .concatenate:
             throw SPARQLExpressionCompilationError.unsupportedExpression("SQL concatenation")
         case .greatest, .least, .truthTest, .isDistinctFrom, .quantifiedComparison:
             throw SPARQLExpressionCompilationError.unsupportedExpression("SQL conditional or quantified expression")
-        // FIXME(INCOMPLETE_IMPLEMENTATION): SPARQL compilation must reject SQL-only constructors.
-        // S07/S08 own SQL execution; RDF term semantics cannot be used as their implementation.
+        // SQL constructors have no RDF term interpretation.
         case .array, .row:
             throw SPARQLExpressionCompilationError.unsupportedExpression("SQL ARRAY/ROW constructor")
             case .literal(let literal):
@@ -269,6 +270,9 @@ private extension SPARQLExpressionValidator {
             childDepth: UInt64,
             tasks: inout [ValidationTask]
         ) throws(SPARQLExpressionCompilationError) {
+            guard !function.finalArrayIsVariadic else {
+                throw SPARQLExpressionCompilationError.unsupportedExpression("SQL VARIADIC")
+            }
             guard function.schema == nil else {
                 throw SPARQLExpressionCompilationError
                     .unsupportedExpression("SQL-qualified function")

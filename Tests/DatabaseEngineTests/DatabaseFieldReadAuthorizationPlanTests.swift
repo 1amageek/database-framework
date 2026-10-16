@@ -12,6 +12,18 @@ struct DatabaseFieldReadAuthorizationPlanTests {
         ]))]), source: .table(TableRef(table: "Parent", alias: "parent")))
         let plan = DatabaseFieldReadAuthorizationPlan.make(query: query, schema: try makeSchema())
         #expect(plan.fieldsByEntity["Parent"] == ["token", "groupID"])
+        let access = Expression.arrayAccess(.col("parent", "token"), subscripts: [
+            .index(.col("parent", "id")),
+            .slice(lower: nil, upper: .col("parent", "groupID")),
+            .slice(lower: .col("parent", "id"), upper: nil),
+        ])
+        for expression in [access, .collectionOperation(.jsonPath, left: access, right: .col("parent", "groupID"))] {
+            let query = SelectQuery(projection: .items([ProjectionItem(expression)]),
+                source: .table(TableRef(table: "Parent", alias: "parent")))
+            let plan = DatabaseFieldReadAuthorizationPlan.make(query: query, schema: try makeSchema())
+            #expect(plan.fieldsByEntity["Parent"] == ["id", "token", "groupID"])
+            #expect(!plan.isCovered(by: ["Parent": ["token", "groupID"]]))
+        }
     }
 
     @Test("Authorization coverage requires every entity and field")

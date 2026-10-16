@@ -376,6 +376,38 @@ extension SQLTextWriter {
                 }
                 try append(":" + name)
             }
+        case .arrayAccess(let base, let subscripts):
+            guard (1...6).contains(subscripts.count) else { throw .invalidStructure("Invalid array access rank") }
+            try collection(subscripts.count)
+            try append("("); try expression(base); try append(")")
+            for subscriptValue in subscripts {
+                try append("[")
+                switch subscriptValue {
+                case .index(let index):
+                    try append("("); try expression(index); try append(")")
+                case .slice(let lower, let upper):
+                    if let lower { try append("("); try expression(lower); try append(")") }
+                    try append(":")
+                    if let upper { try append("("); try expression(upper); try append(")") }
+                }
+                try append("]")
+            }
+        case .collectionOperation(let operation, let left, let right):
+            let token: String
+            switch operation {
+            case .contains: token = "@>"
+            case .containedBy: token = "<@"
+            case .overlaps: token = "&&"
+            case .jsonField: token = "->"
+            case .jsonFieldText: token = "->>"
+            case .jsonPath: token = "#>"
+            case .jsonPathText: token = "#>>"
+            case .jsonHasKey: token = "?"
+            case .jsonHasAnyKey: token = "?|"
+            case .jsonHasAllKeys: token = "?&"
+            case .jsonDeletePath: token = "#-"
+            }
+            try binary(left, token, right)
         case .add(let l, let r): try binary(l, "+", r)
         case .concatenate(let l, let r): try binary(l, "||", r)
         case .subtract(let l, let r): try binary(l, "-", r)
@@ -419,12 +451,18 @@ extension SQLTextWriter {
             try append("("); try expression(value); try append(" IN ("); try select(query); try append("))")
         case .aggregate(let value): try aggregate(value)
         case .function(let call):
-            guard !call.distinct || !call.arguments.isEmpty else { throw .invalidStructure("Generic DISTINCT call requires arguments") }
+            guard !(call.distinct || call.finalArrayIsVariadic) || !call.arguments.isEmpty else { throw .invalidStructure("Generic DISTINCT/VARIADIC call requires arguments") }
             if let schema = call.schema { try identifier(schema); try append(".") }
             try identifier(call.name)
             try append("(")
             if call.distinct { try append("DISTINCT ") }
-            try list(call.arguments) { (writer: inout SQLTextWriter, value: Expression) throws(SQLSerializationError) -> Void in try writer.expression(value) }; try append(")")
+            try collection(call.arguments.count)
+            for (index, argument) in call.arguments.enumerated() {
+                if index > 0 { try append(", ") }
+                if call.finalArrayIsVariadic && index == call.arguments.count - 1 { try append("VARIADIC ") }
+                try expression(argument)
+            }
+            try append(")")
         case .caseWhen(let operand, let pairs, let otherwise):
             guard !pairs.isEmpty else { throw .invalidStructure("CASE requires a WHEN arm") }
             try collection(pairs.count); try append("CASE")

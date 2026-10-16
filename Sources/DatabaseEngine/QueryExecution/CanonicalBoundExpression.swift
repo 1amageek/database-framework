@@ -73,6 +73,18 @@ struct CanonicalBoundExpression: Sendable {
         }
         let result: DatabaseKit.Expression
         switch expression {
+        case .array: result = try .array(children.indices.map(child))
+        case .arrayAccess(_, let subscripts):
+            var index = 1
+            func next() throws -> DatabaseKit.Expression { defer { index += 1 }; return try child(index) }
+            let selected = try subscripts.map { dimension -> ArraySubscript in
+                switch dimension {
+                case .index: return try .index(next())
+                case .slice(let lower, let upper): return try .slice(lower: lower == nil ? nil : next(), upper: upper == nil ? nil : next())
+                }
+            }
+            result = try .arrayAccess(child(0), subscripts: selected)
+        case .collectionOperation(let operation, _, _): result = try .collectionOperation(operation, left: child(0), right: child(1))
         case .greatest: result = try .greatest(children.indices.map(child))
         case .least: result = try .least(children.indices.map(child))
         case .truthTest(_, let value, let negated): result = try .truthTest(child(0), value: value, negated: negated)
@@ -127,7 +139,8 @@ struct CanonicalBoundExpression: Sendable {
         case .cast(_, let target): result = try .cast(child(0), targetType: target)
         case .function(let function):
             result = try .function(FunctionCall(name: function.name, arguments: children.indices.map(child),
-                                               distinct: function.distinct, schema: function.schema))
+                                               distinct: function.distinct, schema: function.schema,
+                                               finalArrayIsVariadic: function.finalArrayIsVariadic))
         case .inSubquery(_, let query): result = try .inSubquery(child(0), subquery: query)
         case .aggregate(let aggregate):
             func argument() throws -> DatabaseKit.Expression {
@@ -156,7 +169,7 @@ struct CanonicalBoundExpression: Sendable {
             }
             result = .aggregate(lowered)
         case .currentValue, .subquery, .exists, .literal, .parameter, .column,
-             .array, .row, .variable, .bound, .regex, .triple, .isTriple, .subject, .predicate, .object:
+.row, .variable, .bound, .regex, .triple, .isTriple, .subject, .predicate, .object:
             result = expression
         }
         // The primitive kernels can return wider carriers than their selected

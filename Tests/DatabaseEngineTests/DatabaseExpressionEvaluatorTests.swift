@@ -15,6 +15,21 @@ struct DatabaseExpressionEvaluatorTests {
                 try evaluator.evaluate(expression)
             }
         }
+        for expression: Expression in [
+            .arrayAccess(.col("unread"), subscripts: [.index(.col("unreadIndex"))]),
+            .collectionOperation(.contains, left: .col("unread"), right: .col("unreadRight")),
+        ] {
+            #expect(throws: DatabaseExpressionEvaluationError.unsupportedExpression("SQL collection expression requires selected SQL execution")) {
+                try evaluator.evaluate(expression)
+            }
+        }
+        #expect(throws: DatabaseExpressionEvaluationError.unsupportedExpression("SQL VARIADIC requires selected SQL execution")) {
+            try evaluator.evaluate(.function(FunctionCall(name: "concat", arguments: [.col("unread")], finalArrayIsVariadic: true)))
+        }
+        #expect(try evaluator.evaluate(.literal(.array([.int(1)]))) == .array([.int64(1)]))
+        #expect(SQLCollectionError.invalidArrayInput(offset: 0, reason: "invalid").description.contains("UTF-8 offset 0"))
+        #expect(SQLCollectionError.nullJSONObjectKey(argument: 1).description.contains("argument 1"))
+        #expect(SQLCollectionError.nullJSONMutationPathElement(position: 1).description.contains("element 1"))
         for type: DataType in [.time(withTimeZone: false, precision: 0),
                                .timestamp(withTimeZone: true, precision: 6)] {
             for operand: Expression in [.null, .literal(.queryValue(.primitive(.null), type: .sql(.integer)))] {

@@ -1062,9 +1062,20 @@ private func preadmitExpressionPayload(
             .greaterThanOrEqual(let lhs, let rhs),
             .and(let lhs, let rhs),
             .or(let lhs, let rhs),
-            .nullIf(let lhs, let rhs), .isDistinctFrom(let lhs, let rhs, _):
+            .nullIf(let lhs, let rhs), .isDistinctFrom(let lhs, let rhs, _),
+            .collectionOperation(_, let lhs, let rhs):
         try retainChild(lhs)
         try retainChild(rhs)
+    case .arrayAccess(let base, let subscripts):
+        try retainChild(base)
+        for item in subscripts {
+            switch item {
+            case .index(let value): try retainChild(value)
+            case .slice(let lower, let upper):
+                if let lower { try retainChild(lower) }
+                if let upper { try retainChild(upper) }
+            }
+        }
     case .patternMatch(let subject, let pattern, let escape, _):
         try retainChild(subject)
         try retainChild(pattern)
@@ -1319,13 +1330,9 @@ private struct CanonicalGroupedRow: Sendable {
     let rows: CanonicalRetainedRows
 }
 
-private struct CanonicalRowValueIdentity: Sendable, Hashable {
+private struct CanonicalRowValueIdentity: Sendable {
     let values: [CanonicalSQLValueIdentity]
     let reservation: DatabaseIntermediateReservation
-
-    static func == (lhs: Self, rhs: Self) -> Bool { lhs.values == rhs.values }
-
-    func hash(into hasher: inout Hasher) { hasher.combine(values) }
 }
 
 @inline(__always)
@@ -1365,9 +1372,22 @@ private func canonicalExpressionContainsAggregate(
             .lessThanOrEqual(let lhs, let rhs),
             .greaterThan(let lhs, let rhs),
             .greaterThanOrEqual(let lhs, let rhs), .and(let lhs, let rhs),
-            .or(let lhs, let rhs), .nullIf(let lhs, let rhs), .isDistinctFrom(let lhs, let rhs, _):
+            .or(let lhs, let rhs), .nullIf(let lhs, let rhs), .isDistinctFrom(let lhs, let rhs, _),
+            .collectionOperation(_, let lhs, let rhs):
         return canonicalExpressionContainsAggregate(lhs)
             || canonicalExpressionContainsAggregate(rhs)
+    case .arrayAccess(let base, let subscripts):
+        if canonicalExpressionContainsAggregate(base) { return true }
+        for item in subscripts {
+            switch item {
+            case .index(let value):
+                if canonicalExpressionContainsAggregate(value) { return true }
+            case .slice(let lower, let upper):
+                if lower.map(canonicalExpressionContainsAggregate) == true
+                    || upper.map(canonicalExpressionContainsAggregate) == true { return true }
+            }
+        }
+        return false
     case .patternMatch(let subject, let pattern, let escape, _):
         return canonicalExpressionContainsAggregate(subject)
             || canonicalExpressionContainsAggregate(pattern)
@@ -2068,9 +2088,20 @@ extension DatabaseContext {
                     .greaterThan(let lhs, let rhs),
                     .greaterThanOrEqual(let lhs, let rhs),
                     .and(let lhs, let rhs), .or(let lhs, let rhs),
-                    .nullIf(let lhs, let rhs), .isDistinctFrom(let lhs, let rhs, _):
+                    .nullIf(let lhs, let rhs), .isDistinctFrom(let lhs, let rhs, _),
+                    .collectionOperation(_, let lhs, let rhs):
                 collect(lhs)
                 collect(rhs)
+            case .arrayAccess(let base, let subscripts):
+                collect(base)
+                for item in subscripts {
+                    switch item {
+                    case .index(let value): collect(value)
+                    case .slice(let lower, let upper):
+                        if let lower { collect(lower) }
+                        if let upper { collect(upper) }
+                    }
+                }
             case .patternMatch(let subject, let pattern, let escape, _):
                 collect(subject); collect(pattern)
                 if let escape { collect(escape) }
@@ -2422,9 +2453,20 @@ extension DatabaseContext {
                 .greaterThan(let lhs, let rhs),
                 .greaterThanOrEqual(let lhs, let rhs),
                 .and(let lhs, let rhs), .or(let lhs, let rhs),
-                .isDistinctFrom(let lhs, let rhs, _), .nullIf(let lhs, let rhs):
+                .isDistinctFrom(let lhs, let rhs, _), .nullIf(let lhs, let rhs),
+                .collectionOperation(_, let lhs, let rhs):
             try validate(lhs)
             try validate(rhs)
+        case .arrayAccess(let base, let subscripts):
+            try validate(base)
+            for item in subscripts {
+                switch item {
+                case .index(let value): try validate(value)
+                case .slice(let lower, let upper):
+                    if let lower { try validate(lower) }
+                    if let upper { try validate(upper) }
+                }
+            }
         case .patternMatch(let subject, let pattern, let escape, _):
             try validate(subject); try validate(pattern)
             if let escape { try validate(escape) }
@@ -2538,9 +2580,20 @@ extension DatabaseContext {
                 .greaterThan(let lhs, let rhs),
                 .greaterThanOrEqual(let lhs, let rhs),
                 .and(let lhs, let rhs), .or(let lhs, let rhs),
-                .isDistinctFrom(let lhs, let rhs, _), .nullIf(let lhs, let rhs):
+                .isDistinctFrom(let lhs, let rhs, _), .nullIf(let lhs, let rhs),
+                .collectionOperation(_, let lhs, let rhs):
             try validate(lhs)
             try validate(rhs)
+        case .arrayAccess(let base, let subscripts):
+            try validate(base)
+            for item in subscripts {
+                switch item {
+                case .index(let value): try validate(value)
+                case .slice(let lower, let upper):
+                    if let lower { try validate(lower) }
+                    if let upper { try validate(upper) }
+                }
+            }
         case .patternMatch(let subject, let pattern, let escape, _):
             try validate(subject); try validate(pattern)
             if let escape { try validate(escape) }
@@ -4797,6 +4850,7 @@ extension DatabaseContext {
             }
             for (leftSource, rightSource) in zip(plan.left, plan.right) {
                 let leftType = declaration(leftSource, row: left), rightType = declaration(rightSource, row: right)
+                if Self.selectedCollectionType(leftType) || Self.selectedCollectionType(rightType) { return nil }
                 if CanonicalSQLValueSemantics.isTemporal(leftType) || CanonicalSQLValueSemantics.isTemporal(rightType) {
                     guard leftType.flatMap(CanonicalQueryTypeBinder.temporalType) == rightType.flatMap(CanonicalQueryTypeBinder.temporalType) else { return nil }
                 }
@@ -5292,13 +5346,12 @@ extension DatabaseContext {
                 at: .deduplication
             )
             defer { setReservation.release() }
-            var nextKeys = Set<CanonicalRowValueIdentity>()
-            nextKeys.reserveCapacity(next.count)
+            var nextKeys = try CanonicalSQLIdentitySet(workMeter: options.workMeter,
+                stage: .deduplication, expectedCount: next.count)
             for row in next {
                 try options.workMeter.consume(at: .deduplication)
-                nextKeys.insert(
-                    try identityRow(row, operation: "INTERSECT", workMeter: options.workMeter)
-                )
+                let key = try identityRow(row, operation: "INTERSECT", workMeter: options.workMeter)
+                _ = try nextKeys.insert(key.values)
             }
             var intersected = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
                 workMeter: options.workMeter,
@@ -5308,8 +5361,8 @@ extension DatabaseContext {
             )
             for row in accumulator {
                 try options.workMeter.consume(at: .joinCandidate)
-                guard nextKeys.contains(
-                    try identityRow(row, operation: "INTERSECT", workMeter: options.workMeter)
+                guard try nextKeys.contains(
+                    identityRow(row, operation: "INTERSECT", workMeter: options.workMeter).values
                 ) else { continue }
                 try intersected.append(
                     footprint: try CanonicalRelationalFootprintMeter.sourceAliasFootprint(
@@ -5403,13 +5456,12 @@ extension DatabaseContext {
             at: .deduplication
         )
         defer { setReservation.release() }
-        var rightKeys = Set<CanonicalRowValueIdentity>()
-        rightKeys.reserveCapacity(rightRows.count)
+        var rightKeys = try CanonicalSQLIdentitySet(workMeter: options.workMeter,
+            stage: .deduplication, expectedCount: rightRows.count)
         for row in rightRows {
             try options.workMeter.consume(at: .deduplication)
-            rightKeys.insert(
-                try identityRow(row, operation: "EXCEPT", workMeter: options.workMeter)
-            )
+            let key = try identityRow(row, operation: "EXCEPT", workMeter: options.workMeter)
+            _ = try rightKeys.insert(key.values)
         }
         var difference = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
             workMeter: options.workMeter,
@@ -5419,8 +5471,8 @@ extension DatabaseContext {
         )
         for row in leftRows {
             try options.workMeter.consume(at: .joinCandidate)
-            guard !rightKeys.contains(
-                try identityRow(row, operation: "EXCEPT", workMeter: options.workMeter)
+            guard try !rightKeys.contains(
+                identityRow(row, operation: "EXCEPT", workMeter: options.workMeter).values
             ) else { continue }
             try difference.append(
                 footprint: try CanonicalRelationalFootprintMeter.sourceAliasFootprint(
@@ -5457,8 +5509,8 @@ extension DatabaseContext {
             at: .deduplication
         )
         defer { setReservation.release() }
-        var seen = Set<CanonicalRowValueIdentity>()
-        seen.reserveCapacity(rows.count)
+        var seen = try CanonicalSQLIdentitySet(workMeter: workMeter,
+            stage: .deduplication, expectedCount: rows.count)
         var unique = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
             workMeter: workMeter,
             stage: .deduplication,
@@ -5472,7 +5524,7 @@ extension DatabaseContext {
                 operation: "relational DISTINCT",
                 workMeter: workMeter
             )
-            if seen.insert(key).inserted {
+            if try seen.insert(key.values) {
                 try unique.append(
                     footprint: try CanonicalRelationalFootprintMeter.sourceAliasFootprint(
                         of: row,
@@ -5552,6 +5604,8 @@ extension DatabaseContext {
     }
 
     private func canonicalQueryValueIdentity(_ value: QueryValue, operation: String, type: QueryColumnType? = nil, workMeter: DatabaseWorkMeter) throws -> CanonicalSQLValueIdentity {
+        if let identity = try CanonicalSQLValueIdentity.prepareCollection(value, type: type,
+            environment: inheritedSQLTemporalEnvironment, workMeter: workMeter) { return identity }
         if let identity = try CanonicalSQLValueSemantics.temporalIdentity(value, type: type,
             environment: inheritedSQLTemporalEnvironment, workMeter: workMeter) { return .temporal(identity) }
         switch value {
@@ -6048,13 +6102,13 @@ extension DatabaseContext {
                     workMeter: workMeter, evaluationContext: context)
             }
             if case .count(_, let distinct) = aggregate, let input = bound.children.first,
-               CanonicalSQLValueSemantics.isTemporal(input.type) {
+               CanonicalSQLValueSemantics.isTemporal(input.type) || selectedCollectionType(input.type) {
                 let scratch = try DatabaseIntermediateFootprint(bytes: UInt64(MemoryLayout<CanonicalSQLValueIdentity>.stride + 32))
                     .multiplied(by: UInt64(distinct ? group.rows.count : 0))
                 let reservation = try workMeter.reserveIntermediate(bytes: scratch.bytes, at: .aggregateInput)
                 defer { reservation.release() }
-                var seen = Set<CanonicalSQLValueIdentity>()
-                if distinct { seen.reserveCapacity(group.rows.count) }
+                var seen = try CanonicalSQLIdentitySet(workMeter: workMeter,
+                    stage: .aggregateInput, expectedCount: distinct ? group.rows.count : 0)
                 var count: Int64 = 0
                 for member in group.rows {
                     let cell = try await evaluateSelectedValue(input, on: member, context: context,
@@ -6063,7 +6117,7 @@ extension DatabaseContext {
                     if distinct {
                         let key = try databaseContext.canonicalQueryValueIdentity(cell.value, operation: "COUNT(DISTINCT)",
                             type: input.type, workMeter: workMeter)
-                        guard seen.insert(key).inserted else { continue }
+                        guard try seen.insert(key) else { continue }
                     }
                     let increment = count.addingReportingOverflow(1)
                     guard !increment.overflow else { throw DatabaseExpressionEvaluationError.numericOverflow }
@@ -6111,8 +6165,42 @@ extension DatabaseContext {
             throw CanonicalReadError.expressionEvaluation(.timeZone(cause), occurrence: bound.occurrence)
         } catch let cause as DatabaseExpressionEvaluationError {
             throw CanonicalReadError.expressionEvaluation(cause, occurrence: bound.occurrence)
+        } catch let cause as QueryValueError {
+            throw CanonicalReadError.expressionEvaluation(.queryValue(cause), occurrence: bound.occurrence)
         } catch CanonicalReadError.expressionEvaluation(let cause, let occurrence) {
             throw CanonicalReadError.expressionEvaluation(cause, occurrence: occurrence ?? bound.occurrence)
+        }
+    }
+
+    private static func selectedCollectionType(_ type: QueryColumnType?) -> Bool {
+        switch type {
+        case .sql(.array)?, .sql(.json)?, .sql(.jsonb)?: return true
+        default: return false
+        }
+    }
+
+    private static func selectedCollectionCast(_ bound: CanonicalBoundExpression) -> Bool {
+        if selectedCollectionType(bound.type) { return true }
+        return bound.children.first?.type == .sql(.jsonb) && !CanonicalSQLScalarCast.usesPayload(bound.type)
+    }
+
+    private static func selectedArrayFunction(_ name: String) -> Bool {
+        switch name {
+        case "array_length", "array_lower", "array_upper", "array_ndims", "array_dims", "cardinality",
+             "array_append", "array_prepend", "array_cat", "array_position", "array_positions",
+             "array_remove", "array_replace", "array_to_string", "string_to_array": return true
+        default: return false
+        }
+    }
+
+    private static func selectedJSONFunction(_ name: String) -> Bool {
+        switch name {
+        case "to_json", "to_jsonb", "array_to_json", "json_build_array", "jsonb_build_array",
+             "json_build_object", "jsonb_build_object", "json_typeof", "jsonb_typeof",
+             "json_array_length", "jsonb_array_length", "json_extract_path", "jsonb_extract_path",
+             "json_extract_path_text", "jsonb_extract_path_text", "jsonb_set", "jsonb_insert",
+             "jsonb_strip_nulls": return true
+        default: return false
         }
     }
 
@@ -6245,6 +6333,12 @@ extension DatabaseContext {
         let claim = try workMeter.reserveIntermediate(bytes: UInt64(children.count) * 512 + 256,
             at: .expressionEvaluation)
         defer { claim.release() }
+        let structural = context?.options.queryStructuralLimits ?? .default
+        let limits = QueryValueLimits(
+            maximumRetainedBytes: min(structural.maximumRetainedBytes, workMeter.budget.maximumIntermediateBytes),
+            maximumTotalNodes: min(structural.maximumTotalNodes, workMeter.budget.maximumWorkUnits),
+            maximumNestingDepth: min(structural.maximumNestingDepth, workMeter.budget.maximumWorkUnits),
+            maximumCollectionElements: min(structural.maximumCollectionElements, workMeter.budget.maximumWorkUnits))
         func booleanResult(_ value: Bool?) throws -> ProjectedQueryValue {
             let result = value.map { QueryValue.primitive(.bool($0)) } ?? .primitive(.null)
             return ProjectedQueryValue(value: try bound.normalize(result), leases: [], payloadIsRetained: false)
@@ -6256,17 +6350,32 @@ extension DatabaseContext {
             return ProjectedQueryValue(value: result, leases: leases, payloadIsRetained: !leases.isEmpty)
         }
         func patternResult() throws -> ProjectedQueryValue {
-            let structural = context?.options.queryStructuralLimits ?? .default
-            let limits = QueryValueLimits(
-                maximumRetainedBytes: min(structural.maximumRetainedBytes, workMeter.budget.maximumIntermediateBytes),
-                maximumTotalNodes: min(structural.maximumTotalNodes, workMeter.budget.maximumWorkUnits),
-                maximumNestingDepth: min(structural.maximumNestingDepth, workMeter.budget.maximumWorkUnits),
-                maximumCollectionElements: min(structural.maximumCollectionElements, workMeter.budget.maximumWorkUnits))
             let result = try CanonicalSQLPatternEvaluator.evaluate(bound,
                 operands: children.map { $0.value }, workMeter: workMeter, limits: limits)
             var leases = children.flatMap { $0.leases }
             if let lease = result.lease { leases.append(lease) }
             return ProjectedQueryValue(value: try bound.normalize(result.value), leases: leases, payloadIsRetained: !leases.isEmpty)
+        }
+        func collectionResult(array: Bool) throws -> ProjectedQueryValue {
+            let result: (value: QueryValue, lease: DatabaseQueryPayloadLease?)
+            if case .cast = bound.expression {
+                guard let input = bound.children.first, let value = children.first?.value else {
+                    throw DatabaseExpressionEvaluationError.typeMismatch(operation: "selected collection CAST arity")
+                }
+                result = try CanonicalSQLScalarCast.evaluateCollection(value, from: input.type, to: bound.type,
+                    context: bound.castContext, temporalEnvironment: temporalEnvironment,
+                    workMeter: workMeter, limits: limits)
+            } else if array {
+                result = try CanonicalSQLArrayEvaluator.evaluate(bound, operands: children.map { $0.value },
+                    temporalEnvironment: temporalEnvironment, workMeter: workMeter, limits: limits)
+            } else {
+                result = try CanonicalSQLJSONEvaluator.evaluate(bound, operands: children.map { $0.value },
+                    temporalEnvironment: temporalEnvironment, workMeter: workMeter, limits: limits)
+            }
+            var leases = children.flatMap { $0.leases }
+            if let lease = result.lease { leases.append(lease) }
+            return ProjectedQueryValue(value: try bound.normalize(result.value), leases: leases,
+                payloadIsRetained: !leases.isEmpty)
         }
         func temporalResult() throws -> ProjectedQueryValue {
             guard let temporalEnvironment else { throw DatabaseExpressionEvaluationError.missingTemporalEnvironment }
@@ -6275,6 +6384,13 @@ extension DatabaseContext {
             return ProjectedQueryValue(value: try bound.normalize(value), leases: children.flatMap { $0.leases }, payloadIsRetained: false)
         }
         switch bound.expression {
+        case .array, .arrayAccess: return try collectionResult(array: true)
+        case .collectionOperation:
+            let array: Bool
+            if case .sql(.array)? = bound.children.first?.type { array = true }
+            else { array = false }
+            return try collectionResult(array: array)
+        case .cast where selectedCollectionCast(bound): return try collectionResult(array: false)
         case .currentValue: return try temporalResult()
         case .equal, .notEqual, .lessThan, .lessThanOrEqual, .greaterThan, .greaterThanOrEqual:
             guard children.count == 2 else {
@@ -6318,6 +6434,9 @@ extension DatabaseContext {
             }
             return try booleanResult(sawNull ? nil : negated)
         case .add, .subtract, .multiply, .divide, .modulo, .negate:
+            if case .subtract = bound.expression, bound.children.first?.type == .sql(.jsonb) {
+                return try collectionResult(array: false)
+            }
             if bound.children.contains(where: { CanonicalSQLValueSemantics.isTemporal($0.type) }) { return try temporalResult() }
             let result = try CanonicalSQLNumericEvaluator.evaluate(bound,
                 operands: children.map { $0.value }, workMeter: workMeter)
@@ -6341,26 +6460,26 @@ extension DatabaseContext {
             }
             if CanonicalSQLScalarCast.usesPayload(bound.type) {
                 return try payloadResult(CanonicalSQLScalarCast.evaluatePayload(value, from: input.type,
-                    to: bound.type, context: bound.castContext, temporalEnvironment: temporalEnvironment, workMeter: workMeter))
+                    to: bound.type, context: bound.castContext, temporalEnvironment: temporalEnvironment,
+                    limits: limits, workMeter: workMeter))
             }
             let result = try CanonicalSQLScalarCast.evaluateValue(value, from: input.type,
                 to: bound.type, context: bound.castContext, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
             return ProjectedQueryValue(value: try bound.normalize(result), leases: children.flatMap { $0.leases }, payloadIsRetained: false)
         case .patternMatch: return try patternResult()
         case .concatenate:
+            if case .sql(.array) = bound.type { return try collectionResult(array: true) }
+            if bound.type == .sql(.jsonb) { return try collectionResult(array: false) }
             if bound.type == .sql(.blob) {
                 return try payloadResult(CanonicalSQLBinaryEvaluator.evaluate(bound, operands: children.map { $0.value }, workMeter: workMeter))
             }
             return try payloadResult(CanonicalSQLStringEvaluator.evaluate(bound, operands: children.map { $0.value }, temporalEnvironment: temporalEnvironment, workMeter: workMeter))
         case .function(let function):
             let name = function.name
+            if selectedArrayFunction(name) { return try collectionResult(array: true) }
+            if selectedJSONFunction(name) { return try collectionResult(array: false) }
             if ["to_char", "to_date"].contains(name) || (name == "to_timestamp" && children.count == 2) {
                 guard let temporalEnvironment else { throw DatabaseExpressionEvaluationError.missingTemporalEnvironment }
-                let structural = context?.options.queryStructuralLimits ?? .default
-                let limits = QueryValueLimits(maximumRetainedBytes: min(structural.maximumRetainedBytes, workMeter.budget.maximumIntermediateBytes),
-                    maximumTotalNodes: min(structural.maximumTotalNodes, workMeter.budget.maximumWorkUnits),
-                    maximumNestingDepth: min(structural.maximumNestingDepth, workMeter.budget.maximumWorkUnits),
-                    maximumCollectionElements: min(structural.maximumCollectionElements, workMeter.budget.maximumWorkUnits))
                 let result = try SQLTemporalFormatting.evaluate(bound, operands: children.map { $0.value },
                     environment: temporalEnvironment, workMeter: workMeter, limits: limits)
                 var leases = children.flatMap { $0.leases }
@@ -6580,14 +6699,15 @@ extension DatabaseContext {
             count: lookupCapacity
         )
 
-        func lookupSlot(for identity: [CanonicalSQLValueIdentity]) -> (Int, Int?) {
+        func lookupSlot(for identity: [CanonicalSQLValueIdentity]) throws -> (Int, Int?) {
             let mask = lookupCapacity - 1
             var slot = canonicalHashLookupSlot(
-                hashValue: identity.hashValue,
+                hashValue: try CanonicalSQLValueIdentity.hash(identity, workMeter: workMeter, stage: .aggregateInput),
                 mask: mask
             )
             while let groupIndex = groupLookup[slot] {
-                if keys[groupIndex].identity == identity {
+                if try CanonicalSQLValueIdentity.equal(keys[groupIndex].identity, identity,
+                    workMeter: workMeter, stage: .aggregateInput) {
                     return (slot, groupIndex)
                 }
                 slot = (slot + 1) & mask
@@ -6644,7 +6764,7 @@ extension DatabaseContext {
                 try keyReservation.reserveAdditional(bytes: identity.payloadFootprint(workMeter: workMeter, stage: .aggregateInput).bytes, at: .aggregateInput)
                 identities.append(identity)
             }
-            let (slot, existingGroupIndex) = lookupSlot(for: identities)
+            let (slot, existingGroupIndex) = try lookupSlot(for: identities)
             if let groupIndex = existingGroupIndex {
                 nextRow[groupTails[groupIndex]] = position
                 groupTails[groupIndex] = position
@@ -6842,7 +6962,11 @@ extension DatabaseContext {
                 }
                 try workMeter.consume(2, at: .sortComparison)
                 return try lhs.0.key.identity.lexicographicallyPrecedes(
-                    rhs.0.key.identity, by: CanonicalSQLValueIdentity.precedes
+                    rhs.0.key.identity, by: { left, right in
+                        try CanonicalSQLValueIdentity.precedes(left, right,
+                            environment: evaluationContext?.options.temporalEnvironment ?? inheritedSQLTemporalEnvironment,
+                            workMeter: workMeter)
+                    }
                 )
             }
         } catch let failure as FieldValueComparisonError {
@@ -7192,13 +7316,13 @@ extension DatabaseContext {
             throw CanonicalReadError.unsupportedSelectQuery("A numeric aggregate requires SUM or AVG")
         }
         let distinctClaim: DatabaseIntermediateReservation?
-        var seen = Set<CanonicalSQLValueIdentity>()
+        var seen = try CanonicalSQLIdentitySet(workMeter: workMeter,
+            stage: .aggregateInput, expectedCount: distinct ? rows.count : 0)
         if distinct {
             let footprint = try DatabaseIntermediateFootprint(
                 bytes: UInt64(MemoryLayout<CanonicalSQLValueIdentity>.stride + 32)).multiplied(by: UInt64(rows.count))
             distinctClaim = try workMeter.reserveIntermediate(rows: UInt64(rows.count), bytes: footprint.bytes,
                 at: .aggregateInput)
-            seen.reserveCapacity(rows.count)
         } else { distinctClaim = nil }
         defer { distinctClaim?.release() }
         var accumulator = DatabaseNumericAggregateAccumulator(inputType: input.type, workMeter: workMeter)
@@ -7211,7 +7335,7 @@ extension DatabaseContext {
                 if distinct {
                     let identity = try canonicalQueryValueIdentity(cell.value,
                         operation: isAverage ? "AVG(DISTINCT)" : "SUM(DISTINCT)", type: input.type, workMeter: workMeter)
-                    guard seen.insert(identity).inserted else { continue }
+                    guard try seen.insert(identity) else { continue }
                 }
                 try accumulator.add(cell.value)
             }
@@ -7623,8 +7747,8 @@ extension DatabaseContext {
             at: .deduplication
         )
         defer { setReservation.release() }
-        var seen: Set<[CanonicalSQLValueIdentity]> = []
-        seen.reserveCapacity(rows.count)
+        var seen = try CanonicalSQLIdentitySet(workMeter: workMeter,
+            stage: .deduplication, expectedCount: rows.count)
         var unique = try DatabaseRetainedArrayBuilder<QueryRow>(
             workMeter: workMeter,
             stage: .deduplication,
@@ -7644,7 +7768,7 @@ extension DatabaseContext {
                 for (index, value) in row.values.enumerated() {
                     identity.append(try canonicalQueryValueIdentity(value, operation: "SELECT DISTINCT", type: rows.columns[index].type, workMeter: workMeter))
                 }
-                if seen.insert(identity).inserted {
+                if try seen.insert(identity) {
                     try unique.append(
                         footprint: CanonicalRelationalFootprintMeter.positionalValueArrayFootprint(
                             count: row.values.count, valueAt: { _ in .primitive(.null) },
@@ -7699,110 +7823,152 @@ extension DatabaseContext {
     }
 
     private func prospectiveBindingPlanBytes(_ query: SelectQuery, workMeter: DatabaseWorkMeter) throws -> UInt64 {
-        func sum(_ values: UInt64...) throws -> UInt64 {
-            var result: UInt64 = 0
-            for value in values {
-                let next = result.addingReportingOverflow(value)
-                guard !next.overflow else { throw DatabaseExpressionEvaluationError.numericOverflow }
-                result = next.partialValue
-            }
-            return result
+        enum Visit {
+            case expression(Expression)
+            case source(DataSource)
+            case statement(SelectQuery)
         }
-        func expression(_ value: Expression) throws -> UInt64 {
-            try workMeter.consume(at: .bindingCandidate)
-            let descendants: UInt64
-            switch value {
-            case .concatenate(let left, let right), .add(let left, let right), .subtract(let left, let right), .multiply(let left, let right),
-                 .divide(let left, let right), .modulo(let left, let right), .equal(let left, let right),
-                 .notEqual(let left, let right), .lessThan(let left, let right), .lessThanOrEqual(let left, let right),
-                 .greaterThan(let left, let right), .greaterThanOrEqual(let left, let right),
-                 .and(let left, let right), .or(let left, let right), .nullIf(let left, let right), .isDistinctFrom(let left, let right, _):
-                descendants = try sum(expression(left), expression(right))
-            case .patternMatch(let subject, let pattern, let escape, _):
-                descendants = try sum(expression(subject), expression(pattern), escape.map(expression) ?? 0)
-            case .negate(let child), .not(let child), .truthTest(let child, _, _), .isNull(let child), .isNotNull(let child),
-                 .regex(let child, _, _), .cast(let child, _), .isTriple(let child),
-                 .subject(let child), .predicate(let child), .object(let child): descendants = try expression(child)
-            case .between(let child, let low, let high):
-                descendants = try sum(expression(child), expression(low), expression(high))
-            case .inList(let child, let members), .notInList(let child, let members):
-                var count = try expression(child)
-                for member in members { count = try sum(count, expression(member)) }
-                descendants = count
-            case .function(let call):
-                var count: UInt64 = 0
-                for argument in call.arguments { count = try sum(count, expression(argument)) }
-                descendants = count
-            case .caseWhen(let operand, let pairs, let fallback):
-                var count: UInt64 = try operand.map(expression) ?? 0
-                for pair in pairs { count = try sum(count, expression(pair.condition), expression(pair.result)) }
-                if let fallback { count = try sum(count, expression(fallback)) }
-                descendants = count
-            case .array(let members), .row(let members), .coalesce(let members), .greatest(let members), .least(let members):
-                var count: UInt64 = 0
-                for member in members { count = try sum(count, expression(member)) }
-                descendants = count
-            case .aggregate(let aggregate):
-                switch aggregate {
-                case .count(let child, _): descendants = try child.map(expression) ?? 0
-                case .sum(let child, _), .avg(let child, _), .min(let child), .max(let child),
-                     .sample(let child), .groupConcat(let child, _, _): descendants = try expression(child)
-                case .arrayAgg(let child, let keys, _):
-                    var count = try expression(child)
-                    for key in keys ?? [] { count = try sum(count, expression(key.expression)) }
-                    descendants = count
+        let layout = try DatabaseRetainedArrayLayout.forElement(Visit.self)
+        let reservation = try workMeter.reserveIntermediate(bytes: layout.containerByteCount, at: .bindingCandidate)
+        defer { reservation.release() }
+        var stack: [Visit] = []
+        var capacity = 0
+        var bytes: UInt64 = 0
+        func addBytes(_ amount: UInt64) throws {
+            let next = bytes.addingReportingOverflow(amount)
+            guard !next.overflow else { throw DatabaseExpressionEvaluationError.numericOverflow }
+            bytes = next.partialValue
+        }
+        func push(_ visit: Visit) throws {
+            try workMeter.checkpoint(at: .bindingCandidate)
+            let required = stack.count.addingReportingOverflow(1)
+            guard !required.overflow else {
+                throw DatabaseRetainedArrayLayoutError.capacityOverflow(currentCapacity: capacity)
+            }
+            let growth = try layout.growth(from: capacity, toFit: required.partialValue)
+            if growth.capacity > capacity {
+                try reservation.reserveAdditional(bytes: growth.additionalByteCount, at: .bindingCandidate)
+                stack.reserveCapacity(growth.capacity)
+                if stack.capacity > growth.capacity {
+                    let excess = try DatabaseIntermediateFootprint(bytes: layout.elementCapacitySlotByteCount)
+                        .multiplied(by: UInt64(stack.capacity - growth.capacity))
+                    try reservation.reserveAdditional(bytes: excess.bytes, at: .bindingCandidate)
                 }
-            case .subquery(let nested), .exists(let nested): descendants = try statement(nested)
-            case .quantifiedComparison(let lhs, _, _, let source):
-                switch source {
-                case .array(let value): descendants = try sum(expression(lhs), expression(value))
-                case .subquery(let query): descendants = try sum(expression(lhs), statement(query))
+                capacity = stack.capacity
+            }
+            stack.append(visit)
+        }
+        try push(.statement(query))
+        while let visit = stack.popLast() {
+            try workMeter.consume(at: .bindingCandidate)
+            try addBytes(1024)
+            // Reverse pushes preserve the recursive traversal's depth-first work order.
+            switch visit {
+            case .expression(let value):
+                switch value {
+                case .concatenate(let left, let right), .add(let left, let right), .subtract(let left, let right),
+                     .multiply(let left, let right), .divide(let left, let right), .modulo(let left, let right),
+                     .equal(let left, let right), .notEqual(let left, let right), .lessThan(let left, let right),
+                     .lessThanOrEqual(let left, let right), .greaterThan(let left, let right),
+                     .greaterThanOrEqual(let left, let right), .and(let left, let right), .or(let left, let right),
+                     .nullIf(let left, let right), .isDistinctFrom(let left, let right, _),
+                     .collectionOperation(_, let left, let right):
+                    try push(.expression(right)); try push(.expression(left))
+                case .arrayAccess(let base, let subscripts):
+                    for item in subscripts.reversed() {
+                        switch item {
+                        case .index(let value): try push(.expression(value))
+                        case .slice(let lower, let upper):
+                            if let upper { try push(.expression(upper)) }
+                            if let lower { try push(.expression(lower)) }
+                        }
+                    }
+                    try push(.expression(base))
+                case .patternMatch(let subject, let pattern, let escape, _):
+                    if let escape { try push(.expression(escape)) }
+                    try push(.expression(pattern)); try push(.expression(subject))
+                case .negate(let child), .not(let child), .truthTest(let child, _, _), .isNull(let child),
+                     .isNotNull(let child), .regex(let child, _, _), .cast(let child, _), .isTriple(let child),
+                     .subject(let child), .predicate(let child), .object(let child):
+                    try push(.expression(child))
+                case .between(let child, let low, let high):
+                    try push(.expression(high)); try push(.expression(low)); try push(.expression(child))
+                case .inList(let child, let members), .notInList(let child, let members):
+                    for member in members.reversed() { try push(.expression(member)) }
+                    try push(.expression(child))
+                case .function(let call):
+                    for argument in call.arguments.reversed() { try push(.expression(argument)) }
+                case .caseWhen(let operand, let pairs, let fallback):
+                    if let fallback { try push(.expression(fallback)) }
+                    for pair in pairs.reversed() {
+                        try push(.expression(pair.result)); try push(.expression(pair.condition))
+                    }
+                    if let operand { try push(.expression(operand)) }
+                case .array(let members), .row(let members), .coalesce(let members), .greatest(let members), .least(let members):
+                    for member in members.reversed() { try push(.expression(member)) }
+                case .aggregate(let aggregate):
+                    switch aggregate {
+                    case .count(let child, _):
+                        if let child { try push(.expression(child)) }
+                    case .sum(let child, _), .avg(let child, _), .min(let child), .max(let child),
+                         .sample(let child), .groupConcat(let child, _, _):
+                        try push(.expression(child))
+                    case .arrayAgg(let child, let keys, _):
+                        for key in (keys ?? []).reversed() { try push(.expression(key.expression)) }
+                        try push(.expression(child))
+                    }
+                case .subquery(let nested), .exists(let nested):
+                    try push(.statement(nested))
+                case .quantifiedComparison(let lhs, _, _, let source):
+                    switch source {
+                    case .array(let value): try push(.expression(value))
+                    case .subquery(let query): try push(.statement(query))
+                    }
+                    try push(.expression(lhs))
+                case .inSubquery(let child, let nested):
+                    try push(.statement(nested)); try push(.expression(child))
+                case .triple(let subject, let predicate, let object):
+                    try push(.expression(object)); try push(.expression(predicate)); try push(.expression(subject))
+                case .currentValue, .literal, .column, .variable, .parameter, .bound: break
                 }
-            case .inSubquery(let child, let nested): descendants = try sum(expression(child), statement(nested))
-            case .triple(let subject, let predicate, let object):
-                descendants = try sum(expression(subject), expression(predicate), expression(object))
-            case .currentValue, .literal, .column, .variable, .parameter, .bound: descendants = 0
+            case .source(let value):
+                switch value {
+                case .subquery(let nested, _): try push(.statement(nested))
+                case .join(let join):
+                    if case .on(let condition) = join.condition { try push(.expression(condition)) }
+                    try push(.source(join.right)); try push(.source(join.left))
+                case .union(let sources), .unionAll(let sources), .intersect(let sources):
+                    for child in sources.reversed() { try push(.source(child)) }
+                case .except(let left, let right):
+                    try push(.source(right)); try push(.source(left))
+                case .values(let rows, _):
+                    for row in rows {
+                        let allowance = UInt64(row.count).multipliedReportingOverflow(by: 1024)
+                        guard !allowance.overflow else { throw DatabaseExpressionEvaluationError.numericOverflow }
+                        try addBytes(allowance.partialValue)
+                    }
+                case .graphTable(let table):
+                    for item in (table.columns ?? []).reversed() { try push(.expression(item.expression)) }
+                #if DATABASE_MULTI_BASE
+                case .base(_, let child): try push(.source(child))
+                #endif
+                case .table, .logical, .graphPattern, .namedGraph, .service: break
+                }
+            case .statement(let value):
+                for key in (value.orderBy ?? []).reversed() { try push(.expression(key.expression)) }
+                if let having = value.having { try push(.expression(having)) }
+                for group in (value.groupBy ?? []).reversed() { try push(.expression(group)) }
+                if let filter = value.filter { try push(.expression(filter)) }
+                switch value.projection {
+                case .items(let items), .distinctItems(let items):
+                    for item in items.reversed() { try push(.expression(item.expression)) }
+                case .all, .allFrom: break
+                }
+                for definition in (value.subqueries ?? []).reversed() { try push(.statement(definition.query)) }
+                try push(.source(value.source))
             }
-            return try sum(1024, descendants)
         }
-        func source(_ value: DataSource) throws -> UInt64 {
-            try workMeter.consume(at: .bindingCandidate)
-            var bytes: UInt64 = 1024
-            switch value {
-            case .subquery(let nested, _): bytes = try sum(bytes, statement(nested))
-            case .join(let join):
-                bytes = try sum(bytes, source(join.left), source(join.right))
-                if case .on(let condition) = join.condition { bytes = try sum(bytes, expression(condition)) }
-            case .union(let sources), .unionAll(let sources), .intersect(let sources):
-                for child in sources { bytes = try sum(bytes, source(child)) }
-            case .except(let left, let right): bytes = try sum(bytes, source(left), source(right))
-            case .values(let rows, _):
-                for row in rows { bytes = try sum(bytes, UInt64(row.count) * 1024) }
-            case .graphTable(let table):
-                for item in table.columns ?? [] { bytes = try sum(bytes, expression(item.expression)) }
-            #if DATABASE_MULTI_BASE
-            case .base(_, let child): bytes = try sum(bytes, source(child))
-            #endif
-            case .table, .logical, .graphPattern, .namedGraph, .service: break
-            }
-            return bytes
-        }
-        func statement(_ value: SelectQuery) throws -> UInt64 {
-            try workMeter.consume(at: .bindingCandidate)
-            var bytes = try sum(1024, source(value.source))
-            for definition in value.subqueries ?? [] { bytes = try sum(bytes, statement(definition.query)) }
-            switch value.projection {
-            case .items(let items), .distinctItems(let items):
-                for item in items { bytes = try sum(bytes, expression(item.expression)) }
-            case .all, .allFrom: break
-            }
-            if let filter = value.filter { bytes = try sum(bytes, expression(filter)) }
-            for group in value.groupBy ?? [] { bytes = try sum(bytes, expression(group)) }
-            if let having = value.having { bytes = try sum(bytes, expression(having)) }
-            for key in value.orderBy ?? [] { bytes = try sum(bytes, expression(key.expression)) }
-            return bytes
-        }
-        return try statement(query)
+        return bytes
     }
 
     @_spi(DatabaseExecution)
@@ -8079,7 +8245,8 @@ extension DatabaseContext {
                     binding: binding.child(.source, index: UInt32(index)))
             }
             schema = try setOperationSchema(sources: sources, namedSubqueries: namedSubqueries,
-                queryBinding: binding, outerSchemas: outerSchemas)
+                queryBinding: binding, requiresEquality: { if case .unionAll = source { return false }; return true }(),
+                outerSchemas: outerSchemas)
         case .except(let left, let right):
             children = try [bindCanonicalSource(left, namedSubqueries: namedSubqueries, outerSchemas: outerSchemas,
                                 binding: binding.child(.joinLeft)),
@@ -8426,7 +8593,7 @@ extension DatabaseContext {
             return try CanonicalRelationSchema(unscopedColumns: names, types: types)
         case .union(let sources), .unionAll(let sources), .intersect(let sources):
             return try setOperationSchema(sources: sources, namedSubqueries: namedSubqueries, queryBinding: queryBinding,
-                                          outerSchemas: outerSchemas)
+                requiresEquality: { if case .unionAll = source { return false }; return true }(), outerSchemas: outerSchemas)
         case .except(let first, let second):
             return try setOperationSchema(sources: [first, second], namedSubqueries: namedSubqueries, queryBinding: queryBinding,
                                           outerSchemas: outerSchemas)
@@ -8781,6 +8948,7 @@ extension DatabaseContext {
         sources: [DataSource],
         namedSubqueries: [NamedSubquery],
         queryBinding: CanonicalQueryBindingEnvironment? = nil,
+        requiresEquality: Bool = true,
         outerSchemas: [CanonicalRelationSchema] = []
     ) throws -> CanonicalRelationSchema {
         guard let firstSource = sources.first else { return try CanonicalRelationSchema() }
@@ -8807,9 +8975,15 @@ extension DatabaseContext {
                 nullability[ordinal] = nullability[ordinal] || schema.layout.nullability[slot]
             }
         }
+        let selectedTypes = try types.map { try binder.commonSourceType($0) }
+        if requiresEquality {
+            for type in selectedTypes { try binder.requireSQLComparison(type, operation: "set equality") }
+        }
+        // The schema owns optional descriptors. This boundary copy constructs
+        // that representation explicitly instead of a reflective Array conversion.
         return try CanonicalRelationSchema(
             unscopedColumns: firstSlots.map { first.layout.slots[$0].name },
-            types: types.map { try binder.commonSourceType($0) }, nullability: nullability
+            types: selectedTypes.map(Optional.some), nullability: nullability
         )
     }
 

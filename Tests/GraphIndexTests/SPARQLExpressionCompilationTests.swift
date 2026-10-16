@@ -43,6 +43,33 @@ struct SPARQLExpressionCompilationTests {
 
     @Test("SQL constructors fail SPARQL compilation and cannot become false or unbound")
     func sqlConstructorsFailCompilation() {
+        let collectionExpressions: [Expression] = [
+            .arrayAccess(.col("unread"), subscripts: [.index(.col("unreadIndex"))]),
+            .collectionOperation(.contains, left: .col("unread"), right: .col("unreadRight")),
+        ]
+        let variadic = Expression.function(FunctionCall(name: "CONCAT", arguments: [.col("unread")], finalArrayIsVariadic: true))
+        for (expression, reason) in collectionExpressions.map({ ($0, "SQL collection expression") }) + [(variadic, "SQL VARIADIC")] {
+            #expect(throws: SPARQLExpressionCompilationError.unsupportedExpression(reason)) {
+                try SPARQLExpressionValidator.validate(expression)
+            }
+            var aggregate = SPARQLAggregateRewriter()
+            #expect(throws: SPARQLExpressionCompilationError.unsupportedExpression(reason)) {
+                try aggregate.rewrite(expression)
+            }
+            var grouped = SPARQLGroupedExpressionBindings()
+            grouped.insert(variable: "grouped", for: expression)
+            var scope = SPARQLGroupScopeExpressionRewriter(groupedExpressions: grouped,
+                directlyGroupedVariables: [], eligibleVariables: [], protectedVariables: [])
+            #expect(throws: SPARQLExpressionCompilationError.unsupportedExpression(reason)) {
+                try scope.rewrite(expression, aggregateRewriter: &aggregate)
+            }
+            #expect(throws: SPARQLExpressionEvaluationError.self) {
+                try ExpressionEvaluator.evaluateAsBoolean(expression, binding: VariableBinding())
+            }
+            #expect(throws: SPARQLExpressionEvaluationError.self) {
+                try ExpressionEvaluator.evaluateForOrdering(expression, binding: VariableBinding())
+            }
+        }
         for expression: Expression in [.array([.int(1)]), .row([.null])] {
             #expect(throws: SPARQLExpressionCompilationError.unsupportedExpression("SQL ARRAY/ROW constructor")) {
                 try SPARQLExpressionValidator.validate(expression)

@@ -292,3 +292,11 @@ changed contract requires it. Every SQL path preserves [SPEC](../SPEC.md)
 transaction, Directory, Partition, authority, and post-closure publication
 contracts. PostgreSQL-backed storage is not PostgreSQL SQL compatibility
 evidence.
+
+S07 composes selected arrays and JSON through the
+[DatabaseEngine collection boundary](Sources/DatabaseEngine/DESIGN.md#s07-collection-composition).
+Existing stored value formats and transport value codecs remain authoritative;
+only expression carriage and in-process semantics change. Public ROW and
+array-subquery construction remain required S08 composition, and general
+set-function relation invocation remains required S10 composition. Each gate
+retains explicit unsupported failures until its actual execution proof exists.

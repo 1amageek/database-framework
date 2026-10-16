@@ -136,6 +136,12 @@ struct SPARQLFunctionTransactionTests {
         )
         let embedded = DatabaseKit.Expression.function(FunctionCall(name: "sparql", arguments: []))
         let scalarOperands: [DatabaseKit.Expression] = [
+            .arrayAccess(embedded, subscripts: [.slice(lower: nil, upper: nil)]),
+            .arrayAccess(.null, subscripts: [.index(embedded)]),
+            .arrayAccess(.null, subscripts: [.slice(lower: embedded, upper: nil)]),
+            .arrayAccess(.null, subscripts: [.slice(lower: nil, upper: embedded)]),
+            .collectionOperation(.contains, left: embedded, right: .null),
+            .collectionOperation(.jsonDeletePath, left: .null, right: embedded),
             .concatenate(.string("prefix"), embedded),
             .patternMatch(subject: embedded, pattern: .string("%"), escape: nil, kind: .like),
             .patternMatch(subject: .string("value"), pattern: embedded, escape: nil, kind: .like),
@@ -476,6 +482,54 @@ struct SPARQLFunctionTransactionTests {
             #expect(failure.position == (annotation.identifierRange?.start ?? annotation.range.start))
         }
         #expect(scenario.engine.rangeReadCount == before)
+
+        func executeRewrittenCollection(_ sql: String) async throws -> QueryResponse {
+            let parsed = try SQLParser().parseSelectWithSource(sql)
+            let options = ReadExecutionOptions()
+            let meter = DatabaseWorkMeter(budget: options.budget, monotonicClock: scenario.container.monotonicClock)
+            let execution = ReadExecutionContext(options: options,
+                monotonicClock: scenario.container.monotonicClock, workMeter: meter)
+            return try await context.indexQueryContext.withSession(workMeter: meter) { session in
+                let storage = try DatabasePreparedSQLSelectStorage(workMeter: meter)
+                let rewriter = SPARQLFunctionRewriter(context: context, workMeter: meter,
+                    transaction: session.transaction, retainedStorage: storage)
+                let prepared = try await rewriter.rewritePrepared(parsed.query,
+                    occurrences: parsed.occurrences, occurrence: parsed.root)
+                return try await prepared.execute(in: session, execution: execution)
+            }
+        }
+        let collections = try await executeRewrittenCollection(
+            "SELECT (ARRAY[10,20,30][:2])[2] AS element, ARRAY[1,2] @> ARRAY[2] AS included, json_array_length(json_build_array(VARIADIC ARRAY[1,2])) AS width")
+        #expect(collections.rows.count == 1)
+        #expect(collections.rows[0].values == [.primitive(.int32(20)), .primitive(.bool(true)), .primitive(.int32(2))])
+        let beforeRejectedProducer = scenario.engine.rangeReadCount
+        do {
+            _ = try await executeRewrittenCollection("SELECT 1 IN (sparql(\"SPARQLTransactionStatement\", VARIADIC 'SELECT ?s WHERE { ?s ?p ?o }'))")
+            Issue.record("Expected unsupported SPARQL VARIADIC to reject before graph reads")
+        } catch let error as SPARQLFunctionError {
+            guard case .invalidArguments(let reason) = error else {
+                Issue.record("Expected the exact SPARQL signature rejection")
+                return
+            }
+            #expect(reason == "SPARQL() does not support SQL VARIADIC")
+        }
+        #expect(scenario.engine.rangeReadCount == beforeRejectedProducer)
+        let invalidCollection = "SELECT (ARRAY[1,2])[array_position(ARRAY[1],1,NULL)]"
+        let collectionSource = try SQLParser().parseSelectWithSource(invalidCollection)
+        let access = try #require(collectionSource.occurrences.child(of: collectionSource.root, field: .projection, index: 0))
+        let call = try #require(collectionSource.occurrences.child(of: access, field: .argument, index: 0))
+        let failurePosition = try #require(invalidCollection.range(of: "array_position")).lowerBound
+        do {
+            _ = try await executeRewrittenCollection(invalidCollection)
+            Issue.record("Expected the reached NULL array start argument to fail")
+        } catch CanonicalReadError.expressionEvaluation(let cause, let occurrence) {
+            #expect(cause == .collection(.nullArraySubscript(function: "array_position")))
+            #expect(occurrence == call)
+            // Prepared execution returns the original occurrence; the SQL boundary adds its source position.
+            let failure = SQLBindingSourceFailure(cause: .expression(cause), occurrence: occurrence,
+                sourceMap: collectionSource.sourceMap)
+            #expect(failure.position == invalidCollection.utf8.distance(from: invalidCollection.utf8.startIndex, to: failurePosition))
+        }
         await scenario.container.shutdown()
     }
 

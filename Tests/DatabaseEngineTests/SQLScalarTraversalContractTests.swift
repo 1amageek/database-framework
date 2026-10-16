@@ -48,6 +48,21 @@ struct SQLScalarTraversalContractTests {
             visitTable: { table, _ in _ = sources.insert(table.table) },
             visitPolymorphic: { _, _ in Issue.record("Unexpected polymorphic source") })
         #expect(sources == ["SubjectSource", "PatternSource", "EscapeSource"])
+        let access = Expression.arrayAccess(nested("ArraySource"), subscripts: [
+            .index(nested("IndexSource")),
+            .slice(lower: nil, upper: nested("UpperSource")),
+            .slice(lower: nested("LowerSource"), upper: nil),
+        ])
+        let collection = Expression.collectionOperation(.jsonPath,
+            left: access, right: nested("PathSource"))
+        #expect(try FusionSelectQueryGraphWalker.containsNestedQuery(in: collection, workMeter: meter))
+        var collectionSources = Set<String>()
+        try FusionSelectQueryGraphWalker.forEachQuery(
+            in: SelectQuery(projection: .items([ProjectionItem(collection)]), source: .values([[]], columnNames: [])),
+            workMeter: meter, { _ in },
+            visitTable: { table, _ in _ = collectionSources.insert(table.table) },
+            visitPolymorphic: { _, _ in Issue.record("Unexpected polymorphic source") })
+        #expect(collectionSources == ["ArraySource", "IndexSource", "UpperSource", "LowerSource", "PathSource"])
         #expect(meter.retainedIntermediateRows == 0)
         #expect(meter.retainedIntermediateBytes == 0)
     }

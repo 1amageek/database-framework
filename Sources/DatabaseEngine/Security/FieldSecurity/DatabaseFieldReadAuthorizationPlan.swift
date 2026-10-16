@@ -375,7 +375,8 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                     localBindings: localBindings,
                     outerScopes: outerScopes
                 )
-            case .add(let lhs, let rhs), .subtract(let lhs, let rhs),
+            case .collectionOperation(_, let lhs, let rhs),
+                 .add(let lhs, let rhs), .subtract(let lhs, let rhs),
                     .multiply(let lhs, let rhs), .divide(let lhs, let rhs),
                     .modulo(let lhs, let rhs), .concatenate(let lhs, let rhs), .equal(let lhs, let rhs),
                     .notEqual(let lhs, let rhs), .lessThan(let lhs, let rhs),
@@ -405,6 +406,17 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                     localBindings: localBindings,
                     outerScopes: outerScopes
                 )
+            case .arrayAccess(let base, let subscripts):
+                collect(base, localBindings: localBindings, outerScopes: outerScopes)
+                for subscriptValue in subscripts {
+                    switch subscriptValue {
+                    case .index(let value):
+                        collect(value, localBindings: localBindings, outerScopes: outerScopes)
+                    case .slice(let lower, let upper):
+                        if let lower { collect(lower, localBindings: localBindings, outerScopes: outerScopes) }
+                        if let upper { collect(upper, localBindings: localBindings, outerScopes: outerScopes) }
+                    }
+                }
             case .patternMatch(let subject, let pattern, let escape, _):
                 collect(subject, localBindings: localBindings, outerScopes: outerScopes)
                 collect(pattern, localBindings: localBindings, outerScopes: outerScopes)

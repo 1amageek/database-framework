@@ -52,6 +52,13 @@ public final class SQLParser {
         }
     }
 
+    private static let collectionOperators: [String: CollectionOperator] = [
+        "@>": .contains, "<@": .containedBy, "&&": .overlaps,
+        "->": .jsonField, "->>": .jsonFieldText, "#>": .jsonPath,
+        "#>>": .jsonPathText, "?": .jsonHasKey, "?|": .jsonHasAnyKey,
+        "?&": .jsonHasAllKeys, "#-": .jsonDeletePath,
+    ]
+
     private static let keywords: Set<String> = [
         "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "IN", "LIKE", "BETWEEN",
         "IS", "NULL", "TRUE", "FALSE", "AS", "JOIN", "INNER", "LEFT", "RIGHT",
@@ -111,6 +118,7 @@ public final class SQLParser {
     private var previousTokenEnd = 0
     private var capturesSource = false
     private var preservesOutputReferenceCasts = false
+    private var colonStartsSlice = false
     private var sourceCapture: SQLSourceCaptureCollector?
     private var sourceRoots: [QueryOccurrenceID] = []
     private var tokenIsQuoted = false
@@ -237,6 +245,7 @@ public final class SQLParser {
         sourceCapture = capturesSource ? SQLSourceCaptureCollector(limits: structuralLimits) : nil
         sourceRoots = []
         preservesOutputReferenceCasts = false
+        colonStartsSlice = false
         tokenIsQuoted = false
         currentToken = .eof
         anonymousParameterPosition = 0
@@ -475,10 +484,6 @@ extension SQLParser {
             guard value != 0 else {
                 throw ParseError.invalidSyntax(message: "U+0000 is not accepted in SQL input", position: tokenStart)
             }
-            if value == 63 {
-                position += 1
-                admitToken(.symbol("?")); return
-            }
             if value == 36 {
                 let opening = position
                 position += 1
@@ -589,12 +594,15 @@ extension SQLParser {
                 }
                 admitToken(.number(try decoded(start..<position))); return
             }
-            if value == 33, byte(1) == 126, byte(2) == 42 {
-                position += 3; admitToken(.symbol("!~*")); return
+            if (value == 33 && byte(1) == 126 && byte(2) == 42)
+                || (value == 45 && byte(1) == 62 && byte(2) == 62)
+                || (value == 35 && byte(1) == 62 && byte(2) == 62) {
+                let symbol = String(decoding: sourceBytes[position..<position + 3], as: UTF8.self)
+                position += 3; admitToken(.symbol(symbol)); return
             }
             if let next = byte(1) {
                 let pair = String(decoding: [value, next], as: UTF8.self)
-                if ["<=", ">=", "<>", "!=", "||", "&&", "->", "<-", "::", "~*", "!~", "=>", ":="].contains(pair) {
+                if ["<=", ">=", "<>", "!=", "||", "&&", "->", "<-", "::", "~*", "!~", "=>", ":=", "@>", "<@", "#>", "?|", "?&", "#-"].contains(pair) {
                     position += 2; admitToken(.symbol(pair)); return
                 }
             }
@@ -1529,8 +1537,6 @@ extension SQLParser {
             return try parseIsPredicate(left)
         case .keyword("LIKE"), .keyword("ILIKE"), .keyword("SIMILAR"):
             return try parsePatternPredicate(left, negated: false)
-        case .symbol("~"), .symbol("~*"), .symbol("!~"), .symbol("!~*"):
-            return try parsePatternPredicate(left, negated: false)
         case .keyword("IN"):
             advance()
             try expect("(")
@@ -1640,7 +1646,7 @@ extension SQLParser {
         if isKeyword("DISTINCT") {
             advance()
             try expect("FROM")
-            let right = try parseAddExpression()
+            let right = try parseConcatenateExpression()
             return try makeStructuralNode(.isDistinctFrom(value, right, negated: negated))
         }
         let truth: TruthValue
@@ -1657,10 +1663,19 @@ extension SQLParser {
 
     private func parseConcatenateExpression() throws -> Expression {
         var left = try parseAddExpression()
-        while isSymbol("||") {
+        while case .symbol(let symbol) = currentToken {
+            guard symbol == "||" || Self.collectionOperators[symbol] != nil || ["~", "~*", "!~", "!~*"].contains(symbol) else { break }
             advance()
             let right = try parseAddExpression()
-            left = try makeStructuralNode(.concatenate(left, right))
+            if let operation = Self.collectionOperators[symbol] {
+                left = try makeStructuralNode(.collectionOperation(operation, left: left, right: right))
+            } else if symbol == "||" {
+                left = try makeStructuralNode(.concatenate(left, right))
+            } else {
+                let kind: PatternMatchKind = symbol.hasSuffix("*") ? .caseInsensitiveRegularExpression : .regularExpression
+                left = try makeStructuralNode(.patternMatch(subject: left, pattern: right, escape: nil, kind: kind))
+                if symbol.hasPrefix("!") { left = try makeStructuralNode(.not(left)) }
+            }
         }
         return left
     }
@@ -1771,15 +1786,51 @@ extension SQLParser {
         } else {
             expression = try parsePrimaryExpression()
         }
-        while isSymbol("::") {
-            let start = tokenStart
-            advance()
-            expression = try normalizedCast(expression, as: parseDataType(), at: start)
+        while isSymbol("::") || isSymbol("[") {
+            if isSymbol("::") {
+                let start = tokenStart
+                advance()
+                expression = try normalizedCast(expression, as: parseDataType(), at: start)
+            } else {
+                expression = try parseArrayAccess(expression)
+            }
         }
         for negative in signs.reversed() {
             if negative { expression = try makeStructuralNode(.negate(expression), at: unaryStart) }
         }
         return expression
+    }
+
+    private func parseArrayAccess(_ base: Expression) throws -> Expression {
+        var subscripts: [ArraySubscript] = []
+        while isSymbol("[") {
+            guard subscripts.count < 6 else {
+                throw ParseError.invalidSyntax(message: "Array access has more than six dimensions", position: tokenStart)
+            }
+            try admitCollectionElement()
+            advance()
+            let lower: Expression?
+            if isSymbol(":") { lower = nil }
+            else { lower = try parseArrayBound() }
+            if isSymbol(":") {
+                advance()
+                let upper = isSymbol("]") ? nil : try parseArrayBound()
+                subscripts.append(.slice(lower: lower, upper: upper))
+            } else if let lower {
+                subscripts.append(.index(lower))
+            } else {
+                throw ParseError.invalidSyntax(message: "Expected array subscript", position: tokenStart)
+            }
+            try expect("]")
+        }
+        return try makeStructuralNode(.arrayAccess(base, subscripts: subscripts))
+    }
+
+    private func parseArrayBound() throws -> Expression {
+        let previous = colonStartsSlice
+        colonStartsSlice = true
+        defer { colonStartsSlice = previous }
+        return try parseExpression()
     }
 
     private func numericExpression(_ text: String, at start: Int) throws -> Expression {
@@ -1831,6 +1882,11 @@ extension SQLParser {
             if upper == "EXTRACT", next == .symbol("(") {
                 return try parseExtractExpression(at: primaryStart)
             }
+            if upper == "ARRAY", next == .symbol("(") {
+                // FIXME(INCOMPLETE_IMPLEMENTATION): SQL ARRAY(subquery) reaches this gate;
+                // S08 must provide relation carriage and executed cardinality/shape evidence.
+                throw ParseError.unsupportedFeature("ARRAY(subquery) requires S08 relation composition")
+            }
             if ["ARRAY", "ROW"].contains(upper), next == .symbol(upper == "ARRAY" ? "[" : "(") {
                 advance()
                 return try parseConstructor(array: upper == "ARRAY", at: primaryStart)
@@ -1860,6 +1916,9 @@ extension SQLParser {
         }
         switch currentToken {
         case .symbol("("):
+            let previousColonRole = colonStartsSlice
+            colonStartsSlice = false
+            defer { colonStartsSlice = previousColonRole }
             advance()
             // Disambiguate: subquery vs parenthesized expression
             if case .keyword("SELECT") = currentToken {
@@ -1911,6 +1970,9 @@ extension SQLParser {
             return try makeStructuralNode(.parameter(reference), at: primaryStart)
 
         case .symbol(":"):
+            guard !colonStartsSlice else {
+                throw ParseError.invalidSyntax(message: "Named subscript operands require parentheses", position: tokenStart)
+            }
             advance()
             let name: String
             switch currentToken {
@@ -2114,6 +2176,9 @@ extension SQLParser {
             }
         }
         if isSymbol("(") {
+            let previousColonRole = colonStartsSlice
+            colonStartsSlice = false
+            defer { colonStartsSlice = previousColonRole }
             let spelling = asciiUppercase(name)
             let expressionFunctions: Set<String> = ["COALESCE", "NULLIF", "GREATEST", "LEAST", "GROUPING", "JSON_ARRAY", "JSON_OBJECT", "JSON_QUERY", "JSON_SCALAR", "JSON_SERIALIZE", "JSON_VALUE", "JSON_EXISTS", "NORMALIZE", "SUBSTRING", "POSITION", "TRIM", "XMLCONCAT", "XMLFOREST"]
             guard schema != nil || quoted || !Self.columnNameWords.contains(spelling) || expressionFunctions.contains(spelling) else {
@@ -2135,16 +2200,27 @@ extension SQLParser {
                 return try makeStructuralNode(.function(FunctionCall(name: name, arguments: args, schema: schema)), at: start, identifierEnd: identifierEnd)
             }
             var args: [Expression] = []
+            var finalArrayIsVariadic = false
             if !isSymbol(")") {
                 var first = true
                 while first || isSymbol(",") {
                     if !first { advance() }
                     first = false
                     try admitCollectionElement()
+                    if isKeyword("VARIADIC") {
+                        finalArrayIsVariadic = true
+                        advance()
+                    }
                     args.append(try parseExpression())
+                    if finalArrayIsVariadic && !isSymbol(")") {
+                        throw ParseError.invalidSyntax(message: "VARIADIC must mark the final argument", position: tokenStart)
+                    }
                 }
             }
             try expect(")")
+            if finalArrayIsVariadic, schema == nil, !quoted, ["COALESCE", "NULLIF", "GREATEST", "LEAST"].contains(spelling) {
+                throw ParseError.invalidSyntax(message: "VARIADIC is not allowed in conditional expression syntax", position: start)
+            }
             if schema == nil, !quoted, distinct, ["COALESCE", "NULLIF", "GREATEST", "LEAST"].contains(spelling) {
                 throw ParseError.invalidSyntax(message: "DISTINCT is not allowed in conditional expression syntax", position: start)
             }
@@ -2160,7 +2236,7 @@ extension SQLParser {
                 guard !args.isEmpty else { throw ParseError.invalidSyntax(message: "GREATEST/LEAST requires at least one argument", position: start) }
                 return try makeStructuralNode(spelling == "GREATEST" ? .greatest(args) : .least(args), at: start, identifierEnd: identifierEnd)
             }
-            return try makeStructuralNode(.function(FunctionCall(name: name, arguments: args, distinct: distinct, schema: schema)), at: start, identifierEnd: identifierEnd)
+            return try makeStructuralNode(.function(FunctionCall(name: name, arguments: args, distinct: distinct, schema: schema, finalArrayIsVariadic: finalArrayIsVariadic)), at: start, identifierEnd: identifierEnd)
         }
         return try makeStructuralNode(.column(ColumnRef(table: schema, column: name)), at: start, identifierEnd: identifierEnd)
     }
@@ -2238,6 +2314,9 @@ extension SQLParser {
     ]
 
     private func parseConstructor(array: Bool, at start: Int? = nil) throws -> Expression {
+        let previousColonRole = colonStartsSlice
+        colonStartsSlice = false
+        defer { colonStartsSlice = previousColonRole }
         let constructorStart = start ?? tokenStart
         try enterStructuralNesting()
         defer { leaveStructuralNesting() }
@@ -2261,6 +2340,9 @@ extension SQLParser {
     }
 
     private func parseCastExpression() throws -> Expression {
+        let previousColonRole = colonStartsSlice
+        colonStartsSlice = false
+        defer { colonStartsSlice = previousColonRole }
         let start = tokenStart
         try expect("CAST")
         try expect("(")

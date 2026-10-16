@@ -14,6 +14,12 @@ products.
 
 ## Responsibilities and Boundaries
 
+S07 public SQL consumes [Engine's selected collection composition](../DatabaseEngine/QueryExecution/DESIGN.md#s07-selected-collections-and-relational-identity).
+The facade preserves selected metadata, complete payload leases, source
+failures and SQL versus SPARQL language applicability. It does not implement
+array/JSON algorithms. Public ROW/array-subquery and general SRF composition
+remain required S08/S10 gates, with explicit pre-read rejection until then.
+
 `Database` owns:
 
 - the public SQL entry points, parameter binding, SELECT admission, and

@@ -205,11 +205,15 @@ struct SQLSelectedStringExecutionTests {
         let context = container.testBaseContext()
         for sql in ["SELECT lower(NULL::integer)", "SELECT decode(NULL::integer, 'hex')",
                     "SELECT regexp_like(NULL::integer, '[')", "SELECT regexp_matches(value, 'a')",
-                    "SELECT regexp_split_to_table(value, ',')", "SELECT concat(NULL::json)"] {
+                    "SELECT regexp_split_to_table(value, ',')"] {
             await #expect(throws: SQLBindingSourceFailure.self) {
                 _ = try await context.executeSQL(sql + " FROM \"StringItem\"")
             }
         }
+        let concat = try await context.executeSQL("SELECT concat(NULL::json) FROM \"StringItem\"")
+        #expect(concat.rows.isEmpty)
+        #expect(concat.columns.map(\.type) == [.sql(.text)])
+        #expect(!concat.columns[0].isNullable)
         let empty = try await context.executeSQL("SELECT regexp_match(value, '(a)'), length(value), value::char(2) FROM \"StringItem\"")
         #expect(empty.rows.isEmpty)
         #expect(empty.columns.map(\.type) == [.sql(.array(.text)), .sql(.integer), .sql(.char(length: 2))])

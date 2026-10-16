@@ -4,12 +4,22 @@ import DatabaseTypes
 /// Selected SQL type output; formatted temporaries live only through the borrow.
 enum CanonicalSQLScalarText {
     static func withText<Result>(of value: QueryValue, type: QueryColumnType,
-        preservingCharacterPadding: Bool, temporalEnvironment: SQLTemporalEnvironment? = nil, workMeter: DatabaseWorkMeter,
+        preservingCharacterPadding: Bool, temporalEnvironment: SQLTemporalEnvironment? = nil,
+        limits: QueryValueLimits? = nil, workMeter: DatabaseWorkMeter,
         _ body: (borrowing Substring) throws -> Result) throws -> Result {
         guard QueryValueValidator.accepts(value, type: type), !value.isNull else {
             throw DatabaseExpressionEvaluationError.typeMismatch(operation: "selected scalar text input")
         }
         try workMeter.checkpoint(at: .expressionEvaluation)
+        if CanonicalQueryTypeBinder.isCollection(type) {
+            let result = try CanonicalSQLScalarCast.evaluateCollection(value, from: type, to: .sql(.text), context: .explicit,
+                temporalEnvironment: temporalEnvironment, workMeter: workMeter,
+                limits: limits ?? CanonicalSQLScalarCast.collectionLimits(workMeter: workMeter))
+            guard case .primitive(.string(let text)) = result.value else {
+                throw DatabaseExpressionEvaluationError.typeMismatch(operation: "collection text output")
+            }
+            return try withExtendedLifetime(result) { try body(text[...]) }
+        }
         if CanonicalQueryTypeBinder.temporalType(type) != nil {
             guard let temporalEnvironment else { throw DatabaseExpressionEvaluationError.missingTemporalEnvironment }
             return try SQLTemporalFormatting.withText(of: value, type: type, environment: temporalEnvironment,

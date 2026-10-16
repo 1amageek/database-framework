@@ -141,6 +141,8 @@ let package = Package(
                 "Directory/DESIGN.md",
                 "QueryExecution/DESIGN.md",
                 "QueryExecution/SQLPatternMatching/DESIGN.md",
+                "QueryExecution/SQLArray/DESIGN.md",
+                "QueryExecution/SQLJSON/DESIGN.md",
                 "QueryExecution/SQLTemporal/DESIGN.md",
                 "QueryExecution/SQLTemporal/TimeZoneRules/DESIGN.md",
                 "QueryExecution/SQLTemporal/Formatting/DESIGN.md",
