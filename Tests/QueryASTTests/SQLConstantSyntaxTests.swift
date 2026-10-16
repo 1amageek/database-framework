@@ -85,7 +85,7 @@ struct SQLConstantSyntaxTests {
             ("SELECT NUMERIC ' 1.2300e2 '", .queryValue(.numeric(try QueryNumericValue(value: .init(coefficient: 123, scale: 0), displayScale: 2)), type: .sql(.decimal(precision: nil, scale: nil)))),
         ]
         for (sql, literal) in cases {
-            #expect(try SQLParser().parseSelect(sql).projection == .items([ProjectionItem(.literal(literal))]))
+            #expect(try SQLParser().parseSelect(sql).projection == [ProjectionItem(.literal(literal))])
             #expect(try SQLConstantSyntax.normalize(.literal(literal), as: literalType(literal), limits: limits) == literal)
         }
         for sql in ["SELECT NUMERIC '1.2.3'", "SELECT UUID 'bad'", #"SELECT BYTEA '\xzz'"#] {
@@ -138,7 +138,7 @@ struct SQLConstantSyntaxTests {
         let literal = try SQLConstantSyntax.normalize(.literal(.string(text)), as: .array(.bigint), limits: limits)
         guard case .queryValue(.array(let array), _) = literal else { Issue.record("Expected array"); return }
         #expect(array.dimensions.map(\.lowerBound) == [-3, 0, 1, 7, -1, 2])
-        #expect(array.elements == [.primitive(.int64(42))])
+        #expect(array.elements.elementsEqual([QueryValue.primitive(.int64(42))]))
         #expect(try SQLConstantSyntax.arrayText(array, limits: limits) == "[-3:-3][0:0][1:1][7:7][-1:-1][2:2]={{{{{{\"42\"}}}}}}")
         #expect(throws: SQLConstantError.self) { try SQLConstantSyntax.normalize(.literal(.string("{{{{{{{42}}}}}}}")), as: .array(.integer), limits: limits) }
     }

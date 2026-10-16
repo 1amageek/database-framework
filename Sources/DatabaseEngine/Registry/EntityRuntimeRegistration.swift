@@ -919,17 +919,12 @@ public struct EntityRuntimeDefinition: Sendable {
         entity: Schema.Entity
     ) throws -> Bool {
         // Identity projections preserve rich values without primitive evaluation.
-        let computedItems: [ProjectionItem]
-        switch query.projection {
-        case .all, .allFrom:
-            computedItems = []
-        case .items(let items), .distinctItems(let items):
-            computedItems = items.filter {
-                if case .column = $0.expression { return false }
-                return true
-            }
+        let computedItems = query.projection.filter { item in
+            guard case .expression(let expression, _) = item else { return false }
+            if case .column = expression { return false }
+            return true
         }
-        let evaluationQuery = query.replacing(projection: .items(computedItems))
+        let evaluationQuery = query.replacing(projection: computedItems)
         let usesRichExpression = evaluationQuery.referencedColumns.contains {
             entity.fieldMapByName[$0.column]?.queryType != nil
         }
@@ -1218,13 +1213,27 @@ public struct EntityRuntimeDefinition: Sendable {
                 queryFingerprint: cursor.queryFingerprint
             )
         }
-        guard let queryOffset = Int(exactly: selectQuery.offset ?? 0) else {
+        let fixedOffset: UInt64
+        switch selectQuery.pagination.offset {
+        case nil: fixedOffset = 0
+        case .fixed(let value): fixedOffset = value
+        case .expression:
+            throw CanonicalReadError.unsupportedSelectQuery("Expression pagination cannot use a storage window")
+        }
+        guard let queryOffset = Int(exactly: fixedOffset) else {
             throw CanonicalReadError.unsupportedSelectQuery(
                 "Query offset exceeds the platform integer range"
             )
         }
         let remainingLimit: Int?
-        if let limit = selectQuery.limit {
+        let fixedLimit: UInt64?
+        switch selectQuery.pagination.limit {
+        case nil, .all: fixedLimit = nil
+        case .count(.fixed(let value), withTies: false): fixedLimit = value
+        case .count:
+            throw CanonicalReadError.unsupportedSelectQuery("Expression pagination and WITH TIES cannot use a storage window")
+        }
+        if let limit = fixedLimit {
             guard let limit = Int(exactly: limit) else {
                 throw CanonicalReadError.unsupportedSelectQuery(
                     "Query limit exceeds the platform integer range"
@@ -1255,11 +1264,16 @@ public struct EntityRuntimeDefinition: Sendable {
     private static func windowPushdownIsSemanticallySafe(
         _ query: SelectQuery
     ) -> Bool {
-        guard !query.distinct,
-              !canonicalQueryRequiresAggregation(query) else {
-            return false
+        switch query.pagination.offset {
+        case nil, .fixed: break
+        case .expression: return false
         }
-        if case .distinctItems = query.projection {
+        switch query.pagination.limit {
+        case nil, .all, .count(.fixed, withTies: false): break
+        case .count: return false
+        }
+        guard query.quantifier == .all,
+              !canonicalQueryRequiresAggregation(query) else {
             return false
         }
         return true

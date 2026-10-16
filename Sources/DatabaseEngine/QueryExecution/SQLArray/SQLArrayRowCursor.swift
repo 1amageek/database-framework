@@ -28,7 +28,12 @@ struct SQLArrayRowCursor: ~Copyable {
         var needsInputClaim = false
         for index in operands.indices {
             try SQLArrayStorage.validate(operands[index], type: bound.children[index].type, meter: workMeter)
-            if case .array(let array) = operands[index], array.elements.capacity > 0 || array.dimensions.capacity > 0 { needsInputClaim = true }
+            if case .array(let array) = operands[index] {
+                let owner = array.storageFootprint
+                if owner.retainedStorageByteCount > 0 || owner.leafRetainedByteCount > 0
+                    || owner.typeStorageFootprint.retainedStorageByteCount > 0
+                    || owner.typeStorageFootprint.utf8ByteCount > 0 { needsInputClaim = true }
+            }
         }
         guard !needsInputClaim || !inputLeases.isEmpty else { throw SQLArrayStorage.mismatch("array cursor missing input claims") }
         let operation: Operation, count: Int, columnCount: Int
@@ -71,6 +76,11 @@ struct SQLArrayRowCursor: ~Copyable {
         for index in 0..<columnCount {
             guard let number = UInt32(exactly: index + 1) else { throw SQLArrayStorage.failure(.arraySubscriptOutOfRange) }
             let type: QueryColumnType = call.name == "unnest" ? .sql(try SQLArrayStorage.elementType(bound.children[index].type)) : .sql(.integer)
+            if case .sql(.composite(let descriptor)) = type {
+                let footprint = try descriptor.measure()
+                try workMeter.consume(footprint.nodeCount, at: .expressionEvaluation)
+                try columns.reservation.reserveAdditional(bytes: footprint.retainedByteCount, at: .expressionEvaluation)
+            }
             try columns.reservation.reserveAdditional(bytes: UInt64(call.name.utf8.count), at: .expressionEvaluation)
             try columns.append(QueryColumn(number: number, name: call.name, type: type, isNullable: call.name == "unnest"))
         }

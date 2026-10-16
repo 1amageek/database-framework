@@ -64,7 +64,13 @@ RDF child canonical term bytes
 The retained scan keeps cursor envelope ownership alive while this component
 decodes the payload and invokes the consumer. Point reads return a retained
 payload owner to Core; temporary envelope and chunk owners release after
-assembly/decode.
+assembly/decode. Each retained-scan row yields in the same Task before envelope
+decode and after its consumer completes, then checks the existing meter on
+resume. The transaction, cursor and retained byte owners remain unchanged;
+no pointer borrow crosses either suspension. This bounds fast-path async
+continuations across a physical scan. `KeyValueCursor.consume` continues to
+own awaited cleanup on success, cancellation and callback failure, preserving
+the original primary/secondary cleanup error contract.
 
 ## State, Ownership, and Lifecycle
 

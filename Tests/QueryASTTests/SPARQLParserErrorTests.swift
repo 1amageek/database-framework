@@ -102,7 +102,8 @@ struct SyntaxErrorTests {
     func testNumericAfterSelectProducesEmptyProjection() throws {
         // Parser is lenient — numeric after SELECT skips to WHERE
         let query = try parseQuery("SELECT ?x WHERE { ?x ?p ?o }")
-        guard case .items(let items) = query.projection else {
+        let items = query.projection
+        guard items.allSatisfy({ if case .expression = $0 { return true }; return false }) else {
             Issue.record("Expected items projection")
             return
         }
@@ -261,7 +262,8 @@ struct ParserRobustnessTests {
     func testLongVariableName() throws {
         let longVar = String(repeating: "a", count: 1000)
         let query = try parseQuery("SELECT ?\(longVar) WHERE { ?\(longVar) ?p ?o }")
-        guard case .items(let items) = query.projection else {
+        let items = query.projection
+        guard items.allSatisfy({ if case .expression = $0 { return true }; return false }) else {
             Issue.record("Expected items")
             return
         }
@@ -297,7 +299,7 @@ struct ParserRobustnessTests {
                 }
             }
             """)
-        #expect(query.projection == .all)
+        #expect(query.projection == [.wildcard()])
     }
 
     @Test("Multiple PREFIX declarations")
@@ -327,7 +329,7 @@ struct ParserRobustnessTests {
                 ?s ex:name ?o # trailing
             }
             """)
-        #expect(query.projection == .all)
+        #expect(query.projection == [.wildcard()])
     }
 
     @Test("Boolean literals TRUE and FALSE")

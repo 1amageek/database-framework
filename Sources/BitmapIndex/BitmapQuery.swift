@@ -425,7 +425,7 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
         }
 
         return SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(TableRef(table: T.persistableType)),
             accessPath: .index(
                 IndexScanSource(
@@ -434,7 +434,7 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
                     parameters: parameters
                 )
             ),
-            limit: limitCount
+            pagination: QueryPagination(limit: limitCount.map { .count(.fixed($0), withTies: false) })
         )
     }
 }

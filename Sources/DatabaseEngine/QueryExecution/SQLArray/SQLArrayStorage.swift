@@ -63,7 +63,9 @@ enum SQLArrayStorage {
     }
 
     static func makeArray(element: DataType, rank: Int, count: Int, meter: DatabaseWorkMeter,
-        limits: QueryValueLimits, dimension: (Int) throws -> QueryArrayDimension,
+        limits: QueryValueLimits, sourceElementType: QueryColumnType? = nil,
+        castContext: CanonicalQueryTypeBinder.CastContext = .implicit, environment: SQLTemporalEnvironment? = nil,
+        dimension: (Int) throws -> QueryArrayDimension,
         cell: (Int, DatabaseIntermediateReservation) throws -> QueryValue) throws
         -> (value: QueryValue, lease: DatabaseQueryPayloadLease?) {
         guard count >= 0, rank >= 0, rank <= 6, (count == 0) == (rank == 0) else { throw failure(.invalidArrayShape) }
@@ -83,10 +85,11 @@ enum SQLArrayStorage {
         // Intrinsic validation scans cells and uses a bounded traversal stack.
         try meter.consume(UInt64(count) + UInt64(rank) + 1, at: .expressionEvaluation)
         let finalDimensions = dimensions.finish(), finalValues = values.finish()
-        let result = try QueryArrayValue(elementType: element, dimensions: finalDimensions.values,
-            elements: finalValues.values, limits: limits)
-        return (.array(result), DatabaseQueryPayloadLease(retaining: finalDimensions.reservation,
-            and: finalValues.reservation))
+        return try withExtendedLifetime((finalDimensions, finalValues)) {
+            try CanonicalSQLValueConstruction.build(type: .sql(.array(element)), values: finalValues.values,
+                dimensions: finalDimensions.values, sourceElementType: sourceElementType, context: castContext,
+                temporalEnvironment: environment, workMeter: meter, limits: limits)
+        }
     }
 
     static func empty(element: DataType, meter: DatabaseWorkMeter, limits: QueryValueLimits) throws
@@ -98,7 +101,9 @@ enum SQLArrayStorage {
     static func scalarCast(_ value: QueryValue, from source: QueryColumnType, to target: QueryColumnType,
         context: CanonicalQueryTypeBinder.CastContext, environment: SQLTemporalEnvironment?,
         meter: DatabaseWorkMeter, limits: QueryValueLimits, destination: DatabaseIntermediateReservation) throws -> QueryValue {
-        if CanonicalQueryTypeBinder.isJSON(source) || CanonicalQueryTypeBinder.isJSON(target) {
+        if CanonicalQueryTypeBinder.isJSON(source) || CanonicalQueryTypeBinder.isJSON(target)
+            || CanonicalQueryTypeBinder.compositeType(source) != nil || CanonicalQueryTypeBinder.compositeType(target) != nil
+            || CanonicalQueryTypeBinder.arrayElement(source) != nil || CanonicalQueryTypeBinder.arrayElement(target) != nil {
             if source == target { return value }
             let result = try CanonicalSQLScalarCast.evaluateCollection(value, from: source, to: target,
                 context: context, temporalEnvironment: environment, workMeter: meter, limits: limits)

@@ -108,15 +108,32 @@ struct DatabaseRetainedFootprintContractTests {
         let owner = jsonb.root.storageFootprint
         var complete = rowBase(values) + owner.retainedStorageByteCount + owner.utf8ByteCount
         for array in [interval, jsonArray] {
-            complete += 64 + UInt64(array.elements.capacity * MemoryLayout<QueryValue>.stride)
-                + UInt64(array.dimensions.capacity * MemoryLayout<QueryArrayDimension>.stride)
+            let storage = array.storageFootprint
+            complete += storage.retainedStorageByteCount + storage.typeStorageFootprint.retainedStorageByteCount
+                + storage.typeStorageFootprint.utf8ByteCount
+            let type = QueryColumnType.sql(.array(array.elementType))
+            let payload = try QueryFieldStorageAdapter.encode(.array(array), type: type,
+                limits: QueryFieldStorageAdapter.inferredLimits(for: .array(array), type: type))
+            let destination = try QueryFieldStorageAdapter.measureDecoded(payload, type: type)
+            let allowance = try CanonicalRelationalFootprintMeter.decodedQueryValueStructureAllowance(destination)
+            #expect(allowance >= storage.retainedStorageByteCount
+                + storage.typeStorageFootprint.retainedStorageByteCount + storage.typeStorageFootprint.utf8ByteCount)
+            try assertExactAdmission(DatabaseIntermediateFootprint(bytes: allowance), stage: .projection)
+            let restored = try QueryFieldStorageAdapter.decode(payload, type: type,
+                limits: QueryFieldStorageAdapter.inferredLimits(for: payload, type: type))
+            guard case .array(let restoredArray) = restored else {
+                Issue.record("A persisted SQL array lost its declared value"); return
+            }
+            let actual = restoredArray.storageFootprint
+            #expect(allowance >= actual.retainedStorageByteCount
+                + actual.typeStorageFootprint.retainedStorageByteCount + actual.typeStorageFootprint.utf8ByteCount)
         }
         let structure = try decoded(values)
         #expect(structure == DatabaseIntermediateFootprint(rows: 1, bytes: complete))
         #expect(owner.retainedStorageByteCount > 0)
         try assertExactAdmission(structure, stage: .projection)
-        let plainInterval = try QueryArrayValue(elementType: .interval(), dimensions: interval.dimensions,
-            elements: interval.elements, limits: limits)
+        let plainInterval = try QueryArrayValue(elementType: .interval(), dimensions: Array(interval.dimensions),
+            elements: Array(interval.elements), limits: limits)
         #expect(try CanonicalRelationalFootprintMeter.valueFootprint(of: QueryValue.array(interval), workMeter: meter, stage: .projection)
             == CanonicalRelationalFootprintMeter.valueFootprint(of: QueryValue.array(plainInterval), workMeter: meter, stage: .projection))
         #expect(meter.retainedIntermediateBytes == 0)

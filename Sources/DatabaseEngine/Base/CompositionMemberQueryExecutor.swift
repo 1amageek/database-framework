@@ -16,7 +16,7 @@ public protocol CompositionMemberQueryExecutor: Sendable {
     func columns(
         session: DatabaseReadSession,
         query: SelectQuery
-    ) throws -> [QueryColumn]
+    ) throws -> DatabaseRetainedQueryColumns
 
     func execute(
         session: DatabaseReadSession,

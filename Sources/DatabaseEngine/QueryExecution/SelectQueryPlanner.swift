@@ -20,9 +20,9 @@ struct SelectQueryPushdownPlan<T: Persistable>: Sendable {
     var residualFilter: Expression?
     /// Original sort keys applied once after physical candidate selection.
     var residualOrderBy: [SortKey]?
-    /// Whether `selectQuery.limit` was pushed into `typedQuery.fetchLimit`.
+    /// Whether the fixed query limit was pushed into `typedQuery.fetchLimit`.
     var limitPushed: Bool
-    /// Whether `selectQuery.offset` was pushed into `typedQuery.fetchOffset`.
+    /// Whether the fixed query offset was pushed into `typedQuery.fetchOffset`.
     var offsetPushed: Bool
     /// Whether the fetched rows already start at the current continuation
     /// window and include at most one lookahead row.
@@ -124,6 +124,7 @@ enum SelectQueryPlanner {
         var pageWindowPushed = false
         var visiblePageSize: Int? = nil
         var stableSnapshotQueryFingerprint: ByteString? = nil
+        let fixedWindow = fixedWindow(selectQuery.pagination)
         let noResidualFilter = residualFilter == nil
         let noOrderBy = selectQuery.orderBy?.isEmpty ?? true
         let resolvedPageSize = try options.resolvePageSize()
@@ -133,7 +134,8 @@ enum SelectQueryPlanner {
            selectQuery.accessPath == nil,
            options.options.continuationSnapshotIsStable,
            windowPushdownIsSemanticallySafe(selectQuery),
-           let pageSize = resolvedPageSize {
+           let pageSize = resolvedPageSize,
+           let fixedWindow {
             let cursor = try CanonicalQueryPagination
                 .validatedStableSnapshotCursor(
                     selectQuery: selectQuery,
@@ -141,7 +143,7 @@ enum SelectQueryPlanner {
                 )
             stableSnapshotQueryFingerprint = cursor.queryFingerprint
             let continuationOffset = cursor.offset
-            guard let queryOffset = Int(exactly: selectQuery.offset ?? 0) else {
+            guard let queryOffset = Int(exactly: fixedWindow.offset ?? 0) else {
                 throw CanonicalReadError.unsupportedSelectQuery(
                     "Query offset exceeds the platform integer range"
                 )
@@ -152,7 +154,7 @@ enum SelectQueryPlanner {
                 throw CanonicalReadError.invalidContinuation
             }
             let remainingLimit: Int?
-            if let limit = selectQuery.limit {
+            if let limit = fixedWindow.limit {
                 guard let limit = Int(exactly: limit) else {
                     throw CanonicalReadError.unsupportedSelectQuery(
                         "Query limit exceeds the platform integer range"
@@ -190,13 +192,14 @@ enum SelectQueryPlanner {
             query.executionWindowIsPushed = true
             pageWindowPushed = true
             visiblePageSize = visibleCount
-        } else if noResidualFilter
-                    && selectQuery.filter == nil
-                    && noOrderBy
-                    && options.continuation == nil
-                    && options.options.pageSize == nil
-                    && windowPushdownIsSemanticallySafe(selectQuery) {
-            if let limit = selectQuery.limit {
+        } else if noResidualFilter,
+                  selectQuery.filter == nil,
+                  noOrderBy,
+                  options.continuation == nil,
+                  options.options.pageSize == nil,
+                  windowPushdownIsSemanticallySafe(selectQuery),
+                  let fixedWindow {
+            if let limit = fixedWindow.limit {
                 guard let limit = Int(exactly: limit) else {
                     throw CanonicalReadError.unsupportedSelectQuery(
                         "Query limit exceeds the platform integer range"
@@ -205,7 +208,7 @@ enum SelectQueryPlanner {
                 query.fetchLimit = limit
                 limitPushed = true
             }
-            if let offset = selectQuery.offset {
+            if let offset = fixedWindow.offset {
                 guard let offset = Int(exactly: offset) else {
                     throw CanonicalReadError.unsupportedSelectQuery(
                         "Query offset exceeds the platform integer range"
@@ -249,14 +252,24 @@ enum SelectQueryPlanner {
     private static func windowPushdownIsSemanticallySafe(
         _ query: SelectQuery
     ) -> Bool {
-        guard !query.distinct,
-              !canonicalQueryRequiresAggregation(query) else {
-            return false
+        query.quantifier == .all && !canonicalQueryRequiresAggregation(query)
+    }
+
+    /// Nil means the window requires selected SQL evaluation, so no physical window may be pushed.
+    private static func fixedWindow(_ pagination: QueryPagination) -> (limit: UInt64?, offset: UInt64?)? {
+        let offset: UInt64?
+        switch pagination.offset {
+        case nil: offset = nil
+        case .fixed(let count)?: offset = count
+        case .expression?: return nil
         }
-        if case .distinctItems = query.projection {
-            return false
+        let limit: UInt64?
+        switch pagination.limit {
+        case nil, .all?: limit = nil
+        case .count(.fixed(let count), withTies: false)?: limit = count
+        case .count?: return nil
         }
-        return true
+        return (limit, offset)
     }
 
     /// Apply a canonical `AccessPath` to the typed query.

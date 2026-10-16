@@ -117,7 +117,7 @@ struct SchemaDeclaredIndexBehaviorTests {
             .testBaseContext()
             .query(
                 SelectQuery(
-                    projection: .all,
+                    projection: [.wildcard()],
                     source: .table(TableRef(CatalogItem.persistableType)),
                     accessPath: .index(
                         IndexScanSource(
@@ -165,36 +165,30 @@ struct SchemaDeclaredIndexBehaviorTests {
         )
         try await context.save()
 
-        let countProjection = Projection.items([
+        let countProjection = [
             ProjectionItem(
                 .aggregate(.count(nil, distinct: false)),
                 alias: "total"
             )
-        ])
+        ]
         let countLimitedToZero = try await context.query(
-            SelectQuery(
-                projection: countProjection,
-                source: .table(TableRef(CatalogItem.persistableType)),
-                limit: 0
-            )
+            SelectQuery(projection: countProjection,
+            source: .table(TableRef(CatalogItem.persistableType)),
+            pagination: QueryPagination(limit: .count(.fixed(0), withTies: false)))
         )
         #expect(countLimitedToZero.rows.isEmpty)
 
         let countLimitedToOne = try await context.query(
-            SelectQuery(
-                projection: countProjection,
-                source: .table(TableRef(CatalogItem.persistableType)),
-                limit: 1
-            )
+            SelectQuery(projection: countProjection,
+            source: .table(TableRef(CatalogItem.persistableType)),
+            pagination: QueryPagination(limit: .count(.fixed(1), withTies: false)))
         )
         #expect(countLimitedToOne.rows.first?.values[0] == .primitive(.int64(3)))
 
         let countOffsetPastAggregate = try await context.query(
-            SelectQuery(
-                projection: countProjection,
-                source: .table(TableRef(CatalogItem.persistableType)),
-                offset: 1
-            )
+            SelectQuery(projection: countProjection,
+            source: .table(TableRef(CatalogItem.persistableType)),
+            pagination: QueryPagination(offset: .fixed(1)))
         )
         #expect(countOffsetPastAggregate.rows.isEmpty)
 
@@ -203,12 +197,10 @@ struct SchemaDeclaredIndexBehaviorTests {
             alias: "category"
         )
         let distinctResponse = try await context.query(
-            SelectQuery(
-                projection: .items([categoryItem]),
-                source: .table(TableRef(CatalogItem.persistableType)),
-                limit: 2,
-                distinct: true
-            )
+            SelectQuery(projection: [categoryItem],
+            source: .table(TableRef(CatalogItem.persistableType)),
+            quantifier: .distinct,
+            pagination: QueryPagination(limit: .count(.fixed(2), withTies: false)))
         )
         #expect(
             Set(distinctResponse.rows.compactMap { row in
@@ -217,11 +209,10 @@ struct SchemaDeclaredIndexBehaviorTests {
         )
 
         let distinctItemsResponse = try await context.query(
-            SelectQuery(
-                projection: .distinctItems([categoryItem]),
-                source: .table(TableRef(CatalogItem.persistableType)),
-                limit: 2
-            )
+            SelectQuery(projection: [categoryItem],
+            source: .table(TableRef(CatalogItem.persistableType)),
+            quantifier: .distinct,
+            pagination: QueryPagination(limit: .count(.fixed(2), withTies: false)))
         )
         #expect(
             Set(distinctItemsResponse.rows.compactMap { row in
@@ -244,7 +235,7 @@ struct SchemaDeclaredIndexBehaviorTests {
 
         let negatedNullComparison = try await context.query(
             SelectQuery(
-                projection: .all,
+                projection: [.wildcard()],
                 source: .table(TableRef(CatalogItem.persistableType)),
                 filter: .not(
                     .equal(.column(ColumnRef("category")), .literal(.null))
@@ -255,7 +246,7 @@ struct SchemaDeclaredIndexBehaviorTests {
 
         let notInContainingNull = try await context.query(
             SelectQuery(
-                projection: .all,
+                projection: [.wildcard()],
                 source: .table(TableRef(CatalogItem.persistableType)),
                 filter: .notInList(
                     .column(ColumnRef("category")),
@@ -267,7 +258,7 @@ struct SchemaDeclaredIndexBehaviorTests {
 
         let scalarProjection = try await context.query(
             SelectQuery(
-                projection: .items([
+                projection: [
                     ProjectionItem(
                         .add(.literal(.int(2)), .literal(.int(3))),
                         alias: "sum"
@@ -296,7 +287,7 @@ struct SchemaDeclaredIndexBehaviorTests {
                         ),
                         alias: "lowerTitle"
                     )
-                ]),
+                ],
                 source: .table(TableRef(CatalogItem.persistableType)),
                 filter: .equal(
                     .column(ColumnRef("id")),
@@ -316,16 +307,14 @@ struct SchemaDeclaredIndexBehaviorTests {
 
         do {
             _ = try await context.query(
-                SelectQuery(
-                    projection: .items([
+                SelectQuery(projection: [
                         ProjectionItem(
                             .divide(.literal(.int(1)), .literal(.int(0))),
                             alias: "invalid"
                         )
-                    ]),
-                    source: .table(TableRef(CatalogItem.persistableType)),
-                    limit: 1
-                )
+                    ],
+            source: .table(TableRef(CatalogItem.persistableType)),
+            pagination: QueryPagination(limit: .count(.fixed(1), withTies: false)))
             )
             Issue.record("Division by zero must surface as a typed read error")
         } catch CanonicalReadError.expressionEvaluation(.divisionByZero, _) {
@@ -347,16 +336,16 @@ struct SchemaDeclaredIndexBehaviorTests {
             name: "selected_items",
             columns: ["identifier", "category", "title"],
             query: SelectQuery(
-                projection: .items([
+                projection: [
                     ProjectionItem(.column(ColumnRef("id"))),
                     ProjectionItem(.column(ColumnRef("category"))),
                     ProjectionItem(.column(ColumnRef("title"))),
-                ]),
+                ],
                 source: .table(TableRef(CatalogItem.persistableType))
             )
         )
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(TableRef("selected_items")),
             subqueries: [cte]
         )
@@ -402,7 +391,7 @@ struct SchemaDeclaredIndexBehaviorTests {
             )
         )
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(TableRef(CatalogItem.persistableType))
         )
         let readsBeforeQuery = storage.control.dataReadOperationCount
@@ -425,14 +414,11 @@ struct SchemaDeclaredIndexBehaviorTests {
         let recursive = NamedSubquery(
             name: "recursive_items",
             query: SelectQuery(
-                projection: .all,
-                source: .values(
-                    [[.string("candidate")]],
-                    columnNames: ["identifier"]
-                ),
+                projection: [.wildcard()],
+                source: .aliased(.values([[.literal(.string("candidate"))]]), name: "input_10", columns: ["identifier"]),
                 filter: .exists(
                     SelectQuery(
-                        projection: .all,
+                        projection: [.wildcard()],
                         source: .table(TableRef("recursive_items"))
                     )
                 )
@@ -442,7 +428,7 @@ struct SchemaDeclaredIndexBehaviorTests {
         await #expect(throws: CanonicalReadError.self) {
             _ = try await scenario.container.testBaseContext().query(
                 SelectQuery(
-                    projection: .all,
+                    projection: [.wildcard()],
                     source: .table(TableRef("recursive_items")),
                     subqueries: [recursive]
                 )
@@ -460,7 +446,7 @@ struct SchemaDeclaredIndexBehaviorTests {
         try await context.save()
 
         let missingItems = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(TableRef(CatalogItem.persistableType)),
             filter: .equal(
                 .column(ColumnRef("id")),
@@ -469,18 +455,12 @@ struct SchemaDeclaredIndexBehaviorTests {
         )
         let response = try await context.query(
             SelectQuery(
-                projection: .all,
+                projection: [.wildcard()],
                 source: .join(
                     JoinClause(
                         type: .left,
-                        left: .table(
-                            TableRef(
-                                schema: nil,
-                                table: CatalogItem.persistableType,
-                                alias: "available"
-                            )
-                        ),
-                        right: .subquery(missingItems, alias: "missing"),
+                        left: .aliased(.table(TableRef(schema: nil, table: CatalogItem.persistableType)), name: "available"),
+                        right: .aliased(.subquery(missingItems), name: "missing"),
                         condition: .on(.literal(.bool(true)))
                     )
                 )
@@ -501,17 +481,8 @@ struct SchemaDeclaredIndexBehaviorTests {
 
         let aligned = try await context.query(
             SelectQuery(
-                projection: .all,
-                source: .unionAll([
-                    .values(
-                        [[.string("first"), .int(1)]],
-                        columnNames: ["identifier", "rank"]
-                    ),
-                    .values(
-                        [[.string("second"), .int(2)]],
-                        columnNames: ["other_identifier", "other_rank"]
-                    ),
-                ])
+                projection: [.wildcard()],
+                source: .subquery(SelectQuery(projection: [.wildcard()], source: .setOperation(operator: .union, quantifier: .all, left: SelectQuery(projection: [.wildcard()], source: .aliased(.values([[.literal(.string("first")), .literal(.int(1))]]), name: "input_9", columns: ["identifier", "rank"])), right: SelectQuery(projection: [.wildcard()], source: .aliased(.values([[.literal(.string("second")), .literal(.int(2))]]), name: "input_8", columns: ["other_identifier", "other_rank"])))))
             )
         )
         #expect(aligned.rows.map { $0.values[0] } == [
@@ -523,26 +494,17 @@ struct SchemaDeclaredIndexBehaviorTests {
         await #expect(throws: CanonicalReadError.self) {
             _ = try await context.query(
                 SelectQuery(
-                    projection: .all,
-                    source: .unionAll([
-                        .values([], columnNames: ["identifier"]),
-                        .values([], columnNames: ["identifier", "rank"]),
-                    ])
+                    projection: [.wildcard()],
+                    source: .subquery(SelectQuery(projection: [.wildcard()], source: .setOperation(operator: .union, quantifier: .all, left: SelectQuery(projection: [.wildcard()], source: .subquery(SelectQuery(projection: (["identifier"]).map { ProjectionItem(.cast(.null, targetType: .text), alias: $0) }, source: .values([[]]), filter: .literal(.bool(false))))), right: SelectQuery(projection: [.wildcard()], source: .subquery(SelectQuery(projection: (["identifier", "rank"]).map { ProjectionItem(.cast(.null, targetType: .text), alias: $0) }, source: .values([[]]), filter: .literal(.bool(false))))))))
                 )
             )
         }
 
-        await #expect(throws: CanonicalReadError.self) {
+        await #expect(throws: QueryStructuralValidationError.invalidValuesRowArity(row: 1, expected: 1, actual: 2)) {
             _ = try await context.query(
                 SelectQuery(
-                    projection: .all,
-                    source: .values(
-                        [
-                            [.string("first")],
-                            [.string("second"), .int(2)],
-                        ],
-                        columnNames: nil
-                    )
+                    projection: [.wildcard()],
+                    source: .values([[.literal(.string("first"))], [.literal(.string("second")), .literal(.int(2))]])
                 )
             )
         }
@@ -553,22 +515,22 @@ struct SchemaDeclaredIndexBehaviorTests {
         let scenario = try await makeScenario()
         let context = scenario.container.testBaseContext()
         let left = SelectQuery(
-            projection: .all,
-            source: .values([[.null]], columnNames: ["identifier"])
+            projection: [.wildcard()],
+            source: .aliased(.values([[.literal(.null)]]), name: "input_5", columns: ["identifier"])
         )
         let right = SelectQuery(
-            projection: .all,
-            source: .values([[.null]], columnNames: ["identifier"])
+            projection: [.wildcard()],
+            source: .aliased(.values([[.literal(.null)]]), name: "input_4", columns: ["identifier"])
         )
 
         let response = try await context.query(
             SelectQuery(
-                projection: .all,
+                projection: [.wildcard()],
                 source: .join(
                     JoinClause(
                         type: .inner,
-                        left: .subquery(left, alias: "left_values"),
-                        right: .subquery(right, alias: "right_values"),
+                        left: .aliased(.subquery(left), name: "left_values"),
+                        right: .aliased(.subquery(right), name: "right_values"),
                         condition: .using(["identifier"])
                     )
                 )
@@ -582,17 +544,17 @@ struct SchemaDeclaredIndexBehaviorTests {
         let scenario = try await makeScenario()
         let context = scenario.container.testBaseContext()
         let left = SelectQuery(
-            projection: .all,
-            source: .values([[.int(1)]], columnNames: ["identifier"])
+            projection: [.wildcard()],
+            source: .aliased(.values([[.literal(.int(1))]]), name: "input_3", columns: ["identifier"])
         )
         let right = SelectQuery(
-            projection: .all,
-            source: .values([[.int(1)]], columnNames: ["identifier"])
+            projection: [.wildcard()],
+            source: .aliased(.values([[.literal(.int(1))]]), name: "input_2", columns: ["identifier"])
         )
 
         let response = try await context.query(
             SelectQuery(
-                projection: .items([
+                projection: [
                     ProjectionItem(
                         .column(ColumnRef("identifier")),
                         alias: "coalesced_identifier"
@@ -611,12 +573,12 @@ struct SchemaDeclaredIndexBehaviorTests {
                         )),
                         alias: "right_identifier"
                     ),
-                ]),
+                ],
                 source: .join(
                     JoinClause(
                         type: .inner,
-                        left: .subquery(left, alias: "left_values"),
-                        right: .subquery(right, alias: "right_values"),
+                        left: .aliased(.subquery(left), name: "left_values"),
+                        right: .aliased(.subquery(right), name: "right_values"),
                         condition: .using(["identifier"])
                     )
                 )
@@ -630,12 +592,12 @@ struct SchemaDeclaredIndexBehaviorTests {
 
         let wildcard = try await context.query(
             SelectQuery(
-                projection: .all,
+                projection: [.wildcard()],
                 source: .join(
                     JoinClause(
                         type: .inner,
-                        left: .subquery(left, alias: "left_values"),
-                        right: .subquery(right, alias: "right_values"),
+                        left: .aliased(.subquery(left), name: "left_values"),
+                        right: .aliased(.subquery(right), name: "right_values"),
                         condition: .using(["identifier"])
                     )
                 )
@@ -649,7 +611,7 @@ struct SchemaDeclaredIndexBehaviorTests {
         let scenario = try await makeScenario()
         let response = try await scenario.container.testBaseContext().query(
             SelectQuery(
-                projection: .items([
+                projection: [
                     ProjectionItem(
                         .aggregate(
                             .sum(.column(ColumnRef("amount")), distinct: false)
@@ -662,18 +624,10 @@ struct SchemaDeclaredIndexBehaviorTests {
                         ),
                         alias: "average"
                     ),
-                ]),
-                source: .values(
-                    [
-                        [
-                            .decimal(
+                ],
+                source: .aliased(.values([[.literal(.decimal(
                                 ExactDecimal(coefficient: 125, scale: 2)
-                            )
-                        ],
-                        [.int(2)],
-                    ],
-                    columnNames: ["amount"]
-                )
+                            ))], [.literal(.int(2))]]), name: "input_1", columns: ["amount"])
             )
         )
 
@@ -698,13 +652,13 @@ struct SchemaDeclaredIndexBehaviorTests {
         let numeric: Expression = .literal(.queryValue(.numeric(try QueryNumericValue(
             value: ExactDecimal(coefficient: 123, scale: 2), displayScale: 5)),
             type: .sql(.decimal(precision: nil, scale: nil))))
-        let projection = Projection.items([
+        let projection = [
             ProjectionItem(.column(ColumnRef("id"))),
             ProjectionItem(.add(numeric, numeric)),
             ProjectionItem(.greatest([.literal(.null), numeric])),
             ProjectionItem(.caseWhen(operand: numeric, cases: [
                 CaseWhenPair(condition: numeric, result: numeric)
-            ], elseResult: .literal(.null)))])
+            ], elseResult: .literal(.null)))]
         let indexed = SelectQuery(projection: projection, source: .table(TableRef(CatalogItem.persistableType)),
             accessPath: .index(IndexScanSource(indexName: scenario.indexName, indexType: .ordered)),
             filter: .equal(.col("category"), .string("books")))

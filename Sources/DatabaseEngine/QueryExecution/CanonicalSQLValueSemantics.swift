@@ -9,10 +9,45 @@ enum CanonicalSQLValueSemantics {
         return CanonicalQueryTypeBinder.temporalType(type) != nil
     }
 
+    static func requireComparable(_ type: QueryColumnType, operation: String,
+        workMeter: DatabaseWorkMeter?, stage: DatabaseWorkStage = .expressionEvaluation) throws {
+        let layout = try DatabaseRetainedArrayLayout.forElement(QueryColumnType.self)
+        let reservation = try workMeter?.reserveIntermediate(bytes: layout.containerByteCount, at: stage)
+        defer { reservation?.release() }
+        var pending: [QueryColumnType] = []
+        func push(_ type: QueryColumnType) throws {
+            let growth = try layout.growth(from: pending.capacity, toFit: pending.count + 1)
+            if growth.capacity > pending.capacity {
+                try reservation?.reserveAdditional(bytes: growth.additionalByteCount, at: stage)
+                pending.reserveCapacity(growth.capacity)
+                if pending.capacity > growth.capacity {
+                    try reservation?.reserveAdditional(bytes: try DatabaseIntermediateFootprint(bytes: layout.elementCapacitySlotByteCount)
+                        .multiplied(by: UInt64(pending.capacity - growth.capacity)).bytes, at: stage)
+                }
+            }
+            pending.append(type)
+        }
+        try push(type)
+        while let type = pending.popLast() {
+            try workMeter?.consume(at: stage)
+            switch type {
+            case .sql(.json):
+                throw DatabaseExpressionEvaluationError.unsupportedExpression("\(operation) of JSON has no SQL comparison")
+            case .sql(.array(let element)): try push(.sql(element))
+            case .sql(.composite(let descriptor)):
+                for column in descriptor.columns { try push(column.type) }
+            default: break
+            }
+        }
+    }
+
     static func compareValues(_ left: QueryValue, _ right: QueryValue,
         leftType: QueryColumnType, rightType: QueryColumnType,
         environment: SQLTemporalEnvironment?, workMeter: DatabaseWorkMeter) throws -> QueryComparison {
         switch (leftType, rightType) {
+        case (.sql(.composite), .sql(.composite)):
+            return try CanonicalSQLCompositeEvaluator.compare(left, right, leftType: leftType, rightType: rightType,
+                environment: environment, workMeter: workMeter)
         case (.sql(.array), .sql(.array)):
             return try CanonicalSQLArrayEvaluator.compare(left, right, leftType: leftType,
                 rightType: rightType, temporalEnvironment: environment, workMeter: workMeter)
@@ -47,7 +82,7 @@ enum CanonicalSQLValueSemantics {
         leftType: QueryColumnType, rightType: QueryColumnType,
         environment: SQLTemporalEnvironment?, workMeter: DatabaseWorkMeter) throws -> Bool {
         switch (leftType, rightType) {
-        case (.sql(.array), _), (_, .sql(.array)), (.sql(.jsonb), _), (_, .sql(.jsonb)), (.sql(.json), _), (_, .sql(.json)):
+        case (.sql(.composite), _), (_, .sql(.composite)), (.sql(.array), _), (_, .sql(.array)), (.sql(.jsonb), _), (_, .sql(.jsonb)), (.sql(.json), _), (_, .sql(.json)):
             return try compareValues(left, right, leftType: leftType, rightType: rightType,
                 environment: environment, workMeter: workMeter) == .equal
         default: break
@@ -80,8 +115,13 @@ enum CanonicalSQLValueSemantics {
     static func compareValues(_ left: QueryValue, _ right: QueryValue, type: QueryColumnType,
         using key: SortKey, environment: SQLTemporalEnvironment?, workMeter: DatabaseWorkMeter) throws -> QueryComparison {
         if left.isNull || right.isNull {
+            let selected: SortKey
+            if case .sql = type, key.nulls == nil {
+                selected = SortKey(key.expression, direction: key.direction,
+                    nulls: key.direction == .ascending ? .last : .first)
+            } else { selected = key }
             return try FieldValueComparator.compare(left.isNull ? .null : .bool(true),
-                right.isNull ? .null : .bool(true), using: key)
+                right.isNull ? .null : .bool(true), using: selected)
         }
         let result = try compareValues(left, right, leftType: type, rightType: type,
             environment: environment, workMeter: workMeter)
@@ -103,7 +143,7 @@ enum CanonicalSQLValueSemantics {
     static func permitsStoredKey(_ expression: CanonicalBoundExpression) -> Bool {
         if isTemporal(expression.type) { return false }
         switch expression.type {
-        case .sql(.array), .sql(.json), .sql(.jsonb): return false
+        case .sql(.array), .sql(.composite), .sql(.json), .sql(.jsonb): return false
         default: break
         }
         if case .sql(.char) = expression.type { return false }

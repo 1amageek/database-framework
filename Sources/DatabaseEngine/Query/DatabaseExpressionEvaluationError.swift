@@ -78,6 +78,10 @@ public enum DatabaseExpressionEvaluationError: Error, Sendable, Equatable, Custo
 
     private static func queryValueDescription(_ cause: QueryValueError) -> String {
         switch cause {
+        case .invalidBuilderReference(let index): return "Invalid query builder reference \(index)"
+        case .invalidValueConstruction: return "Invalid query value construction"
+        case .compositeFieldCountMismatch(let expected, let actual): return "Query composite requires \(expected) fields; received \(actual)"
+        case .nullCompositeField(let index): return "Query composite field \(index) cannot be NULL"
         case .invalidNumeric(let offset, let reason): return "Invalid query numeric at UTF-8 offset \(offset): \(reason)"
         case .invalidUUID(let offset, let reason): return "Invalid query UUID at UTF-8 offset \(offset): \(reason)"
         case .invalidBinary(let offset, let reason): return "Invalid query binary at UTF-8 offset \(offset): \(reason)"

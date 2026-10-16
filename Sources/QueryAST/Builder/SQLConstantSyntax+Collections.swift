@@ -188,6 +188,7 @@ extension SQLConstantSyntax {
             default: throw .unsupportedConstant("Array element has no intrinsic SQL input form")
             }
         case .array: throw .invalidConstant("Nested array values are not array cells")
+        case .composite: throw .unsupportedConstant("Composite array cells have no exact lexical SQL spelling")
         }
     }
 

@@ -26,6 +26,10 @@ enum SQLConstantError: Error, Sendable, Equatable, CustomStringConvertible {
         case .numericOutOfRange: return "SQL numeric value is out of range"
         case .value(let error):
             switch error {
+            case .invalidBuilderReference(let index): return "Invalid query value builder reference: \(index)"
+            case .invalidValueConstruction: return "Invalid query value construction"
+            case .compositeFieldCountMismatch(let expected, let actual): return "Composite field count mismatch: \(actual), expected \(expected)"
+            case .nullCompositeField(let index): return "NULL in nonnullable composite field at index \(index)"
             case .invalidNumeric(_, let reason), .invalidUUID(_, let reason), .invalidBinary(_, let reason): return reason
             case .invalidNumericDisplayScale(let scale): return "Invalid numeric display scale: \(scale)"
             case .numericOutOfRange: return "Query numeric value is out of range"

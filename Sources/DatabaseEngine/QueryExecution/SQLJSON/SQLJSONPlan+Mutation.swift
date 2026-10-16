@@ -5,7 +5,7 @@ extension SQLJSONPlan {
     enum Mutation: Equatable { case set, insert, delete }
 
     mutating func concatenate(_ left: Int, _ right: Int) throws -> Int {
-        if case .object(let a) = entries[left], case .object(let b) = entries[right] {
+        if case .object(let a, _) = entries[left], case .object(let b, _) = entries[right] {
             var result = try copy(a)
             for member in b {
                 if let index = try memberIndex(member.key, in: result) { result[index] = member }
@@ -26,7 +26,7 @@ extension SQLJSONPlan {
 
     mutating func delete(_ root: Int, key: String) throws {
         switch entries[root] {
-        case .object(let members):
+        case .object(let members, _):
             var output: [Member] = []
             for member in members {
                 if try SQLJSONComparison.strings(member.key, key, memory: memory) != .equal {
@@ -74,7 +74,7 @@ extension SQLJSONPlan {
             guard case .primitive(.string(let key)) = cell else { throw SQLJSONMemory.failure("selected JSON path element") }
             let final = position + 1 == path.elements.count
             switch entries[current] {
-            case .object(let members):
+            case .object(let members, _):
                 let existing = try memberIndex(key, in: members)
                 if !final {
                     guard let existing else { return }
@@ -139,7 +139,7 @@ extension SQLJSONPlan {
                     try memory.append(child, to: &pending)
                 }
                 entries[id] = .array(output)
-            case .object(let members):
+            case .object(let members, _):
                 var output: [Member] = []
                 for member in members {
                     if case .scalar(.null) = entries[member.value] { continue }

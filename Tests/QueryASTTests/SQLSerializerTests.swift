@@ -12,8 +12,9 @@ struct SQLSerializerTests {
 
     private func parsedLiteral(_ text: String) throws -> Literal {
         let query = try SQLParser().parseSelect("SELECT " + text)
-        guard case .items(let items) = query.projection, items.count == 1,
-              case .literal(let value) = items[0].expression else {
+        let items = query.projection
+        guard items.allSatisfy({ if case .expression = $0 { return true }; return false }), items.count == 1,
+              case .literal(let value) = try projectionExpression(items[0]) else {
             throw SQLSerializationError.invalidStructure("Expected one normalized constant")
         }
         return value
@@ -42,20 +43,20 @@ struct SQLSerializerTests {
                                         .or(.column(ColumnRef("e")), .column(ColumnRef("f"))))
         let text = try serializer.serialize(expression)
         let parsed = try SQLParser().parseSelect("SELECT " + text)
-        #expect(parsed.projection == .items([ProjectionItem(expression)]))
+        #expect(parsed.projection == [ProjectionItem(expression)])
         let concatenation = Expression.aggregate(.groupConcat(.column(ColumnRef("name")), separator: "'|", distinct: true))
         let aggregateQuery = try SQLParser().parseSelect("SELECT " + serializer.serialize(concatenation))
-        #expect(aggregateQuery.projection == .items([ProjectionItem(concatenation)]))
+        #expect(aggregateQuery.projection == [ProjectionItem(concatenation)])
     }
 
     @Test("CTE materialization, DISTINCT, lateral placement and NULL sorting survive")
     func queryMetadata() throws {
-        let inner = SelectQuery(projection: .all, source: .table(TableRef("events")))
-        let query = SelectQuery(projection: .all,
+        let inner = SelectQuery(projection: [.wildcard()], source: .table(TableRef("events")))
+        let query = SelectQuery(projection: [.wildcard()],
             source: .join(JoinClause(type: .leftLateral, left: .table(TableRef("events")),
-                                    right: .subquery(inner, alias: "nested"), condition: .on(.literal(.bool(true))))),
+                                    right: .aliased(.subquery(inner), name: "nested"), condition: .on(.literal(.bool(true))))),
             orderBy: [SortKey(.column(ColumnRef("id")), direction: .descending, nulls: .first)],
-            distinct: true,
+            quantifier: .distinct,
             subqueries: [NamedSubquery(name: "cte", columns: ["id"], query: inner, materialized: .notMaterialized)])
         let text = try serializer.serialize(query)
         #expect(text.contains("AS NOT MATERIALIZED"))
@@ -165,7 +166,7 @@ struct SQLSerializerTests {
         let source = GraphTableSource(graphName: "Graph Name", matchPattern: MatchPattern(paths: [PathPattern(elements: [
             .node(NodePattern(variable: "a", labels: ["Person"])), .edge(EdgePattern(variable: "e", direction: .outgoing)), .node(NodePattern(variable: "b"))
         ])]), columns: [GraphTableColumn(expression: .column(ColumnRef(table: "b", column: "Name")), alias: "Name")])
-        let query = SelectQuery(projection: .all, source: .graphTable(source))
+        let query = SelectQuery(projection: [.wildcard()], source: .graphTable(source))
         #expect(try SQLParser().parseSelect(serializer.serialize(query)) == query)
     }
 
@@ -173,12 +174,12 @@ struct SQLSerializerTests {
     func constructorsAndParameters() throws {
         let expression = Expression.row([.array([.parameter(.position(2)), .parameter(.name("first"))]), .parameter(.position(1))])
         let query = try SQLParser().parseSelect("SELECT " + serializer.serialize(expression))
-        #expect(query.projection == .items([ProjectionItem(expression)]))
+        #expect(query.projection == [ProjectionItem(expression)])
         #expect(throws: SQLSerializationError.self) { try serializer.serialize(Expression.parameter(.position(0))) }
         for name in ["LOWER", "coalesce", "NULLIF"] {
             let call = Expression.function(FunctionCall(name: name, arguments: [.parameter(.name("x"))], distinct: true))
             let parsed = try SQLParser().parseSelect("SELECT " + serializer.serialize(call))
-            #expect(parsed.projection == .items([ProjectionItem(call)]))
+            #expect(parsed.projection == [ProjectionItem(call)])
         }
         #expect(throws: SQLSerializationError.self) {
             try serializer.serialize(Expression.function(FunctionCall(name: "f", arguments: [], distinct: true)))
@@ -188,11 +189,10 @@ struct SQLSerializerTests {
     @Test("Non-SQL language, physical sources and unrepresentable metadata fail explicitly")
     func unsupportedContracts() throws {
         let queries = [
-            SelectQuery(projection: .all, source: .logical(LogicalSourceRef(kindIdentifier: "custom", identifier: "data"))),
-            SelectQuery(projection: .all, source: .union([.table(TableRef("a")), .table(TableRef("b"))])),
-            SelectQuery(projection: .all, source: .values([[.int(1)]], columnNames: nil)),
-            SelectQuery(projection: .all, source: .table(TableRef("a")), reduced: true),
-            SelectQuery(projection: .all, source: .table(TableRef("a", partitions: try FieldObject([("tenant", .string("t"))]))))
+            SelectQuery(projection: [.wildcard()], source: .logical(LogicalSourceRef(kindIdentifier: "custom", identifier: "data"))),
+            SelectQuery(projection: [.wildcard()], source: .values([])),
+            SelectQuery(projection: [.wildcard()], source: .table(TableRef("a")), reduced: true),
+            SelectQuery(projection: [.wildcard()], source: .table(TableRef("a", partitions: try FieldObject([("tenant", .string("t"))]))))
         ]
         for query in queries { #expect(throws: SQLSerializationError.self) { try serializer.serialize(query) } }
         for expression in [Expression.variable(Variable("x")), .regex(.column(ColumnRef("x")), pattern: "a.*", flags: "i")] {
@@ -206,7 +206,7 @@ struct SQLSerializerTests {
         let tiny = SQLSerializer(limits: QueryStructuralLimits(maximumRetainedBytes: 5))
         #expect(try tiny.serialize(Literal.sqlUnknownString("é")) == "'é'")
         #expect(throws: SQLSerializationError.self) { try tiny.serialize(Literal.sqlUnknownString("''")) }
-        let query = SelectQuery(projection: .all, source: .table(TableRef("a")))
+        let query = SelectQuery(projection: [.wildcard()], source: .table(TableRef("a")))
         let one = try serializer.serialize(query)
         let block = SQLSerializer(limits: QueryStructuralLimits(maximumRetainedBytes: UInt64(one.utf8.count)))
         #expect(try block.serialize(query) == one)

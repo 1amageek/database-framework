@@ -111,7 +111,7 @@ struct CanonicalPaginationFingerprintTests {
             expression = .not(expression)
         }
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(TableRef("events")),
             filter: expression
         )
@@ -135,12 +135,10 @@ struct CanonicalPaginationFingerprintTests {
     }
 
     private func selectQuery() -> SelectQuery {
-        SelectQuery(
-            projection: .all,
+        SelectQuery(projection: [.wildcard()],
             source: .table(TableRef("events")),
             orderBy: [SortKey(.column(ColumnRef("id")))],
-            limit: 10
-        )
+            pagination: QueryPagination(limit: .count(.fixed(10), withTies: false)))
     }
 
     private func paginationColumns() throws -> [QueryColumn] {

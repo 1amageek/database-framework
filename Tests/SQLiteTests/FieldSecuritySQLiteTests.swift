@@ -35,7 +35,16 @@ private struct FieldSecuritySQLiteRecord: SecurityPolicy {
     static func permitsQuery(
         _ query: borrowing SecurityQuery,
         in context: borrowing AuthorizationContext
-    ) -> Bool { context.isAuthenticated }
+    ) -> Bool {
+        guard context.isAuthenticated else { return false }
+        if context.principal?.roles.contains("deny-secret-order") == true,
+           query.orderBy?.contains("secret") == true { return false }
+        if context.principal?.roles.contains("bounded") == true {
+            guard let limit = query.limit else { return false }
+            return limit <= 1
+        }
+        return true
+    }
 
     static func permitsCreate(
         _ newResource: borrowing FieldSecuritySQLiteRecord,
@@ -72,7 +81,7 @@ struct FieldSecuritySQLiteTests {
         let reader = context(in: container)
         let publicResult = try await reader.query(
             SelectQuery(
-                projection: .items([.column("title")]),
+                projection: [.column("title")],
                 source: .table(TableRef(FieldSecuritySQLiteRecord.persistableType))
             )
         )
@@ -80,10 +89,99 @@ struct FieldSecuritySQLiteTests {
             try $0.primitiveFields(columns: publicResult.columns)
         } == [["title": .string("Visible")]])
 
+        let orderRestricted = context(in: container, roles: ["security", "deny-secret-order"])
+        let orderedSource = DataSource.aliased(.table(TableRef(FieldSecuritySQLiteRecord.persistableType)), name: "r")
+        let selectedSecret = Expression.field(.wholeRow("r"), name: "secret")
+        let ordered = SelectQuery(projection: [.expression(.col("r", "title"))], source: orderedSource)
+        #expect(try await orderRestricted.query(ordered.replacing(orderBy: [SortKey(.col("r", "title"))])).rows.count == 1)
+        for expression: Expression in [.col("r", "secret"), selectedSecret,
+            .field(.col("r"), name: "secret"), .wholeRow("r"), .col("r")] {
+            await #expect(throws: SecurityError.self) {
+                try await orderRestricted.query(ordered.replacing(orderBy: [SortKey(expression)]))
+            }
+        }
+        let projectedSecret = ordered.replacing(projection: [.expression(selectedSecret, alias: "sort_value")])
+        for key: Expression in [.col("sort_value"), .literal(.int(1))] {
+            await #expect(throws: SecurityError.self) {
+                try await orderRestricted.query(projectedSecret.replacing(orderBy: [SortKey(key)]))
+            }
+        }
+        let derivedSecret = DataSource.aliased(.subquery(SelectQuery(projection: [.column("secret")],
+            source: .table(TableRef(FieldSecuritySQLiteRecord.persistableType)))), name: "d")
+        let mixed = ordered.replacing(source: .join(JoinClause(type: .cross,
+            left: orderedSource, right: derivedSecret)))
+        #expect(try await orderRestricted.query(mixed.replacing(orderBy: [SortKey(.col("r", "title"))])).rows.count == 1)
+        for key: Expression in [.field(.wholeRow("d"), name: "secret"),
+            .field(.col("d"), name: "secret"), .wholeRow("d"), .col("d", "secret")] {
+            await #expect(throws: SecurityError.self) {
+                try await orderRestricted.query(mixed.replacing(orderBy: [SortKey(key)]))
+            }
+        }
+        let derivedProjection = mixed.replacing(projection: [
+            .expression(.field(.wholeRow("d"), name: "secret"), alias: "sort_value")])
+        for key: Expression in [.col("sort_value"), .literal(.int(1))] {
+            await #expect(throws: SecurityError.self) {
+                try await orderRestricted.query(derivedProjection.replacing(orderBy: [SortKey(key)]))
+            }
+        }
+
+        let boundedReader = context(in: container, roles: ["bounded"])
+        let boundedQuery = SelectQuery(projection: [.column("title")],
+            source: .table(TableRef(FieldSecuritySQLiteRecord.persistableType)),
+            pagination: QueryPagination(limit: .count(.fixed(1), withTies: false)))
+        #expect(try await boundedReader.query(boundedQuery).rows.count == 1)
+        let dynamic = boundedQuery.replacing(pagination: QueryPagination(
+            limit: .count(.expression(.literal(.int(1))), withTies: false)))
+        await #expect(throws: SecurityError.self) { try await boundedReader.query(dynamic) }
+        // Division would fail if a count subquery ran before its list grant.
+        let countQuery = SelectQuery(projection: [.expression(.divide(
+            .literal(.int(1)), .literal(.int(0))))], source: .values([[]]))
+        let subqueryCount = boundedQuery.replacing(pagination: QueryPagination(
+            limit: .count(.expression(.subquery(countQuery)), withTies: false)))
+        await #expect(throws: SecurityError.self) { try await boundedReader.query(subqueryCount) }
+        #expect(try await reader.query(dynamic).rows.count == 1)
+
+        let fieldNames = try FieldSecuritySQLiteRecord.schemaEntity.allFields
+        let titleIndex = try #require(fieldNames.firstIndex(of: "title"))
+        let columnAliases = fieldNames.map { "left_" + $0 }
+            + fieldNames.prefix(titleIndex + 1).map { "right_" + $0 }
+        let joined = DataSource.join(JoinClause(type: .inner,
+            left: .aliased(.table(TableRef(FieldSecuritySQLiteRecord.persistableType)), name: "left"),
+            right: .aliased(.table(TableRef(FieldSecuritySQLiteRecord.persistableType)), name: "right"),
+            condition: .on(.bool(true))))
+        let aliasQuery = SelectQuery(projection: [.expression(.col("joined", "right_title"))],
+            source: .aliased(.aliased(joined, name: "inner", columns: columnAliases), name: "joined"))
+        let aliasedResult = try await reader.query(aliasQuery)
+        #expect(try aliasedResult.rows.map { try $0.primitiveFields(columns: aliasedResult.columns) }
+            == [["right_title": .string("Visible")]])
+        let bareAliasJSON = "SELECT ROW_TO_JSON(r) FROM \"\(FieldSecuritySQLiteRecord.persistableType)\" AS r"
+        await #expect(throws: FieldSecurityError.self) { try await reader.executeSQL(bareAliasJSON) }
+        let authorizedJSON = try await writer.executeSQL(bareAliasJSON)
+        let authorizedRow = try #require(authorizedJSON.rows.first)
+        let authorizedValue = try #require(authorizedRow.values.first)
+        guard case .json(let wholeRowJSON) = authorizedValue else {
+            Issue.record("Expected authorized whole-row JSON")
+            return
+        }
+        #expect(wholeRowJSON.bytes.withUnsafeBytes { String(decoding: $0, as: UTF8.self) }
+            .contains("\"secret\":\"classified\""))
+        let priorityNames = fieldNames.enumerated().map { index, name in index == titleIndex ? "r" : name }
+        let priorityQuery = SelectQuery(projection: [.expression(.col("r"))],
+            source: .aliased(.table(TableRef(FieldSecuritySQLiteRecord.persistableType)),
+                name: "r", columns: priorityNames))
+        let priorityResult = try await reader.query(priorityQuery)
+        #expect(priorityResult.rows.map { $0.values } == [[.primitive(.string("Visible"))]])
+
+        let secretIndex = try #require(fieldNames.firstIndex(of: "secret"))
+        let secretAlias = secretIndex <= titleIndex ? "right_secret" : "secret"
+        await #expect(throws: FieldSecurityError.self) {
+            try await reader.query(aliasQuery.replacing(projection: [.expression(.col("joined", secretAlias))]))
+        }
+
         await #expect(throws: FieldSecurityError.self) {
             try await reader.query(
                 SelectQuery(
-                    projection: .all,
+                    projection: [.wildcard()],
                     source: .table(TableRef(FieldSecuritySQLiteRecord.persistableType))
                 )
             )
@@ -104,7 +202,7 @@ struct FieldSecuritySQLiteTests {
         await #expect(throws: FieldSecurityError.self) {
             try await reader.query(
                 SelectQuery(
-                    projection: .items([.column("title")]),
+                    projection: [.column("title")],
                     source: .table(
                         TableRef(FieldSecuritySQLiteRecord.persistableType)
                     ),
@@ -126,7 +224,7 @@ struct FieldSecuritySQLiteTests {
         await #expect(throws: FieldSecurityError.self) {
             try await reader.query(
                 SelectQuery(
-                    projection: .items([.column("title")]),
+                    projection: [.column("title")],
                     source: .table(TableRef(FieldSecuritySQLiteRecord.persistableType)),
                     filter: .equal(
                         .column(ColumnRef(column: "secret")),
@@ -138,7 +236,7 @@ struct FieldSecuritySQLiteTests {
         await #expect(throws: FieldSecurityError.self) {
             try await reader.query(
                 SelectQuery(
-                    projection: .items([.column("title")]),
+                    projection: [.column("title")],
                     source: .table(TableRef(FieldSecuritySQLiteRecord.persistableType)),
                     orderBy: [SortKey(.column(ColumnRef(column: "secret")))]
                 )
@@ -199,7 +297,7 @@ struct FieldSecuritySQLiteTests {
             try await writer.withTransaction { _ in
                 _ = try await employee.query(
                     SelectQuery(
-                        projection: .items([.column("title")]),
+                        projection: [.column("title")],
                         source: .table(
                             TableRef(FieldSecuritySQLiteRecord.persistableType)
                         )

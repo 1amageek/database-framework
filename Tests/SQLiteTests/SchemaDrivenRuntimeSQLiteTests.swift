@@ -193,8 +193,7 @@ struct SchemaDrivenRuntimeSQLiteTests {
             try await save([alice, bob], in: container)
         }
 
-        let stableInitialPage = SelectQuery(
-            projection: .items([
+        let stableInitialPage = SelectQuery(projection: [
                 ProjectionItem(
                     .literal(
                         .langLiteral(
@@ -204,11 +203,10 @@ struct SchemaDrivenRuntimeSQLiteTests {
                     ),
                     alias: "label"
                 )
-            ]),
+            ],
             source: .table(
                 TableRef(SchemaDrivenRuntimeAccount.persistableType)
-            )
-        )
+            ))
         let stablePageOptions = ReadExecutionOptions(
             pageSize: 10,
             continuationSnapshotIsStable: true
@@ -232,8 +230,7 @@ struct SchemaDrivenRuntimeSQLiteTests {
         }
         #expect(literal.languageTag?.rawValue == "en-us")
 
-        let adults = SelectQuery(
-            projection: .all,
+        let adults = SelectQuery(projection: [.wildcard()],
             source: .table(TableRef(SchemaDrivenRuntimeAccount.persistableType)),
             filter: .greaterThanOrEqual(
                 .column(ColumnRef(column: "age")),
@@ -244,20 +241,17 @@ struct SchemaDrivenRuntimeSQLiteTests {
                     .column(ColumnRef(column: "email")),
                     direction: .ascending
                 )
-            ]
-        )
+            ])
         let compiledAdults = try await compiled.testBaseContext().query(adults)
         let schemaDrivenAdults = try await schemaDriven.testBaseContext().query(adults)
         expectEqual(compiledAdults, schemaDrivenAdults)
 
-        let indexedLookup = SelectQuery(
-            projection: .all,
+        let indexedLookup = SelectQuery(projection: [.wildcard()],
             source: .table(TableRef(SchemaDrivenRuntimeAccount.persistableType)),
             filter: .equal(
                 .column(ColumnRef(column: "email")),
                 .literal(.string("alice@example.com"))
-            )
-        )
+            ))
         let compiledLookup = try await compiled.testBaseContext().query(indexedLookup)
         let schemaDrivenLookup = try await schemaDriven.testBaseContext().query(indexedLookup)
         expectEqual(compiledLookup, schemaDrivenLookup)
@@ -283,16 +277,14 @@ struct SchemaDrivenRuntimeSQLiteTests {
             }
         }
 
-        let allRows = SelectQuery(
-            projection: .all,
+        let allRows = SelectQuery(projection: [.wildcard()],
             source: .table(TableRef(SchemaDrivenRuntimeAccount.persistableType)),
             orderBy: [
                 SortKey(
                     .column(ColumnRef(column: "id")),
                     direction: .ascending
                 )
-            ]
-        )
+            ])
         let compiledRows = try await compiled.testBaseContext().query(allRows)
         let schemaDrivenRows = try await schemaDriven.testBaseContext().query(allRows)
         expectEqual(compiledRows, schemaDrivenRows)
@@ -438,16 +430,14 @@ struct SchemaDrivenRuntimeSQLiteTests {
         #expect(reopened.schemaFingerprint == publication.fingerprint)
         #expect(reopened.schemaGeneration == publication.generation)
         let response = try await reopened.testBaseContext().query(
-            SelectQuery(
-                projection: .all,
-                source: .table(
+            SelectQuery(projection: [.wildcard()],
+            source: .table(
                     TableRef(SchemaDrivenRuntimeAccount.persistableType)
                 ),
-                filter: .equal(
+            filter: .equal(
                     .column(ColumnRef(column: "email")),
                     .literal(.string("restart@example.com"))
-                )
-            )
+                ))
         )
         #expect(response.rows.count == 1)
         #expect(

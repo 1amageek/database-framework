@@ -9,7 +9,7 @@ struct SPARQLAggregateRewriter {
     ) throws -> Expression {
         switch expression {
         // SQL conditionals and quantified predicates have no RDF interpretation.
-        case .arrayAccess, .collectionOperation:
+        case .arrayAccess, .collectionOperation, .collate, .arraySubquery, .wholeRow, .field, .fieldExpansion:
             throw SPARQLExpressionCompilationError.unsupportedExpression("SQL collection expression")
         case .currentValue:
             throw SPARQLExpressionCompilationError.unsupportedExpression("SQL current value")

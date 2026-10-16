@@ -188,12 +188,9 @@ struct CanonicalPaginationBoundaryTests {
         limit: UInt64? = nil,
         offset: UInt64? = nil
     ) -> SelectQuery {
-        SelectQuery(
-            projection: .all,
+        SelectQuery(projection: [.wildcard()],
             source: .table(TableRef(table)),
-            limit: limit,
-            offset: offset
-        )
+            pagination: QueryPagination(limit: limit.map { .count(.fixed($0), withTies: false) }, offset: offset.map { .fixed($0) }))
     }
 
     private func paginationColumns() throws -> [QueryColumn] {

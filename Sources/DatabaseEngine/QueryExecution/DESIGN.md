@@ -12,6 +12,7 @@ final public output.
 - Child: [SQLTemporal](SQLTemporal/DESIGN.md), the S06 temporal evaluation design; S06 contract and completion are tracked by the workspace progress record.
 - Child: [SQLArray](SQLArray/DESIGN.md), selected array algorithms and bounded row cursors.
 - Child: [SQLJSON](SQLJSON/DESIGN.md), lexical JSON and semantic JSONB algorithms and bounded row cursors.
+- Child: [SQLRelations](SQLRelations/DESIGN.md), S08 demand-driven SELECT producers and execution-local CTE cache lifecycle.
 - Planned S01–S10 SQL execution obligations are recorded below; implementation
   completeness remains tracked by the workspace progress record.
 
@@ -44,6 +45,7 @@ copyable and could escape without their reservation.
 | [SQLTemporal](SQLTemporal/DESIGN.md) | child | Temporal evaluation and explicit clock/zone environment | Owns T07/T08/F07 execution design. | Consumes the explicit operation-owned environment; no ambient clock/zone. |
 | [SQLArray](SQLArray/DESIGN.md) | child | Selected array evaluate/cast/compare and noncopyable row cursor | Implements the array layer over existing selected scalar policy. | Parent owns types, lazy selection and every referenced input claim. |
 | [SQLJSON](SQLJSON/DESIGN.md) | child | JSON conversion/extraction, JSONB compare/edit and noncopyable row cursor | Implements the JSON layer over the existing Kit owners. | Semantic identity is distinct from Kit representation hashing. |
+| [SQLRelations](SQLRelations/DESIGN.md) | child | Demand-driven producer, independent CTE consumers and awaited close | Owns S08 producing state and retained prefixes. | Binding, selected comparison and resource readiness remain with this parent and Read. |
 
 ## Architecture
 
@@ -161,9 +163,9 @@ The exhaustive feature/profile contract is owned by
 This component owns binding, planning, SQL evaluation, relational operators,
 and retained relation production above its parent's operation lifecycle.
 Syntax is owned by [QueryAST](../../QueryAST/DESIGN.md), and primitive value
-invariants remain in DatabaseTypes. These are planned implementation
-contracts; current dictionary-backed rows and incremental numeric aggregates
-do not yet satisfy them.
+invariants remain in DatabaseTypes. These are staged implementation contracts; S01/S03 already provide positional
+rows and executable binding. The frozen S08 section below owns the remaining
+relation changes and does not claim their implementation or verification.
 
 ```text
 DatabaseKit statement + schema lease + parameters + admitted scope
@@ -446,6 +448,17 @@ empty left source cannot hide an invalid right expression. GROUP/ORDER use
 the SQL child's separate label/ordinal precedence, including identical-output
 alias equivalence; their resolved expressions feed actual execution.
 
+`bindProjection` binds ordered projection items into the existing bound SELECT
+carrier with empty clauses. The relation binder calls that projection-only seam
+before binding its own clauses, so nested scalar/ARRAY query callbacks do not
+retain an unrelated full-SELECT clause frame. Full `bindSelect` reuses that same
+projection implementation. Each phase retains its actual array-capacity claim
+through the existing binding metadata owner; parameter finalization remains at
+the full selected-plan boundary. Direct scalar, ARRAY, EXISTS and quantified
+query expressions dispatch to the existing narrow subquery binders before
+entering the unrelated scalar-operator switch, with the same located error and
+parameter-finalization boundary.
+
 Selected coercions must run at their use sites, not only as final-cell
 normalization. The same binding feeds filter, JOIN, grouping, projection,
 sorting, conditional branches, CTE/derived/subquery and set alignment. Existing
@@ -473,7 +486,14 @@ contract independently of scalar CAST admission. Mixed decimal/floating
 VALUES, set inputs and JOIN USING columns select numeric metadata; the existing
 source-carrier normalization converts exactly representable floating values
 through RelationalValueIdentity into ExactDecimal and rejects unrepresentable
-values explicitly. Scalar expressions still reject deferred exact/floating
+values explicitly. `bindSourceValue` marks only a selected common-source cast
+with `sourceAlignment`; its evaluator calls `CanonicalSQLScalarCast.alignSource`.
+That seam preserves the existing exact primitive-to-numeric normalization and
+otherwise executes the existing implicit conversion. In particular, common
+CHAR without a typmod preserves physical padding. This marker is not an SQL
+CAST context: explicit and assignment CAST retain their own rounding, typmods,
+and bare-CHAR default length. The input owner and any returned payload lease
+remain retained by the relation producer. Scalar expressions still reject deferred exact/floating
 coercions. Integer arithmetic result widths remain the existing bigint/uint64
 contract until S04; SQL integer literal classification alone does not narrow
 an arithmetic result.
@@ -1065,8 +1085,10 @@ remain distinct. Explicit scalar ROW and ARRAY(subquery) relation construction
 are mandatory S08 work; general cursor invocation with FROM/LATERAL/ordinality
 is mandatory S10 work. S07 implements and tests the bounded lower cursors, and
 rejects these unimplemented public composition paths before reads with the
-required incomplete-implementation markers. These gates preserve the fixed
-inventory rather than remove features from it.
+required incomplete-implementation markers. S08 replaces only its ROW and
+ARRAY(subquery) gates under the frozen contract below; S10 relation-function
+gates remain until their own behavior is implemented. These gates preserve
+the fixed inventory rather than remove features from it.
 
 #### Metered SQL identity
 
@@ -1150,3 +1172,236 @@ coherent source batch. One comprehensive review and finding-limited recheck
 precede the single affected/full sprint lanes and local commits. Existing
 user-deferred URL, FoundationDB and Graph-enabled portable integration remain
 S18; their absence is never reported as S07 coverage.
+
+
+### S08 frozen relational execution
+
+**PLANNED; not implementation or verification evidence.** This section owns
+executable binding, selected keys and positional relation composition. It
+consumes [Query S08](../../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md#s08-frozen-relational-query-carriage),
+[SQL composite values](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s08-frozen-composite-values-and-ownership)
+and [Wire S08](../../../../database-kit/Sources/DatabaseWire/DESIGN.md#s08-relational-query-carriage)
+as the lower authorities; their declarations, layouts and capacity APIs are
+not redefined here. [SQLRelations](SQLRelations/DESIGN.md) owns the new producer
+and CTE state machine. Existing S07 iterative admission is extended along the
+new named edges; it is not replaced by recursion or a generic visitor.
+
+Confirmed migration inputs are `CanonicalQueryTypeBinder`,
+`CanonicalBoundExpression`, `CanonicalBoundSelect` and
+`DatabaseContext+CanonicalRows`: schema binds before rows, source rows are
+positional and retained, LATERAL and nested queries share parent transaction
+and meter, and Collecting-to-Ready follows authoritative close. Remaining
+source gates and eager materialization are not conformance evidence.
+[Accepted PostgreSQL18.6 observations](../../../../.codex-tools/sql-s08-evidence/accepted-summary.json)
+and [judgments](../../../../.codex-tools/sql-s08-evidence/judgments.json)
+fix the observed dialect choices; the targeted NULL correction supersedes only
+its identified ambiguous cells. Product behavior still requires the cases below.
+
+```text
+Kit query + schema/authority lease + parameters + occurrence arena
+  -> Binder: complete scopes, descriptors, selected comparisons/keys/counts
+  -> BoundSelect: output occurrences, source plan, CTE declarations
+  -> SQLRelations: one invocation / demand / retained CTE prefixes
+       -> selected scalar/composite kernels + blocking physical inputs
+       -> retained positional rows and selected-key frames
+  -> close every producer/cache -> existing Read/session/transaction close
+  -> existing Collecting -> Ready -> public or retained result
+```
+
+#### Binding, descriptors and source presence
+
+| Seam | Frozen responsibility |
+|---|---|
+| `CanonicalRelationSchema` / `CanonicalSourceLayout` | Retain ordered slots, exact names/types/nullability, visible wildcard indices, qualified side slots and lexical frame scopes. Add a bound source-presence address for each whole-row-visible source. Presence is not inferred from field NULLs. |
+| `CanonicalSourceRow` | Carry positional cells and per-source presence with the same retained layout/payload owners. A produced source row is present even if every cell is NULL; outer NULL extension marks that source absent. Alias of a joined group exposes its own present row and hides constituent qualifiers; extending that alias marks the whole group absent. |
+| Binder / `CanonicalBoundExpression` | Bind a whole-row descriptor and ordered field slots, named field ordinal, selected comparison mode, expansion context and collation. Retain each original occurrence independently. An ordinary column name resolves columns before whole-row fallback; explicit wholeRow resolves the exact visible source without that fallback. Local qualifier presence prevents a missing local field from falling through to the same outer qualifier. |
+| Bound SELECT output | Expand mixed wildcards in place. Leading source/CTE column aliases replace only supplied positions; excess aliases and ambiguous references fail before reads. Partial aliases preserve remaining names/types, including zero rows. Constructor fields receive f1...fN; wholeRow and selected composite fields preserve their actual named descriptors. |
+| VALUES / aliases | Bind every expression cell in row-major order and choose each column common type before evaluation. Evaluate each row with its admitted outer scope; ordinary derived sources cannot acquire left-sibling correlation, while LATERAL receives left then enclosing frames. Preserve values([]) and values([[]]) as distinct zero-column relations. |
+| Join plan | Validate ON/USING once, select key coercions and exact equality, and retain qualified originals. USING emits its listed keys then remaining left/right visible slots; NATURAL derives shared keys from visible left declarations in their existing order. Empty common keys mean Cartesian product. Duplicate/missing keys fail statically. LEFT/RIGHT/FULL apply slot nullability and source presence together, including empty inputs. |
+
+The existing IN-subquery binder computes and discards a common type and its
+executor casts members toward the original operand type. Replace this path
+with one selected comparison signature for both operands, including implicit
+coercion legality; decimal members cannot be rounded to integers merely to
+compare them.
+Selected positional alignment, USING output and comparison conversion call
+`CanonicalSQLScalarCast.coerce(_:from:to:temporalEnvironment:workMeter:limits:)`.
+Its assumption is a previously admitted implicit source/target pair. It
+executes the existing scalar, payload, array/composite and temporal kernels
+under the caller's environment and meter, returning the value and optional
+producer lease. Equal declarations borrow their input owner; callers retain
+that owner and every returned conversion lease through publication. Result
+normalization validates a selected result and never substitutes for conversion.
+ Scalar subqueries bind arity before reads and retain zero-row
+NULL / multiple-row cardinality failure. ROW-constructor comparison may bind
+a multi-column subquery to its required row arity; ordinary scalar contexts
+still require one output column. Conditional branches remain fully bound and
+only required branches execute.
+
+SQL schema-qualified relation execution remains S11's namespace/catalog gate;
+S08 retains its explicit pre-read failure. Parsing a qualifier never selects a
+Partition, Tenant or authority. General SRF/table-function composition and
+recursive CTEs remain S10, grouping/windows S09, and persistence of composites
+remains explicitly rejected by the lower value contract.
+
+#### Selected composite and collection execution
+
+- ROW construction produces the Kit composite with its bound ordered descriptor.
+  Direct list fieldExpansion expands only in the contexts admitted by Query;
+  scalar/function/order/nested positions consume one composite. An expansion
+  evaluates its producing expression separately for each selected field, as
+  required by the SQL semantics; it does not invent common-subexpression reuse.
+- Whole-row absence produces primitive SQL NULL with its composite declaration.
+  A present all-NULL composite remains a value. ROW(r.*) constructs a present
+  anonymous record even when r is absent. Field selection from typed NULL yields
+  typed NULL; duplicate field names are ambiguous and missing fields fail.
+- Bind constructor comparisons separately from composite-value comparisons.
+  Constructor equality examines all field pairs: a decisive unequal pair is
+  false, otherwise a NULL comparison yields UNKNOWN. Constructor ordering stops
+  at the first unequal or NULL deciding pair. Stored/whole composite comparison
+  uses record semantics: corresponding NULLs equal, and a NULL field sorts
+  greater than a non-NULL field. Arity, field comparison capability and selected
+  field types are checked before reads, including nested composites and arrays.
+- IS NULL is true for SQL NULL or a present composite with every direct field
+  NULL; IS NOT NULL requires a present composite with every direct field
+  non-NULL. Mixed fields make both false. IS DISTINCT FROM NULL tests whole-value
+  presence; it does not collapse an all-NULL present row. Null-safe composite
+  equality, set/group identity and record ordering use their selected SQL mode,
+  not Kit representation equality or constructor UNKNOWN.
+- SQLJSON consumes the real descriptor and selected fields through its existing
+  convertRow kernel for ROW_TO_JSON/TO_JSON/TO_JSONB, including nested composite
+  leaves. Preserve strict SQL NULL, named versus anonymous keys, duplicate-name
+  JSON/JSONB rules and every input lease. SQLArray consumes the same flat Kit
+  views; no primitive object or JSON intermediary represents a ROW.
+- ARRAY(subquery) consumes exactly one bound column in query order. Scalar cells
+  form one dimension; array-valued cells add outer lower bound 1 while preserving
+  every inner dimension and lower bound. Inner rank, lengths and lower bounds
+  must match; NULL or empty subarrays fail explicitly. Zero input produces a
+  typed canonical empty array, not NULL. Six-rank/overflow/shape limits remain
+  cumulative. Use one postorder QueryValueBuilder with the lower capacity seam;
+  reserve construction, complete retained input and output before growth, then
+  reconcile actual storage reports and attach destination leases.
+
+#### Selected keys, sets and pagination
+
+| Boundary | Frozen execution contract |
+|---|---|
+| Binary set node | Bind both complete query operands at that node, in their lexical scopes, before reads. Select arity/common types positionally; preserve left labels and each operand's local ORDER/pagination. UNION ALL concatenates bags; INTERSECT ALL emits min(left,right) occurrences and EXCEPT ALL max(left-right,0); DISTINCT emits at most one SQL-equal row. NULLs compare equal for multiplicity. Admit counted hash/probe state and exact collision comparisons under the same meter. |
+| SQL key frame | Bind each ORDER/DISTINCT key to a source expression or one designated projection target occurrence. Save that target's selected value and leases once and reuse them for ordering/output; clock_timestamp AS x ORDER BY x must not execute twice. Distinct projection occurrences are never merged by expression equality. Unreferenced targets remain demand-evaluated after ordering/pagination; DISTINCT-required values evaluate before reduction. Prefix matching separately compares resolved bound source slots and selected operator/cast/collation structure; semantic prefix equivalence never changes the projectionIndex used for value caching, and independent volatile target occurrences are not equivalent. Duplicate output labels use this same selected equivalence check and select the first matching target without merging target evaluation. Nested subquery volatility is classified by the relation owner through `isVolatileSubquery`; pure subqueries retain exact QueryIR matching. Standalone binding without the relation classifier cannot equate independent nested plans; operational relation binding supplies both that classifier and its work meter. The comparison uses metered temporary pair storage and releases it before returning. |
+| Names and ordinals | Preserve existing SQL ORDER output-name priority, GROUP input-name priority, ambiguity rules and bare positive one-based ordinal binding. An explicit cast constant is an expression, not an ordinal. Set-envelope ORDER binds only admitted output names/ordinals; local operand names do not leak. |
+| SQL sorting | Omitted NULL order is ASC NULLS LAST / DESC NULLS FIRST. Explicit NULL order wins. C/POSIX use the selected binary text contract. Apply the SQL correction only to SQL selected keys; retain RDF/unbound and generic comparison semantics. Pushdown requires proven equivalent selected type, NULL order and collation. |
+| Peers / DISTINCT ON | Peer equality uses only all declared ORDER keys, their selected types and collations. Continuation/row fingerprints and incidental deterministic tie breakers never enter peer equality. DISTINCT ON accepts a reordered or shorter matching initial DISTINCT-key prefix; introducing a non-DISTINCT key before an unmatched DISTINCT key is invalid. Keep the first row of each selected key group after ordering; without ORDER, no additional ordering guarantee is created. |
+| QueryPagination | Bind SQL bigint coercion before reads; reject source-row refs, aggregates/windows, incompatible types, negatives and overflow. Evaluate admitted offset then limit once per query invocation with allowed correlation. NULL offset means zero; omitted/ALL/NULL limit is unlimited, except the accepted bare unknown NULL WITH TIES failure. Explicit NULL::bigint WITH TIES remains unlimited. Fixed UInt64 above Int64.max fails only in SQL; existing non-SQL unsigned domain is preserved. |
+| FETCH WITH TIES | Require ORDER, return zero for count zero, apply offset first and retain every row peer with the final selected row under all ORDER keys. A probe row outside the group is not published or retained unnecessarily. Blocking key computation may read input, but output projection/CTE demand cannot fabricate extra volatile row evaluations. |
+| Explicit physical access | An admitted single-table index hint preserves the same selected projection, DISTINCT ON, sorting and expression-pagination result as its scan equivalent. When physical pushdown cannot prove equivalence, retain the logical clauses and finalize admitted candidates through the selected pipeline. Resolve counts once before candidate reads; LIMIT zero still validates the requested path and metadata without scanning data. |
+
+#### Occurrences, resources and completion evidence
+
+Consume Query's exact named edges and canonical order: CTEs, projection,
+source, filter, groupBy, having, DISTINCT ON, orderBy, offset, limit. VALUES row
+and cell IDs, alias source, binary set query children and composite operand
+edges remain distinct. Expanded targets retain explicit origins to their
+original fieldExpansion occurrence; no structural-equality source search or
+untyped metadata walk substitutes for provenance.
+`bindAssignment` accepts either a raw expression with an explicit occurrence
+or an already bound child. The bound-child form applies the selected
+assignment cast without rebinding its tree or occurrence.
+`bindOrderKey` accepts a key-edge occurrence: source expression binding uses
+that edge, while a projection reference preserves the target expression's
+original occurrence and stores the key edge separately on CanonicalBoundKey.
+ Preserve the existing S07
+bounded iterative prepass, full-owner measurement and shared-state contract on
+Native, ordinary WASM and Embedded.
+
+Source descent retains only its dispatch/binding prelude. Per-kind source
+selection, CTE scope preparation, VALUES cells and post-source SELECT clause
+finalization use separate private frames so recursive aliases/subqueries do
+not carry unrelated branch temporaries. The existing
+structural nesting limit, typed rejection and work/metadata admission remain
+unchanged; the Native worker stack is not enlarged to admit valid queries.
+Recursive source dispatch uses direct typed catches; its shared non-generic
+failure decorator runs only when an error is thrown. It preserves the same
+decisive source occurrence without retaining a generic result-bearing error
+wrapper or capture frame on successful descent.
+JOIN/SET descent binds its children before entering common-type/output
+finalization. Projection binding uses the Binder's projection-only entry in a small prefix;
+other clause binding and output/source-plan assembly run in separate frames
+only after that prefix returns. Each expression-bearing clause isolates its
+binding temporaries, and subquery callback environment construction completes
+before descending into the child query. Group validation runs afterward. Scalar-subquery callbacks can reenter query
+binding, so their complete active chain is included alongside source, JOIN,
+SET and CTE chains in the Native depth witness and compiled-frame evidence.
+
+Selected expression evaluation also owns a cooperative scheduling boundary:
+it yields before descending into a selected node and before publishing that
+node's value, checking the same request meter on each resume. The selected
+body, conditional evaluation order, temporal environment and source context
+remain in the same Task. The returned value and payload leases remain owned
+through publication; failure releases them through the existing parent scope.
+This bounds fast-path async continuations across child evaluation and successive
+projection columns within one producer pull. The S05 UUID/bytea eight-target
+public SELECT is the concrete ordinary-WASM regression witness; producer pull
+scheduling alone does not bound this expression-level chain.
+
+Bound descriptors/key frames, projection values, presence masks, multiset
+counts, sort/peer state, producer state, retained CTE prefix, construction
+scratch and root output are charged before allocation/growth on the exact
+parent meter. Checked arithmetic and measured capacity reconciliation precede
+publication. Long scans/probes/expansion/flat value walks checkpoint work and
+cancellation. Typed intrinsic, binding, cardinality, shape, budget, deadline,
+cancellation and cleanup errors preserve their decisive occurrence and cause;
+no partial row, false EOF, synthetic NULL or old-layout fallback is success.
+
+A selected JOIN reserves its merged payload's row credit and structure bytes
+before allocating destination cells. The same layout/payload lease retains
+that credit. The single-row publication container owns its separate retained
+row credit; its later admission does not substitute for payload admission.
+
+`CanonicalBindingMetadata` owns only the admitted descriptor-construction
+reservation shared by binder copies. Its optional reservation is protected by
+one common Mutex on every target; it caches no type/value, expression, source
+plan, session or producer. Construction and common-type factories reserve
+before allocation, reconcile observed type storage and retain that claim in
+the resulting bound expression/select. This covers descriptors returned by
+common-type selection before an expression exists. The SPI immutable
+`DatabaseRetainedQueryColumns` couples ordered columns to their payload leases
+when bound metadata leaves a binder. Public context/session boundQueryColumns
+return that owner; consumers retain it until their destination adopts all
+metadata claims. No raw-column compatibility API or operational plan owner is
+retained in the returned metadata. S08-E07 and Base metadata tests require a
+descriptor to remain charged across scope closure and final alias release.
+
+Optional Base finalization dispatches row-dependent selected evaluation through
+the original member's admitted context/session under the same retained
+snapshot. Filter, ordering and demanded projection therefore preserve existing
+correlated-subquery authority and data. Cached projection-target keys are
+reused, while unneeded output targets stay unevaluated. The scoped callback
+returns only a selected value and payload claims; final results retain no
+dispatcher, context, session or snapshot. New count-subquery scopes lacking a
+proved global interpretation are rejected before member reads, while admitted
+scalar/parameter counts retain once-per-global-invocation evaluation. Existing
+Base source capability gates remain explicit rather than choosing one member
+as the meaning of a global query.
+
+Existing Read admission, schema/authority leases, parent transaction and
+Collecting-to-Ready remain unchanged. Producers close before the existing
+session/transaction closure and Ready edge; last output owners retain only
+value/schema/payload claims, never operational producers or authority.
+
+| Fixed case ID | Owner and falsifiable completion evidence |
+|---|---|
+| S08-E01 / Q01-Q03 | DatabaseEngineTests + DatabaseTests: SQL text through binder/runtime preserves mixed-star positions, duplicate/zero-row descriptors, expression VALUES, partial aliases/group visibility, local/outer scope and invalid-name rejection on empty inputs. NATURAL z,a stays z,a; chained USING/NATURAL preserves visible-key ownership. RIGHT/FULL empty sides preserve merged/qualified keys, exact common types and presence. |
+| S08-E02 / Q04-Q06/F09 | Bound success/failure tests + public SQL: constructor versus composite NULL equality/order, typed NULL/present all-NULL/absent row, field/expansion multiplicity, ROW JSON, zero/nested ROW and arity/type/capability failures. IN decimal comparison must not round a member to integer; scalar cardinality and lazy subquery branches retain typed failures. |
+| S08-E03 / Q06/F08 | Public ARRAY(subquery): scalar NULL cells, typed empty input, one-column rejection, correlation, composite cells, accepted inner lower bounds/outer1, NULL/empty/mismatched subarrays and rank/overflow failures. Native and exact ordinary/Embedded witnesses exercise flat owners and post-root field/element lifetime. |
+| S08-E04 / Q07-Q09 | Binary set bag counts/common types/local clauses; SQL NULL ordering/C/POSIX, alias/ordinal ambiguity, DISTINCT ON prefix and selected representative. Counting clock proves projection alias ordering evaluates its target once while independent target occurrences execute independently. Forced key collisions distinguish rows; SQL peers exclude fingerprints and RDF/generic regressions remain unchanged. |
+| S08-E05 / Q10 | Parameter/expression/fixed/ALL/NULL/negative/overflow counts, once-only invocation evaluation, explicit NULL CAST distinction, offset/zero/complete final ties and exact metadata. Scan and admitted explicit-index execution have equivalent selected windows and DISTINCT ON; LIMIT zero does not scan. Non-SQL UInt64.max and typed SQL-language rejection regress without truncation. |
+| S08-E06 / Q12 | SQLRelations' demand/cache cases below execute through public SQL: unused bodies bind but perform no work, lexical shadowing/partial aliases, MATERIALIZED LIMIT1 one volatile call, multiple consumers reuse/grow the same prefix without rerun or false EOF, and volatile NOT MATERIALIZED shares one computation. |
+| S08-E07 / resources/lifecycle | All changed paths: exact/one-past row/byte/work/depth/capacity admission, retained source/full-owner inputs, failed/cancelled prefix growth and sort/set/composite construction; awaited close on success/failure, secondary cleanup errors, final-owner release and a successful later operation. No result crosses Ready early. |
+
+Replace each existing S08 incomplete-implementation marker only with its actual
+production path and corresponding success/failure evidence; retain the S10/S11
+gates. These cases compose with Kit S08-V/QC and Wire S08-W proofs rather than
+repeating intrinsic codec tests. Affected parent Database/Read and child
+SQLArray/SQLJSON designs must consume these seams. Actual sprint verification,
+local commits and deferred S18 integrated/URL/platform lanes remain owned by
+the workspace progress record.

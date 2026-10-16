@@ -114,7 +114,7 @@ struct CanonicalIndexReadCorruptionTests {
     ) async throws -> QueryResponse {
         try await context.query(
             SelectQuery(
-                projection: .all,
+                projection: [.wildcard()],
                 source: .table(
                     TableRef(CorruptionProbeItem.persistableType)
                 ),

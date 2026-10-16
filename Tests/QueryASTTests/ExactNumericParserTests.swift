@@ -11,14 +11,14 @@ struct ExactNumericParserTests {
             "SELECT 18446744073709551615, 123.4500 FROM Event"
         )
 
-        #expect(query.projection == .items([
+        #expect(query.projection == [
             ProjectionItem(.literal(.queryValue(.numeric(try QueryNumericValue(
                 value: .init(coefficient: 18_446_744_073_709_551_615, scale: 0), displayScale: 0
             )), type: .sql(.decimal(precision: nil, scale: nil))))),
             ProjectionItem(.literal(.queryValue(.numeric(try QueryNumericValue(
                 value: .init(coefficient: 12_345, scale: 2), displayScale: 4
             )), type: .sql(.decimal(precision: nil, scale: nil))))),
-        ]))
+        ])
     }
 
     @Test("SPARQL preserves unsigned and decimal literals")

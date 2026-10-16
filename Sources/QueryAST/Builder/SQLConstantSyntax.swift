@@ -68,6 +68,7 @@ enum SQLConstantSyntax {
             var element = type
             while case .array(let child) = element { element = child }
             if case .custom = element { return nil }
+            if case .composite = element { return nil }
             guard QueryValueValidator.accepts(.primitive(.null), type: .sql(type)) else {
                 throw .invalidConstant("Invalid SQL NULL type descriptor")
             }

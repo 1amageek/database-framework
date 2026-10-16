@@ -29,7 +29,7 @@ struct CanonicalSQLJSONEvaluatorTests {
         return .array(try QueryArrayValue(elementType: .text, dimensions: dimensions, elements: values, limits: limits))
     }
     private func call(_ name: String, _ values: [QueryValue], _ types: [DataType], result: DataType = .jsonb,
-        variadic: Bool = false, meter: DatabaseWorkMeter? = nil) throws -> (value: QueryValue, lease: DatabaseQueryPayloadLease?) {
+        variadic: Bool = false, meter: DatabaseWorkMeter? = nil, valueLimits: QueryValueLimits? = nil) throws -> (value: QueryValue, lease: DatabaseQueryPayloadLease?) {
         let children = zip(values, types).map { value, type in
             CanonicalBoundExpression(expression: .literal(.queryValue(value, type: .sql(type))), type: .sql(type), isNullable: true)
         }
@@ -37,7 +37,7 @@ struct CanonicalSQLJSONEvaluatorTests {
             arguments: children.map { $0.expression }, finalArrayIsVariadic: variadic)),
             type: .sql(result), isNullable: true, children: children)
         return try CanonicalSQLJSONEvaluator.evaluate(bound, operands: values, temporalEnvironment: nil,
-            workMeter: meter ?? self.meter(), limits: limits)
+            workMeter: meter ?? self.meter(), limits: valueLimits ?? limits)
     }
     private func operation(_ operation: CollectionOperator, _ a: QueryValue, _ b: QueryValue,
         _ at: DataType, _ bt: DataType, result: DataType = .jsonb, meter: DatabaseWorkMeter? = nil) throws
@@ -60,6 +60,129 @@ struct CanonicalSQLJSONEvaluatorTests {
     private let null = QueryValue.primitive(.null)
     private func s(_ text: String) -> QueryValue { .primitive(.string(text)) }
     private func i(_ n: Int32) -> QueryValue { .primitive(.int32(n)) }
+
+    private func composite(_ names: [String], _ values: [QueryValue], _ types: [DataType]) throws
+        -> (value: QueryValue, type: DataType) {
+        #expect(names.count == values.count && values.count == types.count)
+        let columns = try names.indices.map { index in
+            try QueryColumn(number: UInt32(index + 1), name: names[index], type: .sql(types[index]), isNullable: values[index].isNull)
+        }
+        let type = try QueryCompositeType(columns: columns, limits: limits)
+        return (.composite(try QueryCompositeValue(type: type, fields: values, limits: limits)), .composite(type))
+    }
+
+    @Test func compositeJSONUsesNamesOrderDuplicatesAndNestedDescriptors() throws {
+        let inner = try composite(["名", "名"], [i(1), i(2)], [.integer, .integer])
+        let outer = try composite(["z", "child", "z"], [null, inner.value, s("last")], [.text, inner.type, .text])
+        #expect(try lexical(call("row_to_json", [outer.value], [outer.type], result: .json).value)
+            == "{\"z\":null,\"child\":{\"名\":1,\"名\":2},\"z\":\"last\"}")
+        #expect(try call("to_jsonb", [outer.value], [outer.type]).value == jsonb("{\"z\":\"last\",\"child\":{\"名\":2}}"))
+        let pretty = try call("row_to_json", [outer.value, .primitive(.bool(true))], [outer.type, .boolean], result: .json)
+        #expect(try lexical(pretty.value) == "{\"z\":null,\n \"child\":{\"名\":1,\"名\":2},\n \"z\":\"last\"}")
+    }
+
+    @Test func presentAllNullCompositeIsNotStrictSQLNull() throws {
+        let record = try composite(["a", "b"], [null, null], [.integer, .text])
+        for name in ["row_to_json", "to_json"] {
+            #expect(try lexical(call(name, [record.value], [record.type], result: .json).value) == "{\"a\":null,\"b\":null}")
+            #expect(try call(name, [null], [record.type], result: .json).value.isNull)
+        }
+        #expect(try call("to_jsonb", [record.value], [record.type]).value == jsonb("{\"a\":null,\"b\":null}"))
+        #expect(try call("to_jsonb", [null], [record.type]).value.isNull)
+        #expect(try call("row_to_json", [record.value, null], [record.type, .boolean], result: .json).value.isNull)
+    }
+
+    @Test func zeroFieldAndAnonymousCompositeConversion() throws {
+        let empty = try composite([], [], [])
+        #expect(try call("row_to_json", [empty.value], [empty.type], result: .json).value == json("{}"))
+        #expect(try call("to_jsonb", [empty.value], [empty.type]).value == jsonb("{}"))
+        let anonymous = try composite(["f1", "f2"], [i(7), null], [.integer, .text])
+        #expect(try lexical(call("to_json", [anonymous.value], [anonymous.type], result: .json).value) == "{\"f1\":7,\"f2\":null}")
+    }
+
+    @Test func compositesAreBuilderValuesAndCannotBecomeObjectKeys() throws {
+        let record = try composite(["id"], [i(9)], [.integer])
+        #expect(try call("jsonb_build_array", [record.value], [record.type]).value == jsonb("[{\"id\":9}]"))
+        #expect(try call("json_build_object", [s("row"), record.value], [.text, record.type], result: .json).value
+            == json("{\"row\" : {\"id\":9}}"))
+        for name in ["json_build_object", "jsonb_build_object"] {
+            #expect(throws: DatabaseExpressionEvaluationError.collection(.invalidJSONObjectKey(argument: 1))) {
+                try call(name, [record.value, i(1)], [record.type, .integer], result: name == "json_build_object" ? .json : .jsonb)
+            }
+        }
+    }
+
+    @Test func arraysOfCompositesAndCompositeArrayFieldsUseOneConversionPlan() throws {
+        let first = try composite(["n"], [i(1)], [.integer])
+        let second = try composite(["n"], [i(2)], [.integer])
+        let rows = try QueryArrayValue(elementType: first.type, dimensions: [QueryArrayDimension(lowerBound: -7, length: 2)],
+            elements: [first.value, second.value], limits: limits)
+        #expect(try call("to_jsonb", [.array(rows)], [.array(first.type)]).value == jsonb("[{\"n\":1},{\"n\":2}]"))
+        let record = try composite(["rows"], [.array(rows)], [.array(first.type)])
+        #expect(try lexical(call("row_to_json", [record.value], [record.type], result: .json).value)
+            == "{\"rows\":[{\"n\":1},{\"n\":2}]}")
+    }
+
+    @Test func compositeSelectedShapeAndLowerTupleFailuresRemainTyped() throws {
+        let record = try composite(["id"], [i(1)], [.integer])
+        let other = try composite(["other"], [i(1)], [.integer])
+        #expect(throws: DatabaseExpressionEvaluationError.typeMismatch(operation: "selected JSON input")) {
+            try call("row_to_json", [record.value], [other.type], result: .json)
+        }
+        #expect(throws: DatabaseExpressionEvaluationError.typeMismatch(operation: "ROW JSON value type")) {
+            try call("row_to_json", [i(1)], [.integer], result: .json)
+        }
+        let column = try QueryColumn(number: 1, name: "required", type: .sql(.integer), isNullable: false)
+        #expect(throws: DatabaseExpressionEvaluationError.typeMismatch(operation: "ROW JSON value type")) {
+            try CanonicalSQLJSONEvaluator.convertRow(columns: [column], values: [null], resultType: .sql(.json), pretty: false,
+                temporalEnvironment: nil, workMeter: meter(), limits: limits)
+        }
+    }
+
+    @Test func deepCompositeConversionIsIterativeAndFailureReleasesItsDestination() throws {
+        let depth = 48
+        var value = i(7)
+        var type = DataType.integer
+        for _ in 0..<depth {
+            let next = try composite(["f1"], [value], [type])
+            value = next.value; type = next.type
+        }
+        let work = meter()
+        do {
+            let converted = try call("to_jsonb", [value], [type], meter: work)
+            let expected = try jsonb(String(repeating: "{\"f1\":", count: depth) + "7" + String(repeating: "}", count: depth))
+            #expect(converted.value == expected)
+            #expect(work.retainedIntermediateBytes > 0)
+            withExtendedLifetime(converted.lease) { }
+        }
+        #expect(work.retainedIntermediateBytes == 0)
+        let small = meter(bytes: 100)
+        #expect(throws: (any Error).self) { try call("to_jsonb", [value], [type], meter: small) }
+        #expect(small.retainedIntermediateBytes == 0)
+        let shallow = QueryValueLimits(maximumRetainedBytes: 1_000_000, maximumTotalNodes: 10_000,
+            maximumNestingDepth: 8, maximumCollectionElements: 10_000)
+        for result: DataType in [.json, .jsonb] {
+            #expect(throws: QueryValueError.resourceLimit(resource: "depth", actual: 9, maximum: 8)) {
+                try call(result == .json ? "to_json" : "to_jsonb", [value], [type], result: result,
+                    meter: work, valueLimits: shallow)
+            }
+            #expect(work.retainedIntermediateBytes == 0)
+        }
+        #expect(try call("to_jsonb", [i(1)], [.integer], meter: work).value == jsonb("1"))
+    }
+
+    @Test func compositeOutputOutlivesInputOwnerAndReleasesItsMeasuredLease() throws {
+        let work = meter()
+        var source: (value: QueryValue, type: DataType)? = try composite(["text"], [s(String(repeating: "x", count: 4096))], [.text])
+        var output: (value: QueryValue, lease: DatabaseQueryPayloadLease?)?
+        if let input = source { output = try call("to_jsonb", [input.value], [input.type], meter: work) }
+        source = nil
+        #expect(output != nil)
+        #expect(work.retainedIntermediateBytes >= 4096)
+        #expect(try #require(output).value == jsonb("{\"text\":\"" + String(repeating: "x", count: 4096) + "\"}"))
+        output = nil
+        #expect(work.retainedIntermediateBytes == 0)
+    }
 
     @Test func strictSQLNullAndJSONNullDiffer() throws {
         #expect(try call("to_json", [null], [.text], result: .json).value.isNull)

@@ -11,6 +11,15 @@ struct CanonicalBoundExpression: Sendable {
     let occurrence: QueryOccurrenceID?
     let subqueryBinding: CanonicalBoundSelect?
     let castContext: CanonicalQueryTypeBinder.CastContext
+    let sourceAlignment: Bool
+    let wholeRow: CanonicalBoundWholeRow?
+    let fieldOrdinal: Int?
+    let comparisonMode: CanonicalSQLCompositeComparisonMode
+    let collation: SQLCollation?
+    let subqueryComparisonTypes: [QueryColumnType]
+    let bindingMetadata: CanonicalBindingMetadata?
+    let constructionLease: DatabaseQueryPayloadLease?
+    let metadataLease: DatabaseQueryPayloadLease?
 
     init(
         expression: DatabaseKit.Expression,
@@ -20,7 +29,16 @@ struct CanonicalBoundExpression: Sendable {
         children: [CanonicalBoundExpression] = [],
         occurrence: QueryOccurrenceID? = nil,
         subqueryBinding: CanonicalBoundSelect? = nil,
-        castContext: CanonicalQueryTypeBinder.CastContext = .explicit
+        castContext: CanonicalQueryTypeBinder.CastContext = .explicit,
+        sourceAlignment: Bool = false,
+        wholeRow: CanonicalBoundWholeRow? = nil,
+        fieldOrdinal: Int? = nil,
+        comparisonMode: CanonicalSQLCompositeComparisonMode = .record,
+        collation: SQLCollation? = nil,
+        subqueryComparisonTypes: [QueryColumnType] = [],
+        metadataLease: DatabaseQueryPayloadLease? = nil,
+        constructionLease: DatabaseQueryPayloadLease? = nil,
+        bindingMetadata: CanonicalBindingMetadata? = nil
     ) {
         self.expression = expression
         self.type = type
@@ -30,6 +48,15 @@ struct CanonicalBoundExpression: Sendable {
         self.occurrence = occurrence
         self.subqueryBinding = subqueryBinding
         self.castContext = castContext
+        self.sourceAlignment = sourceAlignment
+        self.wholeRow = wholeRow
+        self.fieldOrdinal = fieldOrdinal
+        self.comparisonMode = comparisonMode
+        self.collation = collation
+        self.subqueryComparisonTypes = subqueryComparisonTypes
+        self.metadataLease = metadataLease
+        self.constructionLease = constructionLease
+        self.bindingMetadata = bindingMetadata
     }
 
     /// Normalize value-dependent primitive evaluator representations to the
@@ -73,6 +100,10 @@ struct CanonicalBoundExpression: Sendable {
         }
         let result: DatabaseKit.Expression
         switch expression {
+        case .row: result = try .row(children.indices.map(child))
+        case .field(_, let name): result = try .field(child(0), name: name)
+        case .fieldExpansion: result = try .fieldExpansion(child(0))
+        case .collate(_, let collation): result = try .collate(child(0), collation: collation)
         case .array: result = try .array(children.indices.map(child))
         case .arrayAccess(_, let subscripts):
             var index = 1
@@ -169,7 +200,7 @@ struct CanonicalBoundExpression: Sendable {
             }
             result = .aggregate(lowered)
         case .currentValue, .subquery, .exists, .literal, .parameter, .column,
-.row, .variable, .bound, .regex, .triple, .isTriple, .subject, .predicate, .object:
+.arraySubquery, .wholeRow, .variable, .bound, .regex, .triple, .isTriple, .subject, .predicate, .object:
             result = expression
         }
         // The primitive kernels can return wider carriers than their selected

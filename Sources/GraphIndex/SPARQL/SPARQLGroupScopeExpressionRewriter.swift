@@ -15,7 +15,7 @@ struct SPARQLGroupScopeExpressionRewriter {
         aggregateRewriter: inout SPARQLAggregateRewriter
     ) throws -> Expression {
         switch expression {
-        case .arrayAccess, .collectionOperation:
+        case .arrayAccess, .collectionOperation, .collate, .arraySubquery, .wholeRow, .field, .fieldExpansion:
             throw SPARQLExpressionCompilationError.unsupportedExpression("SQL collection expression")
         case .function(let call) where call.finalArrayIsVariadic:
             throw SPARQLExpressionCompilationError.unsupportedExpression("SQL VARIADIC")
@@ -28,7 +28,7 @@ struct SPARQLGroupScopeExpressionRewriter {
 
         switch expression {
         // SQL conditionals and quantified predicates have no RDF interpretation.
-        case .arrayAccess, .collectionOperation:
+        case .arrayAccess, .collectionOperation, .collate, .arraySubquery, .wholeRow, .field, .fieldExpansion:
             throw SPARQLExpressionCompilationError.unsupportedExpression("SQL collection expression")
         case .currentValue:
             throw SPARQLExpressionCompilationError.unsupportedExpression("SQL current value")

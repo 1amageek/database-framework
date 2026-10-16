@@ -45,6 +45,54 @@ enum CanonicalSQLArrayEvaluator {
         }
     }
 
+    static func assembleSubquery(_ rows: [QueryValue], columnType: QueryColumnType,
+        resultType: QueryColumnType, temporalEnvironment: SQLTemporalEnvironment?,
+        workMeter: DatabaseWorkMeter, limits: QueryValueLimits) throws
+        -> (value: QueryValue, lease: DatabaseQueryPayloadLease?) {
+        let element = try SQLArrayStorage.elementType(resultType)
+        if rows.isEmpty { return try SQLArrayStorage.empty(element: element, meter: workMeter, limits: limits) }
+        if case .primitive(_, true) = columnType {
+            var normalized = try SQLArrayBuffer<QueryValue>(count: rows.count, meter: workMeter)
+            for row in rows {
+                let output = try cast(row, from: columnType, to: resultType, context: .implicit,
+                    temporalEnvironment: temporalEnvironment, workMeter: workMeter, limits: limits)
+                try withExtendedLifetime(output) {
+                    let bytes = try CanonicalRelationalFootprintMeter.valueFootprint(of: output.value,
+                        workMeter: workMeter, stage: .expressionEvaluation).bytes
+                    try normalized.reservation.reserveAdditional(bytes: bytes, at: .expressionEvaluation)
+                    try normalized.append(output.value)
+                }
+            }
+            let source = normalized.finish()
+            return try withExtendedLifetime(source) {
+                try assembleSubquery(source.values, columnType: resultType, resultType: resultType,
+                    temporalEnvironment: temporalEnvironment, workMeter: workMeter, limits: limits)
+            }
+        }
+        if let innerType = CanonicalQueryTypeBinder.arrayElement(columnType) {
+            guard case .sql(let innerElement) = innerType,
+                  case .array(let first) = rows[0], !first.elements.isEmpty,
+                  first.dimensions.count < 6 else { throw SQLArrayStorage.failure(.invalidArrayShape) }
+            let total = try SQLArrayStorage.checkedMultiply(rows.count, first.elements.count)
+            return try SQLArrayStorage.makeArray(element: element, rank: first.dimensions.count + 1,
+                count: total, meter: workMeter, limits: limits,
+                dimension: { index in index == 0 ? try SQLArrayStorage.dimension(length: rows.count) : first.dimensions[index - 1] },
+                cell: { index, claim in
+                    let row = index / first.elements.count, cell = index % first.elements.count
+                    guard case .array(let array) = rows[row], array.elements.count == first.elements.count,
+                          array.dimensions.elementsEqual(first.dimensions) else { throw SQLArrayStorage.failure(.invalidArrayShape) }
+                    return try SQLArrayStorage.scalarCast(array.elements[cell], from: .sql(innerElement), to: .sql(element),
+                        context: .implicit, environment: temporalEnvironment, meter: workMeter, limits: limits, destination: claim)
+                })
+        }
+        return try SQLArrayStorage.makeArray(element: element, rank: 1, count: rows.count,
+            meter: workMeter, limits: limits, dimension: { _ in try SQLArrayStorage.dimension(length: rows.count) },
+            cell: { index, claim in
+                try SQLArrayStorage.scalarCast(rows[index], from: columnType, to: .sql(element), context: .implicit,
+                    environment: temporalEnvironment, meter: workMeter, limits: limits, destination: claim)
+            })
+    }
+
     static func cast(_ value: QueryValue, from source: QueryColumnType, to target: QueryColumnType,
         context: CanonicalQueryTypeBinder.CastContext, temporalEnvironment: SQLTemporalEnvironment?,
         workMeter: DatabaseWorkMeter, limits: QueryValueLimits) throws
@@ -62,18 +110,14 @@ enum CanonicalSQLArrayEvaluator {
                 let sourceElement = try SQLArrayStorage.elementType(source)
                 return try SQLArrayStorage.makeArray(element: element, rank: array.dimensions.count,
                     count: array.elements.count, meter: workMeter, limits: limits,
-                    dimension: { array.dimensions[$0] }, cell: { index, claim in
-                        try SQLArrayStorage.scalarCast(array.elements[index], from: .sql(sourceElement), to: .sql(element),
-                            context: context, environment: temporalEnvironment, meter: workMeter, limits: limits, destination: claim)
-                    })
+                    sourceElementType: .sql(sourceElement), castContext: context, environment: temporalEnvironment,
+                    dimension: { array.dimensions[$0] }, cell: { index, _ in array.elements[index] })
             }
             if case .primitive(.array(let values)) = value, case .primitive(let primitive, true) = source {
                 return try SQLArrayStorage.makeArray(element: element, rank: values.isEmpty ? 0 : 1,
                     count: values.count, meter: workMeter, limits: limits,
-                    dimension: { _ in try SQLArrayStorage.dimension(length: values.count) }, cell: { index, claim in
-                        try SQLArrayStorage.scalarCast(.primitive(values[index]), from: .primitive(primitive), to: .sql(element),
-                            context: context, environment: temporalEnvironment, meter: workMeter, limits: limits, destination: claim)
-                    })
+                    sourceElementType: .primitive(primitive), castContext: context, environment: temporalEnvironment,
+                    dimension: { _ in try SQLArrayStorage.dimension(length: values.count) }, cell: { index, _ in .primitive(values[index]) })
             }
             throw SQLArrayStorage.mismatch("selected array cast source")
         }
@@ -140,7 +184,7 @@ enum CanonicalSQLArrayEvaluator {
                     emptyCount += 1; continue
                 }
                 guard array.elementType == element else { throw SQLArrayStorage.mismatch("selected nested ARRAY element") }
-                if let first, array.dimensions != first.dimensions {
+                if let first, !array.dimensions.elementsEqual(first.dimensions) {
                     throw SQLArrayStorage.failure(.invalidArrayShape)
                 }
                 first = array

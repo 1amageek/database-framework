@@ -30,7 +30,7 @@ struct SQLQueryBuilderLiteralTests {
             let literal = Literal.queryValue(value)
             let rich = SQLQueryBuilder(from: "items").select(ProjectionItem(.literal(literal), alias: "value"))
             let nested = SQLQueryBuilder(from: "items").where(.isNotNull(.literal(literal)))
-            let source = SQLQueryBuilder(source: .subquery(rich.buildAST(), alias: "nested"))
+            let source = SQLQueryBuilder(source: .aliased(.subquery(rich.buildAST()), name: "nested"))
             let cte = SQLQueryBuilder(from: "nested").with("nested", as: rich.buildAST())
             for builder in [rich, nested, source, cte] {
                 let text = try builder.toSQL()

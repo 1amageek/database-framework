@@ -17,8 +17,10 @@ products.
 S07 public SQL consumes [Engine's selected collection composition](../DatabaseEngine/QueryExecution/DESIGN.md#s07-selected-collections-and-relational-identity).
 The facade preserves selected metadata, complete payload leases, source
 failures and SQL versus SPARQL language applicability. It does not implement
-array/JSON algorithms. Public ROW/array-subquery and general SRF composition
-remain required S08/S10 gates, with explicit pre-read rejection until then.
+array/JSON algorithms. S08 composes ROW and ARRAY(subquery) through the same
+selected Engine contract; their implementation and behavioral proof remain
+required before declaring support. General SRF relation composition remains
+the S10 gate with explicit pre-read rejection until then.
 
 `Database` owns:
 
@@ -74,6 +76,15 @@ uses the parent `DatabaseReadTransaction`; it does not open a nested
 transaction.
 
 ## Contracts and Invariants
+
+- S08 consumes the [canonical relation query contract](../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md#s08-frozen-relational-query-carriage)
+  through QueryAST and Engine. Entry adaptation preserves all ordered
+  projection items, source/set scopes, quantifiers and pagination expressions
+  during parameter admission and SPARQL rewriting. The facade never executes
+  its own CTE cache, composite conversion or ordering algorithm. Engine must
+  close every demand producer and session before this facade exposes a ready
+  positional response. Empty responses retain bound descriptors, and a
+  composite remains distinct from a primitive object or SQL NULL.
 
 - S05 concatenation and dynamic SQL pattern operands participate in SPARQL
   detection and rewriting under the [QueryExecution traversal contract](../DatabaseEngine/QueryExecution/DESIGN.md#s05-selected-string-pattern-binary-and-cast-execution).

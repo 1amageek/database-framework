@@ -504,7 +504,7 @@ struct PolymorphicRetainedResourceContractTests {
 
     private func selectQuery(for group: PolymorphicGroup) -> SelectQuery {
         SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .logical(
                 LogicalSourceRef(
                     kindIdentifier: LogicalSourceKind.polymorphic,

@@ -255,6 +255,36 @@ struct PositionalQueryRowCodecTests {
         #expect(DatabaseTextFormatting.lowercaseHex(fingerprint) == "ff182749ff784ac839f7308a7a9073e0219f7edb2d145106cea1fa45cedd2a0a")
     }
 
+    @Test("Composite fingerprints retain presence, field order and descriptor identity")
+    func compositeFingerprintIdentity() throws {
+        let meter = DatabaseWorkMeter(unbounded: ExecutionBudget(timeoutMilliseconds: UInt32.max))
+        func descriptor(_ name: String, nullable: Bool = true) throws -> QueryCompositeType {
+            try QueryCompositeType(columns: [
+                QueryColumn(number: 1, name: name, type: .sql(.integer), isNullable: nullable),
+                QueryColumn(number: 2, name: name, type: .sql(.integer), isNullable: true),
+            ], limits: limits)
+        }
+        let type = try descriptor("same")
+        func digest(_ value: QueryValue, type: QueryCompositeType) throws -> ByteString {
+            let column = try QueryColumn(number: 1, name: "row", type: .sql(.composite(type)), isNullable: true)
+            return try CanonicalRowFingerprint.compute(QueryRow(values: [value], columns: [column]),
+                columns: [column], workMeter: meter)
+        }
+        let present = QueryValue.composite(try QueryCompositeValue(type: type,
+            fields: [.primitive(.null), .primitive(.null)], limits: limits))
+        #expect(try digest(present, type: type) != digest(.primitive(.null), type: type))
+        let first = QueryValue.composite(try QueryCompositeValue(type: type,
+            fields: [.primitive(.int32(1)), .primitive(.int32(2))], limits: limits))
+        let reversed = QueryValue.composite(try QueryCompositeValue(type: type,
+            fields: [.primitive(.int32(2)), .primitive(.int32(1))], limits: limits))
+        #expect(try digest(first, type: type) != digest(reversed, type: type))
+        let renamed = try descriptor("other")
+        let required = try descriptor("same", nullable: false)
+        #expect(try digest(.primitive(.null), type: type) != digest(.primitive(.null), type: renamed))
+        #expect(try digest(.primitive(.null), type: type) != digest(.primitive(.null), type: required))
+        #expect(try digest(first, type: type) == digest(first, type: type))
+    }
+
     @Test("Opaque query payload leases retain claims until their last owner ends")
     func opaquePayloadLeaseLastOwner() throws {
         let meter = DatabaseWorkMeter(unbounded: ExecutionBudget(timeoutMilliseconds: UInt32.max))

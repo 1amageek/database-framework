@@ -55,7 +55,19 @@ final class SQLJSONMemory {
     static func validate(_ value: QueryValue, type: QueryColumnType, meter: DatabaseWorkMeter) throws {
         let cells: Int
         switch value {
-        case .array(let array): cells = array.elements.count
+        case .composite(let record):
+            cells = record.fields.count
+            let descriptor = record.type
+            let footprint = try descriptor.measure()
+            let work = try add(try add(footprint.nodeCount, footprint.collectionElementCount), descriptor.storageFootprint.utf8ByteCount)
+            try meter.consume(work, at: .expressionEvaluation)
+        case .array(let array):
+            cells = array.elements.count
+            if case .composite(let descriptor) = array.elementType {
+                let footprint = try descriptor.measure()
+                let work = try add(try add(footprint.nodeCount, footprint.collectionElementCount), descriptor.storageFootprint.utf8ByteCount)
+                try meter.consume(work, at: .expressionEvaluation)
+            }
         case .primitive(.array(let array)): cells = array.count
         default: cells = 0
         }

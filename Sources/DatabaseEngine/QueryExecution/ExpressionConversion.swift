@@ -276,6 +276,7 @@ extension Expression {
         switch self {
         case .column(let column):
             return column.table == nil || column.table == sourceQualifier
+        case .wholeRow(let name): return name == sourceQualifier
         case .collectionOperation(_, let lhs, let rhs),
              .add(let lhs, let rhs), .subtract(let lhs, let rhs),
                 .multiply(let lhs, let rhs), .divide(let lhs, let rhs),
@@ -291,7 +292,8 @@ extension Expression {
         case .negate(let operand), .not(let operand),
                 .isNull(let operand), .isNotNull(let operand), .truthTest(let operand, _, _),
                 .regex(let operand, _, _),
-                .cast(let operand, _), .isTriple(let operand),
+                .cast(let operand, _), .collate(let operand, _), .field(let operand, _),
+                .fieldExpansion(let operand), .isTriple(let operand),
                 .subject(let operand), .predicate(let operand),
                 .object(let operand):
             return operand.referencesOnlySourceQualifier(sourceQualifier)
@@ -326,7 +328,7 @@ extension Expression {
             case .array(let value): return lhs.referencesOnlySourceQualifier(sourceQualifier) && value.referencesOnlySourceQualifier(sourceQualifier)
             case .subquery: return false
             }
-        case .inSubquery, .subquery, .exists:
+        case .inSubquery, .subquery, .arraySubquery, .exists:
             return false
         case .aggregate(let aggregate):
             switch aggregate {

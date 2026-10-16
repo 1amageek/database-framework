@@ -66,21 +66,16 @@ struct CanonicalSQLRetainedOwnershipTests {
         try await context.save()
 
         let windowed = try await context.query(
-            SelectQuery(
-                projection: .all,
-                source: .table(TableRef(DecodeProbeItem.persistableType)),
-                limit: 1,
-                offset: 1
-            )
+            SelectQuery(projection: [.wildcard()],
+            source: .table(TableRef(DecodeProbeItem.persistableType)),
+            pagination: QueryPagination(limit: .count(.fixed(1), withTies: false), offset: .fixed(1)))
         )
         #expect(try windowed.rows.map { try $0.primitiveFields(columns: windowed.columns)["id"] } == [.string("b")])
 
         let empty = try await context.query(
-            SelectQuery(
-                projection: .all,
-                source: .table(TableRef(DecodeProbeItem.persistableType)),
-                limit: 0
-            )
+            SelectQuery(projection: [.wildcard()],
+            source: .table(TableRef(DecodeProbeItem.persistableType)),
+            pagination: QueryPagination(limit: .count(.fixed(0), withTies: false)))
         )
         #expect(empty.rows.isEmpty)
     }
@@ -94,8 +89,7 @@ struct CanonicalSQLRetainedOwnershipTests {
         try await context.save()
 
         let response = try await context.query(
-            SelectQuery(
-                projection: .items([
+            SelectQuery(projection: [
                     ProjectionItem(
                         .literal(
                             .langLiteral(
@@ -105,9 +99,8 @@ struct CanonicalSQLRetainedOwnershipTests {
                         ),
                         alias: "label"
                     )
-                ]),
-                source: .table(TableRef(DecodeProbeItem.persistableType))
-            ),
+                ],
+            source: .table(TableRef(DecodeProbeItem.persistableType))),
             options: ReadExecutionOptions(
                 pageSize: 10,
                 continuationSnapshotIsStable: true
@@ -149,12 +142,9 @@ struct CanonicalSQLRetainedOwnershipTests {
         // physical cursor opens, even when the source would be empty.
         do {
             _ = try await container.testBaseContext().query(
-                SelectQuery(
-                    projection: .all,
-                    source: .table(TableRef(DecodeProbeItem.persistableType)),
-                    limit: 1_000_000,
-                    offset: 1_000_000
-                ),
+                SelectQuery(projection: [.wildcard()],
+            source: .table(TableRef(DecodeProbeItem.persistableType)),
+            pagination: QueryPagination(limit: .count(.fixed(1_000_000), withTies: false), offset: .fixed(1_000_000))),
                 options: ReadExecutionOptions(budget: budget)
             )
             Issue.record("Expected the tiny work budget to reject typed schema construction")
@@ -173,8 +163,9 @@ struct CanonicalSQLRetainedOwnershipTests {
         let cursorBudget = ExecutionBudget(maximumRows: 3, maximumWorkUnits: 100_000,
             maximumIntermediateRows: 3, maximumIntermediateBytes: 1 * 1_024 * 1_024,
             timeoutMilliseconds: 30_000)
-        let bounded = try await container.testBaseContext().query(SelectQuery(projection: .all,
-            source: .table(TableRef(DecodeProbeItem.persistableType)), limit: 1_000_000, offset: 1_000_000),
+        let bounded = try await container.testBaseContext().query(SelectQuery(projection: [.wildcard()],
+            source: .table(TableRef(DecodeProbeItem.persistableType)),
+            pagination: QueryPagination(limit: .count(.fixed(1_000_000), withTies: false), offset: .fixed(1_000_000))),
             options: ReadExecutionOptions(budget: cursorBudget))
         #expect(bounded.rows.isEmpty)
         let boundedLimits = Array(
@@ -185,11 +176,9 @@ struct CanonicalSQLRetainedOwnershipTests {
         let openedBeforeLimitZero = control.openedRangeCursorCount
 
         let response = try await container.testBaseContext().query(
-            SelectQuery(
-                projection: .all,
-                source: .table(TableRef(DecodeProbeItem.persistableType)),
-                limit: 0
-            ),
+            SelectQuery(projection: [.wildcard()],
+            source: .table(TableRef(DecodeProbeItem.persistableType)),
+            pagination: QueryPagination(limit: .count(.fixed(0), withTies: false))),
             options: ReadExecutionOptions(
                 pageSize: 1,
                 continuationSnapshotIsStable: true
@@ -224,11 +213,9 @@ struct CanonicalSQLRetainedOwnershipTests {
         try await schemaSeedContext.save()
         let schemaOpenedBefore = schemaControl.openedRangeCursorCount
         let schemaResponse = try await schemaDriven.testBaseContext().query(
-            SelectQuery(
-                projection: .all,
-                source: .table(TableRef(DecodeProbeItem.persistableType)),
-                limit: 0
-            ),
+            SelectQuery(projection: [.wildcard()],
+            source: .table(TableRef(DecodeProbeItem.persistableType)),
+            pagination: QueryPagination(limit: .count(.fixed(0), withTies: false))),
             options: ReadExecutionOptions(
                 pageSize: 1,
                 continuationSnapshotIsStable: true
@@ -242,10 +229,8 @@ struct CanonicalSQLRetainedOwnershipTests {
     @Test("Stable continuation without a storage position keeps one validated proof")
     func stableContinuationWithoutStoragePositionKeepsOneValidatedProof()
         async throws {
-        let query = SelectQuery(
-            projection: .all,
-            source: .table(TableRef(DecodeProbeItem.persistableType))
-        )
+        let query = SelectQuery(projection: [.wildcard()],
+            source: .table(TableRef(DecodeProbeItem.persistableType)))
         let continuationScope = ByteString([0x44, 0x46, 0x30, 0x36])
         let firstExecution = ReadExecutionContext(
             options: ReadExecutionOptions(
@@ -313,12 +298,12 @@ struct CanonicalSQLRetainedOwnershipTests {
             let cursorCountBeforeMismatch = control.openedRangeCursorCount
             var changedQuery = query
             changedQuery = changedQuery.replacing(
-                projection: .items([
+                projection: [
                     ProjectionItem(
                         .literal(.string("changed")),
                         alias: "changed"
                     )
-                ])
+                ]
             )
             do {
                 _ = try await container.testBaseContext().query(
@@ -353,18 +338,13 @@ struct CanonicalSQLRetainedOwnershipTests {
             in: container,
             meter: meter
         )
-        let query = SelectQuery(
-            projection: .items([
+        let query = SelectQuery(projection: [
                 ProjectionItem(
-                    .column(ColumnRef("value")),
+                    .column(ColumnRef("column1")),
                     alias: "projected"
                 )
-            ]),
-            source: .values(
-                [[.string("first")], [.string("second")]],
-                columnNames: ["value"]
-            )
-        )
+            ],
+            source: .values([[.literal(.string("first"))], [.literal(.string("second"))]]))
 
         do {
             _ = try await container.testBaseContext().queryRetained(
@@ -404,14 +384,9 @@ struct CanonicalSQLRetainedOwnershipTests {
             in: container,
             meter: meter
         )
-        let query = SelectQuery(
-            projection: .all,
-            source: .values(
-                [[.string("books")]],
-                columnNames: ["category"]
-            ),
-            groupBy: [.column(ColumnRef("category"))]
-        )
+        let query = SelectQuery(projection: [.wildcard()],
+            source: .values([[.literal(.string("books"))]]),
+            groupBy: [.column(ColumnRef("column1"))])
 
         do {
             _ = try await container.testBaseContext().queryRetained(
@@ -444,29 +419,22 @@ struct CanonicalSQLRetainedOwnershipTests {
         let container = try await makeContainer()
         defer { await container.shutdown() }
         let meter = makeMeter(
-            maximumIntermediateRows: 2,
+            // Each input retains its VALUES row and its named source frame.
+            maximumIntermediateRows: 2 * 2,
             maximumIntermediateBytes: 1_024 * 1_024
         )
         let execution = makeExecution(
             in: container,
             meter: meter
         )
-        let query = SelectQuery(
-            projection: .all,
+        let query = SelectQuery(projection: [.wildcard()],
             source: .join(
                 JoinClause(
                     type: .cross,
-                    left: .values(
-                        [[.string("left")]],
-                        columnNames: ["left_value"]
-                    ),
-                    right: .values(
-                        [[.string("right")]],
-                        columnNames: ["right_value"]
-                    )
+                    left: .aliased(.values([[.literal(.string("left"))]]), name: "left_source", columns: ["left_value"]),
+                    right: .aliased(.values([[.literal(.string("right"))]]), name: "right_source", columns: ["right_value"])
                 )
-            )
-        )
+            ))
 
         do {
             _ = try await container.testBaseContext().queryRetained(
@@ -485,9 +453,9 @@ struct CanonicalSQLRetainedOwnershipTests {
                 return
             }
             #expect(stage == .joinCandidate)
-            #expect(consumed == 2)
+            #expect(consumed == 4)
             #expect(requested == 1)
-            #expect(maximum == 2)
+            #expect(maximum == 4)
         }
 
         #expect(meter.retainedIntermediateRows == 0)
@@ -499,32 +467,25 @@ struct CanonicalSQLRetainedOwnershipTests {
         let container = try await makeContainer()
         defer { await container.shutdown() }
         let meter = makeMeter(
-            maximumIntermediateRows: 3,
+            // Predicate composition begins after both two-owner input rows.
+            maximumIntermediateRows: 2 * 2,
             maximumIntermediateBytes: 1_024 * 1_024
         )
         let execution = makeExecution(
             in: container,
             meter: meter
         )
-        let query = SelectQuery(
-            projection: .all,
+        let query = SelectQuery(projection: [.wildcard()],
             source: .join(
                 JoinClause(
                     type: .inner,
-                    left: .values(
-                        [[.string("left")]],
-                        columnNames: ["left_value"]
-                    ),
-                    right: .values(
-                        [[.string("right")]],
-                        columnNames: ["right_value"]
-                    ),
+                    left: .aliased(.values([[.literal(.string("left"))]]), name: "left_source", columns: ["left_value"]),
+                    right: .aliased(.values([[.literal(.string("right"))]]), name: "right_source", columns: ["right_value"]),
                     condition: .on(
                         .isNotNull(.column(ColumnRef("left_value")))
                     )
                 )
-            )
-        )
+            ))
 
         do {
             _ = try await container.testBaseContext().queryRetained(
@@ -543,9 +504,9 @@ struct CanonicalSQLRetainedOwnershipTests {
                 return
             }
             #expect(stage == .joinCandidate)
-            #expect(consumed == 3)
+            #expect(consumed == 4)
             #expect(requested == 1)
-            #expect(maximum == 3)
+            #expect(maximum == 4)
         }
 
         #expect(meter.retainedIntermediateRows == 0)
@@ -556,27 +517,23 @@ struct CanonicalSQLRetainedOwnershipTests {
     func setAlignmentRejectsBeforeDestinationAdmission() async throws {
         let container = try await makeContainer()
         defer { await container.shutdown() }
+        // Each operand retains VALUES, alias, SELECT input, projected row,
+        // canonical output and drained-source containers before alignment.
+        let inputRowOwners: UInt32 = 2 * (1 + 1 + 1 + 1 + 1 + 1)
         let meter = makeMeter(
-            maximumIntermediateRows: 3,
+            maximumIntermediateRows: inputRowOwners,
             maximumIntermediateBytes: 1_024 * 1_024
         )
         let execution = makeExecution(
             in: container,
             meter: meter
         )
-        let query = SelectQuery(
-            projection: .all,
-            source: .unionAll([
-                .values(
-                    [[.string("first")]],
-                    columnNames: ["first_name"]
-                ),
-                .values(
-                    [[.string("second")]],
-                    columnNames: ["second_name"]
-                ),
-            ])
-        )
+        let query = SelectQuery(projection: [.wildcard()],
+            source: .setOperation(operator: .union, quantifier: .all,
+                left: SelectQuery(projection: [.wildcard()], source:
+                    .aliased(.values([[.literal(.string("first"))]]), name: "values", columns: ["first_name"])),
+                right: SelectQuery(projection: [.wildcard()], source:
+                    .aliased(.values([[.literal(.string("second"))]]), name: "values", columns: ["second_name"]))))
 
         do {
             _ = try await container.testBaseContext().queryRetained(
@@ -595,9 +552,9 @@ struct CanonicalSQLRetainedOwnershipTests {
                 return
             }
             #expect(stage == .bindingCandidate)
-            #expect(consumed == 3)
+            #expect(consumed == UInt64(inputRowOwners))
             #expect(requested == 1)
-            #expect(maximum == 3)
+            #expect(maximum == UInt64(inputRowOwners))
         }
 
         #expect(meter.retainedIntermediateRows == 0)
@@ -616,29 +573,19 @@ struct CanonicalSQLRetainedOwnershipTests {
             in: container,
             meter: meter
         )
-        let nested = SelectQuery(
-            projection: .items([
+        let nested = SelectQuery(projection: [
                 ProjectionItem(.column(ColumnRef("outer_value")))
-            ]),
-            source: .values([[]], columnNames: [])
-        )
-        let outer = SelectQuery(
-            projection: .items([
+            ],
+            source: .values([[]]))
+        let outer = SelectQuery(projection: [
                 ProjectionItem(.column(ColumnRef("outer_value")))
-            ]),
-            source: .values(
-                [[.string("outer")]],
-                columnNames: ["outer_value"]
-            )
-        )
-        let lateralRight = SelectQuery(
-            projection: .items([
+            ],
+            source: .aliased(.values([[.literal(.string("outer"))]]), name: "values", columns: ["outer_value"]))
+        let lateralRight = SelectQuery(projection: [
                 ProjectionItem(.subquery(nested), alias: "nested_value")
-            ]),
-            source: .values([[]], columnNames: [])
-        )
-        let query = SelectQuery(
-            projection: .items([
+            ],
+            source: .values([[]]))
+        let query = SelectQuery(projection: [
                 ProjectionItem(
                     .column(
                         ColumnRef(table: "outer", column: "outer_value")
@@ -651,16 +598,15 @@ struct CanonicalSQLRetainedOwnershipTests {
                     ),
                     alias: "nested_value"
                 ),
-            ]),
+            ],
             source: .join(
                 JoinClause(
                     type: .lateral,
-                    left: .subquery(outer, alias: "outer"),
-                    right: .subquery(lateralRight, alias: "nested"),
+                    left: .aliased(.subquery(outer), name: "outer"),
+                    right: .aliased(.subquery(lateralRight), name: "nested"),
                     condition: .on(.bool(true))
                 )
-            )
-        )
+            ))
 
         let retained = try await container.testBaseContext().queryRetained(
             query,
@@ -690,8 +636,7 @@ struct CanonicalSQLRetainedOwnershipTests {
             in: container,
             meter: meter
         )
-        let query = SelectQuery(
-            projection: .items([
+        let query = SelectQuery(projection: [
                 ProjectionItem(
                     .function(
                         FunctionCall(
@@ -710,12 +655,8 @@ struct CanonicalSQLRetainedOwnershipTests {
                     ),
                     alias: "upper_value"
                 ),
-            ]),
-            source: .values(
-                [[.string("MiXeD")]],
-                columnNames: ["value"]
-            )
-        )
+            ],
+            source: .aliased(.values([[.literal(.string("MiXeD"))]]), name: "values", columns: ["value"]))
 
         let retained = try await container.testBaseContext().queryRetained(
             query,
@@ -925,8 +866,7 @@ struct CanonicalSQLRetainedOwnershipTests {
             in: container,
             meter: meter
         )
-        let query = SelectQuery(
-            projection: .items([
+        let query = SelectQuery(projection: [
                 ProjectionItem(
                     .literal(
                         .langLiteral(
@@ -946,12 +886,8 @@ struct CanonicalSQLRetainedOwnershipTests {
                     ),
                     alias: "directed_label"
                 ),
-            ]),
-            source: .values(
-                [[.int(1)]],
-                columnNames: ["source"]
-            )
-        )
+            ],
+            source: .aliased(.values([[.literal(.int(1))]]), name: "values", columns: ["source"]))
 
         let retained = try await container.testBaseContext().queryRetained(
             query,
@@ -996,8 +932,7 @@ struct CanonicalSQLRetainedOwnershipTests {
             meter: meter
         )
         let value = Expression.column(ColumnRef("value"))
-        let query = SelectQuery(
-            projection: .items([
+        let query = SelectQuery(projection: [
                 ProjectionItem(
                     .aggregate(
                         .arrayAgg(
@@ -1018,12 +953,8 @@ struct CanonicalSQLRetainedOwnershipTests {
                     ),
                     alias: "joined"
                 ),
-            ]),
-            source: .values(
-                [[.string("first")], [.string("second")]],
-                columnNames: ["value"]
-            )
-        )
+            ],
+            source: .aliased(.values([[.literal(.string("first"))], [.literal(.string("second"))]]), name: "values", columns: ["value"]))
 
         let retained = try await container.testBaseContext().queryRetained(
             query,
@@ -1054,28 +985,18 @@ struct CanonicalSQLRetainedOwnershipTests {
             in: container,
             meter: meter
         )
-        let membership = SelectQuery(
-            projection: .items([
+        let membership = SelectQuery(projection: [
                 ProjectionItem(.column(ColumnRef("candidate")))
-            ]),
-            source: .values(
-                [[.int(1)], [.int(2)]],
-                columnNames: ["candidate"]
-            )
-        )
-        let query = SelectQuery(
-            projection: .items([
+            ],
+            source: .aliased(.values([[.literal(.int(1))], [.literal(.int(2))]]), name: "values", columns: ["candidate"]))
+        let query = SelectQuery(projection: [
                 ProjectionItem(.column(ColumnRef("value")), alias: "value")
-            ]),
-            source: .values(
-                [[.int(2)], [.int(3)]],
-                columnNames: ["value"]
-            ),
+            ],
+            source: .aliased(.values([[.literal(.int(2))], [.literal(.int(3))]]), name: "values", columns: ["value"]),
             filter: .inSubquery(
                 .column(ColumnRef("value")),
                 subquery: membership
-            )
-        )
+            ))
 
         let retained = try await container.testBaseContext().queryRetained(
             query,
@@ -1095,41 +1016,45 @@ struct CanonicalSQLRetainedOwnershipTests {
     func valuesRejectsOneByteShortBeforeFieldAllocation() async throws {
         let fieldName = "value"
         let stringValue = String(repeating: "x", count: 1_024)
-        let fieldValue = FieldValue.string(stringValue)
         let container = try await makeContainer()
         defer { await container.shutdown() }
-        let query = SelectQuery(projection: .all,
-            source: .values([[Literal.string(stringValue)]], columnNames: [fieldName]))
-        let measurementMeter = makeMeter(
-            maximumIntermediateRows: 64,
-            maximumIntermediateBytes: UInt64.max
-        )
-        let schemaFootprint = try CanonicalRelationalFootprintMeter.sourceLayoutFootprint(
-            fieldNames: [fieldName], sourceName: nil,
-            workMeter: measurementMeter, stage: .bindingCandidate
-        )
-        let valuesFootprint = try CanonicalRelationalFootprintMeter.positionalRowFootprint(
-            values: [.primitive(fieldValue)], annotations: [:], version: nil,
-            workMeter: measurementMeter, stage: .bindingCandidate
-        )
-        let layout = try DatabaseRetainedArrayLayout.forElement(
-            CanonicalSourceRow.self
-        )
-        let initialGrowth = try layout.growth(from: 0, toFit: 1)
-        let initialBuilderBytes = layout.containerByteCount
-            + initialGrowth.additionalByteCount
-        // This raw-string binding performs no temporary input conversion.
-        // Its measured peak is the parameter/selected-plan prefix retained by
-        // execution until the VALUES append and response boundary complete.
-        _ = try container.testBaseContext().boundQueryParameters(query, parameters: [], workMeter: measurementMeter)
-        let bindingPrefixBytes = measurementMeter.peakIntermediateBytes
-        #expect(measurementMeter.retainedIntermediateBytes == 0)
-        let retainedBeforeAppendBytes = DatabaseReadSession
-            .scopeCursorRegistryContainerByteCount
-            + bindingPrefixBytes + initialBuilderBytes + schemaFootprint.bytes
-        let appendRequestBytes = valuesFootprint.bytes
-            + layout.appendAdmissionByteCount
-        let maximumBytes = retainedBeforeAppendBytes + appendRequestBytes - 1
+        let query = SelectQuery(projection: [.wildcard()],
+            source: .aliased(.values([[.literal(Literal.string(stringValue))]]), name: "values", columns: [fieldName]))
+        let measurementMeter = makeMeter(maximumIntermediateRows: 64, maximumIntermediateBytes: .max)
+        let literalFootprint = try CanonicalRelationalFootprintMeter.valueFootprint(
+            of: .primitive(.string(stringValue)), workMeter: measurementMeter, stage: .expressionEvaluation)
+        // Advance only over an observed prefix admission. The fixture's finite
+        // encoded shape bounds diagnostic retries; no budget is guessed.
+        let maximumPrefixTransitions = try QueryIRWireFormat.encode(.select(query)).count
+        var prefixBudget: UInt64 = 0
+        var selectedBoundary: (consumed: UInt64, requested: UInt64)?
+        for _ in 0..<maximumPrefixTransitions {
+            let probe = makeMeter(maximumIntermediateRows: 64, maximumIntermediateBytes: prefixBudget)
+            do {
+                _ = try await container.testBaseContext().queryRetained(query,
+                    execution: makeExecution(in: container, meter: probe))
+                Issue.record("The VALUES expression admission was not observed")
+                return
+            } catch let error as DatabaseWorkLimitError {
+                guard case .maximumIntermediateBytes(let stage, let consumed, let requested, _) = error else {
+                    Issue.record("Unexpected VALUES prefix failure: \(error)"); return
+                }
+                #expect(probe.retainedIntermediateRows == 0)
+                #expect(probe.retainedIntermediateBytes == 0)
+                let (required, overflow) = consumed.addingReportingOverflow(requested)
+                guard !overflow, required > prefixBudget else {
+                    Issue.record("VALUES prefix admission overflowed or made no progress"); return
+                }
+                if stage == .expressionEvaluation, requested == literalFootprint.bytes {
+                    selectedBoundary = (consumed, requested)
+                    break
+                }
+                prefixBudget = required
+            }
+        }
+        let boundary = try #require(selectedBoundary)
+        let requiredBytes = boundary.consumed + boundary.requested
+        let maximumBytes = requiredBytes - 1
 
         let meter = makeMeter(
             maximumIntermediateRows: 64,
@@ -1155,14 +1080,34 @@ struct CanonicalSQLRetainedOwnershipTests {
                 Issue.record("Unexpected VALUES failure: \(error)")
                 return
             }
-            #expect(stage == .bindingCandidate)
-            #expect(consumed == retainedBeforeAppendBytes)
-            #expect(requested == appendRequestBytes)
+            #expect(stage == .expressionEvaluation)
+            #expect(consumed == boundary.consumed)
+            #expect(requested == boundary.requested)
+            #expect(requested == literalFootprint.bytes)
             #expect(maximum == maximumBytes)
         }
 
         #expect(meter.retainedIntermediateRows == 0)
         #expect(meter.retainedIntermediateBytes == 0)
+
+        let exact = makeMeter(maximumIntermediateRows: 64, maximumIntermediateBytes: requiredBytes)
+        do {
+            let response = try await container.testBaseContext().queryRetained(query,
+                execution: makeExecution(in: container, meter: exact))
+            let output = try response.promoteToPublicResponse()
+            #expect(output.rows.count == 1)
+        } catch let error as DatabaseWorkLimitError {
+            guard case .maximumIntermediateBytes(_, let consumed, let requested, let maximum) = error else {
+                Issue.record("Unexpected exact-boundary VALUES failure: \(error)"); return
+            }
+            // The selected claim fits exactly; a later owner may need a separate claim.
+            #expect(consumed != boundary.consumed || requested != boundary.requested)
+            let (required, overflow) = consumed.addingReportingOverflow(requested)
+            #expect(!overflow)
+            #expect(required > maximum)
+        }
+        #expect(exact.retainedIntermediateRows == 0)
+        #expect(exact.retainedIntermediateBytes == 0)
     }
 
     @Test("Multiple scalar subqueries retain values until public promotion")
@@ -1179,16 +1124,11 @@ struct CanonicalSQLRetainedOwnershipTests {
         )
         let first = scalarSubquery(value: "first")
         let second = scalarSubquery(value: "second")
-        let query = SelectQuery(
-            projection: .items([
+        let query = SelectQuery(projection: [
                 ProjectionItem(.subquery(first), alias: "first_value"),
                 ProjectionItem(.subquery(second), alias: "second_value"),
-            ]),
-            source: .values(
-                [[.string("outer")]],
-                columnNames: ["outer_value"]
-            )
-        )
+            ],
+            source: .aliased(.values([[.literal(.string("outer"))]]), name: "values", columns: ["outer_value"]))
 
         let retained = try await container.testBaseContext().queryRetained(
             query,
@@ -1218,25 +1158,15 @@ struct CanonicalSQLRetainedOwnershipTests {
             meter: meter
         )
         let first = scalarSubquery(value: "first")
-        let invalid = SelectQuery(
-            projection: .items([
+        let invalid = SelectQuery(projection: [
                 ProjectionItem(.column(ColumnRef("value")))
-            ]),
-            source: .values(
-                [[.string("one")], [.string("two")]],
-                columnNames: ["value"]
-            )
-        )
-        let query = SelectQuery(
-            projection: .items([
+            ],
+            source: .aliased(.values([[.literal(.string("one"))], [.literal(.string("two"))]]), name: "values", columns: ["value"]))
+        let query = SelectQuery(projection: [
                 ProjectionItem(.subquery(first), alias: "first_value"),
                 ProjectionItem(.subquery(invalid), alias: "invalid_value"),
-            ]),
-            source: .values(
-                [[.string("outer")]],
-                columnNames: ["outer_value"]
-            )
-        )
+            ],
+            source: .aliased(.values([[.literal(.string("outer"))]]), name: "values", columns: ["outer_value"]))
 
         do {
             _ = try await container.testBaseContext().queryRetained(
@@ -1395,10 +1325,8 @@ struct CanonicalSQLRetainedOwnershipTests {
             workMeter: workMeter
         )
         let prepared = DatabasePreparedSQLSelect(
-            query: SelectQuery(
-                projection: .all,
-                source: .table(TableRef("DecodeProbeItem"))
-            ),
+            query: SelectQuery(projection: [.wildcard()],
+            source: .table(TableRef("DecodeProbeItem"))),
             workMeter: workMeter
         )
 
@@ -1456,10 +1384,8 @@ struct CanonicalSQLRetainedOwnershipTests {
             workMeter: sessionMeter
         )
         let prepared = DatabasePreparedSQLSelect(
-            query: SelectQuery(
-                projection: .all,
-                source: .table(TableRef("DecodeProbeItem"))
-            ),
+            query: SelectQuery(projection: [.wildcard()],
+            source: .table(TableRef("DecodeProbeItem"))),
             workMeter: preparationMeter
         )
         let context = container.testBaseContext()
@@ -1588,15 +1514,10 @@ struct CanonicalSQLRetainedOwnershipTests {
     }
 
     private func scalarSubquery(value: String) -> SelectQuery {
-        SelectQuery(
-            projection: .items([
+        SelectQuery(projection: [
                 ProjectionItem(.column(ColumnRef("value")))
-            ]),
-            source: .values(
-                [[.string(value)]],
-                columnNames: ["value"]
-            )
-        )
+            ],
+            source: .aliased(.values([[.literal(.string(value))]]), name: "values", columns: ["value"]))
     }
 
     private func makeEmptyCanonicalRows(

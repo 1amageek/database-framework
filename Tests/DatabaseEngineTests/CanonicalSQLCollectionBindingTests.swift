@@ -141,13 +141,15 @@ struct CanonicalSQLCollectionBindingTests {
     func jsonCapabilityGate() throws {
         for type: DataType in [.json, .array(.json)] {
             let column = try QueryColumn(number: 1, name: "value", type: .sql(type), isNullable: true)
-            let selected = binder(columns: [column]), source = DataSource.values([], columnNames: ["value"])
+            let selected = binder(columns: [column]), source = DataSource.values([])
             for query in [
-                SelectQuery(projection: .distinctItems([ProjectionItem(.col("value"))]), source: source),
-                SelectQuery(projection: .all, source: source, groupBy: [.col("value")]),
-                SelectQuery(projection: .all, source: source, orderBy: [SortKey(.col("value"))]),
-                SelectQuery(projection: .items([ProjectionItem(.aggregate(.count(.col("value"), distinct: true)))]), source: source),
-                SelectQuery(projection: .items([ProjectionItem(.aggregate(.min(.col("value"))))]), source: source)] {
+                SelectQuery(projection: [ProjectionItem(.col("value"))],
+            source: source,
+            quantifier: .distinct),
+                SelectQuery(projection: [.wildcard()], source: source, groupBy: [.col("value")]),
+                SelectQuery(projection: [.wildcard()], source: source, orderBy: [SortKey(.col("value"))]),
+                SelectQuery(projection: [ProjectionItem(.aggregate(.count(.col("value"), distinct: true)))], source: source),
+                SelectQuery(projection: [ProjectionItem(.aggregate(.min(.col("value"))))], source: source)] {
                 #expect(throws: DatabaseExpressionEvaluationError.self) { try selected.bind(query) }
             }
             #expect(throws: DatabaseExpressionEvaluationError.self) { try selected.bind(.equal(.col("value"), .col("value"))) }
@@ -208,7 +210,28 @@ struct CanonicalSQLCollectionBindingTests {
         #expect(throws: DatabaseExpressionEvaluationError.typeMismatch(operation: "SPARQL arguments")) {
             try sparqlScope.bind(.inList(integer(1), values: [variadicProducer]))
         }
-        for expression in [Expression.row([integer(1)]), call("unnest", [null(.array(.integer))]), call("generate_subscripts", [null(.array(.integer)), integer(1)]), call("json_each", [null(.json)]), call("row_to_json", [.row([integer(1)])])] {
+        let row = try binder().bind(.row([integer(1)]))
+        guard case .sql(.composite(let descriptor)) = row.type else {
+            Issue.record("ROW must select a composite descriptor"); return
+        }
+        #expect(descriptor.columns.map(\.name) == ["f1"])
+        #expect(descriptor.columns.map(\.type) == [.sql(.integer)])
+        let json = try binder().bind(call("row_to_json", [.row([integer(1)])]))
+        #expect(json.type == .sql(.json))
+        let limits = QueryValueLimits(maximumRetainedBytes: 100_000, maximumTotalNodes: 1000,
+            maximumNestingDepth: 16, maximumCollectionElements: 1000)
+        let meter = DatabaseWorkMeter(unbounded: ExecutionBudget(maximumWorkUnits: 100_000,
+            maximumIntermediateBytes: 100_000, timeoutMilliseconds: UInt32.max))
+        do {
+            let record = try CanonicalSQLCompositeEvaluator.evaluate(row, operands: [.primitive(.int32(1))],
+                temporalEnvironment: nil, workMeter: meter, limits: limits)
+            let output = try CanonicalSQLJSONEvaluator.evaluate(json, operands: [record.value],
+                temporalEnvironment: nil, workMeter: meter, limits: limits)
+            guard case .json(let object) = output.value else { Issue.record("ROW_TO_JSON result missing"); return }
+            #expect(object.bytes == ByteString(Array("{\"f1\":1}".utf8)))
+        }
+        #expect(meter.retainedIntermediateBytes == 0)
+        for expression in [call("unnest", [null(.array(.integer))]), call("generate_subscripts", [null(.array(.integer)), integer(1)]), call("json_each", [null(.json)])] {
             #expect(throws: DatabaseExpressionEvaluationError.self) { try binder().bind(expression) }
         }
     }

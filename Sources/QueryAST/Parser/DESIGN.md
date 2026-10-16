@@ -90,6 +90,7 @@ literal adapters.
 | Strings | Ordinary strings use standard_conforming_strings=on, doubled quotes and PostgreSQL newline concatenation. String-token continuation admits whitespace and line comments containing a newline; a block comment between quoted fragments ends that continuation and cannot splice the fragments. E strings support PostgreSQL byte/Unicode escapes and validate resulting UTF-8; an otherwise unrecognized escaped character is taken literally, including x when no hexadecimal digit follows. U& strings and identifiers support UESCAPE, surrogate pairs and six-digit escapes. Dollar quoting uses an exact case-sensitive delimiter, recognizes $n parameters separately, and treats its body as uninterpreted string content. Invalid Unicode escapes, invalid resulting UTF-8, U+0000 and unfinished forms fail. |
 | Numeric tokens | Decimal point, exponent, leading/trailing decimal point, base-2/8/16 integer prefixes and legal digit underscores are accepted. A direct unary +/- is folded before SQL-width selection. Exponent/digit scanning is checked and linear; never use Double or unbounded decimal expansion. Typed literal normalization preserves dscale. |
 | Comments | Line comments and nested block comments are whitespace between SQL tokens; string-token continuation follows the separate Strings contract. Bounded nesting and byte scans apply before growth. Comment/string/dollar bodies do not expose statement delimiters or parameter markers. |
+| Named parameter markers | A colon and its following identifier form one contiguous product parameter marker. Whitespace and comments cannot separate them. Preserve exact identifier spelling, including quoted names and keyword names, without consuming a following clause as a missing parameter name. |
 | Type and literal grammar | Typed DATE/TIME/TIMESTAMP/INTERVAL/UUID/BYTEA plus JSON/JSONB canonical forms, ARRAY[...] and ROW(...), CAST and postfix :: share canonical DataType parsing. Preserve temporal precision and zone qualifiers, signed numeric scale and all accepted aliases. PostgreSQL type'...' does not admit array types; array text uses CAST/::. |
 | Existing query grammar | General parse and parseSelect share the WITH-leading SELECT path; preserve CTE hints, LATERAL ordering, DISTINCT, sort NULLS and supported DML/SQL-PGQ semantics. Require AS aliases, qualified-name components, NULLS FIRST/LAST, nonempty WHERE/ON expressions, valid USING lists and required ordinary JOIN conditions. CROSS/NATURAL cannot acquire ON/USING. |
 | Complete input | Existing parse/parseSelect return one complete statement and reject additional statements. Add parseStatements for bounded ordered existing statements; accept trailing separators/empty separators as delimiters without creating empty statements. Quoted/comment semicolons never split input. This API performs syntax only, not transactional SQL blocks. Unsupported BEGIN/DDL/new query features remain typed unsupported until their owning sprint. |
@@ -432,3 +433,130 @@ intrinsic input remains a positioned failure, never a deferred success.
 These are planned behavioral obligations in QueryASTTests and public scalar SQL
 tests, not evidence of execution from successful parsing. Kit/Wire changes
 require revalidation of these consumers; S08/S10 own their explicit public gates.
+
+### S08 relational grammar and construction provenance
+
+**PLANNED; not implementation or verification evidence.** Consume
+[Query's frozen declarations](../../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md#s08-frozen-relational-query-carriage),
+[SQL's composite value contract](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s08-frozen-composite-values-and-ownership)
+and [Wire's canonical carriage](../../../../database-kit/Sources/DatabaseWire/DESIGN.md#s08-relational-query-carriage).
+These are the sole semantic carriers; Parser owns grammar, normalization and
+source provenance. This section replaces the S02/S07 VALUES, set-source and
+ARRAY(subquery) syntax gates only after the cases below pass. ROW binding and
+JSON conversion additionally require QueryExecution's behavioral evidence.
+
+```text
+complete query grammar -> canonical Kit query/source/expression values
+    -> construction provenance -> named occurrence edges + original UTF-8 ranges
+    -> structural admission -> one returned semantic tree and immutable sidecar
+```
+
+#### Grammar and normalization
+
+All SELECT, statement, batch and annotated entries share one query-expression
+grammar, including nested CTEs, scalar/IN/EXISTS/quantified subqueries, derived
+tables and ARRAY(subquery). Parse complete query operands, not sources stripped
+of projection or modifiers. INTERSECT binds above UNION/EXCEPT; UNION/EXCEPT are
+left associative. Parentheses delimit operand-local CTEs, ORDER and pagination;
+unparenthesized trailing clauses belong to the outer query. Each binary
+setOperation has its own SetOperator/SetQuantifier and the exact direct SELECT
+envelope required by Query. No syntax path repairs an invalid envelope.
+
+| Grammar responsibility | Canonical construction and boundary |
+|---|---|
+| Projection | Build ordered ProjectionItem.expression/wildcard items, including mixed bare/qualified stars and explicit/implicit output aliases. Omitted quantifier and SELECT ALL normalize to SelectQuantifier.all; DISTINCT and nonempty DISTINCT ON keys remain distinct. Preserve duplicate output names and exact quoted identity. |
+| Source alias | Construct DataSource.aliased around table, VALUES, derived query or joined group, with the ordered optional column list. A derived alias is optional. FROM tables have no TableRef.alias; direct mutation targets retain their separate existing contract. Never fabricate an alias. |
+| FROM and joins | Comma creates a cross-join tree with lower precedence than explicit JOIN. Parenthesized groups retain grouping; an outer alias wraps the complete group. Preserve ordinary/outer/natural/USING joins and INNER/CROSS/LEFT LATERAL; condition legality remains strict. Column merge/order, alias visibility, NULL extension and correlation are binding responsibilities. |
+| VALUES | Parse nonempty SQL rows of general expressions, not literals only, under the shared query/source grammar. Preserve row-major cells and parameters. Reject empty SQL rows. Shared structural validation rejects unequal raw widths only when no direct cell is fieldExpansion; binding checks final widths after parent-context expansion. Internal values([]) and values([[]]) retain Query's distinct empty/singleton meanings. |
+| Composite expressions | Explicit ROW and implicit multi-item parenthesized rows construct the existing row expression. Parenthesized composite field access constructs field; composite star constructs fieldExpansion. A simple relation star operand is wholeRow(name), preserving relation identity instead of ordinary column-name priority. |
+| Query tail | ORDER accepts expressions, output names/ordinals, multiple keys, direction, NULL order and collate expressions. COLLATE admits the exact quoted C/POSIX identities from SQLCollation; other names fail explicitly. Existing bare output ordinal versus explicit CAST constant distinction survives nested queries. |
+| Pagination | Normalize legal LIMIT/OFFSET/FETCH FIRST/NEXT order and optional ROW/ROWS into QueryPagination. LIMIT ALL remains all; SQL counts retain expression syntax, parameters and CAST edges. Omitted FETCH count constructs fixed(1); ONLY/WITH TIES set the canonical flag. Do not pre-coerce NULL, negative or overflowing expressions into unsigned defaults. |
+| Nonrecursive CTE | Preserve name, optional partial column list, complete query and materialization hint. Grammar acceptance does not evaluate demand, volatility, visibility, arity or materialization. |
+
+FROM (VALUES ...) constructs a direct values source; a following set operator
+or query tail retains a complete subquery envelope instead. FROM (SELECT ...)
+retains its explicit subquery boundary. Source captures follow the constructed
+source directly, including each VALUES row and cell, without inventing a query
+or projection occurrence for direct VALUES syntax.
+
+fieldExpansion is retained honestly at expression positions. A direct SELECT
+or RETURNING target, top-level VALUES cell or ROW item expands according to
+Query's parent-context rule; nested expressions and function arguments consume
+one composite operand. In particular, a star argument to ROW_TO_JSON/TO_JSON
+is not normalized to multiple arguments or a synthesized object. Ordinary
+unqualified names retain column-first binding; Parser does not replace them
+with wholeRow by guessing the catalog. Expansion evaluation multiplicity and
+present all-NULL versus absent joined-row identity remain runtime contracts.
+
+FETCH WITH TIES preserves the distinction between a bare unknown NULL and an
+explicit bigint CAST. The accepted 18.6 observations distinguish their failure
+versus unlimited behavior; Parser must not normalize away the decisive type
+edge. Missing ordering, illegal clause combinations, negative counts, coercion
+and overflow receive the typed error of their syntax/binding/runtime owner.
+DISTINCT ON's ORDER-prefix legality similarly belongs to binding, not a
+textual equality comparison in Parser.
+
+ARRAY(subquery) constructs arraySubquery over one complete nested query. The
+user's accepted PostgreSQL18.6 policy preserves inner array dimensions/lower
+bounds and adds outer lower bound one. Parser performs no array accumulation,
+rank repair or lower-bound rewriting. One-column admission, NULL/empty subarray
+failures and typed empty results require QueryExecution evidence.
+
+#### Capture, limits and migration
+
+Follow Query's canonical child roles and order exactly: CTEs, projection,
+source, filter, groupBy, having, DISTINCT ON, orderBy, offset, limit. Wildcards
+are projection leaves. VALUES captures row nodes with valuesRow(row), then
+valuesCell(column); aliases capture source(nil), sets setLeft/setRight query
+children, pagination expression alternatives offset/limit, and ARRAY queries
+subquery(nil). COLLATE, field and fieldExpansion use operand(0); wholeRow is a
+leaf. Fixed/ALL and absent children create no expression occurrence.
+
+Construction order can differ from that canonical order. Reorder explicit
+construction references before finishing a node; never pair equal values or
+search source text. Argument-star normalization retains the operand's actual
+identifier range and the star wrapper's original syntax range. Parentheses,
+normalization and implicit AS neither invent text spans nor leave discarded
+capture nodes. Distinct repeated values across set operands, VALUES rows,
+CTEs, pagination and function arguments retain separate addresses. Ranges
+remain absolute half-open UTF-8 offsets through multibyte text, CRLF/comments
+and batch input; earlier snapshots survive parser reuse and failure.
+
+Consecutive ROW/ARRAY constructor children use an invocation-local frame stack.
+Each frame and child is admitted before growth; open expression/constructor
+nesting is balanced on success and failure. A completed child resumes the same
+postfix and precedence path, so fields, casts, predicates and binary operators
+cannot change scope. S08-SYN05 must parse depth-40 constructor chains with source
+capture without exhausting the test worker stack, and still reject trailing
+commas and one-past nesting budgets.
+
+Charge source bytes, captures, row nodes/cells, child edges, alias/name lists,
+DISTINCT keys and output arena/map entries before growth under the existing
+cumulative ledger. New children enter structural and parameter traversal once;
+no nested query gains a fresh budget. Every query rebuild preserves all Kit
+envelope fields and optional presence, including quantifier, pagination,
+accessPath, CTE hints, reduced and dataset. SPARQL retains its separate algebra
+and fixed unsigned pagination; SQL-only forms fail through its typed language
+boundary. Public table functions/SRF composition and recursive CTE execution
+remain S10; schema-qualified table execution remains S11. Parsing qualified
+names grants neither capability.
+
+#### Falsifiable syntax and source evidence
+
+QueryASTTests owns these planned cases; Database/QueryExecution tests own
+executed types, values, scopes, failures and resource behavior. Link the
+[accepted oracle summary](../../../../.codex-tools/sql-s08-evidence/accepted-summary.json),
+[judgments](../../../../.codex-tools/sql-s08-evidence/judgments.json) and
+[strict-NULL correction](../../../../.codex-tools/sql-s08-evidence/null-correction-observations.json)
+as reference observations, never product conformance evidence. The original
+32-case capture setup failure remains recorded; four corrected NULL cases
+supersede only their identified ambiguous cells.
+
+| Case | Required distinguishing evidence |
+|---|---|
+| S08-SYN01 / QC01–02 | Mixed-star order, duplicate/zero-row names, implicit/explicit aliases, partial/excess source aliases, omitted derived alias, group scope and comma/JOIN precedence. Replace the old mixed-star rejection with positive grammar and malformed counterparts. |
+| S08-SYN02 / QC03 | Explicit/implicit/nested ROW, field selection, list expansion versus single-composite arguments and ARRAY(subquery) preserve structure and source addresses. Runtime pairs distinguish constructor/present all-NULL/absent row JSON behavior and the accepted inner-bound policy. |
+| S08-SYN03 / QC04 | Every set operator/quantifier, precedence and parenthesized operand-local versus outer clauses stabilize across repeated canonical round trips; DISTINCT ON and quoted C/POSIX remain separate metadata. |
+| S08-SYN04 / QC05–06 | Expression/parameter/ALL/NULL pagination, omitted FETCH count, WITH TIES and explicit NULL CAST retain meaning and provenance; CTE columns/hints survive all entry points and enclosing rebuilds. |
+| S08-SYN05 / QC07 | Repeated equal children in mixed wildcard/VALUES/set/CTE/argument-star/pagination trees have unique canonical addresses and exact UTF-8 ranges; exact/one-past cumulative budgets and parser reuse fail or succeed at the selected boundary. |
+| S08-SYN06 / QC08 | Builder emission and parser round trips preserve representable composite metadata and all query fields; unrepresentable literal/type metadata fails typed. Replace VALUES/set/ARRAY syntax gates only with their positive and failure evidence, preserving S10/S11 boundaries. |

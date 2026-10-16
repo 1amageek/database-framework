@@ -14,6 +14,16 @@ UNNEST or GENERATE_SUBSCRIPTS kernels.
 
 ## Responsibilities and Boundaries
 
+S08 consumes [the parent's selected composite and ARRAY(subquery) contract](../DESIGN.md#s08-frozen-relational-execution)
+and [Kit's flat value/builder contract](../../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s08-frozen-composite-values-and-ownership).
+The parent supplies bound one-column subquery rows and correlation; SQLArray
+owns checked destination shape/element assembly and selected element
+conversion/comparison. Existing scalar-array semantics remain unchanged as
+elements/dimensions become retained views. Composite elements route to the
+parent's selected record semantics, without primitive/object conversion.
+S08-E03 owns public construction/bounds/failure evidence; SQLArray tests own
+changed local shape, capacity, retained-input and comparison behavior.
+
 | Owner | Responsibility |
 |---|---|
 | SQLArray | Checked shape arithmetic, row-major traversal, access/slices, lexical array framing, scalar F08 operations, array comparison and bounded row production. |

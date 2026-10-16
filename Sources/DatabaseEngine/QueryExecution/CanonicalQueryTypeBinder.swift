@@ -12,11 +12,14 @@ struct CanonicalQueryTypeBinder {
     private let root: QueryOccurrenceID?
     private var currentOccurrence: QueryOccurrenceID?
     private var isNested = false
+    private var allowsRowSubquery = false
     private let resolveColumn: (ColumnRef) throws -> Int
     private let wildcardSlots: (String?) throws -> [Int]
+    private let resolveWholeRow: ((String) throws -> CanonicalBoundWholeRow)?
     private let bindSubquery: ((SelectQuery) throws -> [QueryColumn])?
     private let bindLocatedSubquery: ((SelectQuery, QueryOccurrenceID?) throws -> CanonicalBoundSelect)?
     private let workMeter: DatabaseWorkMeter?
+    private let bindingMetadata = CanonicalBindingMetadata()
 
     init(
         columns: [QueryColumn],
@@ -27,6 +30,7 @@ struct CanonicalQueryTypeBinder {
         root: QueryOccurrenceID? = nil,
         resolveColumn: @escaping (ColumnRef) throws -> Int,
         wildcardSlots: @escaping (String?) throws -> [Int],
+        resolveWholeRow: ((String) throws -> CanonicalBoundWholeRow)? = nil,
         bindSubquery: ((SelectQuery) throws -> [QueryColumn])? = nil,
         bindLocatedSubquery: ((SelectQuery, QueryOccurrenceID?) throws -> CanonicalBoundSelect)? = nil,
         workMeter: DatabaseWorkMeter? = nil
@@ -40,6 +44,7 @@ struct CanonicalQueryTypeBinder {
         self.currentOccurrence = root
         self.resolveColumn = resolveColumn
         self.wildcardSlots = wildcardSlots
+        self.resolveWholeRow = resolveWholeRow
         self.bindSubquery = bindSubquery
         self.bindLocatedSubquery = bindLocatedSubquery
         self.workMeter = workMeter
@@ -57,44 +62,170 @@ struct CanonicalQueryTypeBinder {
             scoped.currentOccurrence = occurrence
             return try scoped.bindSelect(query)
         }
-        let output: [QueryColumn]
-        let projection: [CanonicalBoundExpression]
-        switch query.projection {
-        case .all:
-            output = try outputColumns(slots: wildcardSlots(nil)); projection = []
-        case .allFrom(let scope):
-            do { output = try outputColumns(slots: wildcardSlots(scope)); projection = [] }
-            catch let cause as DatabaseExpressionEvaluationError {
-                guard occurrences != nil else { throw cause }
-                throw CanonicalSQLBindingFailure(cause: .expression(cause),
-                    occurrence: childBinder(.projection, 0).currentOccurrence, root: root)
-            }
-        case .items(let items), .distinctItems(let items):
-            projection = try items.enumerated().map { index, item in
-                try childBinder(.projection, index).bind(item.expression, parameterContext: .output)
-            }
-            output = try items.enumerated().map { index, item in
-                let bound = projection[index]
-                return try QueryColumn(
-                    number: ordinal(index),
-                    name: item.alias ?? Self.outputName(item.expression, index: index),
-                    type: bound.type,
-                    isNullable: bound.isNullable
-                )
+        let bytes = UInt64(MemoryLayout<[CanonicalBoundExpression]>.stride
+            + MemoryLayout<[CanonicalBoundKey]>.stride * 2)
+        let reservation = try workMeter?.reserveIntermediate(bytes: bytes, at: .bindingCandidate)
+        var successful = false
+        defer { if !successful { reservation?.release() } }
+        let selected = try bindProjection(query.projection)
+        let output = selected.columns
+        let projection = selected.projection
+        let filter = try query.filter.map { try childBinder(.filter).boolean($0) }
+        var groupBy: [CanonicalBoundExpression] = []
+        for (index, expression) in (query.groupBy ?? []).enumerated() {
+            let child = try childBinder(.groupBy, index).bind(expression)
+            try requireSQLComparison(child.type, operation: "GROUP BY")
+            try CanonicalBindingStorage.append(child, to: &groupBy, reservation: reservation)
+        }
+        let having = try query.having.map { try childBinder(.having).boolean($0) }
+        var orderBy: [CanonicalBoundKey] = []
+        for (index, key) in (query.orderBy ?? []).enumerated() {
+            try CanonicalBindingStorage.append(childBinder(.orderBy, index).bindOrderKey(key,
+                projection: projection, output: output), to: &orderBy, reservation: reservation)
+        }
+        var distinctOn: [CanonicalBoundKey] = []
+        switch query.quantifier {
+        case .all: break
+        case .distinct:
+            for column in output { try requireSQLComparison(column.type, operation: "DISTINCT") }
+        case .distinctOn(let expressions):
+            for (index, expression) in expressions.enumerated() {
+                let key = try childBinder(.distinctOn, index).bindOrderKey(SortKey(expression),
+                    projection: projection, output: output)
+                try CanonicalBindingStorage.append(CanonicalBoundKey(expression: key.expression,
+                    projectionIndex: key.projectionIndex, occurrence: key.occurrence), to: &distinctOn,
+                    reservation: reservation)
             }
         }
-        let filter = try query.filter.map { try childBinder(.filter).boolean($0) }
-        let groupBy = try (query.groupBy ?? []).enumerated().map { try childBinder(.groupBy, $0.offset).bind($0.element) }
-        let having = try query.having.map { try childBinder(.having).boolean($0) }
-        let orderBy = try (query.orderBy ?? []).enumerated().map { try childBinder(.orderBy, $0.offset).bind($0.element.expression) }
-        for child in groupBy { try requireSQLComparison(child.type, operation: "GROUP BY") }
-        for child in orderBy { try requireSQLComparison(child.type, operation: "ORDER BY") }
-        let distinct: Bool
-        if case .distinctItems = query.projection { distinct = true } else { distinct = query.distinct }
-        if distinct { for column in output { try requireSQLComparison(column.type, operation: "DISTINCT") } }
         if ownsParameterState { try parameterState.finalize() }
+        successful = true
         return CanonicalBoundSelect(columns: output, projection: projection, filter: filter,
-                                    groupBy: groupBy, having: having, orderBy: orderBy)
+            groupBy: groupBy, having: having, orderBy: orderBy, distinctOn: distinctOn,
+            metadataLease: reservation.map { DatabaseQueryPayloadLease(retaining: $0) }, bindingMetadata: bindingMetadata)
+    }
+
+    /// Binds only ordered projection items; the relation owner supplies clause binding.
+    func bindProjection(_ items: [ProjectionItem], occurrence: QueryOccurrenceID? = nil) throws -> CanonicalBoundSelect {
+        var scoped = self
+        if let occurrence { scoped.currentOccurrence = occurrence }
+        let bytes = UInt64(MemoryLayout<[QueryColumn]>.stride + MemoryLayout<[CanonicalBoundExpression]>.stride)
+        let reservation = try workMeter?.reserveIntermediate(bytes: bytes, at: .bindingCandidate)
+        var successful = false
+        defer { if !successful { reservation?.release() } }
+        var columns: [QueryColumn] = [], projection: [CanonicalBoundExpression] = []
+        for (index, item) in items.enumerated() {
+            try scoped.childBinder(.projection, index).appendProjectionItem(item, index: index,
+                columns: &columns, projection: &projection, reservation: reservation)
+        }
+        try bindingMetadata.retain(reservation)
+        successful = true
+        return CanonicalBoundSelect(columns: columns, projection: projection, filter: nil,
+            groupBy: [], having: nil, orderBy: [], bindingMetadata: bindingMetadata)
+    }
+
+    private func appendProjectionItem(_ item: ProjectionItem, index: Int,
+        columns: inout [QueryColumn], projection: inout [CanonicalBoundExpression],
+        reservation: DatabaseIntermediateReservation?) throws {
+        switch item {
+        case .wildcard(let qualifier):
+            try appendProjectionWildcard(qualifier, columns: &columns, projection: &projection, reservation: reservation)
+        case .expression(let expression, let alias):
+            if case .fieldExpansion(let operand) = expression {
+                try appendProjectionExpansion(operand, alias: alias, columns: &columns,
+                    projection: &projection, reservation: reservation)
+            } else {
+                try appendProjection(bind(expression, parameterContext: .output),
+                    name: alias ?? Self.outputName(expression, index: index),
+                    columns: &columns, projection: &projection, reservation: reservation)
+            }
+        }
+    }
+
+    private func appendProjection(_ bound: CanonicalBoundExpression, name: String,
+        columns: inout [QueryColumn], projection: inout [CanonicalBoundExpression],
+        reservation: DatabaseIntermediateReservation?) throws {
+        let column = try QueryColumn(number: ordinal(columns.count), name: name,
+            type: bound.type, isNullable: bound.isNullable)
+        try CanonicalBindingStorage.append(bound, to: &projection, reservation: reservation)
+        try CanonicalBindingStorage.append(column, to: &columns, reservation: reservation)
+    }
+
+    private func appendProjectionWildcard(_ qualifier: String?, columns: inout [QueryColumn],
+        projection: inout [CanonicalBoundExpression], reservation: DatabaseIntermediateReservation?) throws {
+        for slot in try wildcardSlots(qualifier) {
+            let column = try self.column(at: slot)
+            let bound = CanonicalBoundExpression(expression: .column(ColumnRef(column: column.name)),
+                type: column.type, isNullable: column.isNullable, columnSlot: slot, occurrence: currentOccurrence)
+            try appendProjection(bound, name: column.name, columns: &columns, projection: &projection, reservation: reservation)
+        }
+    }
+
+    private func appendProjectionExpansion(_ operand: Expression, alias: String?, columns: inout [QueryColumn],
+        projection: inout [CanonicalBoundExpression], reservation: DatabaseIntermediateReservation?) throws {
+        let source = try bind(operand, parameterContext: .output)
+        guard case .sql(.composite(let descriptor)) = source.type else { throw mismatch("field expansion requires a composite") }
+        guard alias == nil || descriptor.columns.count == 1 else { throw mismatch("alias on multiple expanded fields") }
+        for field in descriptor.columns.indices {
+            let column = descriptor.columns[field]
+            let bound = CanonicalBoundExpression(expression: .field(source.expression, name: column.name),
+                type: column.type, isNullable: source.isNullable || column.isNullable,
+                children: [source], occurrence: currentOccurrence, fieldOrdinal: field)
+            try appendProjection(bound, name: alias ?? column.name, columns: &columns,
+                projection: &projection, reservation: reservation)
+        }
+    }
+
+    func bindOrderKey(_ key: SortKey, projection: [CanonicalBoundExpression], output: [QueryColumn],
+        allowSourceExpressions: Bool = true, occurrence: QueryOccurrenceID? = nil,
+        isVolatileSubquery: (CanonicalBoundSelect) -> Bool = { _ in true }) throws -> CanonicalBoundKey {
+        var scoped = self
+        if let occurrence { scoped.currentOccurrence = occurrence }
+        do {
+            return try scoped.bindSelectedOrderKey(key, projection: projection, output: output,
+                allowSourceExpressions: allowSourceExpressions, isVolatileSubquery: isVolatileSubquery)
+        } catch let error as DatabaseExpressionEvaluationError {
+            throw scoped.located(error, at: scoped.currentOccurrence)
+        } catch let error as QueryValueError {
+            throw scoped.located(.queryValue(error), at: scoped.currentOccurrence)
+        }
+    }
+
+    private func bindSelectedOrderKey(_ key: SortKey, projection: [CanonicalBoundExpression], output: [QueryColumn],
+        allowSourceExpressions: Bool, isVolatileSubquery: (CanonicalBoundSelect) -> Bool) throws -> CanonicalBoundKey {
+        let index: Int?
+        switch key.expression {
+        case .literal(.int(let number)):
+            guard number > 0, let selected = Int(exactly: number - 1), projection.indices.contains(selected) else {
+                throw mismatch("ORDER BY position outside projection")
+            }
+            index = selected
+        case .literal(.uint(let number)):
+            guard number > 0, let selected = Int(exactly: number - 1), projection.indices.contains(selected) else {
+                throw mismatch("ORDER BY position outside projection")
+            }
+            index = selected
+        case .column(let column) where column.table == nil:
+            var selected: Int?
+            for position in output.indices where output[position].name.utf8.elementsEqual(column.column.utf8) {
+                if let selected {
+                    let candidate = CanonicalBoundKey(expression: projection[selected], projectionIndex: selected)
+                    let duplicate = CanonicalBoundKey(expression: projection[position], projectionIndex: position)
+                    guard try candidate.isSemanticallyEquivalent(to: duplicate, workMeter: workMeter,
+                        isVolatileSubquery: isVolatileSubquery) else { throw mismatch("ambiguous output alias") }
+                } else { selected = position }
+            }
+            index = selected
+        default: index = nil
+        }
+        let expression: CanonicalBoundExpression
+        if let index { expression = projection[index] }
+        else {
+            guard allowSourceExpressions else { throw mismatch("set ordering requires an output alias or position") }
+            expression = try bind(key.expression)
+        }
+        try requireSQLComparison(expression.type, operation: "ORDER BY")
+        return CanonicalBoundKey(expression: expression, projectionIndex: index, sortKey: key,
+            occurrence: currentOccurrence)
     }
 
     func bind(
@@ -106,32 +237,40 @@ struct CanonicalQueryTypeBinder {
         var scoped = self
         if let occurrence { scoped.currentOccurrence = occurrence }
         do {
-            let result = try scoped.bindExpression(expression, contextualType: contextualType, parameterContext: parameterContext)
-            if ownsParameterState && !isNested { try parameterState.finalize() }
-            return result
+            return try finalizing(scoped.bindSelectedExpression(expression,
+                contextualType: contextualType, parameterContext: parameterContext))
         }
         catch let cause as QueryValueError {
-            let failure = DatabaseExpressionEvaluationError.queryValue(cause)
-            guard occurrences != nil else { throw failure }
-            throw CanonicalSQLBindingFailure(cause: .expression(failure), occurrence: scoped.currentOccurrence, root: root)
+            throw scoped.located(cause, at: scoped.currentOccurrence)
         }
         catch let cause as DatabaseExpressionEvaluationError {
-            guard occurrences != nil else { throw cause }
-            throw CanonicalSQLBindingFailure(cause: .expression(cause), occurrence: scoped.currentOccurrence, root: root)
+            throw scoped.located(cause, at: scoped.currentOccurrence)
         }
+    }
+
+    private func finalizing(_ result: CanonicalBoundExpression) throws -> CanonicalBoundExpression {
+        if ownsParameterState && !isNested { try parameterState.finalize() }
+        return result
     }
 
     func bindPredicate(_ expression: DatabaseKit.Expression) throws -> CanonicalBoundExpression {
         try boolean(expression)
     }
 
-    func bindAssignment(_ expression: DatabaseKit.Expression, to type: QueryColumnType) throws -> CanonicalBoundExpression {
+    func bindAssignment(_ expression: DatabaseKit.Expression, to type: QueryColumnType,
+        occurrence: QueryOccurrenceID? = nil) throws -> CanonicalBoundExpression {
         try validate(type)
         let context: QueryColumnType
         if case .sql(.decimal) = type { context = .sql(.decimal(precision: nil, scale: nil)) }
         else { context = Self.isText(type) ? .sql(.text) : type }
-        let child = try bind(expression, contextualType: context)
-        try validateCast(from: child.type, to: type, context: .assignment)
+        let child = try bind(expression, contextualType: context, occurrence: occurrence)
+        return try bindAssignment(child, to: type)
+    }
+
+    func bindAssignment(_ child: CanonicalBoundExpression, to type: QueryColumnType) throws -> CanonicalBoundExpression {
+        try validate(type)
+        do { try validateCast(from: child.type, to: type, context: .assignment) }
+        catch let error as DatabaseExpressionEvaluationError { throw located(error, at: child.occurrence) }
         let target: DataType
         switch type {
         case .sql(let scalar): target = scalar
@@ -146,7 +285,152 @@ struct CanonicalQueryTypeBinder {
             target = scalar
         }
         return CanonicalBoundExpression(expression: .cast(child.expression, targetType: target), type: type,
-            isNullable: child.isNullable, children: [child], occurrence: child.occurrence, castContext: .assignment)
+            isNullable: child.isNullable, children: [child], occurrence: child.occurrence, castContext: .assignment, bindingMetadata: bindingMetadata)
+    }
+
+    /// Common-source conversion preserves relation identity independently of SQL CAST policy.
+    func bindSourceValue(_ expression: Expression, to type: QueryColumnType,
+        occurrence: QueryOccurrenceID? = nil) throws -> CanonicalBoundExpression {
+        let context = Self.isText(type) ? QueryColumnType.sql(.text) : type
+        return try bindSourceValue(bind(expression, contextualType: context, occurrence: occurrence), to: type)
+    }
+
+    func bindSourceValue(_ child: CanonicalBoundExpression, to type: QueryColumnType) throws -> CanonicalBoundExpression {
+        try validate(type)
+        if child.type == type { return child }
+        let exactNumeric: Bool
+        if case .sql(.decimal(precision: nil, scale: nil)) = type {
+            exactNumeric = Self.numericKind(child.type) != nil
+        } else { exactNumeric = false }
+        if !exactNumeric { try validateCast(from: child.type, to: type, context: .implicit) }
+        guard case .sql(let target) = type else {
+            return try bindAssignment(child, to: type)
+        }
+        return CanonicalBoundExpression(expression: .cast(child.expression, targetType: target), type: type,
+            isNullable: child.isNullable, children: [child], occurrence: child.occurrence,
+            castContext: .implicit, sourceAlignment: true, bindingMetadata: bindingMetadata)
+    }
+
+    func bindPagination(_ pagination: QueryPagination, localColumnCount: Int,
+                        sql: Bool = true) throws -> CanonicalBoundPagination {
+        func count(_ count: QueryCount, field: QueryOccurrenceField) throws -> CanonicalBoundCount {
+            switch count {
+            case .fixed(let value):
+                guard !sql || value <= UInt64(Int64.max) else {
+                    throw DatabaseExpressionEvaluationError.numericOverflow
+                }
+                return .fixed(value)
+            case .expression(let expression):
+                let selected = try childBinder(field).bindAssignment(expression, to: .sql(.bigint))
+                let layout = try DatabaseRetainedArrayLayout.forElement(CanonicalBoundExpression.self)
+                let scratch = try workMeter?.reserveIntermediate(bytes: layout.containerByteCount, at: .bindingCandidate)
+                defer { scratch?.release() }
+                var pending: [CanonicalBoundExpression] = []
+                var capacity = 0
+                func append(_ child: CanonicalBoundExpression) throws {
+                    let next = pending.count.addingReportingOverflow(1)
+                    guard !next.overflow else { throw DatabaseExpressionEvaluationError.numericOverflow }
+                    let growth = try layout.growth(from: capacity, toFit: next.partialValue)
+                    if growth.capacity > capacity {
+                        try scratch?.reserveAdditional(bytes: growth.additionalByteCount, at: .bindingCandidate)
+                        pending.reserveCapacity(growth.capacity)
+                        if pending.capacity > growth.capacity {
+                            let extra = try DatabaseIntermediateFootprint(bytes: layout.elementCapacitySlotByteCount)
+                                .multiplied(by: UInt64(pending.capacity - growth.capacity))
+                            try scratch?.reserveAdditional(bytes: extra.bytes, at: .bindingCandidate)
+                        }
+                        capacity = pending.capacity
+                    }
+                    pending.append(child)
+                }
+                try append(selected)
+                while let child = pending.popLast() {
+                    try workMeter?.consume(at: .bindingCandidate)
+                    if let slot = child.columnSlot, slot < localColumnCount {
+                        throw mismatch("pagination cannot reference its source row")
+                    }
+                    if case .aggregate = child.expression { throw mismatch("pagination aggregate") }
+                    for nested in child.children.reversed() { try append(nested) }
+                }
+                return .expression(selected)
+            }
+        }
+        let offset = try pagination.offset.map { try count($0, field: .offset) }
+        let limit: CanonicalBoundCount?
+        let withTies: Bool
+        var rejectsUnknownNullLimit = false
+        switch pagination.limit {
+        case .none, .some(.all): limit = nil; withTies = false
+        case .some(.count(let selected, let ties)):
+            limit = try count(selected, field: .limit)
+            withTies = ties
+            if case .expression(let expression) = selected {
+                switch expression {
+                case .literal(.null), .literal(.queryValue(.primitive(.null), type: nil)):
+                    rejectsUnknownNullLimit = ties
+                default: break
+                }
+            }
+        }
+        return CanonicalBoundPagination(offset: offset, limit: limit, withTies: withTies,
+            rejectsUnknownNullLimit: rejectsUnknownNullLimit)
+    }
+
+    // Query callbacks must not retain unrelated dispatch and result-construction frames.
+    private func bindSelectedExpression(_ expression: Expression, contextualType: QueryColumnType?,
+        parameterContext: CanonicalParameterBindingState.Context) throws -> CanonicalBoundExpression {
+        if let query = Self.selectedSubquery(expression) {
+            return try finishSelectedSubquery(query, expression: expression,
+                binding: bindLocatedSubquery?(query, subqueryOccurrence()))
+        }
+        return try bindOtherSelectedExpression(expression, contextualType: contextualType, parameterContext: parameterContext)
+    }
+
+    private static func selectedSubquery(_ expression: Expression) -> SelectQuery? {
+        switch expression {
+        case .subquery(let query), .arraySubquery(let query), .exists(let query): return query
+        default: return nil
+        }
+    }
+
+    private func subqueryOccurrence() -> QueryOccurrenceID? {
+        childBinder(.subquery).currentOccurrence
+    }
+
+    private func bindOtherSelectedExpression(_ expression: Expression, contextualType: QueryColumnType?,
+        parameterContext: CanonicalParameterBindingState.Context) throws -> CanonicalBoundExpression {
+        switch expression {
+        case .inSubquery(let operand, let query): return try bindSubqueryComparison(operand, query: query, expression: expression)
+        case .quantifiedComparison(let operand, _, _, .subquery(let query)):
+            return try bindSubqueryComparison(operand, query: query, expression: expression)
+        default: return try bindExpression(expression, contextualType: contextualType, parameterContext: parameterContext)
+        }
+    }
+
+    private func finishSelectedSubquery(_ query: SelectQuery, expression: Expression,
+        binding: CanonicalBoundSelect?) throws -> CanonicalBoundExpression {
+        switch expression {
+        case .arraySubquery:
+            let column = try scalarColumn(query, binding: binding)
+            let element: DataType
+            if let nested = Self.arrayElement(column.type), case .sql(let selected) = nested { element = selected }
+            else if case .sql(let selected) = column.type { element = selected }
+            else if let selected = Self.sqlScalar(column.type) { element = selected }
+            else { throw mismatch("ARRAY subquery element type") }
+            return node(expression, .sql(.array(element)), false, subqueryBinding: binding)
+        case .subquery:
+            let output = try binding?.columns ?? subqueryColumns(query)
+            guard !output.isEmpty else { throw mismatch("scalar subquery column count") }
+            if output.count == 1 { return node(expression, output[0].type, true, subqueryBinding: binding) }
+            guard allowsRowSubquery else { throw mismatch("scalar subquery column count") }
+            let descriptor = try CanonicalBindingStorage.composite(columns: output, workMeter: workMeter)
+            return node(expression, .sql(.composite(descriptor.type)), true, subqueryBinding: binding,
+                metadataLease: descriptor.lease)
+        case .exists:
+            if binding == nil { _ = try subqueryColumns(query) }
+            return node(expression, .sql(.boolean), false, subqueryBinding: binding)
+        default: throw DatabaseExpressionEvaluationError.unsupportedExpression("selected subquery expression")
+        }
     }
 
     private func bindExpression(
@@ -187,10 +471,73 @@ struct CanonicalQueryTypeBinder {
             return try bindArrayAccess(base, subscripts: subscripts, expression: expression)
         case .collectionOperation(let operation, let left, let right):
             return try bindCollectionOperation(operation, left: left, right: right, expression: expression)
-        // FIXME(INCOMPLETE_IMPLEMENTATION): Selected SQL reaches scalar ROW here.
-        // S08 must supply a typed composite carrier and public row execution before success.
-        case .row:
-            throw DatabaseExpressionEvaluationError.unsupportedExpression("SQL ARRAY/ROW constructor")
+        case .row(let expressions):
+            let claim = try workMeter?.reserveIntermediate(bytes: UInt64(MemoryLayout<[CanonicalBoundExpression]>.stride
+                + MemoryLayout<[QueryColumn]>.stride), at: .bindingCandidate)
+            var successful = false
+            defer { if !successful { claim?.release() } }
+            var children: [CanonicalBoundExpression] = []
+            var fields: [QueryColumn] = []
+            let context: QueryCompositeType?
+            if case .sql(.composite(let type))? = contextualType { context = type } else { context = nil }
+            func append(_ child: CanonicalBoundExpression) throws {
+                let index = fields.count
+                let field = try QueryColumn(number: ordinal(index), name: "f\(index + 1)",
+                    type: child.type, isNullable: child.isNullable)
+                try CanonicalBindingStorage.append(child, to: &children, reservation: claim)
+                try CanonicalBindingStorage.append(field, to: &fields, reservation: claim)
+            }
+            for (index, value) in expressions.enumerated() {
+                let scoped = childBinder(.argument, index)
+                if case .fieldExpansion(let operand) = value {
+                    let child = try scoped.bind(operand)
+                    guard case .sql(.composite(let descriptor)) = child.type else { throw mismatch("ROW field expansion") }
+                    for position in descriptor.columns.indices {
+                        let field = descriptor.columns[position]
+                        try append(scoped.node(.field(child.expression, name: field.name), field.type,
+                            child.isNullable || field.isNullable, [child], fieldOrdinal: position))
+                    }
+                } else {
+                    let type = context.flatMap { $0.columns.indices.contains(fields.count) ? $0.columns[fields.count].type : nil }
+                    try append(scoped.bind(value, contextualType: type))
+                }
+            }
+            let descriptor = try CanonicalBindingStorage.composite(columns: fields, workMeter: workMeter)
+            let temporary = try DatabaseIntermediateFootprint(bytes: UInt64(MemoryLayout<[QueryColumn]>.stride))
+                .adding(try DatabaseIntermediateFootprint(bytes: UInt64(MemoryLayout<QueryColumn>.stride))
+                    .multiplied(by: UInt64(fields.capacity)))
+            try claim?.releasePartial(bytes: temporary.bytes)
+            // The descriptor lease and the selected children remain live together.
+            let result = node(expression, .sql(.composite(descriptor.type)), false, children,
+                comparisonMode: .constructor, metadataLease: descriptor.lease)
+            successful = true
+            return CanonicalBoundExpression(expression: result.expression, type: result.type, isNullable: false,
+                children: result.children, occurrence: result.occurrence, comparisonMode: .constructor,
+                metadataLease: descriptor.lease, constructionLease: claim.map { DatabaseQueryPayloadLease(retaining: $0) },
+                bindingMetadata: bindingMetadata)
+        case .wholeRow(let name):
+            guard let selected = try resolveWholeRow?(name) else { throw mismatch("unknown whole-row source") }
+            return node(expression, .sql(.composite(selected.type)), true, wholeRow: selected)
+        case .field(let operand, let name):
+            let child = try childBinder(.operand, 0).bind(operand)
+            guard case .sql(.composite(let descriptor)) = child.type else { throw mismatch("field selection requires a composite") }
+            var selected: Int?
+            for index in descriptor.columns.indices where descriptor.columns[index].name.utf8.elementsEqual(name.utf8) {
+                guard selected == nil else { throw mismatch("ambiguous composite field") }
+                selected = index
+            }
+            guard let selected else { throw mismatch("unknown composite field") }
+            let field = descriptor.columns[selected]
+            return node(expression, field.type, child.isNullable || field.isNullable, [child], fieldOrdinal: selected)
+        case .fieldExpansion(let operand):
+            let child = try childBinder(.operand, 0).bind(operand)
+            guard case .sql(.composite) = child.type else { throw mismatch("field expansion requires a composite") }
+            return node(expression, child.type, child.isNullable, [child])
+        case .collate(let operand, let collation):
+            let child = try childBinder(.operand, 0).bind(operand, contextualType: contextualType)
+            guard Self.isText(child.type) else { throw mismatch("COLLATE requires character input") }
+            return node(expression, child.type, child.isNullable, [child], collation: collation)
+        case .arraySubquery: return try bindSelectedExpression(expression, contextualType: contextualType, parameterContext: parameterContext)
         case .literal(let literal):
             let type = try literalType(literal, contextualType: contextualType)
             if case .sqlUnknownString(let text) = literal {
@@ -209,12 +556,18 @@ struct CanonicalQueryTypeBinder {
             }
             return node(expression, type, literal.isNull)
         case .column(let reference):
-            let slot = try resolveColumn(reference)
-            let column = try column(at: slot)
-            return CanonicalBoundExpression(
-                expression: expression, type: column.type,
-                isNullable: column.isNullable, columnSlot: slot, occurrence: currentOccurrence
-            )
+            do {
+                let slot = try resolveColumn(reference)
+                let column = try column(at: slot)
+                return CanonicalBoundExpression(
+                    expression: expression, type: column.type,
+                    isNullable: column.isNullable, columnSlot: slot, occurrence: currentOccurrence, bindingMetadata: bindingMetadata
+                )
+            } catch let error as DatabaseExpressionEvaluationError {
+                guard case .missingColumn = error, reference.table == nil, let resolveWholeRow else { throw error }
+                let selected = try resolveWholeRow(reference.column)
+                return node(expression, .sql(.composite(selected.type)), true, wholeRow: selected)
+            }
         case .parameter(let reference):
             let parameter = try parameterState.resolve(reference, contextualType: contextualType,
                 context: contextualType == nil ? parameterContext : .required,
@@ -253,7 +606,9 @@ struct CanonicalQueryTypeBinder {
              .lessThan(let lhs, let rhs), .lessThanOrEqual(let lhs, let rhs),
              .greaterThan(let lhs, let rhs), .greaterThanOrEqual(let lhs, let rhs):
             let children = try bindComparison([lhs, rhs])
-            return node(expression, .sql(.boolean), children.contains { $0.isNullable }, children)
+            let mode = Self.comparisonMode([lhs, rhs])
+            return node(expression, .sql(.boolean), try comparisonNullable(children, mode: mode), children,
+                comparisonMode: mode)
         case .and(let lhs, let rhs), .or(let lhs, let rhs):
             let children = try [childBinder(.operand, 0).boolean(lhs), childBinder(.operand, 1).boolean(rhs)]
             return node(expression, .sql(.boolean), children.contains { $0.isNullable }, children)
@@ -286,7 +641,9 @@ struct CanonicalQueryTypeBinder {
                 try inputs.map { try coerce($0, to: .sql(.text)) })
         case .between(let operand, let low, let high):
             let children = try bindComparison([operand, low, high])
-            return node(expression, .sql(.boolean), children.contains { $0.isNullable }, children)
+            let mode = Self.comparisonMode([operand, low, high])
+            return node(expression, .sql(.boolean), try comparisonNullable(children, mode: mode), children,
+                comparisonMode: mode)
         case .inList(let operand, let values), .notInList(let operand, let values):
             if allowingSPARQLFunctions, values.contains(where: Self.isSPARQLProducer) {
                 let child = try childBinder(.operand, 0).bind(operand)
@@ -307,7 +664,9 @@ struct CanonicalQueryTypeBinder {
             }
             let addresses = [childBinder(.operand, 0).currentOccurrence] + values.indices.map { childBinder(.argument, $0).currentOccurrence }
             let children = try bindComparison([operand] + values, addresses: addresses)
-            return node(expression, .sql(.boolean), !values.isEmpty && children.contains { $0.isNullable }, children)
+            let mode = Self.comparisonMode([operand] + values)
+            return node(expression, .sql(.boolean), try !values.isEmpty && comparisonNullable(children, mode: mode), children,
+                comparisonMode: mode)
         case .caseWhen(let operand, let pairs, let fallback):
             let conditions: [CanonicalBoundExpression]
             if let operand {
@@ -327,8 +686,9 @@ struct CanonicalQueryTypeBinder {
                     let match = try inferredMatches[index] ?? scoped.bind(pair.condition, contextualType: original.type)
                     do {
                         let selected = try selectComparisonInputs([original, match])
+                        let mode = Self.comparisonMode([original.expression, match.expression])
                         return scoped.node(.equal(original.expression, match.expression), .sql(.boolean),
-                            selected.contains { $0.isNullable }, selected)
+                            try scoped.comparisonNullable(selected, mode: mode), selected, comparisonMode: mode)
                     } catch let cause as DatabaseExpressionEvaluationError {
                         throw located(cause, at: match.occurrence)
                     }
@@ -357,6 +717,7 @@ struct CanonicalQueryTypeBinder {
             let inputType: QueryColumnType
             if case .decimal = target { inputType = .sql(.decimal(precision: nil, scale: nil)) }
             else if Self.arrayElement(type) != nil, case .array = operand { inputType = type }
+            else if Self.compositeType(type) != nil { inputType = type }
             else if Self.isText(type) || Self.temporalType(type) != nil || Self.isCollection(type) { inputType = .sql(.text) }
             else { inputType = type }
             let child = try childBinder(.operand, 0).bind(operand, contextualType: inputType)
@@ -372,25 +733,36 @@ struct CanonicalQueryTypeBinder {
             return try bindFunction(function, expression: expression)
         case .aggregate(let aggregate):
             return try bindAggregate(aggregate, expression: expression)
-        case .subquery(let query):
-            let binding = try bindLocatedSubquery?(query, childBinder(.subquery).currentOccurrence)
-            let column = try scalarColumn(query, binding: binding)
-            return node(expression, column.type, true, subqueryBinding: binding)
-        case .exists(let query):
-            let binding = try bindLocatedSubquery?(query, childBinder(.subquery).currentOccurrence)
-            if binding == nil { _ = try subqueryColumns(query) }
-            return node(expression, .sql(.boolean), false, subqueryBinding: binding)
+        case .subquery: return try bindSelectedExpression(expression, contextualType: contextualType, parameterContext: parameterContext)
+        case .exists: return try bindSelectedExpression(expression, contextualType: contextualType, parameterContext: parameterContext)
         case .inSubquery(let operand, let query):
-            let binding = try bindLocatedSubquery?(query, childBinder(.subquery).currentOccurrence)
-            let column = try scalarColumn(query, binding: binding)
-            let child = try childBinder(.operand, 0).bind(operand, contextualType: column.type)
-            _ = try commonType([child.type, column.type])
-            try requireSQLComparison(column.type, operation: "IN subquery")
-            try requireComparable([child], operation: "IN subquery")
-            return node(expression, .sql(.boolean), true, [child], subqueryBinding: binding)
+            return try bindSubqueryComparison(operand, query: query, expression: expression)
         case .variable, .bound, .regex, .triple, .isTriple, .subject, .predicate, .object:
             throw DatabaseExpressionEvaluationError.unsupportedExpression("SQL binding does not admit this expression")
         }
+    }
+
+    private func comparisonNullable(_ children: [CanonicalBoundExpression],
+        mode: CanonicalSQLCompositeComparisonMode) throws -> Bool {
+        if children.contains(where: { $0.isNullable }) { return true }
+        guard mode == .constructor else { return false }
+        // A present ROW can yield UNKNOWN through one of its direct NULL fields.
+        // Nested records retain their separate null-safe record comparison policy.
+        for child in children {
+            guard let descriptor = Self.compositeType(child.type) else { continue }
+            for field in descriptor.columns {
+                try workMeter?.consume(at: .bindingCandidate)
+                if field.isNullable { return true }
+            }
+        }
+        return false
+    }
+
+    private static func comparisonMode(_ expressions: [Expression]) -> CanonicalSQLCompositeComparisonMode {
+        let constructor = expressions.contains { if case .row = $0 { return true }; return false }
+        return constructor && expressions.allSatisfy {
+            switch $0 { case .row, .subquery: return true; default: return false }
+        } ? .constructor : .record
     }
 
     private static func constantText(_ expression: Expression) -> String? {
@@ -449,6 +821,11 @@ struct CanonicalQueryTypeBinder {
     }
 
     static func isJSON(_ type: QueryColumnType) -> Bool { type == .sql(.json) || type == .sql(.jsonb) }
+    static func compositeType(_ type: QueryColumnType) -> QueryCompositeType? {
+        if case .sql(.composite(let descriptor)) = type { return descriptor }
+        return nil
+    }
+
     static func isCollection(_ type: QueryColumnType) -> Bool { arrayElement(type) != nil || isJSON(type) }
 
     private func sqlElement(_ type: QueryColumnType) throws -> DataType {
@@ -620,12 +997,12 @@ struct CanonicalQueryTypeBinder {
     private func bindCollectionFunction(_ call: FunctionCall, expression: Expression) throws -> CanonicalBoundExpression? {
         let name = call.name, args = call.arguments
         let arrayFunctions = ["array_length", "array_lower", "array_upper", "array_ndims", "array_dims", "cardinality", "array_append", "array_prepend", "array_cat", "array_position", "array_positions", "array_remove", "array_replace", "array_to_string", "string_to_array"]
-        let jsonFunctions = ["to_json", "to_jsonb", "array_to_json", "json_build_array", "jsonb_build_array", "json_build_object", "jsonb_build_object", "json_typeof", "jsonb_typeof", "json_array_length", "jsonb_array_length", "json_extract_path", "jsonb_extract_path", "json_extract_path_text", "jsonb_extract_path_text", "jsonb_set", "jsonb_insert", "jsonb_strip_nulls"]
-        if ["unnest", "generate_subscripts", "json_each", "jsonb_each", "json_each_text", "jsonb_each_text", "json_array_elements", "jsonb_array_elements", "json_array_elements_text", "jsonb_array_elements_text", "json_object_keys", "jsonb_object_keys", "row_to_json"].contains(name) {
+        let jsonFunctions = ["row_to_json", "to_json", "to_jsonb", "array_to_json", "json_build_array", "jsonb_build_array", "json_build_object", "jsonb_build_object", "json_typeof", "jsonb_typeof", "json_array_length", "jsonb_array_length", "json_extract_path", "jsonb_extract_path", "json_extract_path_text", "jsonb_extract_path_text", "jsonb_set", "jsonb_insert", "jsonb_strip_nulls"]
+        if ["unnest", "generate_subscripts", "json_each", "jsonb_each", "json_each_text", "jsonb_each_text", "json_array_elements", "jsonb_array_elements", "json_array_elements_text", "jsonb_array_elements_text", "json_object_keys", "jsonb_object_keys"].contains(name) {
             // FIXME(INCOMPLETE_IMPLEMENTATION): Public selected scalar invocation reaches
-            // relation/ROW functions here. S08 ROW and S10 relation composition must
-            // consume the bounded child kernels before public execution can succeed.
-            throw DatabaseExpressionEvaluationError.unsupportedExpression("collection ROW or relation function requires S08/S10 composition")
+            // relation functions here. S10 relation composition must consume the
+            // bounded child kernels before public execution can succeed.
+            throw DatabaseExpressionEvaluationError.unsupportedExpression("collection relation function requires S10 composition")
         }
         guard arrayFunctions.contains(name) || jsonFunctions.contains(name) else { return nil }
         let builders = ["json_build_array", "jsonb_build_array", "json_build_object", "jsonb_build_object"]
@@ -640,13 +1017,13 @@ struct CanonicalQueryTypeBinder {
                 if call.finalArrayIsVariadic && index == args.count - 1 {
                     guard let element = Self.arrayElement(child.type) else { throw mismatch("VARIADIC array argument") }
                     child = try coerce(child, to: .sql(.array(try sqlElement(element))))
-                } else if !Self.isCollection(child.type) && !Self.permitsScalarText(child.type) { throw mismatch("JSON value conversion") }
+                } else if !Self.isCollection(child.type) && Self.compositeType(child.type) == nil && !Self.permitsScalarText(child.type) { throw mismatch("JSON value conversion") }
                 children.append(child)
             }
             if name.hasSuffix("object"), !call.finalArrayIsVariadic {
                 guard children.count.isMultiple(of: 2) else { throw DatabaseExpressionEvaluationError.collection(.oddJSONObjectArgumentCount(actual: children.count)) }
                 for index in stride(from: 0, to: children.count, by: 2) {
-                    guard !Self.isCollection(children[index].type), Self.permitsScalarText(children[index].type) else {
+                    guard !Self.isCollection(children[index].type), Self.compositeType(children[index].type) == nil, Self.permitsScalarText(children[index].type) else {
                         throw DatabaseExpressionEvaluationError.collection(.invalidJSONObjectKey(argument: index + 1))
                     }
                 }
@@ -700,12 +1077,13 @@ struct CanonicalQueryTypeBinder {
         }
         let binaryJSON = name.hasPrefix("jsonb") || name == "to_jsonb"
         let family: QueryColumnType = .sql(binaryJSON ? .jsonb : .json)
-        if name == "to_json" || name == "to_jsonb" || name == "array_to_json" {
-            guard args.count == 1 || name == "array_to_json" && args.count == 2 else { throw mismatch(name) }
+        if name == "to_json" || name == "to_jsonb" || name == "array_to_json" || name == "row_to_json" {
+            guard args.count == 1 || (name == "array_to_json" || name == "row_to_json") && args.count == 2 else { throw mismatch(name) }
             guard try !isContextualUnknown(args[0]) else { throw mismatch("unresolved polymorphic JSON conversion") }
             let input = try childBinder(.argument, 0).bind(args[0], contextualType: .sql(.text))
-            guard Self.isCollection(input.type) || Self.permitsScalarText(input.type) else { throw mismatch(name) }
+            guard Self.isCollection(input.type) || Self.compositeType(input.type) != nil || Self.permitsScalarText(input.type) else { throw mismatch(name) }
             if name == "array_to_json", Self.arrayElement(input.type) == nil { throw mismatch(name) }
+            if name == "row_to_json", Self.compositeType(input.type) == nil { throw mismatch(name) }
             var children = [input]
             if args.count == 2 { children.append(try coerce(childBinder(.argument, 1).bind(args[1], contextualType: .sql(.boolean)), to: .sql(.boolean))) }
             return node(expression, family, children.contains { $0.isNullable }, children)
@@ -1092,7 +1470,10 @@ struct CanonicalQueryTypeBinder {
         var context: QueryColumnType?
         for index in expressions.indices {
             guard let child = bound[index] else { continue }
-            do { context = try context.map { try commonType([$0, child.type]) } ?? child.type }
+            do {
+                if let existing = context, Self.compositeType(existing) != nil, Self.compositeType(child.type) != nil { continue }
+                context = try context.map { try commonType([$0, child.type]) } ?? child.type
+            }
             catch let cause as DatabaseExpressionEvaluationError { throw located(cause, at: child.occurrence) }
         }
         let selectedContext: QueryColumnType
@@ -1113,6 +1494,7 @@ struct CanonicalQueryTypeBinder {
         field: QueryOccurrenceField = .operand, addresses: [QueryOccurrenceID?]? = nil
     ) throws -> [CanonicalBoundExpression] {
         let inputs = try bindInputs(expressions, defaultType: defaultType, field: field, addresses: addresses)
+        if inputs.allSatisfy({ Self.compositeType($0.type) != nil }) { return try selectCompositeInputs(inputs) }
         let type = try commonType(inputs.map { $0.type })
         return try inputs.map { try coerce($0, to: type) }
     }
@@ -1120,12 +1502,16 @@ struct CanonicalQueryTypeBinder {
     private func bindComparison(
         _ expressions: [DatabaseKit.Expression], addresses: [QueryOccurrenceID?]? = nil
     ) throws -> [CanonicalBoundExpression] {
-        try selectComparisonInputs(bindInputs(expressions, addresses: addresses))
+        var selected = self
+        selected.allowsRowSubquery = expressions.contains { if case .row = $0 { return true }; return false }
+        return try selected.selectComparisonInputs(selected.bindInputs(expressions, addresses: addresses))
     }
 
     private func selectComparisonInputs(_ inputs: [CanonicalBoundExpression]) throws -> [CanonicalBoundExpression] {
         let children: [CanonicalBoundExpression]
-        if let first = inputs.first, case .primitive = first.type,
+        if inputs.allSatisfy({ Self.compositeType($0.type) != nil }) {
+            children = try selectCompositeInputs(inputs)
+        } else if let first = inputs.first, case .primitive = first.type,
            inputs.allSatisfy({ $0.type == first.type }) {
             children = inputs
         } else if inputs.allSatisfy({ if case .sql(.char) = $0.type { return true }; return false }) {
@@ -1145,6 +1531,92 @@ struct CanonicalQueryTypeBinder {
         }
         try requireComparable(children, operation: "comparison")
         return children
+    }
+
+    private func constructorField(_ input: CanonicalBoundExpression, at index: Int) throws -> Expression? {
+        guard case .row(let arguments) = input.expression else { return nil }
+        var start = 0
+        for argument in arguments {
+            if case .fieldExpansion(let operand) = argument {
+                var scoped = self
+                scoped.isNested = true
+                let expanded = try scoped.bind(operand)
+                guard let descriptor = Self.compositeType(expanded.type) else { throw mismatch("ROW expansion") }
+                let end = start.addingReportingOverflow(descriptor.columns.count)
+                guard !end.overflow else { throw DatabaseExpressionEvaluationError.numericOverflow }
+                if index < end.partialValue { return nil }
+                start = end.partialValue
+            } else {
+                if start == index { return argument }
+                start += 1
+            }
+        }
+        return nil
+    }
+
+    private func selectCompositeInputs(_ inputs: [CanonicalBoundExpression]) throws -> [CanonicalBoundExpression] {
+        guard let first = inputs.first, let descriptor = Self.compositeType(first.type) else { throw mismatch("row comparison") }
+        let claim = try workMeter?.reserveIntermediate(bytes: UInt64(MemoryLayout<[QueryColumn]>.stride
+            + MemoryLayout<[CanonicalBoundExpression]>.stride + MemoryLayout<[QueryColumnType]>.stride), at: .bindingCandidate)
+        var successful = false
+        defer { if !successful { claim?.release() } }
+        var fields: [QueryColumn] = [], selected: [CanonicalBoundExpression] = [], types: [QueryColumnType] = []
+        for input in inputs {
+            guard Self.compositeType(input.type)?.columns.count == descriptor.columns.count else { throw mismatch("row comparison arity") }
+            if allowsRowSubquery, case .subquery(let query) = input.expression {
+                let arity = try input.subqueryBinding?.columns.count ?? subqueryColumns(query).count
+                guard arity == descriptor.columns.count else { throw mismatch("row subquery column count") }
+            }
+        }
+        for index in descriptor.columns.indices {
+            types.removeAll(keepingCapacity: true)
+            var nullable = false
+            for input in inputs {
+                let field = Self.compositeType(input.type)!.columns[index]
+                nullable = nullable || field.isNullable
+                if let original = try constructorField(input, at: index), try isContextualUnknown(original) { continue }
+                try CanonicalBindingStorage.append(field.type, to: &types, reservation: claim)
+            }
+            let type: QueryColumnType
+            if !types.isEmpty, types.allSatisfy({ Self.numericKind($0) != nil }) { type = try arithmeticType(types) }
+            else { type = try commonType(types) }
+            try CanonicalBindingStorage.append(try QueryColumn(number: ordinal(index), name: descriptor.columns[index].name,
+                type: type, isNullable: nullable), to: &fields, reservation: claim)
+        }
+        let destination = try CanonicalBindingStorage.composite(columns: fields, workMeter: workMeter)
+        try bindingMetadata.retain(destination.reservation)
+        let target = QueryColumnType.sql(.composite(destination.type))
+        for input in inputs {
+            if case .row = input.expression {
+                let childrenClaim = try workMeter?.reserveIntermediate(bytes: UInt64(MemoryLayout<[CanonicalBoundExpression]>.stride), at: .bindingCandidate)
+                var completed = false
+                defer { if !completed { childrenClaim?.release() } }
+                var children: [CanonicalBoundExpression] = []
+                for index in descriptor.columns.indices {
+                    let child: CanonicalBoundExpression
+                    if let original = try constructorField(input, at: index), try isContextualUnknown(original) {
+                        var scoped = self
+                        scoped.isNested = true
+                        scoped.currentOccurrence = input.children[index].occurrence
+                        child = try scoped.bind(original, contextualType: destination.type.columns[index].type)
+                    } else { child = try coerce(input.children[index], to: destination.type.columns[index].type) }
+                    try CanonicalBindingStorage.append(child, to: &children, reservation: childrenClaim)
+                }
+                let replacement = CanonicalBoundExpression(expression: input.expression, type: target, isNullable: false,
+                    children: children, occurrence: input.occurrence, comparisonMode: .constructor,
+                    constructionLease: childrenClaim.map { DatabaseQueryPayloadLease(retaining: $0) }, bindingMetadata: bindingMetadata)
+                try CanonicalBindingStorage.append(replacement, to: &selected, reservation: claim)
+                completed = true
+            } else { try CanonicalBindingStorage.append(coerce(input, to: target), to: &selected, reservation: claim) }
+        }
+        // Only the selected array escapes; descriptor/temporary field buffers do not.
+        let temporary = UInt64(MemoryLayout<[QueryColumn]>.stride + MemoryLayout<[QueryColumnType]>.stride)
+        let slots = try DatabaseIntermediateFootprint(bytes: UInt64(MemoryLayout<QueryColumn>.stride)).multiplied(by: UInt64(fields.capacity))
+            .adding(try DatabaseIntermediateFootprint(bytes: UInt64(MemoryLayout<QueryColumnType>.stride)).multiplied(by: UInt64(types.capacity))).bytes
+        try claim?.releasePartial(bytes: try DatabaseIntermediateFootprint(bytes: temporary).adding(.init(bytes: slots)).bytes)
+        try bindingMetadata.retain(claim)
+        successful = true
+        return selected
     }
 
     private func bindArrayComparison(
@@ -1178,30 +1650,49 @@ struct CanonicalQueryTypeBinder {
         case .array(let array):
             let children = try bindArrayComparison(lhs, array: array)
             // A nonempty array may contain NULL even when the array itself is nonnullable.
-            return node(expression, .sql(.boolean), true, children)
+            return node(expression, .sql(.boolean), true, children,
+                comparisonMode: Self.comparisonMode([lhs, .row([])]))
         case .subquery(let query):
-            let binding = try bindLocatedSubquery?(query, childBinder(.subquery).currentOccurrence)
-            let column = try scalarColumn(query, binding: binding)
-            let child = try childBinder(.operand, 0).bind(lhs, contextualType: column.type)
-            let type = try Self.numericKind(child.type) != nil && Self.numericKind(column.type) != nil
-                ? arithmeticType([child.type, column.type]) : commonType([child.type, column.type])
-            let selected = try coerce(child, to: type)
-            let declaration = node(.literal(.queryValue(.primitive(.null), type: column.type)), column.type, true)
-            try requireComparable([selected, declaration], operation: "quantified subquery")
-            guard Self.permitsImplicit(from: column.type, to: type) else { throw mismatch("quantified subquery column") }
-            return node(expression, .sql(.boolean), true, [selected], subqueryBinding: binding)
+            return try bindSubqueryComparison(lhs, query: query, expression: expression)
         }
     }
 
+    private func bindSubqueryComparison(_ operand: Expression, query: SelectQuery,
+        expression: Expression) throws -> CanonicalBoundExpression {
+        let binding = try bindLocatedSubquery?(query, childBinder(.subquery).currentOccurrence)
+        let output = try binding?.columns ?? subqueryColumns(query)
+        guard !output.isEmpty else { throw mismatch("subquery comparison arity") }
+        let inputType: QueryColumnType
+        if output.count == 1 { inputType = output[0].type }
+        else {
+            let descriptor = try CanonicalBindingStorage.composite(columns: output, workMeter: workMeter)
+            try bindingMetadata.retain(descriptor.reservation)
+            inputType = .sql(.composite(descriptor.type))
+        }
+        let child = try childBinder(.operand, 0).bind(operand, contextualType: inputType)
+        let selected: QueryColumnType
+        if Self.numericKind(child.type) != nil, Self.numericKind(inputType) != nil {
+            selected = try arithmeticType([child.type, inputType])
+        } else { selected = try commonType([child.type, inputType]) }
+        try requireSQLComparison(selected, operation: "subquery comparison")
+        let converted = try coerce(child, to: selected)
+        let memberTypes: [QueryColumnType]
+        if output.count > 1, case .sql(.composite(let descriptor)) = selected {
+            memberTypes = descriptor.columns.map { $0.type }
+        } else { memberTypes = [selected] }
+        return node(expression, .sql(.boolean), true, [converted], subqueryBinding: binding,
+            comparisonMode: Self.comparisonMode([operand, .row([])]), subqueryComparisonTypes: memberTypes)
+    }
+
     func requireSQLComparison(_ type: QueryColumnType, operation: String) throws {
-        if type == .sql(.json) { throw DatabaseExpressionEvaluationError.unsupportedExpression("\(operation) of JSON has no SQL comparison") }
-        if let element = Self.arrayElement(type) { try requireSQLComparison(element, operation: operation) }
+        try CanonicalSQLValueSemantics.requireComparable(type, operation: operation,
+            workMeter: workMeter, stage: .bindingCandidate)
     }
 
     private func requireComparable(_ children: [CanonicalBoundExpression], operation: String) throws {
         for child in children {
             try requireSQLComparison(child.type, operation: operation)
-            if Self.isCollection(child.type) { continue }
+            if Self.isCollection(child.type) || Self.compositeType(child.type) != nil { continue }
             guard !Self.isPrimitiveArray(child.type), Self.primitiveKind(child.type) != nil || Self.temporalType(child.type) != nil else { throw mismatch(operation) }
         }
     }
@@ -1231,6 +1722,32 @@ struct CanonicalQueryTypeBinder {
     func commonType(_ types: [QueryColumnType]) throws -> QueryColumnType {
         guard let first = types.first else { return .sql(.text) }
         if types.allSatisfy({ $0 == first }) { return first }
+        if types.allSatisfy({ Self.compositeType($0) != nil }) {
+            guard let descriptor = Self.compositeType(first) else { throw mismatch("composite common arity") }
+            let claim = try workMeter?.reserveIntermediate(bytes: UInt64(MemoryLayout<[QueryColumn]>.stride
+                + MemoryLayout<[QueryColumnType]>.stride), at: .bindingCandidate)
+            defer { claim?.release() }
+            for type in types {
+                guard Self.compositeType(type)?.columns.count == descriptor.columns.count else { throw mismatch("composite common arity") }
+            }
+            var fields: [QueryColumn] = [], candidates: [QueryColumnType] = []
+            for index in descriptor.columns.indices {
+                candidates.removeAll(keepingCapacity: true)
+                var nullable = false
+                for type in types {
+                    guard let source = Self.compositeType(type) else { throw mismatch("composite common type") }
+                    try workMeter?.consume(at: .bindingCandidate)
+                    nullable = nullable || source.columns[index].isNullable
+                    try CanonicalBindingStorage.append(source.columns[index].type, to: &candidates, reservation: claim)
+                }
+                let type = try commonType(candidates)
+                let field = try QueryColumn(number: ordinal(index), name: descriptor.columns[index].name, type: type, isNullable: nullable)
+                try CanonicalBindingStorage.append(field, to: &fields, reservation: claim)
+            }
+            let result = try CanonicalBindingStorage.composite(columns: fields, workMeter: workMeter)
+            try bindingMetadata.retain(result.reservation)
+            return .sql(.composite(result.type))
+        }
         if types.allSatisfy({ Self.arrayElement($0) != nil }) {
             let element = try commonType(types.compactMap(Self.arrayElement))
             guard case .sql(let scalar) = element else { throw mismatch("array element common type") }
@@ -1325,6 +1842,11 @@ struct CanonicalQueryTypeBinder {
 
     private static func permitsImplicit(from source: QueryColumnType, to target: QueryColumnType) -> Bool {
         if source == target { return true }
+        if let left = compositeType(source), let right = compositeType(target) {
+            return left.columns.count == right.columns.count && left.columns.indices.allSatisfy {
+                permitsImplicit(from: left.columns[$0].type, to: right.columns[$0].type)
+            }
+        }
         if let source = arrayElement(source), let target = arrayElement(target) {
             return permitsImplicit(from: source, to: target)
         }
@@ -1401,6 +1923,7 @@ struct CanonicalQueryTypeBinder {
         case .dateInfinity: return .sql(.date)
         case .timestampInfinity(_, let zone): return .sql(.timestamp(withTimeZone: zone))
         case .array(let value): return .sql(.array(value.elementType))
+        case .composite(let value): return .sql(.composite(value.type))
         case .primitive(let value):
             switch value {
             case .null: return .sql(.text)
@@ -1459,6 +1982,13 @@ struct CanonicalQueryTypeBinder {
 
     func validateCast(from source: QueryColumnType, to target: QueryColumnType, context: CastContext = .explicit) throws {
         if source == target { return }
+        if let left = Self.compositeType(source), let right = Self.compositeType(target) {
+            guard left.columns.count == right.columns.count else { throw mismatch("composite cast arity") }
+            for index in left.columns.indices {
+                try validateCast(from: left.columns[index].type, to: right.columns[index].type, context: context)
+            }
+            return
+        }
         if let sourceElement = Self.arrayElement(source), let targetElement = Self.arrayElement(target) {
             try validateCast(from: sourceElement, to: targetElement, context: context)
             return
@@ -1516,6 +2046,7 @@ struct CanonicalQueryTypeBinder {
         guard child.type != type else { return child }
         guard Self.permitsImplicit(from: child.type, to: type),
               (Self.arrayElement(child.type) != nil && Self.arrayElement(type) != nil)
+                || (Self.compositeType(child.type) != nil && Self.compositeType(type) != nil)
                 || (Self.numericKind(child.type) != nil && Self.numericKind(type) != nil)
                 || (Self.temporalType(child.type) != nil && Self.temporalType(type) != nil)
                 || (Self.primitiveKind(child.type) == .bool && Self.primitiveKind(type) == .bool
@@ -1539,7 +2070,8 @@ struct CanonicalQueryTypeBinder {
         try validateCast(from: child.type, to: type, context: .implicit)
         return CanonicalBoundExpression(expression: .cast(child.expression, targetType: target), type: type,
             isNullable: child.isNullable, children: [child], occurrence: child.occurrence,
-            subqueryBinding: child.subqueryBinding, castContext: .implicit)
+            subqueryBinding: child.subqueryBinding, castContext: .implicit,
+            comparisonMode: child.comparisonMode, collation: child.collation, bindingMetadata: bindingMetadata)
     }
 
     private static func isSPARQLProducer(_ expression: DatabaseKit.Expression) -> Bool {
@@ -1754,10 +2286,17 @@ struct CanonicalQueryTypeBinder {
     private func node(
         _ expression: DatabaseKit.Expression, _ type: QueryColumnType,
         _ nullable: Bool, _ children: [CanonicalBoundExpression] = [],
-        subqueryBinding: CanonicalBoundSelect? = nil
+        subqueryBinding: CanonicalBoundSelect? = nil,
+        wholeRow: CanonicalBoundWholeRow? = nil, fieldOrdinal: Int? = nil,
+        comparisonMode: CanonicalSQLCompositeComparisonMode = .record,
+        collation: SQLCollation? = nil, subqueryComparisonTypes: [QueryColumnType] = [],
+        metadataLease: DatabaseQueryPayloadLease? = nil
     ) -> CanonicalBoundExpression {
         CanonicalBoundExpression(expression: expression, type: type, isNullable: nullable, children: children,
-                                 occurrence: currentOccurrence, subqueryBinding: subqueryBinding)
+                                 occurrence: currentOccurrence, subqueryBinding: subqueryBinding, wholeRow: wholeRow,
+                                 fieldOrdinal: fieldOrdinal, comparisonMode: comparisonMode, collation: collation,
+                                 subqueryComparisonTypes: subqueryComparisonTypes, metadataLease: metadataLease,
+                                 bindingMetadata: bindingMetadata)
     }
 
     private func childBinder(_ field: QueryOccurrenceField, _ index: Int? = nil) -> Self {
@@ -1770,6 +2309,10 @@ struct CanonicalQueryTypeBinder {
     }
 
     private func mismatch(_ operation: String) -> DatabaseExpressionEvaluationError { .typeMismatch(operation: operation) }
+
+    private func located(_ cause: QueryValueError, at occurrence: QueryOccurrenceID?) -> any Error {
+        located(DatabaseExpressionEvaluationError.queryValue(cause), at: occurrence)
+    }
 
     private func located(_ cause: DatabaseExpressionEvaluationError, at occurrence: QueryOccurrenceID?) -> any Error {
         guard occurrences != nil else { return cause }
@@ -1820,9 +2363,10 @@ struct CanonicalQueryTypeBinder {
         return false
     }
 
-    private static func outputName(_ expression: DatabaseKit.Expression, index: Int) -> String {
+    static func outputName(_ expression: DatabaseKit.Expression, index: Int) -> String {
         switch expression {
         case .column(let column): return column.column
+        case .field(_, let name): return name
         case .aggregate(let aggregate):
             switch aggregate {
             case .count: return "count"

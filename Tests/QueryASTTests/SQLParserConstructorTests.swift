@@ -6,11 +6,12 @@ import Testing
 struct SQLParserConstructorTests {
     private func expressions(_ sql: String) throws -> [Expression] {
         let query = try SQLParser().parseSelect(sql)
-        guard case .items(let items) = query.projection else {
+        let items = query.projection
+        guard items.allSatisfy({ if case .expression = $0 { return true }; return false }) else {
             Issue.record("Expected projection items")
             return []
         }
-        return items.map(\.expression)
+        return try projectionExpressions(items)
     }
 
     @Test("Direct signs select PostgreSQL signed integer widths before normalization")
@@ -157,13 +158,13 @@ struct SQLParserConstructorTests {
     @Test("Qualified names preserve components and reject incomplete syntax")
     func strictQualification() throws {
         #expect(try expressions("SELECT \"a.b\", \"a\".\"b\"") == [.col("a.b"), .column(ColumnRef(table: "a", column: "b"))])
-        #expect(try SQLParser().parseSelect("SELECT MiXeD.* FROM items AS MiXeD").projection == .allFrom("mixed"))
+        #expect(try SQLParser().parseSelect("SELECT MiXeD.* FROM items AS MiXeD").projection == [.wildcard(qualifier: "mixed")])
         for qualifier in ["t", "MiXeD", "a.b", "select"] {
-            let query = SelectQuery(projection: .allFrom(qualifier), source: .table(TableRef(table: "items", alias: qualifier)))
+            let query = SelectQuery(projection: [.wildcard(qualifier: qualifier)], source: .aliased(.table(TableRef(table: "items")), name: qualifier))
             let sql = try SQLSerializer().serialize(query)
             #expect(try SQLParser().parseSelect(sql) == query)
         }
-        #expect(throws: SQLParser.ParseError.self) { _ = try SQLParser().parseSelect("SELECT t.*, :x FROM items AS t") }
+        #expect(try SQLParser().parseSelect("SELECT t.*, :x FROM items AS t").projection == [.wildcard(qualifier: "t"), ProjectionItem(.parameter(.name("x")))])
         let qualified = try expressions("SELECT a.f(1), \"a.b\"(1), NULL::a.b, NULL::\"a.b\"")
         let integer = Expression.literal(.queryValue(.primitive(.int32(1)), type: .sql(.integer)))
         #expect(qualified == [
@@ -205,7 +206,7 @@ struct SQLParserConstructorTests {
         #expect(join.type == .lateral)
         #expect(join.condition == .on(.literal(.bool(true))))
         let graph = try SQLParser().parseSelect("SELECT $1 FROM GRAPH_TABLE(\"g\", MATCH ((\"a\":\"A\":\"B\") | (\"b\")){1,2} COLUMNS ($1 AS \"value\")) AS \"t\"")
-        guard case .graphTable(let graphSource) = graph.source,
+        guard case .aliased(.graphTable(let graphSource), "t", nil) = graph.source,
               case .quantified(let inner, let quantifier) = graphSource.matchPattern.paths[0].elements[0],
               case .alternation(let alternatives) = inner.elements[0] else {
             Issue.record("Expected quantified PGQ alternatives")

@@ -7,11 +7,12 @@ import Testing
 struct SQLBindingSyntaxTests {
     private func expressions(_ sql: String) throws -> [Expression] {
         let query = try SQLParser().parseSelect(sql)
-        guard case .items(let items) = query.projection else {
+        let items = query.projection
+        guard items.allSatisfy({ if case .expression = $0 { return true }; return false }) else {
             Issue.record("Expected projection items")
             return []
         }
-        return items.map(\.expression)
+        return try projectionExpressions(items)
     }
 
     @Test("Qualified functions retain exact namespace and terminal identifier")
@@ -73,9 +74,9 @@ struct SQLBindingSyntaxTests {
         let expected: [Expression] = [1, 0, -1, 2, 3, 4, 2147483648].map { .literal(.int($0)) }
         #expect(query.groupBy == expected)
         #expect(query.orderBy?.map(\.expression) == expected)
-        #expect(query.projection == .items([
+        #expect(query.projection == [
             ProjectionItem(.literal(.queryValue(.primitive(.int32(1)), type: .sql(.integer))))
-        ]))
+        ])
 
         let constants = try SQLParser().parseSelect(
             "SELECT 1 GROUP BY CAST(1 AS INTEGER), 1::BIGINT, INTEGER '1', 1 + 1 ORDER BY CAST(1 AS INTEGER), 1::BIGINT, INTEGER '1', 1 + 1"
@@ -90,12 +91,12 @@ struct SQLBindingSyntaxTests {
         #expect(constants.groupBy == expectedConstants)
         #expect(constants.orderBy?.map(\.expression) == expectedConstants)
         let nested = try SQLParser().parseSelect("SELECT ARRAY_AGG(1 ORDER BY 1) ORDER BY (SELECT CAST(1 AS INTEGER))")
-        #expect(nested.projection == .items([ProjectionItem(.aggregate(.arrayAgg(integer, orderBy: [SortKey(integer)], distinct: false)))]))
+        #expect(nested.projection == [ProjectionItem(.aggregate(.arrayAgg(integer, orderBy: [SortKey(integer)], distinct: false)))])
         guard case .subquery(let inner) = try #require(nested.orderBy?.first?.expression) else {
             Issue.record("Expected nested SELECT")
             return
         }
-        #expect(inner.projection == .items([ProjectionItem(integer)]))
+        #expect(inner.projection == [ProjectionItem(integer)])
     }
 
     @Test("Query output positions and explicit constants stabilize across SQL round trips")

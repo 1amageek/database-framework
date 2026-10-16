@@ -9,56 +9,58 @@ import DatabaseKit
 
 /// SQL Query Builder for type-safe query construction
 public struct SQLQueryBuilder: Sendable {
-    private var projection: Projection
+    private var projection: [ProjectionItem]
     private var source: DataSource
     private var filter: Expression?
     private var groupByExprs: [Expression]?
     private var havingExpr: Expression?
     private var orderByKeys: [SortKey]?
-    private var limitCount: UInt64?
-    private var offsetCount: UInt64?
-    private var distinctFlag: Bool
+    private var pagination: QueryPagination
+    private var quantifier: SelectQuantifier
     private var ctes: [NamedSubquery]?
+
+    private static func source(for table: TableRef) -> DataSource {
+        guard let alias = table.alias else { return .table(table) }
+        let reference = TableRef(schema: table.schema, table: table.table, partitions: table.partitions)
+        return .aliased(.table(reference), name: alias)
+    }
 
     /// Initialize with a table name
     public init(from tableName: String) {
-        self.projection = .all
+        self.projection = [.wildcard()]
         self.source = .table(TableRef(tableName))
         self.filter = nil
         self.groupByExprs = nil
         self.havingExpr = nil
         self.orderByKeys = nil
-        self.limitCount = nil
-        self.offsetCount = nil
-        self.distinctFlag = false
+        self.pagination = QueryPagination()
+        self.quantifier = .all
         self.ctes = nil
     }
 
     /// Initialize with a table reference
     public init(from table: TableRef) {
-        self.projection = .all
-        self.source = .table(table)
+        self.projection = [.wildcard()]
+        self.source = Self.source(for: table)
         self.filter = nil
         self.groupByExprs = nil
         self.havingExpr = nil
         self.orderByKeys = nil
-        self.limitCount = nil
-        self.offsetCount = nil
-        self.distinctFlag = false
+        self.pagination = QueryPagination()
+        self.quantifier = .all
         self.ctes = nil
     }
 
     /// Initialize with a custom source
     public init(source: DataSource) {
-        self.projection = .all
+        self.projection = [.wildcard()]
         self.source = source
         self.filter = nil
         self.groupByExprs = nil
         self.havingExpr = nil
         self.orderByKeys = nil
-        self.limitCount = nil
-        self.offsetCount = nil
-        self.distinctFlag = false
+        self.pagination = QueryPagination()
+        self.quantifier = .all
         self.ctes = nil
     }
 }
@@ -69,36 +71,36 @@ extension SQLQueryBuilder {
     /// Select all columns
     public func selectAll() -> SQLQueryBuilder {
         var builder = self
-        builder.projection = .all
+        builder.projection = [.wildcard()]
         return builder
     }
 
     /// Select specific columns
     public func select(_ columns: String...) -> SQLQueryBuilder {
         var builder = self
-        builder.projection = .items(columns.map { ProjectionItem(.column(ColumnRef(column: $0))) })
+        builder.projection = columns.map { ProjectionItem(.column(ColumnRef(column: $0))) }
         return builder
     }
 
     /// Select with expressions
     public func select(_ items: ProjectionItem...) -> SQLQueryBuilder {
         var builder = self
-        builder.projection = .items(items)
+        builder.projection = items
         return builder
     }
 
     /// Select DISTINCT
     public func selectDistinct(_ columns: String...) -> SQLQueryBuilder {
         var builder = self
-        builder.projection = .distinctItems(columns.map { ProjectionItem(.column(ColumnRef(column: $0))) })
-        builder.distinctFlag = true
+        builder.projection = columns.map { ProjectionItem(.column(ColumnRef(column: $0))) }
+        builder.quantifier = .distinct
         return builder
     }
 
     /// Select with alias
     public func select(_ column: String, as alias: String) -> SQLQueryBuilder {
         var builder = self
-        builder.projection = .items([ProjectionItem(.column(ColumnRef(column: column)), alias: alias)])
+        builder.projection = [ProjectionItem(.column(ColumnRef(column: column)), alias: alias)]
         return builder
     }
 }
@@ -313,7 +315,7 @@ extension SQLQueryBuilder {
         builder.source = .join(JoinClause(
             type: .inner,
             left: builder.source,
-            right: .table(table),
+            right: Self.source(for: table),
             condition: .on(condition)
         ))
         return builder
@@ -337,7 +339,7 @@ extension SQLQueryBuilder {
         builder.source = .join(JoinClause(
             type: .left,
             left: builder.source,
-            right: .table(table),
+            right: Self.source(for: table),
             condition: .on(condition)
         ))
         return builder
@@ -361,7 +363,7 @@ extension SQLQueryBuilder {
         builder.source = .join(JoinClause(
             type: .right,
             left: builder.source,
-            right: .table(table),
+            right: Self.source(for: table),
             condition: .on(condition)
         ))
         return builder
@@ -472,14 +474,14 @@ extension SQLQueryBuilder {
     /// Set LIMIT
     public func limit(_ count: UInt64) -> SQLQueryBuilder {
         var builder = self
-        builder.limitCount = count
+        builder.pagination = QueryPagination(limit: .count(.fixed(count), withTies: false), offset: builder.pagination.offset)
         return builder
     }
 
     /// Set OFFSET
     public func offset(_ count: UInt64) -> SQLQueryBuilder {
         var builder = self
-        builder.offsetCount = count
+        builder.pagination = QueryPagination(limit: builder.pagination.limit, offset: .fixed(count))
         return builder
     }
 
@@ -530,9 +532,8 @@ extension SQLQueryBuilder {
             groupBy: groupByExprs,
             having: havingExpr,
             orderBy: orderByKeys,
-            limit: limitCount,
-            offset: offsetCount,
-            distinct: distinctFlag,
+            quantifier: quantifier,
+            pagination: pagination,
             subqueries: ctes
         )
     }
@@ -549,47 +550,47 @@ extension SQLQueryBuilder {
     /// Count rows
     public func count() -> SQLQueryBuilder {
         var builder = self
-        builder.projection = .items([ProjectionItem(.aggregate(.count(nil, distinct: false)), alias: "count")])
+        builder.projection = [ProjectionItem(.aggregate(.count(nil, distinct: false)), alias: "count")]
         return builder
     }
 
     /// Sum of column
     public func sum(_ column: String) -> SQLQueryBuilder {
         var builder = self
-        builder.projection = .items([ProjectionItem(
+        builder.projection = [ProjectionItem(
             .aggregate(.sum(.column(ColumnRef(column: column)), distinct: false)),
             alias: "sum"
-        )])
+        )]
         return builder
     }
 
     /// Average of column
     public func avg(_ column: String) -> SQLQueryBuilder {
         var builder = self
-        builder.projection = .items([ProjectionItem(
+        builder.projection = [ProjectionItem(
             .aggregate(.avg(.column(ColumnRef(column: column)), distinct: false)),
             alias: "avg"
-        )])
+        )]
         return builder
     }
 
     /// Max of column
     public func max(_ column: String) -> SQLQueryBuilder {
         var builder = self
-        builder.projection = .items([ProjectionItem(
+        builder.projection = [ProjectionItem(
             .aggregate(.max(.column(ColumnRef(column: column)))),
             alias: "max"
-        )])
+        )]
         return builder
     }
 
     /// Min of column
     public func min(_ column: String) -> SQLQueryBuilder {
         var builder = self
-        builder.projection = .items([ProjectionItem(
+        builder.projection = [ProjectionItem(
             .aggregate(.min(.column(ColumnRef(column: column)))),
             alias: "min"
-        )])
+        )]
         return builder
     }
 }

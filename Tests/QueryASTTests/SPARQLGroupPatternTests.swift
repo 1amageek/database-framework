@@ -421,7 +421,7 @@ struct SPARQLSubSelectTests {
             Issue.record("Expected .subquery, got: \(pattern)")
             return
         }
-        #expect(subQuery.projection != .all)
+        #expect(subQuery.projection != [.wildcard()])
     }
 
     @Test("SubSelect with LIMIT")
@@ -437,7 +437,7 @@ struct SPARQLSubSelectTests {
             Issue.record("Expected .subquery, got: \(pattern)")
             return
         }
-        #expect(subQuery.limit == 10)
+        #expect(subQuery.pagination.limit == .count(.fixed(10), withTies: false))
     }
 
     @Test("SubSelect joined with triples")

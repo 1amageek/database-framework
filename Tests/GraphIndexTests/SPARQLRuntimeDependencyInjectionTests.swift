@@ -87,8 +87,7 @@ struct SPARQLRuntimeDependencyInjectionTests {
         )
         try await context.save()
 
-        let query = SelectQuery(
-            projection: .items([
+        let query = SelectQuery(projection: [
                 ProjectionItem(.variable(Variable("subject"))),
                 ProjectionItem(
                     .function(
@@ -99,7 +98,7 @@ struct SPARQLRuntimeDependencyInjectionTests {
                     ),
                     alias: "identity"
                 ),
-            ]),
+            ],
             source: .graphPattern(
                 .basic([
                     TriplePattern(
@@ -108,8 +107,7 @@ struct SPARQLRuntimeDependencyInjectionTests {
                         object: .variable("object")
                     )
                 ])
-            )
-        )
+            ))
 
         let ordinary = try await context.query(query)
         let executor = try #require(
@@ -191,10 +189,8 @@ struct SPARQLRuntimeDependencyInjectionTests {
             container.runtimeConfiguration.logicalSourceExecutors
                 .sparqlExecutor
         )
-        let query = SelectQuery(
-            projection: .all,
-            source: .graphPattern(.basic([]))
-        )
+        let query = SelectQuery(projection: [.wildcard()],
+            source: .graphPattern(.basic([])))
 
         try await context.withTransaction { _ in
             try await DatabaseReadSession.withSession(

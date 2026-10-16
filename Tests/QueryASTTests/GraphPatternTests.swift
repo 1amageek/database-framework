@@ -533,7 +533,7 @@ struct SelectQuerySPARQLSerializationTests {
     @Test("toSPARQL - basic SELECT")
     func testToSPARQLBasicSelect() throws {
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .graphPattern(GraphPattern.basic([
                 TriplePattern(subject: .variable("s"), predicate: .variable("p"), object: .variable("o"))
             ]))
@@ -547,7 +547,7 @@ struct SelectQuerySPARQLSerializationTests {
     @Test("toSPARQL - SELECT with prefixes")
     func testToSPARQLWithPrefixes() throws {
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .graphPattern(GraphPattern.basic([]))
         )
 
@@ -557,11 +557,9 @@ struct SelectQuerySPARQLSerializationTests {
 
     @Test("toSPARQL - SELECT DISTINCT")
     func testToSPARQLDistinct() throws {
-        let query = SelectQuery(
-            projection: .all,
+        let query = SelectQuery(projection: [.wildcard()],
             source: .graphPattern(GraphPattern.basic([])),
-            distinct: true
-        )
+            quantifier: .distinct)
 
         let sparql = try query.toSPARQL()
         #expect(sparql.contains("SELECT DISTINCT"))
@@ -569,11 +567,9 @@ struct SelectQuerySPARQLSerializationTests {
 
     @Test("toSPARQL - SELECT with LIMIT")
     func testToSPARQLWithLimit() throws {
-        let query = SelectQuery(
-            projection: .all,
+        let query = SelectQuery(projection: [.wildcard()],
             source: .graphPattern(GraphPattern.basic([])),
-            limit: 10
-        )
+            pagination: QueryPagination(limit: .count(.fixed(10), withTies: false)))
 
         let sparql = try query.toSPARQL()
         #expect(sparql.contains("LIMIT 10"))
@@ -581,11 +577,9 @@ struct SelectQuerySPARQLSerializationTests {
 
     @Test("toSPARQL - SELECT with OFFSET")
     func testToSPARQLWithOffset() throws {
-        let query = SelectQuery(
-            projection: .all,
+        let query = SelectQuery(projection: [.wildcard()],
             source: .graphPattern(GraphPattern.basic([])),
-            offset: 5
-        )
+            pagination: QueryPagination(offset: .fixed(5)))
 
         let sparql = try query.toSPARQL()
         #expect(sparql.contains("OFFSET 5"))
@@ -594,7 +588,7 @@ struct SelectQuerySPARQLSerializationTests {
     @Test("toSPARQL - SELECT with ORDER BY")
     func testToSPARQLWithOrderBy() throws {
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .graphPattern(GraphPattern.basic([])),
             orderBy: [SortKey(.variable(Variable("name")), direction: .ascending)]
         )
@@ -607,7 +601,7 @@ struct SelectQuerySPARQLSerializationTests {
     @Test("toSPARQL - SELECT with GROUP BY")
     func testToSPARQLWithGroupBy() throws {
         let query = SelectQuery(
-            projection: .items([ProjectionItem(.variable(Variable("x")))]),
+            projection: [ProjectionItem(.variable(Variable("x")))],
             source: .graphPattern(GraphPattern.basic([])),
             groupBy: [.variable(Variable("x"))]
         )
@@ -619,7 +613,7 @@ struct SelectQuerySPARQLSerializationTests {
     @Test("toSPARQL - SELECT with HAVING")
     func testToSPARQLWithHaving() throws {
         let query = SelectQuery(
-            projection: .items([ProjectionItem(.variable(Variable("x")))]),
+            projection: [ProjectionItem(.variable(Variable("x")))],
             source: .graphPattern(GraphPattern.basic([])),
             groupBy: [.variable(Variable("x"))],
             having: .greaterThan(

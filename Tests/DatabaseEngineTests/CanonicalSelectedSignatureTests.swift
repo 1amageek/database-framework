@@ -226,7 +226,7 @@ struct CanonicalSelectedSignatureTests {
             #expect(selected.children.map(\.type) == [.sql(.doublePrecision), .sql(type)])
             #expect(selected.type == .sql(.boolean) && selected.isNullable)
         }
-        let subquery = SelectQuery(projection: .all, source: .values([], columnNames: nil))
+        let subquery = SelectQuery(projection: [.wildcard()], source: .values([]))
         let output = try QueryColumn(number: 1, name: "number", type: .sql(.integer), isNullable: true)
         let plan = CanonicalBoundSelect(columns: [output], projection: [], filter: nil, groupBy: [], having: nil, orderBy: [])
         let selected = try binder(subquery: plan).bind(.quantifiedComparison(null(numeric), comparison: .lessThan,
@@ -277,7 +277,7 @@ struct CanonicalSelectedSignatureTests {
 
     private func null(_ type: DataType) -> Expression { .literal(.queryValue(.primitive(.null), type: .sql(type))) }
     private func empty(_ expression: Expression) -> SelectQuery {
-        SelectQuery(projection: .items([ProjectionItem(expression)]), source: .values([], columnNames: nil))
+        SelectQuery(projection: [ProjectionItem(expression)], source: .values([]))
     }
     private func function(_ name: String, _ arguments: [Expression]) throws -> CanonicalBoundExpression {
         try binder().bind(.function(FunctionCall(name: name, arguments: arguments)))

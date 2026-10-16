@@ -7,17 +7,25 @@ import Testing
 @Suite("Canonical SQL expression type binding")
 struct CanonicalQueryTypeBinderTests {
 
-    @Test("ARRAY constructors select types, ROW stays gated and temporal casts retain declarations")
+    @Test("ARRAY and ROW constructors select types and temporal casts retain declarations")
     func deferredSQLSemanticsFailBinding() throws {
         let selectedArray = try binder().bind(.array([.int(1)]))
         #expect(selectedArray.type == .sql(.array(.bigint)))
         #expect(selectedArray.children[0].type == .sql(.bigint))
         for expression: Expression in [.row([.null])] {
-            let query = SelectQuery(projection: .items([ProjectionItem(expression)]),
-                                    source: .values([], columnNames: nil))
-            #expect(throws: DatabaseExpressionEvaluationError.unsupportedExpression("SQL ARRAY/ROW constructor")) {
-                try binder().bind(query)
+            let query = SelectQuery(projection: [ProjectionItem(expression)],
+                                    source: .values([]))
+            let columns = try binder().bind(query)
+            #expect(columns.count == 1)
+            #expect(!columns[0].isNullable)
+            guard case .sql(.composite(let descriptor)) = columns[0].type else {
+                Issue.record("ROW projection did not select a composite descriptor")
+                continue
             }
+            #expect(descriptor.columns.count == 1)
+            #expect(descriptor.columns[0].name == "f1")
+            #expect(descriptor.columns[0].type == .sql(.text))
+            #expect(descriptor.columns[0].isNullable)
         }
         for type: DataType in [.time(withTimeZone: false, precision: 0),
                                .timestamp(withTimeZone: true, precision: 6)] {
@@ -68,12 +76,12 @@ struct CanonicalQueryTypeBinderTests {
     @Test("An empty input preserves duplicate output labels and declared NULL types")
     func emptyInputHasOrderedTypes() throws {
         let query = SelectQuery(
-            projection: .items([
+            projection: [
                 ProjectionItem(.cast(.literal(.null), targetType: .bigint), alias: "same"),
                 ProjectionItem(.literal(.int(7)), alias: "same"),
                 ProjectionItem(.literal(.null), alias: ""),
-            ]),
-            source: .values([], columnNames: nil)
+            ],
+            source: .values([])
         )
         let columns = try binder().bind(query)
         #expect(columns.map(\.number) == [1, 2, 3])
@@ -144,7 +152,7 @@ struct CanonicalQueryTypeBinderTests {
             resolveColumn: { _ in 0 },
             wildcardSlots: { _ in [1, 0] }
         )
-        let output = try binder.bind(SelectQuery(projection: .all, source: .values([], columnNames: nil)))
+        let output = try binder.bind(SelectQuery(projection: [.wildcard()], source: .values([])))
         #expect(output.map(\.name) == ["second", "first"])
         #expect(output.map(\.number) == [1, 2])
         #expect(output.map(\.isNullable) == [true, false])
@@ -285,7 +293,7 @@ struct CanonicalQueryTypeBinderTests {
 
     @Test("Scalar subqueries use declared metadata and require one output column")
     func scalarSubqueryBinding() throws {
-        let query = SelectQuery(projection: .all, source: .values([], columnNames: nil))
+        let query = SelectQuery(projection: [.wildcard()], source: .values([]))
         let output = try QueryColumn(number: 1, name: "value", type: .sql(.jsonb), isNullable: false)
         let binder = CanonicalQueryTypeBinder(columns: [], resolveColumn: { _ in 0 }, wildcardSlots: { _ in [] }, bindSubquery: { _ in [output] })
         let scalar = try binder.bind(.subquery(query))
@@ -326,7 +334,7 @@ struct CanonicalQueryTypeBinderTests {
             try binder().bind(.function(FunctionCall(name: "lower", arguments: [.literal(.int(1))])))
         }
         #expect(throws: DatabaseExpressionEvaluationError.self) {
-            try binder().bind(SelectQuery(projection: .all, source: .values([], columnNames: nil), filter: .literal(.int(1))))
+            try binder().bind(SelectQuery(projection: [.wildcard()], source: .values([]), filter: .literal(.int(1))))
         }
         #expect(throws: DatabaseExpressionEvaluationError.self) {
             try binder().bind(.coalesce([.literal(.array([.int(1)])), .literal(.int(1))]))
@@ -525,8 +533,8 @@ struct CanonicalQueryTypeBinderTests {
     func orderedParameterInference() throws {
         let parameter = Expression.parameter(.position(1))
         func query(_ expressions: [Expression], filter: Expression? = nil) -> SelectQuery {
-            SelectQuery(projection: .items(expressions.map { ProjectionItem($0) }),
-                        source: .values([], columnNames: nil), filter: filter)
+            SelectQuery(projection: expressions.map { ProjectionItem($0) },
+                        source: .values([]), filter: filter)
         }
         let supplied = [QueryParameter(position: 1, value: .primitive(.null))]
         #expect(try binder(parameters: supplied).bind(query([parameter]))[0].type == .sql(.text))

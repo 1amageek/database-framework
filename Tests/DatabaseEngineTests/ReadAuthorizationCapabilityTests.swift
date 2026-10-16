@@ -1122,7 +1122,7 @@ struct ReadAuthorizationCapabilityTests {
                 ) {
                     _ = try await context.querySessionBound(
                         SelectQuery(
-                            projection: .all,
+                            projection: [.wildcard()],
                             source: .table(TableRef(Anchor.persistableType))
                         ),
                         execution: ReadExecutionContext(
@@ -1325,7 +1325,7 @@ struct ReadAuthorizationCapabilityTests {
             ) {
                 _ = try await snapshot.session.executeCanonical(
                     SelectQuery(
-                        projection: .all,
+                        projection: [.wildcard()],
                         source: .graphPattern(.basic([]))
                     ),
                     execution: ReadExecutionContext(
@@ -1364,7 +1364,7 @@ struct ReadAuthorizationCapabilityTests {
                     try session.authorizeCanonicalListAccess(
                         entity: try ReadPolicyAuthorizationAnchor.schemaEntity,
                         selectQuery: SelectQuery(
-                            projection: .all,
+                            projection: [.wildcard()],
                             source: .table(
                                 TableRef(
                                     ReadPolicyAuthorizationAnchor
@@ -1445,7 +1445,7 @@ struct ReadAuthorizationCapabilityTests {
             authorization: deniedAuthorization
         )
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(
                 TableRef(ReadPolicyAuthorizationAnchor.persistableType)
             )
@@ -1538,11 +1538,11 @@ struct ReadAuthorizationCapabilityTests {
 
         let response = try await context.query(
             SelectQuery(
-                projection: .items([
+                projection: [
                     ProjectionItem(
                         .column(ColumnRef(column: "title"))
                     )
-                ]),
+                ],
                 source: .logical(
                     LogicalSourceRef(
                         kindIdentifier: LogicalSourceKind.polymorphic,
@@ -1816,7 +1816,7 @@ struct ReadAuthorizationCapabilityTests {
             }
         )
         let admittedQuery = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(TableRef(Anchor.persistableType)),
             accessPath: .index(
                 IndexScanSource(
@@ -1863,12 +1863,10 @@ struct ReadAuthorizationCapabilityTests {
                     additionalFieldNames: []
                 )
 
-                let widenedQuery = SelectQuery(
-                    projection: admittedQuery.projection,
-                    source: admittedQuery.source,
-                    accessPath: admittedQuery.accessPath,
-                    limit: 1
-                )
+                let widenedQuery = SelectQuery(projection: admittedQuery.projection,
+            source: admittedQuery.source,
+            accessPath: admittedQuery.accessPath,
+            pagination: QueryPagination(limit: .count(.fixed(1), withTies: false)))
                 #expect(throws: DatabaseReadSessionError.authorizationMismatch) {
                     try authorizedSession
                         .requireCanonicalIndexReadAuthorization(
@@ -1924,7 +1922,7 @@ struct ReadAuthorizationCapabilityTests {
             ) {
                 _ = try await context.query(
                     SelectQuery(
-                        projection: .all,
+                        projection: [.wildcard()],
                         source: .graphTable(graphTable)
                     )
                 )
@@ -1934,7 +1932,7 @@ struct ReadAuthorizationCapabilityTests {
             ) {
                 _ = try await context.query(
                     SelectQuery(
-                        projection: .all,
+                        projection: [.wildcard()],
                         source: .graphPattern(.basic([]))
                     )
                 )
@@ -1944,10 +1942,8 @@ struct ReadAuthorizationCapabilityTests {
             ) {
                 _ = try await context.query(
                     SelectQuery(
-                        projection: .all,
-                        source: .union([
-                            .graphPattern(.basic([]))
-                        ])
+                        projection: [.wildcard()],
+                        source: .subquery(SelectQuery(projection: [.wildcard()], source: .setOperation(operator: .union, quantifier: .distinct, left: SelectQuery(projection: [.wildcard()], source: .graphPattern(.basic([]))), right: SelectQuery(projection: [.wildcard()], source: .graphPattern(.basic([]))))))
                     )
                 )
             }
@@ -1956,13 +1952,14 @@ struct ReadAuthorizationCapabilityTests {
             ) {
                 _ = try await context.query(
                     SelectQuery(
-                        projection: .all,
-                        source: .union([
-                            .namedGraph(
+                        projection: [.wildcard()],
+                        source: .subquery(SelectQuery(projection: [.wildcard()], source: .setOperation(operator: .union, quantifier: .distinct, left: SelectQuery(projection: [.wildcard()], source: .namedGraph(
                                 name: "authority_probe",
                                 pattern: .basic([])
-                            )
-                        ])
+                            )), right: SelectQuery(projection: [.wildcard()], source: .namedGraph(
+                                name: "authority_probe",
+                                pattern: .basic([])
+                            )))))
                     )
                 )
             }

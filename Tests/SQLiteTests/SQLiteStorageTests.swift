@@ -127,9 +127,10 @@ struct SQLiteStorageTests {
         #expect(empty.columns == selected.columns)
 
         let names = ["exactAmount", "lexicalDocument", "binaryDocument", "durationValue", "integerValues"]
-        let literalQuery = SelectQuery(projection: .items(expected.indices.map { index in
+        let literalQuery = SelectQuery(projection: expected.indices.map { index in
             ProjectionItem(.literal(.queryValue(expected[index], type: types[index])), alias: names[index])
-        }), source: .values([[]], columnNames: []))
+        },
+            source: .values([[]]))
         let literals = try await context.query(literalQuery)
         #expect(literals.rows.count == 1)
         #expect(literals.rows[0].values == expected)
@@ -215,32 +216,29 @@ struct SQLiteStorageTests {
             #expect(failure.position == 15)
             #expect(failure.occurrence != nil)
         }
-        for (sql, reason) in [
-            ("SELECT ROW(1, NULL)", "SQL ARRAY/ROW constructor"),
-        ] {
-            do {
-                _ = try await context.executeSQL(sql)
-                Issue.record("Expected an explicit pending SQL execution failure")
-            } catch let failure as SQLBindingSourceFailure {
-                guard case .expression(.unsupportedExpression(let message)) = failure.cause else {
-                    Issue.record("Expected the typed unsupported SQL execution capability")
-                    continue
-                }
-                #expect(message == reason)
-                #expect(failure.position == 7)
-                #expect(failure.occurrence != nil)
-            } catch {
-                Issue.record("Unexpected SQL execution failure: \(error)")
-            }
+        let composite = try await context.executeSQL("SELECT ROW(1, NULL) AS value")
+        try #require(composite.rows.count == 1)
+        guard case .composite(let record) = composite.rows[0].values[0] else {
+            Issue.record("Expected the selected SQL row constructor")
+            return
         }
+        #expect(composite.columns.map(\.type) == [.sql(.composite(record.type))])
+        #expect(composite.columns.map(\.isNullable) == [false])
+        #expect(record.type.columns.map(\.name) == ["f1", "f2"])
+        #expect(record.type.columns.map(\.type) == [.sql(.integer), .sql(.text)])
+        #expect(record.type.columns.map(\.isNullable) == [false, true])
+        #expect(Array(record.fields) == [.primitive(.int32(1)), .primitive(.null)])
+        let emptyComposite = try await context.executeSQL("SELECT ROW(1, NULL) AS value WHERE FALSE")
+        #expect(emptyComposite.rows.isEmpty)
+        #expect(emptyComposite.columns == composite.columns)
         let array = try await context.executeSQL("SELECT ARRAY[1,NULL] AS values")
         #expect(array.columns.map(\.type) == [.sql(.array(.integer))])
         guard case .array(let arrayValue) = array.rows[0].values[0] else {
             Issue.record("Expected the selected SQL array constructor")
             return
         }
-        #expect(arrayValue.elements == [.primitive(.int32(1)), .primitive(.null)])
-        #expect(arrayValue.dimensions == [try QueryArrayDimension(lowerBound: 1, length: 2)])
+        #expect(arrayValue.elements.elementsEqual([QueryValue.primitive(.int32(1)), .primitive(.null)]))
+        #expect(arrayValue.dimensions.elementsEqual([try QueryArrayDimension(lowerBound: 1, length: 2)]))
         let emptyArray = try await context.executeSQL("SELECT ARRAY[1,NULL] AS values WHERE FALSE")
         #expect(emptyArray.rows.isEmpty)
         #expect(emptyArray.columns == array.columns)
@@ -255,7 +253,7 @@ struct SQLiteStorageTests {
             .timestamp(withTimeZone: false, precision: 3),
             .timestamp(withTimeZone: true, precision: 6),
         ] {
-            let nullBuilder = SQLQueryBuilder(source: .values([[]], columnNames: nil))
+            let nullBuilder = SQLQueryBuilder(source: .values([[]]))
                 .select(ProjectionItem(.cast(.null, targetType: type), alias: "clock"))
             let directNull = try await context.query(nullBuilder.buildAST())
             let emittedNull = try await context.executeSQL(nullBuilder.toSQL())

@@ -34,10 +34,11 @@ struct QueryValueSQLSerializationTests {
 
     private func projection(_ text: String) throws -> Expression {
         let query = try SQLParser().parseSelect("SELECT " + text)
-        guard case .items(let items) = query.projection, items.count == 1 else {
+        let items = query.projection
+        guard items.allSatisfy({ if case .expression = $0 { return true }; return false }), items.count == 1 else {
             throw SQLSerializationError.invalidStructure("Expected one projection item")
         }
-        return items[0].expression
+        return try projectionExpression(items[0])
     }
 
     @Test("Direct, array-nested and query-nested rich SQL retain exact values")
@@ -63,12 +64,13 @@ struct QueryValueSQLSerializationTests {
             #expect(try projection(serializer.serialize(parsedNested)) == parsedNested)
 
             let query = SelectQuery(
-                projection: .items([ProjectionItem(.coalesce([.literal(literal), .null]))]),
+                projection: [ProjectionItem(.coalesce([.literal(literal), .null]))],
                 source: .table(TableRef("values"))
             )
             let parsedQuery = try SQLParser().parseSelect(serializer.serialize(query))
-            guard case .items(let items) = parsedQuery.projection,
-                  case .coalesce(let alternatives)? = items.first?.expression,
+            let items = parsedQuery.projection
+        guard items.allSatisfy({ if case .expression = $0 { return true }; return false }),
+                  case .coalesce(let alternatives) = try projectionExpression(#require(items.first)),
                   case .literal(.queryValue(let queryValue, _))? = alternatives.first else {
                 Issue.record("Expected a nested rich constant in the SELECT projection")
                 continue

@@ -1,4 +1,5 @@
 import DatabaseKit
+import DatabaseTypes
 
 /// Selected relational identity; Kit representation identity remains unchanged.
 enum CanonicalSQLValueIdentity: Sendable, Hashable {
@@ -12,11 +13,32 @@ enum CanonicalSQLValueIdentity: Sendable, Hashable {
         switch type {
         case .sql(.json), .sql(.array(.json)):
             throw DatabaseExpressionEvaluationError.typeMismatch(operation: "SQL JSON identity")
-        case .sql(.array), .sql(.jsonb):
+        case .sql(.array), .sql(.composite), .sql(.jsonb):
             if value.isNull { return nil }
             return .collection(try CanonicalSQLCollectionIdentity.prepare(value, type: type,
                 environment: environment, workMeter: workMeter))
         default: return nil
+        }
+    }
+
+    static func prepare(_ value: QueryValue, type: QueryColumnType,
+        environment: SQLTemporalEnvironment?, workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage = .expressionEvaluation) throws -> Self {
+        try workMeter.consume(at: stage)
+        if value.isNull { return .value(.primitive(.null)) }
+        if let collection = try prepareCollection(value, type: type, environment: environment, workMeter: workMeter) {
+            return collection
+        }
+        if let temporal = try CanonicalSQLValueSemantics.temporalIdentity(value, type: type,
+            environment: environment, workMeter: workMeter) { return .temporal(temporal) }
+        if case .sql(.char) = type {
+            return .collection(try CanonicalSQLCollectionIdentity.prepare(value, type: type,
+                environment: environment, workMeter: workMeter))
+        }
+        switch value {
+        case .numeric(let number): return .value(.primitive(.decimal(number.value)))
+        case .primitive(let scalar): return .value(.primitive(try RelationalValueIdentity.canonicalize(scalar).value))
+        default: throw DatabaseExpressionEvaluationError.typeMismatch(operation: "selected scalar identity")
         }
     }
 

@@ -85,21 +85,20 @@ public struct CompositionQueryExecutor<Model: Persistable>: Sendable {
     ) async throws -> Int {
         let selected = try query.toSelectQuery()
         let aggregate = SelectQuery(
-            projection: .items([
+            projection: [
                 ProjectionItem(
                     .aggregate(.count(nil, distinct: false)),
                     alias: "count"
                 ),
-            ]),
+            ],
             source: selected.source,
             accessPath: selected.accessPath,
             filter: selected.filter,
             groupBy: nil,
             having: nil,
             orderBy: nil,
-            limit: nil,
-            offset: nil,
-            distinct: false,
+            quantifier: .all,
+            pagination: QueryPagination(),
             subqueries: selected.subqueries,
             reduced: false,
             dataset: selected.dataset

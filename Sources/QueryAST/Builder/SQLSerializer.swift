@@ -104,6 +104,8 @@ extension SQLTextWriter {
         case .array(let element):
             if case .array = element { throw .unsupportedType("Nested array DataType") }
             try type(element); try append("[]")
+        case .composite:
+            throw .unsupportedType("Composite descriptors have no exact standalone SQL type spelling")
         case .custom(let name, let schema):
             if let schema { try identifier(schema); try append(".") }
             try identifier(name)
@@ -179,6 +181,10 @@ extension SQLTextWriter {
                 default: break
                 }
             }
+            if case .composite(let composite) = value {
+                try compositeLiteral(composite, declared: sqlType)
+                return
+            }
             if sqlType != nil { try append("CAST(") }
             switch value {
             case .primitive(let value): try primitive(value, declared: sqlType)
@@ -206,7 +212,12 @@ extension SQLTextWriter {
             case .intervalInfinity(let value):
                 try append("INTERVAL "); try string(SQLConstantSyntax.infinityText(value))
             case .interval(let value): try append("INTERVAL "); try string(SQLConstantSyntax.intervalText(value))
+            case .composite:
+                throw .unsupportedLiteral("Composite literal requires exact descriptor admission")
             case .array(let value):
+                if case .composite = value.elementType {
+                    throw .unsupportedLiteral("Composite array descriptors have no exact SQL text spelling")
+                }
                 try append("CAST(")
                 do { try string(SQLConstantSyntax.arrayText(value, limits: limits)) }
                 catch let error as SQLSerializationError { throw error }
@@ -218,6 +229,26 @@ extension SQLTextWriter {
         case .iri, .blankNode, .typedLiteral, .langLiteral, .dirLangLiteral, .rdfTerm:
             throw .unsupportedLanguage("RDF literal")
         }
+    }
+
+    private mutating func compositeLiteral(_ value: QueryCompositeValue, declared: DataType?) throws(SQLSerializationError) {
+        if let declared, declared != .composite(value.type) {
+            throw .unsupportedLiteral("Composite literal declaration differs from its descriptor")
+        }
+        try collection(value.fields.count)
+        try append("ROW(")
+        for index in value.fields.indices {
+            let column = value.type.columns[index]
+            guard column.name == "f" + String(index + 1), column.isNullable == value.fields[index].isNull else {
+                throw .unsupportedLiteral("Composite names or nullability cannot be retained by ROW syntax")
+            }
+            if case .primitive = column.type {
+                throw .unsupportedLiteral("Primitive composite field declarations have no exact SQL identity")
+            }
+            if index > 0 { try append(", ") }
+            try literal(.queryValue(value.fields[index], type: column.type))
+        }
+        try append(")")
     }
 
     private mutating func offsetTimeLiteral(_ value: QueryTimeWithTimeZoneValue) throws(SQLSerializationError) {
@@ -254,6 +285,8 @@ extension SQLTextWriter {
             switch value {
             case .json(let json): footprint = try json.measure()
             case .jsonb(let json): footprint = try json.measure()
+            case .composite:
+                footprint = try QueryValueValidator.measure(value)
             case .array(let array):
                 guard UInt64(array.elements.count) <= limits.maximumCollectionElements else { throw SQLSerializationError.structuralLimit("SQL array collection budget exceeded") }
                 footprint = try QueryValueValidator.measure(value)
@@ -361,6 +394,17 @@ extension SQLTextWriter {
         case .literal(let value): try literal(value)
         case .array(let values): try append("ARRAY["); try list(values) { (writer: inout SQLTextWriter, value: Expression) throws(SQLSerializationError) -> Void in try writer.expression(value) }; try append("]")
         case .row(let values): try append("ROW("); try list(values) { (writer: inout SQLTextWriter, value: Expression) throws(SQLSerializationError) -> Void in try writer.expression(value) }; try append(")")
+        case .arraySubquery(let query): try append("ARRAY("); try select(query); try append(")")
+        case .collate(let operand, let collation):
+            try append("("); try expression(operand); try append(" COLLATE ")
+            try identifier(collation == .c ? "C" : "POSIX"); try append(")")
+        case .wholeRow:
+            throw .unsupportedSource("Explicit whole-row identity has no context-free SQL spelling")
+        case .field(let operand, let name):
+            try append("("); try expression(operand); try append(")."); try identifier(name)
+        case .fieldExpansion(let operand):
+            if case .wholeRow(let name) = operand { try identifier(name); try append(".*") }
+            else { try append("("); try expression(operand); try append(").*") }
         case .column(let column):
             if let table = column.table { try identifier(table); try append(".") }
             try identifier(column.column)
@@ -595,13 +639,19 @@ extension SQLTextWriter {
 
     mutating func projectionItems(_ values: [ProjectionItem]) throws(SQLSerializationError) {
         guard !values.isEmpty else { throw .invalidStructure("Empty projection") }
-        try list(values) { (writer: inout SQLTextWriter, value: ProjectionItem) throws(SQLSerializationError) -> Void in
-            try writer.expression(value.expression)
-            if let alias = value.alias { try writer.append(" AS "); try writer.identifier(alias) }
+        try list(values) { (writer: inout SQLTextWriter, item: ProjectionItem) throws(SQLSerializationError) -> Void in
+            switch item {
+            case .wildcard(let qualifier):
+                if let qualifier { try writer.identifier(qualifier); try writer.append(".") }
+                try writer.append("*")
+            case .expression(let expression, let alias):
+                try writer.expression(expression)
+                if let alias { try writer.append(" AS "); try writer.identifier(alias) }
+            }
         }
     }
 
-    mutating func select(_ query: SelectQuery) throws(SQLSerializationError) {
+    mutating func select(_ query: SelectQuery, allowsValuesQuery: Bool = true) throws(SQLSerializationError) {
         let enclosingOutputReferenceCasts = preservesOutputReferenceCasts
         preservesOutputReferenceCasts = false
         defer { preservesOutputReferenceCasts = enclosingOutputReferenceCasts }
@@ -619,24 +669,64 @@ extension SQLTextWriter {
             }
             try append(" ")
         }
-        try append("SELECT ")
-        var distinctProjection = false
-        if case .distinctItems = query.projection { distinctProjection = true }
-        if query.distinct || distinctProjection { try append("DISTINCT ") }
-        switch query.projection {
-        case .all: try append("*")
-        case .allFrom(let name): try identifier(name); try append(".*")
-        case .items(let items), .distinctItems(let items): try projectionItems(items)
+        if case .setOperation(let operation, let quantifier, let left, let right) = query.source {
+            guard query.projection == [.wildcard()], query.quantifier == .all,
+                  query.filter == nil, query.groupBy == nil, query.having == nil else {
+                throw .invalidStructure("Invalid set query envelope")
+            }
+            try append("("); try select(left); try append(") ")
+            switch operation { case .union: try append("UNION"); case .intersect: try append("INTERSECT"); case .except: try append("EXCEPT") }
+            try append(quantifier == .all ? " ALL (" : " DISTINCT (")
+            try select(right); try append(")")
+        } else if allowsValuesQuery, case .values(let rows) = query.source,
+                  !rows.isEmpty, rows.first?.isEmpty == false,
+                  query.projection == [.wildcard()], query.quantifier == .all,
+                  query.filter == nil, query.groupBy == nil, query.having == nil {
+            try values(rows, parenthesized: false)
+        } else {
+            try append("SELECT ")
+            switch query.quantifier {
+            case .all: break
+            case .distinct: try append("DISTINCT ")
+            case .distinctOn(let keys):
+                guard !keys.isEmpty else { throw .invalidStructure("DISTINCT ON requires keys") }
+                try append("DISTINCT ON (")
+                try list(keys) { (writer: inout SQLTextWriter, value: Expression) throws(SQLSerializationError) -> Void in try writer.expression(value) }
+                try append(") ")
+            }
+            try projectionItems(query.projection)
+            if case .values(let rows) = query.source, rows == [[]] {} else {
+                try append(" FROM "); try source(query.source)
+            }
+            if let filter = query.filter { try append(" WHERE "); try expression(filter) }
+            if let group = query.groupBy, !group.isEmpty { try append(" GROUP BY "); try list(group) { (writer: inout SQLTextWriter, value: Expression) throws(SQLSerializationError) -> Void in try writer.outputReference(value) } }
+            if let having = query.having { try append(" HAVING "); try expression(having) }
         }
-        // The parser's no-FROM representation is one zero-column VALUES row.
-        if case .values(let rows, let columns) = query.source, rows == [[]], columns == nil || columns == [] {
-        } else { try append(" FROM "); try source(query.source) }
-        if let filter = query.filter { try append(" WHERE "); try expression(filter) }
-        if let group = query.groupBy, !group.isEmpty { try append(" GROUP BY "); try list(group) { (writer: inout SQLTextWriter, value: Expression) throws(SQLSerializationError) -> Void in try writer.outputReference(value) } }
-        if let having = query.having { try append(" HAVING "); try expression(having) }
         if let order = query.orderBy, !order.isEmpty { try append(" ORDER BY "); try sorts(order, outputReferences: true) }
-        if let limit = query.limit { try append(" LIMIT \(limit)") }
-        if let offset = query.offset { try append(" OFFSET \(offset)") }
+        try pagination(query.pagination)
+    }
+
+    private mutating func count(_ count: QueryCount) throws(SQLSerializationError) {
+        switch count {
+        case .fixed(let value):
+            guard value <= UInt64(Int64.max) else { throw .unsupportedMetadata("SQL query count exceeds signed bigint") }
+            try append(String(value))
+        case .expression(let value):
+            try append("("); try expression(value); try append(")")
+        }
+    }
+
+    private mutating func pagination(_ pagination: QueryPagination) throws(SQLSerializationError) {
+        if let offset = pagination.offset { try append(" OFFSET "); try count(offset) }
+        if let limit = pagination.limit {
+            switch limit {
+            case .all: try append(" LIMIT ALL")
+            case .count(let value, let withTies):
+                if withTies {
+                    try append(" FETCH FIRST "); try count(value); try append(" ROWS WITH TIES")
+                } else { try append(" LIMIT "); try count(value) }
+            }
+        }
     }
 
     mutating func table(_ table: TableRef) throws(SQLSerializationError) {
@@ -649,8 +739,15 @@ extension SQLTextWriter {
     mutating func source(_ source: DataSource) throws(SQLSerializationError) {
         try enter(); defer { depth -= 1 }
         switch source {
-        case .table(let value): try table(value)
-        case .subquery(let query, let alias): try append("("); try select(query); try append(") AS "); try identifier(alias)
+        case .table(let value):
+            guard value.alias == nil else { throw .invalidStructure("Table source aliases use DataSource.aliased") }
+            try table(value)
+        case .subquery(let query): try append("("); try select(query, allowsValuesQuery: false); try append(")")
+        case .aliased(let value, let name, let columns):
+            if case .aliased = value { try append("("); try self.source(value); try append(")") }
+            else { try self.source(value) }
+            try append(" AS "); try identifier(name)
+            if let columns { try append(" ("); try identifiers(columns); try append(")") }
         case .join(let join):
             switch join.type {
             case .natural, .naturalLeft, .naturalRight, .naturalFull, .cross:
@@ -670,16 +767,10 @@ extension SQLTextWriter {
             }
             try append(")")
         case .graphTable(let value): try graphTable(value)
-        // FIXME(INCOMPLETE_IMPLEMENTATION): SQLSerializer.serialize reaches non-singleton VALUES sources here.
-        // S08 must provide alias/scope-preserving VALUES grammar and semantic round-trip tests
-        // before this source branch may report SQL generation success. SELECT's no-FROM singleton
-        // is handled by select(_:); INSERT VALUES retains its separate statement writer.
-        case .values:
-            throw .unsupportedSource("VALUES source requires the S08 alias and scope grammar")
-        case .union(let sources): try setSource(sources, op: "UNION")
-        case .unionAll(let sources): try setSource(sources, op: "UNION ALL")
-        case .intersect(let sources): try setSource(sources, op: "INTERSECT")
-        case .except(let left, let right): try setSource([left, right], op: "EXCEPT")
+        case .values(let rows):
+            try values(rows, parenthesized: true)
+        case .setOperation:
+            throw .invalidStructure("Set operation requires a complete SELECT envelope")
         case .graphPattern, .namedGraph, .service: throw .unsupportedLanguage("SPARQL source")
         case .logical: throw .unsupportedSource("Logical source has no SQL syntax")
         #if MultiBase
@@ -688,14 +779,24 @@ extension SQLTextWriter {
         }
     }
 
-    // FIXME(INCOMPLETE_IMPLEMENTATION): SQLSerializer.serialize reaches set-valued DataSource here.
-    // S08 must supply an alias/scope-preserving query representation and semantic round-trip tests
-    // before set-source SQL generation may report success.
-    private mutating func setSource(_ sources: [DataSource], op: String) throws(SQLSerializationError) {
-        guard sources.count >= 2 else { throw .invalidStructure("Set source requires two operands") }
-        // Current semantics model sets as sources, without an alias-bearing derived-table contract.
-        // Emitting a derived table would invent a scope; fail until that contract exists.
-        throw .unsupportedSource("Set source requires an explicit alias-bearing query representation: " + op)
+    private mutating func values(_ rows: [[Expression]], parenthesized: Bool) throws(SQLSerializationError) {
+        guard !rows.isEmpty, let first = rows.first, !first.isEmpty else {
+            throw .unsupportedSource("Empty zero-column VALUES has no exact SQL spelling")
+        }
+        let hasDirectExpansion = rows.contains { row in
+            row.contains { if case .fieldExpansion = $0 { return true }; return false }
+        }
+        guard rows.allSatisfy({ !$0.isEmpty }),
+              hasDirectExpansion || rows.allSatisfy({ $0.count == first.count }) else {
+            throw .invalidStructure("Ragged VALUES")
+        }
+        try append(parenthesized ? "(VALUES " : "VALUES ")
+        try list(rows) { (writer: inout SQLTextWriter, row: [Expression]) throws(SQLSerializationError) -> Void in
+            try writer.append("(")
+            try writer.list(row) { (writer: inout SQLTextWriter, value: Expression) throws(SQLSerializationError) -> Void in try writer.expression(value) }
+            try writer.append(")")
+        }
+        if parenthesized { try append(")") }
     }
 
     mutating func joinType(_ type: JoinType) throws(SQLSerializationError) {

@@ -310,11 +310,11 @@ enum SQLArrayFixture {
     }
     static func cells(_ value: QueryValue) throws -> [QueryValue] {
         guard case .array(let array) = value else { throw DatabaseExpressionEvaluationError.typeMismatch(operation: "array test result") }
-        return array.elements
+        return Array(array.elements)
     }
     static func shape(_ value: QueryValue) throws -> [QueryArrayDimension] {
         guard case .array(let array) = value else { throw DatabaseExpressionEvaluationError.typeMismatch(operation: "array test result") }
-        return array.dimensions
+        return Array(array.dimensions)
     }
     static func bound(_ expression: Expression, _ values: [QueryValue], types: [QueryColumnType]? = nil, result: DataType) throws -> CanonicalBoundExpression {
         let children = try values.enumerated().map { index, value -> CanonicalBoundExpression in

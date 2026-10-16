@@ -609,19 +609,19 @@ public struct GraphPatternConverter: Sendable {
     /// Adds SPARQL projection expressions as Extend algebra nodes. Aggregate
     /// expressions are evaluated by Group and are therefore not extended here.
     package static func applyingProjectionExpressions(
-        _ projection: Projection,
+        _ projection: [ProjectionItem],
         to pattern: ExecutionPattern,
         limits: SPARQLExpressionCompilationLimits,
         inputVariables: Set<String> = [],
         reservedTargetVariables: Set<String> = [],
         restrictExpressionReferencesToScope: Bool = false
     ) throws -> ExecutionPattern {
-        let items: [ProjectionItem]
-        switch projection {
-        case .items(let values), .distinctItems(let values):
-            items = values
-        case .all, .allFrom:
-            return pattern
+        if projection == [.wildcard()] { return pattern }
+        let items: [(expression: Expression, alias: String?)] = try projection.map { item in
+            guard case .expression(let expression, let alias) = item else {
+                throw SPARQLSelectPlanCompilationError.allFromProjectionUnsupported
+            }
+            return (expression, alias)
         }
 
         var aliases = Set<String>()

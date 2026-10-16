@@ -250,12 +250,11 @@ struct BitmapFusionInputTests {
         try await context.save()
 
         let response = try await context.query(
-            SelectQuery(
-                projection: .all,
-                source: .table(
+            SelectQuery(projection: [.wildcard()],
+            source: .table(
                     TableRef(BitmapFusionExecutionItem.persistableType)
                 ),
-                accessPath: .index(
+            accessPath: .index(
                     IndexScanSource(
                         indexName: "bitmap_fusion_status",
                         indexType: .bitmap,
@@ -269,8 +268,7 @@ struct BitmapFusionInputTests {
                             ])
                         ]
                     )
-                )
-            )
+                ))
         )
         let row = try #require(response.rows.first)
         #expect(response.rows.count == 1)

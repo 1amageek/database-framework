@@ -203,13 +203,13 @@ struct FusionExecution: Sendable {
     ) -> SelectQuery? {
         switch input.operation {
         case .filter(let expression):
-            return SelectQuery(projection: .all, source: .table(table),
-                filter: expression, limit: input.limit.map(UInt64.init))
+            return SelectQuery(projection: [.wildcard()], source: .table(table),
+                filter: expression, pagination: QueryPagination(limit: input.limit.map { .count(.fixed(UInt64($0)), withTies: false) }))
         case .order(let keys):
-            return SelectQuery(projection: .all, source: .table(table),
-                orderBy: keys, limit: input.limit.map(UInt64.init))
+            return SelectQuery(projection: [.wildcard()], source: .table(table),
+                orderBy: keys, pagination: QueryPagination(limit: input.limit.map { .count(.fixed(UInt64($0)), withTies: false) }))
         case .connected:
-            return SelectQuery(projection: .all, source: .table(table))
+            return SelectQuery(projection: [.wildcard()], source: .table(table))
         case .index:
             return nil
         }
@@ -338,16 +338,21 @@ struct FusionExecution: Sendable {
     private static func scoringOutputPrefixLimit(
         _ query: SelectQuery
     ) throws -> Int? {
-        guard let limit = query.limit,
+        guard case .count(.fixed(let limit), withTies: false) = query.pagination.limit,
               query.filter == nil,
               query.groupBy == nil,
               query.having == nil,
               query.orderBy?.isEmpty != false,
-              !query.distinct,
+              query.quantifier == .all,
               !query.reduced else {
             return nil
         }
-        let offset = query.offset ?? 0
+        let offset: UInt64
+        switch query.pagination.offset {
+        case nil: offset = 0
+        case .fixed(let value): offset = value
+        case .expression: return nil
+        }
         let (prefix, overflow) = limit.addingReportingOverflow(offset)
         guard !overflow else {
             throw CanonicalReadError.paginationValueExceedsRuntimeRange(

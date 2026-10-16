@@ -127,10 +127,8 @@ struct SPARQLRuntimeExpressionExecutionTests {
 
     @Test("BIND evaluates a dataset-dependent EXISTS expression")
     func bindEvaluatesExists() async throws {
-        let existsQuery = SelectQuery(
-            projection: .all,
-            source: .graphPattern(.basic([]))
-        )
+        let existsQuery = SelectQuery(projection: [.wildcard()],
+            source: .graphPattern(.basic([])))
         let queryPattern = GraphPattern.bind(
             .basic([]),
             variable: "exists",
@@ -164,10 +162,8 @@ struct SPARQLRuntimeExpressionExecutionTests {
             .basic([]),
             .variable(Variable("flag"))
         )
-        let existsQuery = SelectQuery(
-            projection: .all,
-            source: .graphPattern(inner)
-        )
+        let existsQuery = SelectQuery(projection: [.wildcard()],
+            source: .graphPattern(inner))
         let queryPattern = GraphPattern.filter(
             outer,
             .exists(existsQuery)
@@ -452,10 +448,8 @@ struct SPARQLRuntimeExpressionExecutionTests {
     @Test("An invalid EXISTS source fails during compilation")
     func invalidExistsSourceFailsCompilation() {
         let invalid = Expression.exists(
-            SelectQuery(
-                projection: .all,
-                source: .table(TableRef("not-a-graph"))
-            )
+            SelectQuery(projection: [.wildcard()],
+            source: .table(TableRef("not-a-graph")))
         )
 
         #expect(throws: SPARQLExpressionCompilationError.self) {
@@ -465,8 +459,7 @@ struct SPARQLRuntimeExpressionExecutionTests {
 
     @Test("EXISTS compiles once and requests only its first physical match")
     func existsUsesFirstMatchExecution() async throws {
-        let exists = SelectQuery(
-            projection: .all,
+        let exists = SelectQuery(projection: [.wildcard()],
             source: .graphPattern(
                 .basic([
                     TriplePattern(
@@ -475,8 +468,7 @@ struct SPARQLRuntimeExpressionExecutionTests {
                         object: .variable("object")
                     )
                 ])
-            )
-        )
+            ))
         let pattern = ExecutionPattern.extend(
             .basic([]),
             variable: "?exists",
@@ -671,12 +663,12 @@ struct SPARQLRuntimeExpressionExecutionTests {
             variable: "?source",
             expression: try SPARQLExpressionPlan(.literal(.int(4)))
         )
-        let projection = Projection.items([
+        let projection = [
             ProjectionItem(
                 .add(.variable(Variable("source")), .literal(.int(1))),
                 alias: "result"
             )
-        ])
+        ]
         let pattern = try GraphPatternConverter.applyingProjectionExpressions(
             projection,
             to: source,
@@ -699,13 +691,13 @@ struct SPARQLRuntimeExpressionExecutionTests {
 
     @Test("A projection expression can use a preceding alias")
     func projectionCanUsePrecedingAlias() throws {
-        let projection = Projection.items([
+        let projection = [
             ProjectionItem(.literal(.int(1)), alias: "first"),
             ProjectionItem(
                 .variable(Variable("first")),
                 alias: "second"
             ),
-        ])
+        ]
 
         let pattern = try GraphPatternConverter.applyingProjectionExpressions(
             projection,
@@ -718,10 +710,10 @@ struct SPARQLRuntimeExpressionExecutionTests {
 
     @Test("A projection expression cannot use a following alias")
     func projectionForwardAliasFailsCompilation() {
-        let projection = Projection.items([
+        let projection = [
             ProjectionItem(.variable(Variable("second")), alias: "first"),
             ProjectionItem(.literal(.int(1)), alias: "second"),
-        ])
+        ]
 
         #expect(
             throws: GraphPatternConversionError

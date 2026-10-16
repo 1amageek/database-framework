@@ -41,8 +41,7 @@ private struct SPARQLTransactionStatement {
 struct SPARQLFunctionTransactionTests {
     @Test("SPARQL transaction routing is limited to queries that require rewriting")
     func detectsOnlySPARQLFunctions() {
-        let plainQuery = SelectQuery(
-            projection: .all,
+        let plainQuery = SelectQuery(projection: [.wildcard()],
             source: .table(TableRef("SPARQLTransactionUser")),
             filter: .equal(
                 .function(
@@ -52,10 +51,8 @@ struct SPARQLFunctionTransactionTests {
                     )
                 ),
                 .literal(.string("alice"))
-            )
-        )
-        let graphQuery = SelectQuery(
-            projection: .all,
+            ))
+        let graphQuery = SelectQuery(projection: [.wildcard()],
             source: .table(TableRef("SPARQLTransactionUser")),
             filter: .inList(
                 .column(ColumnRef("resource")),
@@ -70,29 +67,23 @@ struct SPARQLFunctionTransactionTests {
                         )
                     )
                 ]
-            )
-        )
-        let nestedGraphQuery = SelectQuery(
-            projection: .items([
+            ))
+        let nestedGraphQuery = SelectQuery(projection: [
                 ProjectionItem(
                     .subquery(
-                        SelectQuery(
-                            projection: .items([
+                        SelectQuery(projection: [
                                 ProjectionItem(.column(ColumnRef("id"))),
-                            ]),
-                            source: .table(
+                            ],
+            source: .table(
                                 TableRef("SPARQLTransactionUser")
                             ),
-                            filter: graphQuery.filter
-                        )
+            filter: graphQuery.filter)
                     ),
                     alias: "nested_id"
                 ),
-            ]),
-            source: .values([[]], columnNames: [])
-        )
-        let graphPatternQuery = SelectQuery(
-            projection: .all,
+            ],
+            source: .values([[]]))
+        let graphPatternQuery = SelectQuery(projection: [.wildcard()],
             source: .graphPattern(
                 .filter(
                     .values(variables: [], bindings: [[]]),
@@ -119,8 +110,7 @@ struct SPARQLFunctionTransactionTests {
                         ]
                     )
                 )
-            )
-        )
+            ))
 
         #expect(!SPARQLFunctionRewriter.containsSPARQLFunction(in: plainQuery))
         #expect(SPARQLFunctionRewriter.containsSPARQLFunction(in: graphQuery))
@@ -148,8 +138,8 @@ struct SPARQLFunctionTransactionTests {
             .patternMatch(subject: .string("value"), pattern: .string("%"), escape: embedded, kind: .like),
         ]
         for expression in scalarOperands {
-            let query = SelectQuery(projection: .items([ProjectionItem(expression)]),
-                                    source: .values([[]], columnNames: []))
+            let query = SelectQuery(projection: [ProjectionItem(expression)],
+            source: .values([[]]))
             #expect(SPARQLFunctionRewriter.containsSPARQLFunction(in: query))
         }
     }
@@ -220,8 +210,7 @@ struct SPARQLFunctionTransactionTests {
         try context.insert(statement)
         try await context.save()
 
-        let query = SelectQuery(
-            projection: .all,
+        let query = SelectQuery(projection: [.wildcard()],
             source: .table(TableRef("SPARQLTransactionUser")),
             filter: .inList(
                 .column(ColumnRef("resource")),
@@ -242,8 +231,7 @@ struct SPARQLFunctionTransactionTests {
                         )
                     )
                 ]
-            )
-        )
+            ))
         let options = ReadExecutionOptions()
         let workMeter = DatabaseWorkMeter(
             budget: options.budget,

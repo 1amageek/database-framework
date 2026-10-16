@@ -186,18 +186,14 @@ struct SPARQLValuesExecutionTests {
 
     @Test("VALUES participates in EXISTS without a fallback result")
     func valuesInsideExists() async throws {
-        let nonEmpty = SelectQuery(
-            projection: .all,
+        let nonEmpty = SelectQuery(projection: [.wildcard()],
             source: .graphPattern(
                 .values(variables: ["value"], bindings: [[.int(1)]])
-            )
-        )
-        let empty = SelectQuery(
-            projection: .all,
+            ))
+        let empty = SelectQuery(projection: [.wildcard()],
             source: .graphPattern(
                 .values(variables: ["value"], bindings: [])
-            )
-        )
+            ))
         let executor = SPARQLQueryExecutor(
             database: InMemoryEngine(),
             monotonicClock: TestProcessMonotonicClock(),

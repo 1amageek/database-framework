@@ -71,14 +71,12 @@ struct DatabasePreparedSQLSelectTests {
             reservation: literalReservation
         )
         let prepared = DatabasePreparedSQLSelect(
-            query: SelectQuery(
-                projection: .all,
-                source: .table(TableRef("Example")),
-                filter: .inList(
+            query: SelectQuery(projection: [.wildcard()],
+            source: .table(TableRef("Example")),
+            filter: .inList(
                     .column(ColumnRef("id")),
                     values: queryExpressions
-                )
-            ),
+                )),
             workMeter: workMeter,
             retainedStorage: retainedStorage
         )

@@ -82,7 +82,7 @@ extension Query {
         }
 
         return SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(
                 TableRef(
                     table: T.persistableType,
@@ -92,8 +92,10 @@ extension Query {
             accessPath: accessPath,
             filter: filter,
             orderBy: orderBy,
-            limit: limit,
-            offset: offset
+            pagination: QueryPagination(
+                limit: limit.map { .count(.fixed($0), withTies: false) },
+                offset: offset.map { .fixed($0) }
+            )
         )
     }
 }

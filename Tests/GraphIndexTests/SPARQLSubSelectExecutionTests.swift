@@ -307,17 +307,15 @@ struct SPARQLSubSelectExecutionTests {
 
     @Test("A SubSelect exposes only projected variables")
     func hiddenVariablesDoNotEscape() async throws {
-        let query = SelectQuery(
-            projection: .items([
+        let query = SelectQuery(projection: [
                 ProjectionItem(.variable(Variable("visible")))
-            ]),
+            ],
             source: .graphPattern(
                 .values(
                     variables: ["visible", "hidden"],
                     bindings: [[.string("public"), .string("private")]]
                 )
-            )
-        )
+            ))
         let pattern = try GraphPatternConverter.convert(.subquery(query))
 
         #expect(pattern.outputVariables == ["?visible"])
@@ -329,11 +327,10 @@ struct SPARQLSubSelectExecutionTests {
 
     @Test("A normal join matches only projected SubSelect variables")
     func projectedVariablesParticipateInOuterJoin() async throws {
-        let inner = SelectQuery(
-            projection: .items([
+        let inner = SelectQuery(projection: [
                 ProjectionItem(.variable(Variable("identifier"))),
                 ProjectionItem(.variable(Variable("value"))),
-            ]),
+            ],
             source: .graphPattern(
                 .values(
                     variables: ["identifier", "value"],
@@ -342,8 +339,7 @@ struct SPARQLSubSelectExecutionTests {
                         [.string("c"), .string("three")],
                     ]
                 )
-            )
-        )
+            ))
         let graphPattern = GraphPattern.join(
             .values(
                 variables: ["identifier"],
@@ -365,10 +361,9 @@ struct SPARQLSubSelectExecutionTests {
     func isolatedOccurrenceUsesOneScanAndSharedRuntimeContext() async throws {
         let observations = ScanObservations()
         let scanner = RecordingScanner(observations: observations)
-        let inner = SelectQuery(
-            projection: .items([
+        let inner = SelectQuery(projection: [
                 ProjectionItem(.variable(Variable("subject")))
-            ]),
+            ],
             source: .graphPattern(
                 .basic([
                     TriplePattern(
@@ -377,8 +372,7 @@ struct SPARQLSubSelectExecutionTests {
                         object: .variable("object")
                     )
                 ])
-            )
-        )
+            ))
         let pattern = try GraphPatternConverter.convert(
             .join(
                 .values(
@@ -412,28 +406,24 @@ struct SPARQLSubSelectExecutionTests {
 
     @Test("Isolated SubSelect execution enforces the request row budget")
     func isolatedExecutionEnforcesRequestRowBudget() async throws {
-        let first = SelectQuery(
-            projection: .items([
+        let first = SelectQuery(projection: [
                 ProjectionItem(.variable(Variable("first")))
-            ]),
+            ],
             source: .graphPattern(
                 .values(
                     variables: ["first"],
                     bindings: [[.string("one")]]
                 )
-            )
-        )
-        let second = SelectQuery(
-            projection: .items([
+            ))
+        let second = SelectQuery(projection: [
                 ProjectionItem(.variable(Variable("second")))
-            ]),
+            ],
             source: .graphPattern(
                 .values(
                     variables: ["second"],
                     bindings: [[.string("two")]]
                 )
-            )
-        )
+            ))
         let pattern = try GraphPatternConverter.convert(
             .join(.subquery(first), .subquery(second))
         )
@@ -465,17 +455,15 @@ struct SPARQLSubSelectExecutionTests {
 
     @Test("The isolated SubSelect cache enforces its retained byte budget")
     func isolatedCacheEnforcesRetainedByteBudget() async throws {
-        let inner = SelectQuery(
-            projection: .items([
+        let inner = SelectQuery(projection: [
                 ProjectionItem(.variable(Variable("value")))
-            ]),
+            ],
             source: .graphPattern(
                 .values(
                     variables: ["value"],
                     bindings: [[.string(String(repeating: "x", count: 128))]]
                 )
-            )
-        )
+            ))
         let pattern = try GraphPatternConverter.convert(.subquery(inner))
 
         do {
@@ -510,10 +498,9 @@ struct SPARQLSubSelectExecutionTests {
     @Test("An isolated SubSelect cache never crosses request execution")
     func isolatedCacheIsRequestScoped() async throws {
         let observations = ScanObservations()
-        let inner = SelectQuery(
-            projection: .items([
+        let inner = SelectQuery(projection: [
                 ProjectionItem(.variable(Variable("subject")))
-            ]),
+            ],
             source: .graphPattern(
                 .basic([
                     TriplePattern(
@@ -522,8 +509,7 @@ struct SPARQLSubSelectExecutionTests {
                         object: .variable("object")
                     )
                 ])
-            )
-        )
+            ))
         let pattern = try GraphPatternConverter.convert(.subquery(inner))
         let executor = SPARQLQueryExecutor(
             database: InMemoryEngine(),
@@ -551,10 +537,9 @@ struct SPARQLSubSelectExecutionTests {
     @Test("A transaction retry rebuilds the isolated SubSelect cache")
     func isolatedCacheIsFreshForEveryTransactionAttempt() async throws {
         let observations = RetryScanObservations()
-        let innerQuery = SelectQuery(
-            projection: .items([
+        let innerQuery = SelectQuery(projection: [
                 ProjectionItem(.variable(Variable("value")))
-            ]),
+            ],
             source: .graphPattern(
                 .basic([
                     TriplePattern(
@@ -563,8 +548,7 @@ struct SPARQLSubSelectExecutionTests {
                         object: .variable("value")
                     )
                 ])
-            )
-        )
+            ))
         let pattern = try GraphPatternConverter.convert(
             .join(
                 .subquery(innerQuery),
@@ -677,10 +661,9 @@ struct SPARQLSubSelectExecutionTests {
 
     @Test("ORDER BY and Slice are local to the SubSelect")
     func localOrderAndSliceAreAppliedBeforeOuterEvaluation() async throws {
-        let query = SelectQuery(
-            projection: .items([
+        let query = SelectQuery(projection: [
                 ProjectionItem(.variable(Variable("visible")))
-            ]),
+            ],
             source: .graphPattern(
                 .values(
                     variables: ["visible", "rank"],
@@ -691,8 +674,7 @@ struct SPARQLSubSelectExecutionTests {
                 )
             ),
             orderBy: [SortKey(.variable(Variable("rank")))],
-            limit: 1
-        )
+            pagination: QueryPagination(limit: .count(.fixed(1), withTies: false)))
 
         let rows = try await execute(
             GraphPatternConverter.convert(.subquery(query))
@@ -705,10 +687,9 @@ struct SPARQLSubSelectExecutionTests {
 
     @Test("DISTINCT observes projected SubSelect solutions")
     func projectionPrecedesDistinct() async throws {
-        let query = SelectQuery(
-            projection: .items([
+        let query = SelectQuery(projection: [
                 ProjectionItem(.variable(Variable("visible")))
-            ]),
+            ],
             source: .graphPattern(
                 .values(
                     variables: ["visible", "hidden"],
@@ -718,8 +699,7 @@ struct SPARQLSubSelectExecutionTests {
                     ]
                 )
             ),
-            distinct: true
-        )
+            quantifier: .distinct)
 
         let rows = try await execute(
             GraphPatternConverter.convert(.subquery(query))
@@ -731,8 +711,7 @@ struct SPARQLSubSelectExecutionTests {
 
     @Test("Aggregation is completed inside the SubSelect")
     func localAggregationIsProjected() async throws {
-        let query = SelectQuery(
-            projection: .items([
+        let query = SelectQuery(projection: [
                 ProjectionItem(
                     .aggregate(
                         .count(
@@ -742,14 +721,13 @@ struct SPARQLSubSelectExecutionTests {
                     ),
                     alias: "count"
                 )
-            ]),
+            ],
             source: .graphPattern(
                 .values(
                     variables: ["value"],
                     bindings: [[.string("one")], [.string("two")]]
                 )
-            )
-        )
+            ))
 
         let rows = try await execute(
             GraphPatternConverter.convert(.subquery(query))
@@ -773,11 +751,9 @@ struct SPARQLSubSelectExecutionTests {
         ) {
             try GraphPatternConverter.convert(
                 .subquery(
-                    SelectQuery(
-                        projection: .all,
-                        source: source,
-                        limit: .max
-                    )
+                    SelectQuery(projection: [.wildcard()],
+            source: source,
+            pagination: QueryPagination(limit: .count(.fixed(.max), withTies: false)))
                 )
             )
         }
@@ -787,14 +763,12 @@ struct SPARQLSubSelectExecutionTests {
         ) {
             try GraphPatternConverter.convert(
                 .subquery(
-                    SelectQuery(
-                        projection: .all,
-                        source: source,
-                        dataset: .explicit(
+                    SelectQuery(projection: [.wildcard()],
+            source: source,
+            dataset: .explicit(
                             defaultGraphs: ["urn:default"],
                             namedGraphs: []
-                        )
-                    )
+                        ))
                 )
             )
         }
@@ -804,17 +778,15 @@ struct SPARQLSubSelectExecutionTests {
     func optimizerPreservesSubSelectBoundary() async throws {
         let subquery = try GraphPatternConverter.convert(
             .subquery(
-                SelectQuery(
-                    projection: .items([
+                SelectQuery(projection: [
                         ProjectionItem(.variable(Variable("visible")))
-                    ]),
-                    source: .graphPattern(
+                    ],
+            source: .graphPattern(
                         .values(
                             variables: ["visible", "hidden"],
                             bindings: [[.string("public"), .string("private")]]
                         )
-                    )
-                )
+                    ))
             )
         )
         let optimized = SPARQLQueryOptimizer().optimize(
@@ -841,10 +813,9 @@ struct SPARQLSubSelectExecutionTests {
     }
 
     private func correlatedQuery() -> SelectQuery {
-        SelectQuery(
-            projection: .items([
+        SelectQuery(projection: [
                 ProjectionItem(.variable(Variable("identifier")))
-            ]),
+            ],
             source: .graphPattern(
                 .filter(
                     .basic([]),
@@ -853,8 +824,7 @@ struct SPARQLSubSelectExecutionTests {
                         .literal(.string("a"))
                     )
                 )
-            )
-        )
+            ))
     }
 
     private func execute(

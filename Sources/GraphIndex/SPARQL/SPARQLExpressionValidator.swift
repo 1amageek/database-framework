@@ -111,7 +111,7 @@ private extension SPARQLExpressionValidator {
             }
             switch consume expression {
         // SQL conditionals and quantified predicates have no RDF interpretation.
-        case .arrayAccess, .collectionOperation:
+        case .arrayAccess, .collectionOperation, .collate, .arraySubquery, .wholeRow, .field, .fieldExpansion:
             throw SPARQLExpressionCompilationError.unsupportedExpression("SQL collection expression")
         case .currentValue:
             throw SPARQLExpressionCompilationError.unsupportedExpression("SQL current value")
@@ -331,15 +331,15 @@ private extension SPARQLExpressionValidator {
             depth: UInt64,
             tasks: inout [ValidationTask]
         ) throws(SPARQLExpressionCompilationError) {
-            guard query.projection == .all,
+            guard query.projection == [.wildcard()],
                   query.subqueries == nil || query.subqueries?.isEmpty == true,
                   query.accessPath == nil,
                   query.groupBy == nil,
                   query.having == nil,
                   query.orderBy == nil,
-                  query.limit == nil,
-                  query.offset == nil,
-                  query.distinct == false,
+                  query.pagination.limit == nil,
+                  query.pagination.offset == nil,
+                  query.quantifier == .all,
                   query.reduced == false,
                   query.dataset == .implicit else {
                 throw SPARQLExpressionCompilationError.invalidExistsSource

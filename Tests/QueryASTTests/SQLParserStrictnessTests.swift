@@ -52,32 +52,33 @@ struct SQLParserStrictnessTests {
                 + "CAST('{1}' AS INTEGER ARRAY), "
                 + "CAST('POINT(0 0)' AS geography)"
         )
-        guard case .items(let items) = query.projection,
+        let items = query.projection
+        guard items.allSatisfy({ if case .expression = $0 { return true }; return false }),
               items.count == 4 else {
             Issue.record("Expected four CAST projection items")
             return
         }
 
-        guard case .literal(.queryValue(.numeric(let numeric), let decimalType)) = items[0].expression else {
+        guard case .literal(.queryValue(.numeric(let numeric), let decimalType)) = try projectionExpression(items[0]) else {
             Issue.record("Expected normalized DECIMAL constant")
             return
         }
         #expect(decimalType == .sql(.decimal(precision: 10, scale: 2)))
         #expect(numeric.displayScale == 2)
 
-        guard case .literal(.queryValue(.primitive(.float64(1)), let doubleType)) = items[1].expression else {
+        guard case .literal(.queryValue(.primitive(.float64(1)), let doubleType)) = try projectionExpression(items[1]) else {
             Issue.record("Expected normalized DOUBLE PRECISION constant")
             return
         }
         #expect(doubleType == .sql(.doublePrecision))
 
-        guard case .literal(.queryValue(.array, let arrayType)) = items[2].expression else {
+        guard case .literal(.queryValue(.array, let arrayType)) = try projectionExpression(items[2]) else {
             Issue.record("Expected normalized ARRAY constant")
             return
         }
         #expect(arrayType == .sql(.array(.integer)))
 
-        guard case .cast(_, let customType) = items[3].expression else {
+        guard case .cast(_, let customType) = try projectionExpression(items[3]) else {
             Issue.record("Expected custom CAST")
             return
         }

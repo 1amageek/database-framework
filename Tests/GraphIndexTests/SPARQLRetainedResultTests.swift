@@ -35,12 +35,11 @@ struct SPARQLRetainedResultTests {
         do {
             let engine = InMemoryEngine()
             let transaction = try engine.createTransaction()
-            let query = SelectQuery(
-                projection: .items([
+            let query = SelectQuery(projection: [
                     ProjectionItem(.variable(Variable("value"))),
                     ProjectionItem(.variable(Variable("missing"))),
-                ]),
-                source: .graphPattern(
+                ],
+            source: .graphPattern(
                     .values(
                         variables: ["value"],
                         bindings: [
@@ -50,9 +49,7 @@ struct SPARQLRetainedResultTests {
                         ]
                     )
                 ),
-                limit: 1,
-                offset: 1
-            )
+            pagination: QueryPagination(limit: .count(.fixed(1), withTies: false), offset: .fixed(1)))
             let plan = try SPARQLSelectPlanCompiler
                 .compileForCanonicalPagination(query)
             let result = try await SPARQLQueryExecutor(
@@ -148,11 +145,10 @@ struct SPARQLRetainedResultTests {
         )
         defer { await container.shutdown() }
         let context = container.testBaseContext()
-        let pagedQuery = SelectQuery(
-            projection: .items([
+        let pagedQuery = SelectQuery(projection: [
                 ProjectionItem(.variable(Variable("value"))),
                 ProjectionItem(.variable(Variable("missing"))),
-            ]),
+            ],
             source: .graphPattern(
                 .values(
                     variables: ["value"],
@@ -164,9 +160,7 @@ struct SPARQLRetainedResultTests {
                     ]
                 )
             ),
-            limit: 2,
-            offset: 1
-        )
+            pagination: QueryPagination(limit: .count(.fixed(2), withTies: false), offset: .fixed(1)))
         let firstPage = try await context.query(
             pagedQuery,
             options: ReadExecutionOptions(
@@ -211,18 +205,16 @@ struct SPARQLRetainedResultTests {
         #expect(try secondPage.rows[0].primitiveFields(columns: secondPage.columns)["missing"] == .null)
         #expect(secondPage.continuation == nil)
 
-        let capacityQuery = SelectQuery(
-            projection: .items([
+        let capacityQuery = SelectQuery(projection: [
                 ProjectionItem(.variable(Variable("value"))),
                 ProjectionItem(.variable(Variable("missing"))),
-            ]),
+            ],
             source: .graphPattern(
                 .values(
                     variables: ["value"],
                     bindings: [[.string(String(repeating: "x", count: 256))]]
                 )
-            )
-        )
+            ))
         let capacityPlan = try SPARQLSelectPlanCompiler
             .compileForCanonicalPagination(capacityQuery)
         let executor = SPARQLQueryExecutor(
@@ -233,19 +225,17 @@ struct SPARQLRetainedResultTests {
         )
         let boundOnlyPlan = try SPARQLSelectPlanCompiler
             .compileForCanonicalPagination(
-                SelectQuery(
-                    projection: .items([
+                SelectQuery(projection: [
                         ProjectionItem(.variable(Variable("value"))),
-                    ]),
-                    source: .graphPattern(
+                    ],
+            source: .graphPattern(
                         .values(
                             variables: ["value"],
                             bindings: [[
                                 .string(String(repeating: "x", count: 256)),
                             ]]
                         )
-                    )
-                )
+                    ))
             )
         let boundOnlyMeter = DatabaseWorkMeter(
             budget: ExecutionBudget(

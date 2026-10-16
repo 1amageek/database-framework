@@ -327,16 +327,14 @@ struct SPARQLPropertyPathRuntimeSemanticsTests {
                 context: context
             )
 
-            let existsQuery = SelectQuery(
-                projection: .all,
-                source: .graphPattern(
+            let existsQuery = SelectQuery(projection: [.wildcard()],
+            source: .graphPattern(
                     GraphPattern.propertyPath(
                         subject: .variable("start"),
                         path: DatabaseKit.PropertyPath.iri(predicate),
                         object: .variable("target")
                     )
-                )
-            )
+                ))
             let query = GraphPattern.filter(
                 .values(
                     variables: ["start"],

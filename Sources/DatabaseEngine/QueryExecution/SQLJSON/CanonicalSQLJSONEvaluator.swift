@@ -113,18 +113,7 @@ enum CanonicalSQLJSONEvaluator {
         var plan = SQLJSONPlan(memory: memory, limits: limits, environment: temporalEnvironment)
         let binary = resultType == .sql(.jsonb)
         guard binary || resultType == .sql(.json) else { throw SQLJSONMemory.failure("ROW JSON result type") }
-        var members: [SQLJSONPlan.Member] = []
-        for index in values.indices {
-            let column = columns[index]
-            try SQLJSONMemory.validate(values[index], type: column.type, meter: workMeter)
-            guard column.isNullable || !values[index].isNull else { throw SQLJSONMemory.failure("ROW JSON value type") }
-            let id = try plan.value(values[index], type: column.type, jsonb: binary)
-            let member = SQLJSONPlan.Member(key: column.name, value: id)
-            if binary, let old = try plan.memberIndex(column.name, in: members) { members[old] = member }
-            else { try memory.append(member, to: &members) }
-        }
-        if binary { try plan.sort(&members) }
-        let root = try plan.add(.object(members))
+        let root = try plan.row(columns: columns, values: values, jsonb: binary)
         let value: QueryValue = binary ? .jsonb(try plan.jsonb(root)) : .json(try plan.json(root, style: .compact, pretty: pretty))
         return try SQLJSONMemory.retain(value, meter: workMeter)
     }
@@ -186,7 +175,7 @@ enum CanonicalSQLJSONEvaluator {
                 for index in stride(from: 0, to: values.count, by: 2) {
                     guard !values[index].isNull else { throw failure(.nullJSONObjectKey(argument: index + 1)) }
                     switch values[index] {
-                    case .array, .json, .jsonb: throw failure(.invalidJSONObjectKey(argument: index + 1))
+                    case .array, .composite, .json, .jsonb: throw failure(.invalidJSONObjectKey(argument: index + 1))
                     default: break
                     }
                     let memory = plan.memory, environment = plan.environment
@@ -213,7 +202,10 @@ enum CanonicalSQLJSONEvaluator {
         }
         if operands.contains(where: { $0.isNull }) { return .primitive(.null) }
         guard !operands.isEmpty else { throw SQLJSONMemory.failure("JSON function arity") }
-        if name == "to_json" || name == "to_jsonb" || name == "array_to_json" {
+        if name == "to_json" || name == "to_jsonb" || name == "array_to_json" || name == "row_to_json" {
+            if name == "row_to_json" {
+                guard case .sql(.composite) = bound.children[0].type else { throw SQLJSONMemory.failure("ROW JSON value type") }
+            }
             let root = try plan.value(operands[0], type: bound.children[0].type, jsonb: binary)
             let pretty = operands.count > 1 ? try boolean(operands[1]) : false
             return binary ? .jsonb(try plan.jsonb(root)) : .json(try plan.json(root, style: .compact, pretty: pretty))

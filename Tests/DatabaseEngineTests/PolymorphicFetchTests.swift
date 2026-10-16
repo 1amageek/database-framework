@@ -435,7 +435,7 @@ struct PolymorphicFetchTests {
             #expect(workMeter.retainedIntermediateBytes == 0)
 
             let query = SelectQuery(
-                projection: .all,
+                projection: [.wildcard()],
                 source: .logical(
                     LogicalSourceRef(
                         kindIdentifier: LogicalSourceKind.polymorphic,

@@ -197,6 +197,8 @@ public struct ItemStorage: Sendable {
             streamingMode: limit > 0 ? .small : .wantAll
         )
         try await cursor.consume { key, envelopeBytes in
+            // Bound fast-path continuations while the cursor still owns this retained row.
+            await Task.yield()
             try workMeter.checkpoint(at: stage)
             let data = try await decodeStoredValueRetained(
                 envelopeBytes,
@@ -206,6 +208,8 @@ public struct ItemStorage: Sendable {
                 stage: stage
             )
             try await body(key, data)
+            await Task.yield()
+            try workMeter.checkpoint(at: stage)
         }
     }
 

@@ -61,6 +61,7 @@ package enum CanonicalRelationalFootprintMeter {
             version: row.version, workMeter: workMeter, stage: stage)
             .adding(DatabaseIntermediateCollectionMeter.arrayFootprint(count: count,
                 element: DatabaseQueryPayloadLease.self))
+            .adding(DatabaseIntermediateCollectionMeter.arrayFootprint(count: row.sourcePresence.count, element: Bool.self))
     }
 
     static func footprint(
@@ -69,6 +70,7 @@ package enum CanonicalRelationalFootprintMeter {
     ) throws -> DatabaseIntermediateFootprint {
         try positionalRowFootprint(values: row.values, annotations: row.annotations,
                                    version: row.version, workMeter: workMeter, stage: .projection)
+            .adding(DatabaseIntermediateCollectionMeter.arrayFootprint(count: row.sourcePresence.count, element: Bool.self))
     }
 
     package static func footprint(
@@ -203,8 +205,8 @@ package enum CanonicalRelationalFootprintMeter {
     }
 
     private enum DecodedStructureVisit {
-        case value(QueryValue)
-        case arrayElements([QueryValue], index: Int)
+        case value(QueryValue, ownerAdmitted: Bool)
+        case arrayElements(QueryValueElements, index: Int)
     }
 
     /// Observes complete newly constructed owners before publishing a decoded row.
@@ -241,18 +243,22 @@ package enum CanonicalRelationalFootprintMeter {
             if growth.additionalByteCount > 0 {
                 try scratch.reserveAdditional(bytes: growth.additionalByteCount, at: stage)
                 stack.reserveCapacity(growth.capacity)
-                capacity = growth.capacity
+                if stack.capacity > growth.capacity {
+                    try scratch.reserveAdditional(bytes: try DatabaseIntermediateFootprint(bytes: layout.elementCapacitySlotByteCount)
+                        .multiplied(by: UInt64(stack.capacity - growth.capacity)).bytes, at: stage)
+                }
+                capacity = stack.capacity
             }
             stack.append(visit)
         }
         for value in values {
-            try push(.value(value))
+            try push(.value(value, ownerAdmitted: false))
             while let visit = stack.popLast() {
                 switch visit {
                 case .arrayElements(let elements, let index):
                     if index + 1 < elements.count { try push(.arrayElements(elements, index: index + 1)) }
-                    try push(.value(elements[index]))
-                case .value(let value):
+                    try push(.value(elements[index], ownerAdmitted: true))
+                case .value(let value, let ownerAdmitted):
                     try workMeter.consume(at: stage)
                     switch value {
                     case .jsonb(let json):
@@ -260,14 +266,11 @@ package enum CanonicalRelationalFootprintMeter {
                         bytes = try adding(bytes, owner.retainedStorageByteCount)
                         bytes = try adding(bytes, owner.utf8ByteCount)
                     case .array(let array):
-                        bytes = try adding(bytes, DatabaseIntermediateFootprint(
-                            bytes: UInt64(MemoryLayout<QueryValue>.stride))
-                            .multiplied(by: UInt64(array.elements.capacity)).bytes)
-                        bytes = try adding(bytes, DatabaseIntermediateFootprint(
-                            bytes: UInt64(MemoryLayout<QueryArrayDimension>.stride))
-                            .multiplied(by: UInt64(array.dimensions.capacity)).bytes)
-                        bytes = try adding(bytes, 64)
+                        if !ownerAdmitted { bytes = try adding(bytes, flatStructureByteCount(array.storageFootprint)) }
                         if !array.elements.isEmpty { try push(.arrayElements(array.elements, index: 0)) }
+                    case .composite(let record):
+                        if !ownerAdmitted { bytes = try adding(bytes, flatStructureByteCount(record.storageFootprint)) }
+                        if !record.fields.isEmpty { try push(.arrayElements(record.fields, index: 0)) }
                     // Fixed temporal payloads are inline in the already charged QueryValue slots.
                     case .primitive, .numeric, .json, .interval, .time, .timeWithTimeZone,
                          .dateInfinity, .timestampInfinity, .intervalInfinity:
@@ -278,6 +281,20 @@ package enum CanonicalRelationalFootprintMeter {
         }
         try workMeter.checkpoint(at: stage)
         return DatabaseIntermediateFootprint(rows: 1, bytes: bytes)
+    }
+
+    /// A view retains the complete flat structural owner, independently of its logical subtree.
+    private static func flatStructureByteCount(_ footprint: QueryValueStorageFootprint) throws -> UInt64 {
+        try adding(footprint.retainedStorageByteCount,
+            adding(footprint.typeStorageFootprint.retainedStorageByteCount, footprint.typeStorageFootprint.utf8ByteCount))
+    }
+
+    /// The persisted array decoder selects a finite growth allowance before allocation.
+    package static func decodedQueryValueStructureAllowance(
+        _ decoded: QueryFieldDecodedFootprint
+    ) throws -> UInt64 {
+        let minimum = try decoded.minimumQueryValueStorageByteCount
+        return try adding(minimum, minimum)
     }
 
     /// Capacity selection is Framework policy; Kit reports logical requirements.
@@ -294,8 +311,9 @@ package enum CanonicalRelationalFootprintMeter {
             nodeCapacity: capacity(decoded.jsonbNodeCount),
             elementIndexCapacity: capacity(decoded.jsonbElementIndexCount),
             memberCapacity: capacity(decoded.jsonbMemberCount))
-        return try adding(adding(structureByteCount(nodes: decoded.nodeCount,
-            elements: decoded.collectionElementCount), flat), decoded.utf8ByteCount)
+        return try adding(adding(adding(structureByteCount(nodes: decoded.nodeCount,
+            elements: decoded.collectionElementCount), flat), decoded.utf8ByteCount),
+            decodedQueryValueStructureAllowance(decoded))
     }
 
     /// Only primitive RDF terms change; declared rich SQL values remain intact.
@@ -448,6 +466,8 @@ package enum CanonicalRelationalFootprintMeter {
         workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage
     ) throws -> UInt64 {
+        // Logical traversal is charged for the selected subtree; retainedByteCount
+        // includes its complete flat value/type owner exactly once, not per cell.
         let counts = try QueryValueValidator.measure(value)
         var bytes = try adding(structureByteCount(nodes: counts.nodeCount, elements: counts.collectionElementCount),
                                counts.retainedByteCount)

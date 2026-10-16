@@ -30,7 +30,7 @@ package struct DatabaseExpressionEvaluator: Sendable {
         // SQL constructors require the selected execution path rather than this primitive evaluator.
         case .array, .row:
             throw DatabaseExpressionEvaluationError.unsupportedExpression("SQL ARRAY/ROW constructor")
-        case .arrayAccess, .collectionOperation:
+        case .arrayAccess, .collectionOperation, .collate, .arraySubquery, .wholeRow, .field, .fieldExpansion:
             throw DatabaseExpressionEvaluationError.unsupportedExpression("SQL collection expression requires selected SQL execution")
         case .currentValue:
             throw DatabaseExpressionEvaluationError.missingTemporalEnvironment
@@ -678,7 +678,7 @@ package struct DatabaseExpressionEvaluator: Sendable {
                 return .decimal(decimal)
             }
             throw invalidCast(target)
-        case .time, .interval, .json, .jsonb, .custom:
+        case .time, .interval, .json, .jsonb, .composite, .custom:
             throw invalidCast(target)
         }
     }
@@ -710,6 +710,7 @@ package struct DatabaseExpressionEvaluator: Sendable {
         case .jsonb: return "JSONB"
         case .uuid: return "UUID"
         case .array(let element): return "\(dataTypeName(element)) ARRAY"
+        case .composite: return "ROW"
         case .custom(let name, let schema): return schema.map { "\($0).\(name)" } ?? name
         }
     }

@@ -6,14 +6,14 @@ enum SPARQLExistsPatternCompiler {
         _ query: SelectQuery,
         limits: SPARQLExpressionCompilationLimits
     ) throws -> ExecutionPattern {
-        guard query.projection == .all,
+        guard query.projection == [.wildcard()],
               query.accessPath == nil,
               query.groupBy == nil,
               query.having == nil,
               query.orderBy == nil,
-              query.limit == nil,
-              query.offset == nil,
-              query.distinct == false,
+              query.pagination.limit == nil,
+              query.pagination.offset == nil,
+              query.quantifier == .all,
               query.subqueries == nil || query.subqueries?.isEmpty == true,
               query.reduced == false,
               query.dataset == .implicit else {

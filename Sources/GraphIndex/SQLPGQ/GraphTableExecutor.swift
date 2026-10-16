@@ -1168,7 +1168,7 @@ extension DatabaseContext {
         )
         let response = try await query(
             SelectQuery(
-                projection: .all,
+                projection: [.wildcard()],
                 source: .graphTable(canonicalSource)
             ),
             options: options

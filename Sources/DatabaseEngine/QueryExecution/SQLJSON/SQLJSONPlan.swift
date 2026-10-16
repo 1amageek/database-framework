@@ -8,7 +8,23 @@ struct SQLJSONPlan {
         case scalar(QueryJSONBNode)
         case lexical(QueryJSONValue)
         case array([Int])
-        case object([Member])
+        case object([Member], compact: Bool = false)
+    }
+    private enum Columns {
+        case owned([QueryColumn])
+        case composite(QueryCompositeColumns)
+        var count: Int { switch self { case .owned(let columns): columns.count; case .composite(let columns): columns.count } }
+        subscript(index: Int) -> QueryColumn {
+            switch self { case .owned(let columns): columns[index]; case .composite(let columns): columns[index] }
+        }
+    }
+    private enum Fields {
+        case owned([QueryValue])
+        case composite(QueryValueElements)
+        var count: Int { switch self { case .owned(let fields): fields.count; case .composite(let fields): fields.count } }
+        subscript(index: Int) -> QueryValue {
+            switch self { case .owned(let fields): fields[index]; case .composite(let fields): fields[index] }
+        }
     }
     private enum Visit {
         case node(QueryJSONBNode)
@@ -16,6 +32,9 @@ struct SQLJSONPlan {
         case object(QueryJSONBMembers)
         case value(QueryValue, QueryColumnType)
         case dimension(QueryArrayValue, Int, Int)
+        case row(Columns, Fields, validate: Bool)
+        case rowField(Columns, Fields, Int, validate: Bool)
+        case rowObject(Columns)
     }
     let memory: SQLJSONMemory
     let limits: QueryValueLimits
@@ -39,6 +58,10 @@ struct SQLJSONPlan {
 
     mutating func value(_ value: QueryValue, type: QueryColumnType, jsonb: Bool) throws -> Int {
         try append(.value(value, type), jsonb: jsonb)
+    }
+
+    mutating func row(columns: [QueryColumn], values: [QueryValue], jsonb: Bool) throws -> Int {
+        try append(.row(.owned(columns), .owned(values), validate: true), jsonb: jsonb)
     }
 
     private mutating func append(_ first: Visit, jsonb: Bool) throws -> Int {
@@ -67,6 +90,13 @@ struct SQLJSONPlan {
                     guard case .primitive(let kind, true) = type else { throw SQLJSONMemory.failure("JSON primitive array declaration") }
                     try memory.append(.array(cells.count), to: &visits)
                     for cell in cells.reversed() { try memory.append(.value(.primitive(cell), .primitive(kind)), to: &visits) }
+                case .composite(let composite):
+                    // Facade inputs are validated once; the immutable value owner validates
+                    // every nested field against its descriptor when it is constructed.
+                    guard case .sql(.composite) = type else {
+                        throw SQLJSONMemory.failure("ROW JSON value type")
+                    }
+                    try memory.append(.row(.composite(composite.type.columns), .composite(composite.fields), validate: false), to: &visits)
                 case .array(let array):
                     if array.dimensions.isEmpty { try memory.append(try add(.array([])), to: &completed) }
                     else { try memory.append(.dimension(array, 0, 0), to: &visits) }
@@ -89,6 +119,35 @@ struct SQLJSONPlan {
                     }
                     try memory.append(try add(.scalar(scalar)), to: &completed)
                 }
+            case .row(let columns, let fields, let validate):
+                guard columns.count == fields.count else { throw SQLJSONMemory.failure("ROW conversion arity") }
+                try memory.append(.rowField(columns, fields, 0, validate: validate), to: &visits)
+            case .rowField(let columns, let fields, let index, let validate):
+                guard index < fields.count else {
+                    try memory.append(.rowObject(columns), to: &visits)
+                    continue
+                }
+                let column = columns[index]
+                if validate {
+                    guard UInt64(column.number) == UInt64(index) + 1 else { throw QueryValueError.invalidColumnNumber(column.number) }
+                    try SQLJSONMemory.validate(fields[index], type: column.type, meter: memory.meter)
+                    guard column.isNullable || !fields[index].isNull else { throw SQLJSONMemory.failure("ROW JSON value type") }
+                }
+                try memory.append(.rowField(columns, fields, index + 1, validate: validate), to: &visits)
+                try memory.append(.value(fields[index], column.type), to: &visits)
+            case .rowObject(let columns):
+                guard completed.count >= columns.count else { throw SQLJSONMemory.failure("ROW conversion stack") }
+                var members: [Member] = []
+                let start = completed.count - columns.count
+                for index in 0..<columns.count {
+                    let key = columns[index].name
+                    let member = Member(key: key, value: completed[start + index])
+                    if jsonb, let old = try memberIndex(key, in: members) { members[old] = member }
+                    else { try memory.append(member, to: &members) }
+                }
+                completed.removeLast(columns.count)
+                if jsonb { try sort(&members) }
+                try memory.append(try add(.object(members, compact: true)), to: &completed)
             case .dimension(let array, let dimension, let offset):
                 let count = Int(array.dimensions[dimension].length)
                 try memory.append(.array(count), to: &visits)

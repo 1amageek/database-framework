@@ -197,7 +197,7 @@ struct PostClosureCancellationTests {
 
     private var anchorQuery: SelectQuery {
         SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(TableRef(Anchor.persistableType))
         )
     }

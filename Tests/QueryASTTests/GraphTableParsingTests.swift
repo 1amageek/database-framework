@@ -335,13 +335,13 @@ struct GraphTableParsingTests {
             return
         }
 
-        guard case .graphTable(let gt) = join.right else {
+        guard case .aliased(.graphTable(let gt), let gtAlias, _) = join.right else {
             Issue.record("Expected graphTable in right side of join")
             return
         }
 
         #expect(gt.graphName == "social")
-        #expect(gt.alias == "g")
+        #expect(gtAlias == "g")
         #expect(gt.columns?.count == 2)
     }
 
@@ -355,14 +355,14 @@ struct GraphTableParsingTests {
         """
 
         let query = try SQLParser().parseSelect(sql)
-        guard case .graphTable(let graphTable) = query.source,
+        guard case .aliased(.graphTable(let graphTable), let graphTableAlias, _) = query.source,
               let firstElement = graphTable.matchPattern.paths.first?.elements.first,
               case .node(let node) = firstElement else {
             Issue.record("Expected an aliased graphTable with a node pattern")
             return
         }
 
-        #expect(graphTable.alias == "people")
+        #expect(graphTableAlias == "people")
         #expect(node.labels == ["Person"])
         #expect(node.properties == [
             PropertyBinding(key: "id", value: .parameter(.name("personID"))),
@@ -393,7 +393,7 @@ struct GraphTableParsingTests {
         let parser = SQLParser()
         let query = try parser.parseSelect(sql)
 
-        #expect(query.limit == 10)
+        #expect(query.pagination.limit == .count(.fixed(10), withTies: false))
         #expect(query.filter != nil)
 
         guard case .graphTable(let gt) = query.source else {
@@ -763,11 +763,11 @@ struct ComplexGraphTableQueryTests {
         }
 
         // Extract graph table from the right side of the join
-        guard case .graphTable(let gt) = join.right else {
+        guard case .aliased(.graphTable(let gt), let gtAlias, _) = join.right else {
             Issue.record("Expected graphTable in join")
             return
         }
-        #expect(gt.alias == "friend2")
+        #expect(gtAlias == "friend2")
 
         // Verify path pattern: (p1)-[f1]->(p2)-[f2]->(p3)
         let path = gt.matchPattern.paths[0]
@@ -842,11 +842,11 @@ struct ComplexGraphTableQueryTests {
         let parser = SQLParser()
         let query = try parser.parseSelect(sql)
 
-        guard case .graphTable(let gt) = query.source else {
+        guard case .aliased(.graphTable(let gt), let gtAlias, _) = query.source else {
             Issue.record("Expected graphTable")
             return
         }
-        #expect(gt.alias == "path")
+        #expect(gtAlias == "path")
 
         let path = gt.matchPattern.paths[0]
         #expect(path.elements.count == 5)
@@ -890,11 +890,11 @@ struct ComplexGraphTableQueryTests {
         }
 
         // Extract graph table from the right side of the join
-        guard case .graphTable(let gt) = join.right else {
+        guard case .aliased(.graphTable(let gt), let gtAlias, _) = join.right else {
             Issue.record("Expected graphTable in join")
             return
         }
-        #expect(gt.alias == "p")
+        #expect(gtAlias == "p")
 
         let path = gt.matchPattern.paths[0]
 
@@ -944,11 +944,11 @@ struct ComplexGraphTableQueryTests {
         }
 
         // Extract graph table from the right side of the join
-        guard case .graphTable(let gt) = join.right else {
+        guard case .aliased(.graphTable(let gt), let gtAlias, _) = join.right else {
             Issue.record("Expected graphTable in join")
             return
         }
-        #expect(gt.alias == "p2")
+        #expect(gtAlias == "p2")
 
         let path = gt.matchPattern.paths[0]
 
@@ -1019,11 +1019,11 @@ struct ComplexGraphTableQueryTests {
         let parser = SQLParser()
         let query = try parser.parseSelect(sql)
 
-        guard case .graphTable(let gt) = query.source else {
+        guard case .aliased(.graphTable(let gt), let gtAlias, _) = query.source else {
             Issue.record("Expected graphTable")
             return
         }
-        #expect(gt.alias == "mutual")
+        #expect(gtAlias == "mutual")
 
         let path = gt.matchPattern.paths[0]
 
@@ -1060,11 +1060,11 @@ struct ComplexGraphTableQueryTests {
         let parser = SQLParser()
         let query = try parser.parseSelect(sql)
 
-        guard case .graphTable(let gt) = query.source else {
+        guard case .aliased(.graphTable(let gt), let gtAlias, _) = query.source else {
             Issue.record("Expected graphTable")
             return
         }
-        #expect(gt.alias == "citations")
+        #expect(gtAlias == "citations")
 
         // Verify complex WHERE clause exists
         #expect(gt.matchPattern.where != nil)
@@ -1103,11 +1103,11 @@ struct ComplexGraphTableQueryTests {
         let parser = SQLParser()
         let query = try parser.parseSelect(sql)
 
-        guard case .graphTable(let gt) = query.source else {
+        guard case .aliased(.graphTable(let gt), let gtAlias, _) = query.source else {
             Issue.record("Expected graphTable")
             return
         }
-        #expect(gt.alias == "triangle")
+        #expect(gtAlias == "triangle")
 
         let path = gt.matchPattern.paths[0]
 

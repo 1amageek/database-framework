@@ -17,6 +17,16 @@ those later gates do not remove functions from the inventory.
 
 ## Responsibilities and Boundaries
 
+S08 consumes the parent's [selected composite contract](../DESIGN.md#s08-frozen-relational-execution)
+and [Kit's flat composite views](../../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s08-frozen-composite-values-and-ownership).
+ROW_TO_JSON/TO_JSON/TO_JSONB reuse the existing ordered convertRow kernel for
+actual composite fields, including nested composites. Parent binding supplies
+the descriptor and distinguishes whole-value SQL NULL from a present all-NULL
+record. SQLJSON owns the resulting lexical/semantic JSON shape, duplicate-key
+policy and bounded destination; it does not reconstruct relation presence.
+S08-E02 proves public invocation, while local SQLJSON tests prove nested
+conversion, strict NULL and retained-owner/resource behavior.
+
 - Consume bound signatures and typed QueryValue operands; implement JSON value
   semantics without re-resolving overloads or interpreting SQL source text.
 - Preserve lexical JSON subtree bytes and complete backing-owner retention.

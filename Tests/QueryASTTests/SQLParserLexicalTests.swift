@@ -6,20 +6,21 @@ import Testing
 struct SQLParserLexicalTests {
     private func expressions(_ sql: String) throws -> [Expression] {
         let query = try SQLParser().parseSelect(sql)
-        guard case .items(let items) = query.projection else {
+        let items = query.projection
+        guard items.allSatisfy({ if case .expression = $0 { return true }; return false }) else {
             Issue.record("Expected projection items")
             return []
         }
-        return items.map(\.expression)
+        return try projectionExpressions(items)
     }
 
     @Test("Unquoted ASCII folds while quoted and Unicode names remain exact")
     func identifierIdentity() throws {
         let query = try SQLParser().parseSelect("SELECT MiXeD, \"MiXeD\", ÉTÉ, \"a\"\"b\" FROM \"Schema\".TABLE_NAME")
-        #expect(query.projection == .items([
+        #expect(query.projection == [
             ProjectionItem(.col("mixed")), ProjectionItem(.col("MiXeD")),
             ProjectionItem(.col("ÉtÉ")), ProjectionItem(.col("a\"b")),
-        ]))
+        ])
         #expect(query.source == .table(TableRef(schema: "Schema", table: "table_name")))
         #expect(try expressions("SELECT 'a''\u{301}', \"a\"\"\u{301}\"") == [.literal(.sqlUnknownString("a'\u{301}")), .col("a\"\u{301}")])
     }
@@ -38,7 +39,7 @@ struct SQLParserLexicalTests {
             #expect(try expressions("SELECT \"" + name + "\"") == [.col(name)])
             #expect(try expressions("SELECT t." + name + " FROM t") == [.column(ColumnRef(table: "t", column: name))])
             let alias = try SQLParser().parseSelect("SELECT NULL AS " + name)
-            #expect(alias.projection == .items([ProjectionItem(.literal(.null), alias: name)]))
+            #expect(alias.projection == [ProjectionItem(.literal(.null), alias: name)])
         }
         let typeFunctions = "AUTHORIZATION BINARY COLLATION CONCURRENTLY CROSS CURRENT_SCHEMA FREEZE FULL ILIKE INNER IS ISNULL JOIN LEFT LIKE NATURAL NOTNULL OUTER OVERLAPS RIGHT SIMILAR TABLESAMPLE VERBOSE".split(separator: " ")
         for keyword in typeFunctions {
@@ -121,7 +122,7 @@ struct SQLParserLexicalTests {
     @Test("Nested comments hide every apparent statement and parameter")
     func nestedComments() throws {
         let query = try SQLParser().parseSelect("/* a /* SELECT ?; */ b */ SELECT :ExactName -- $0;\r\n")
-        #expect(query.projection == .items([ProjectionItem(.parameter(.name("ExactName")))]))
+        #expect(query.projection == [ProjectionItem(.parameter(.name("ExactName")))])
     }
 
     @Test("Diagnostic positions are UTF-8 token starts and EOF byte offsets")
@@ -145,7 +146,7 @@ struct SQLParserLexicalTests {
         }
         #expect(throws: SQLParser.ParseError.self) { _ = try parser.parseSelect("SELECT ?, $1") }
         let query = try parser.parseSelect("SELECT ?")
-        #expect(query.projection == .items([ProjectionItem(.parameter(.position(1)))]))
+        #expect(query.projection == [ProjectionItem(.parameter(.position(1)))])
     }
 
     @Test("Single entries reject additional statements and batches preserve delimiters")

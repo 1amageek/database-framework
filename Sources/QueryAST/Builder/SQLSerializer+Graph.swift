@@ -98,7 +98,6 @@ extension SQLTextWriter {
             try append(")")
         }
         try append(")")
-        if let alias = value.alias { try append(" AS "); try identifier(alias) }
     }
 
     mutating func createGraph(_ value: CreateGraphStatement) throws(SQLSerializationError) {

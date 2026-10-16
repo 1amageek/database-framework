@@ -6,8 +6,20 @@ package struct DatabaseListReadAuthorizationRequirement:
     Hashable
 {
     package let entityName: String
-    package let limit: Int?
-    package let offset: Int?
+    package enum Window: Sendable, Hashable {
+        case fixed(limit: Int?, offset: Int?)
+        case deferred(QueryPagination)
+
+        /// Deferred declarations require the existing unbounded-list capability.
+        var admission: (limit: Int?, offset: Int?) {
+            switch self {
+            case .fixed(let limit, let offset): return (limit, offset)
+            case .deferred: return (nil, nil)
+            }
+        }
+    }
+
+    package let window: Window
     package let orderBy: [String]?
 }
 
@@ -140,8 +152,7 @@ package struct DatabaseReadPolicy: Sendable {
         try authorizeList(
             DatabaseListReadAuthorizationRequirement(
                 entityName: entityName,
-                limit: limit,
-                offset: offset,
+                window: .fixed(limit: limit, offset: offset),
                 orderBy: orderBy
             )
         )
@@ -153,8 +164,8 @@ package struct DatabaseReadPolicy: Sendable {
         try withAuthorization {
             try securityDelegate?.evaluateList(
                 entity: requirement.entityName,
-                limit: requirement.limit,
-                offset: requirement.offset,
+                limit: requirement.window.admission.limit,
+                offset: requirement.window.admission.offset,
                 orderBy: requirement.orderBy
             )
         }
@@ -269,8 +280,8 @@ package struct DatabaseReadPolicy: Sendable {
             for requirement in uniqueListRequirements {
                 try securityDelegate?.evaluateList(
                     entity: requirement.entityName,
-                    limit: requirement.limit,
-                    offset: requirement.offset,
+                    limit: requirement.window.admission.limit,
+                    offset: requirement.window.admission.offset,
                     orderBy: requirement.orderBy
                 )
             }
@@ -447,18 +458,31 @@ package struct DatabaseReadPolicy: Sendable {
         selectQuery: SelectQuery,
         schema: Schema
     ) throws -> DatabaseListReadAuthorizationRequirement {
-        DatabaseListReadAuthorizationRequirement(
-            entityName: entityName,
-            limit: try windowValue(
-                selectQuery.limit,
-                parameter: "limit"
-            ),
-            offset: try windowValue(
-                selectQuery.offset,
-                parameter: "offset"
-            ),
-            orderBy: try selectQuery.requiredOrderByColumnNames(entity: schema.entity(named: entityName))
-        )
+        let window: DatabaseListReadAuthorizationRequirement.Window
+        switch (selectQuery.pagination.limit, selectQuery.pagination.offset) {
+        case (.count(.expression, _), _), (_, .expression):
+            window = .deferred(selectQuery.pagination)
+        case (let limit, let offset):
+            let fixedLimit: UInt64?
+            switch limit {
+            case .count(.fixed(let count), _): fixedLimit = count
+            case .none, .all: fixedLimit = nil
+            case .count(.expression, _):
+                preconditionFailure("Expression counts require deferred admission")
+            }
+            let fixedOffset: UInt64?
+            switch offset {
+            case .fixed(let count): fixedOffset = count
+            case .none: fixedOffset = nil
+            case .expression:
+                preconditionFailure("Expression counts require deferred admission")
+            }
+            window = .fixed(limit: try windowValue(fixedLimit, parameter: "limit"),
+                            offset: try windowValue(fixedOffset, parameter: "offset"))
+        }
+        return DatabaseListReadAuthorizationRequirement(
+            entityName: entityName, window: window,
+            orderBy: try selectQuery.requiredOrderByColumnNames(entity: schema.entity(named: entityName), schema: schema))
     }
 }
 

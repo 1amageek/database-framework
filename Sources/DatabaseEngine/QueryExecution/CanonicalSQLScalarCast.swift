@@ -19,11 +19,51 @@ enum CanonicalSQLScalarCast {
             maximumCollectionElements: min(structural.maximumCollectionElements, workMeter.budget.maximumWorkUnits))
     }
 
+    /// Executes a previously selected implicit conversion. Borrowed results keep
+    /// their input owner; callers retain that owner alongside the returned lease.
+    static func coerce(_ value: QueryValue, from source: QueryColumnType, to target: QueryColumnType,
+        temporalEnvironment: SQLTemporalEnvironment?, workMeter: DatabaseWorkMeter,
+        limits: QueryValueLimits) throws -> (value: QueryValue, lease: DatabaseQueryPayloadLease?) {
+        try validate(value, source: source, target: target, workMeter: workMeter)
+        if source == target { return (value, nil) }
+        if CanonicalQueryTypeBinder.isCollection(target) || CanonicalQueryTypeBinder.compositeType(target) != nil {
+            return try evaluateCollection(value, from: source, to: target, context: .implicit,
+                temporalEnvironment: temporalEnvironment, workMeter: workMeter, limits: limits)
+        }
+        if usesPayload(target) {
+            let result = try evaluatePayload(value, from: source, to: target, context: .implicit,
+                temporalEnvironment: temporalEnvironment, limits: limits, workMeter: workMeter)
+            return (result.withValue { .primitive(copy $0) },
+                result.retainedReservation.map { DatabaseQueryPayloadLease(retaining: $0) })
+        }
+        return (try evaluateValue(value, from: source, to: target, context: .implicit,
+            temporalEnvironment: temporalEnvironment, workMeter: workMeter), nil)
+    }
+
+    /// Common relation sources retain exact primitive numeric identity; SQL CAST remains separate.
+    static func alignSource(_ value: QueryValue, from source: QueryColumnType, to target: QueryColumnType,
+        temporalEnvironment: SQLTemporalEnvironment?, workMeter: DatabaseWorkMeter,
+        limits: QueryValueLimits) throws -> (value: QueryValue, lease: DatabaseQueryPayloadLease?) {
+        try validate(value, source: source, target: target, workMeter: workMeter)
+        if case .sql(.decimal(precision: nil, scale: nil)) = target,
+           case .primitive = value, CanonicalQueryTypeBinder.numericAggregateInputType(source) != nil {
+            _ = try CanonicalRelationalFootprintMeter.valueFootprint(of: value,
+                workMeter: workMeter, stage: .expressionEvaluation)
+            return (try CanonicalQueryTypeBinder.normalizeSourceCarrier(value, to: target), nil)
+        }
+        return try coerce(value, from: source, to: target, temporalEnvironment: temporalEnvironment,
+            workMeter: workMeter, limits: limits)
+    }
+
     static func evaluateCollection(_ value: QueryValue, from source: QueryColumnType,
         to target: QueryColumnType, context: CanonicalQueryTypeBinder.CastContext,
         temporalEnvironment: SQLTemporalEnvironment?, workMeter: DatabaseWorkMeter,
         limits: QueryValueLimits) throws -> (value: QueryValue, lease: DatabaseQueryPayloadLease?) {
         try validate(value, source: source, target: target, workMeter: workMeter)
+        if CanonicalQueryTypeBinder.compositeType(target) != nil {
+            return try CanonicalSQLCompositeEvaluator.cast(value, from: source, to: target, context: context,
+                temporalEnvironment: temporalEnvironment, workMeter: workMeter, limits: limits)
+        }
         if CanonicalQueryTypeBinder.arrayElement(source) != nil || CanonicalQueryTypeBinder.arrayElement(target) != nil {
             return try CanonicalSQLArrayEvaluator.cast(value, from: source, to: target, context: context,
                 temporalEnvironment: temporalEnvironment, workMeter: workMeter, limits: limits)

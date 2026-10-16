@@ -37,6 +37,13 @@ prepared stages + frozen invocation parameters + admitted session
   preserving physical source admission even when a child contains a subquery.
 
 - Bind every relational filter/order input before the first source executor read.
+- Feature preflight validates index and connection contracts after field
+  authorization. `FusionExecution.make` sends all relational inputs through
+  `DatabaseReadSession.boundFusionRelationalQueries` in one batch with the
+  invocation's actual parameters and finalizes their shared inference state
+  before `FusionExecutor.execute`. No parameterless per-input type binding
+  precedes that batch. Canonical table binding supplies declared field
+  types and optionality from the admitted schema before any source executor read.
 - Stage/input ordinals identify exact bound operators without expression equality
   lookup or per-row rebinding. Parameter references share the batch's state.
 - Query/operator storage remains admitted under the session's exact work meter.

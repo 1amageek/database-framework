@@ -1,14 +1,30 @@
 import DatabaseKit
 
 extension SelectQuery {
-    package func requiredOrderByColumnNames(entity: Schema.Entity?) throws -> [String]? {
+    package func requiredOrderByColumnNames(entity: Schema.Entity?, schema: Schema) throws -> [String]? {
         guard let orderBy else { return nil }
-        let items: [ProjectionItem]?
-        switch projection {
-        case .items(let value), .distinctItems(let value): items = value
-        case .all, .allFrom: items = nil
+        let items: [(expression: Expression, alias: String?)]?
+        if projection.contains(where: { if case .wildcard = $0 { return true }; return false }) {
+            if let entity {
+                var expanded: [(expression: Expression, alias: String?)] = []
+                for item in projection {
+                    switch item {
+                    case .expression(let expression, let alias): expanded.append((expression, alias))
+                    case .wildcard(let qualifier):
+                        expanded.append(contentsOf: entity.allFields.map {
+                            (Expression.column(ColumnRef(table: qualifier, column: $0)), nil)
+                        })
+                    }
+                }
+                items = expanded
+            } else { items = nil }
+        } else {
+            items = projection.compactMap { item in
+                guard case .expression(let expression, let alias) = item else { return nil }
+                return (expression, alias)
+            }
         }
-        func outputName(_ item: ProjectionItem, index: Int) -> String {
+        func outputName(_ item: (expression: Expression, alias: String?), index: Int) -> String {
             if let alias = item.alias { return alias }
             if case .column(let column) = item.expression { return column.column }
             return "column\(index)"
@@ -51,11 +67,10 @@ extension SelectQuery {
         var fields: [String] = []
         for sortKey in orderBy {
             for expression in orderingInputs(sortKey.expression) {
-                // Reuse QueryIR's complete expression dependency traversal.
-                // The empty source contributes no unrelated projected fields.
-                let dependencies = SelectQuery(projection: .items([ProjectionItem(expression)]),
-                    source: .values([[]], columnNames: [])).referencedColumns
-                fields.append(contentsOf: dependencies.map { $0.column }.sorted())
+                let dependencies = DatabaseFieldReadAuthorizationPlan.orderingFields(
+                    query: self, inputs: [expression], schema: schema)
+                if let entity { fields.append(contentsOf: (dependencies[entity.name] ?? []).sorted()) }
+                else { fields.append(contentsOf: dependencies.values.flatMap { $0 }.sorted()) }
             }
         }
         return fields

@@ -123,8 +123,8 @@ struct SQLSelectedStringExecutionTests {
             Issue.record("Expected typed regex text arrays"); return
         }
         #expect(matched.elementType == .text)
-        #expect(matched.elements == [.primitive(.string("a")), .primitive(.null)])
-        #expect(split.elements == [.primitive(.string("a")), .primitive(.string("")), .primitive(.string("b"))])
+        #expect(matched.elements.elementsEqual([QueryValue.primitive(.string("a")), .primitive(.null)]))
+        #expect(split.elements.elementsEqual([QueryValue.primitive(.string("a")), .primitive(.string("")), .primitive(.string("b"))]))
         #expect(values[11] == .primitive(.string("xbx")))
         #expect(values[12] == .primitive(.string("123")))
         #expect(result.columns[9].type == .sql(.array(.text)))
@@ -174,20 +174,22 @@ struct SQLSelectedStringExecutionTests {
         let container = try await makeContainer()
         defer { await container.shutdown() }
         let context = container.testBaseContext()
-        let source = DataSource.values([
-            [.queryValue(.primitive(.string("a")), type: .sql(.char(length: 1)))],
-            [.queryValue(.primitive(.string("a   ")), type: .sql(.char(length: 4)))],
-            [.queryValue(.primitive(.string("b ")), type: .sql(.char(length: 2)))]], columnNames: ["c"])
-        let distinct = try await context.query(SelectQuery(projection: .distinctItems([ProjectionItem(.col("c"))]),
-            source: source, orderBy: [SortKey(.col("c"))]))
+        let source = DataSource.aliased(.values([[.literal(.queryValue(.primitive(.string("a")), type: .sql(.char(length: 1))))], [.literal(.queryValue(.primitive(.string("a   ")), type: .sql(.char(length: 4))))], [.literal(.queryValue(.primitive(.string("b ")), type: .sql(.char(length: 2))))]]), name: "values", columns: ["c"])
+        let distinct = try await context.query(SelectQuery(projection: [ProjectionItem(.col("c"))],
+            source: source,
+            orderBy: [SortKey(.col("c"))],
+            quantifier: .distinct))
         #expect(distinct.rows.count == 2)
         let count = Expression.aggregate(.count(nil, distinct: false))
-        let groups = try await context.query(SelectQuery(projection: .items([ProjectionItem(count)]),
-            source: source, groupBy: [.col("c")], orderBy: [SortKey(count, direction: .descending)]))
+        let groups = try await context.query(SelectQuery(projection: [ProjectionItem(count)],
+            source: source,
+            groupBy: [.col("c")],
+            orderBy: [SortKey(count, direction: .descending)]))
         #expect(groups.rows.map(\.values) == [[.primitive(.int64(2))], [.primitive(.int64(1))]])
-        let aggregate = try await context.query(SelectQuery(projection: .items([
+        let aggregate = try await context.query(SelectQuery(projection: [
             ProjectionItem(.aggregate(.count(.col("c"), distinct: true))), ProjectionItem(.aggregate(.min(.col("c")))),
-            ProjectionItem(.aggregate(.max(.col("c"))))]), source: source))
+            ProjectionItem(.aggregate(.max(.col("c"))))],
+            source: source))
         #expect(aggregate.rows[0].values[0] == .primitive(.int64(2)))
         #expect(aggregate.rows[0].values[1] == .primitive(.string("a")))
         #expect(aggregate.rows[0].values[2] == .primitive(.string("b ")))

@@ -195,10 +195,8 @@ struct CompositionSPARQLAuthorizationTests {
         try await CompositionSPARQLQueryPlanner(
             structuralLimits: readContext.queryStructuralLimits
         ).execute(
-            SelectQuery(
-                projection: .all,
-                source: .graphPattern(.basic([]))
-            ),
+            SelectQuery(projection: [.wildcard()],
+            source: .graphPattern(.basic([]))),
             source: source,
             graphPartitions: FieldObject(),
             pageSize: 1,
@@ -239,10 +237,8 @@ struct CompositionSPARQLAuthorizationTests {
             try await CompositionSPARQLQueryPlanner(
                 structuralLimits: readContext.queryStructuralLimits
             ).execute(
-                SelectQuery(
-                    projection: .all,
-                    source: .graphPattern(.basic([]))
-                ),
+                SelectQuery(projection: [.wildcard()],
+            source: .graphPattern(.basic([]))),
                 source: source,
                 graphPartitions: FieldObject(),
                 pageSize: 1,
@@ -346,11 +342,9 @@ struct CompositionSPARQLAuthorizationTests {
             ]
         )
         fixture.outputWorkMeter.setRow(sourceRow)
-        let distinctQuery = SelectQuery(
-            projection: .items([ProjectionItem(.variable(Variable("subject")))]),
+        let distinctQuery = SelectQuery(projection: [ProjectionItem(.variable(Variable("subject")))],
             source: .graphPattern(.basic([])),
-            distinct: true
-        )
+            quantifier: .distinct)
         func context(maximumIntermediateBytes: UInt64) -> ReadExecutionContext {
             ReadExecutionContext(
                 options: ReadExecutionOptions(

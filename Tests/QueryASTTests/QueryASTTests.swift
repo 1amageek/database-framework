@@ -137,25 +137,23 @@ struct QueryASTTests {
 
     @Test("SelectQuery basic construction")
     func testSelectQueryConstruction() throws {
-        let query = SelectQuery(
-            projection: .all,
+        let query = SelectQuery(projection: [.wildcard()],
             source: .table(TableRef("users")),
             filter: .greaterThan(.column(ColumnRef(column: "age")), .literal(.int(18))),
-            limit: 10
-        )
+            pagination: QueryPagination(limit: .count(.fixed(10), withTies: false)))
 
-        #expect(query.projection == .all)
-        #expect(query.limit == 10)
+        #expect(query.projection == [.wildcard()])
+        #expect(query.pagination.limit == .count(.fixed(10), withTies: false))
         #expect(query.filter != nil)
     }
 
     @Test("SelectQuery referenced columns")
     func testSelectQueryReferencedColumns() throws {
         let query = SelectQuery(
-            projection: .items([
+            projection: [
                 ProjectionItem(.column(ColumnRef(column: "name"))),
                 ProjectionItem(.column(ColumnRef(column: "age")))
-            ]),
+            ],
             source: .table(TableRef("users")),
             filter: .equal(.column(ColumnRef(column: "active")), .literal(.bool(true)))
         )
@@ -336,15 +334,13 @@ struct QueryASTTests {
     func testSQLQueryBuilder() throws {
         // Note: We can't test actual execution without a Persistable model
         // This test verifies the builder API compiles correctly
-        let ast = SelectQuery(
-            projection: .all,
+        let ast = SelectQuery(projection: [.wildcard()],
             source: .table(TableRef("users")),
             filter: .greaterThan(.column(ColumnRef(column: "age")), .literal(.int(18))),
             orderBy: [SortKey(.column(ColumnRef(column: "name")), direction: .ascending)],
-            limit: 10
-        )
+            pagination: QueryPagination(limit: .count(.fixed(10), withTies: false)))
 
-        #expect(ast.limit == 10)
+        #expect(ast.pagination.limit == .count(.fixed(10), withTies: false))
         #expect(ast.orderBy?.count == 1)
     }
 
@@ -363,7 +359,7 @@ struct QueryASTTests {
             .limit(10)
 
         let ast = builder.buildAST()
-        #expect(ast.limit == 10)
+        #expect(ast.pagination.limit == .count(.fixed(10), withTies: false))
     }
 
     @Test("SPARQLQueryBuilder SPARQL output")
@@ -420,7 +416,7 @@ struct SQLParserTests {
         let parser = SQLParser()
         let query = try parser.parseSelect(sql)
 
-        #expect(query.projection == Projection.all)
+        #expect(query.projection == [ProjectionItem.wildcard()])
         if case .table(let ref) = query.source {
             #expect(ref.table == "users")
         } else {
@@ -434,7 +430,8 @@ struct SQLParserTests {
         let parser = SQLParser()
         let query = try parser.parseSelect(sql)
 
-        if case .items(let items) = query.projection {
+        let items = query.projection
+        if items.allSatisfy({ if case .expression = $0 { return true }; return false }) {
             #expect(items.count == 2)
         } else {
             Issue.record("Expected items projection")
@@ -465,7 +462,7 @@ struct SQLParserTests {
         let parser = SQLParser()
         let query = try parser.parseSelect(sql)
 
-        #expect(query.limit == 10)
+        #expect(query.pagination.limit == .count(.fixed(10), withTies: false))
     }
 
     @Test("Parse SELECT with JOIN")
@@ -498,14 +495,15 @@ struct SQLParserTests {
             "SELECT ARRAY_AGG(DISTINCT name ORDER BY rank DESC) AS names, GROUP_CONCAT(name, '|') AS joined FROM users"
         )
 
-        guard case .items(let items) = query.projection,
+        let items = query.projection
+        guard items.allSatisfy({ if case .expression = $0 { return true }; return false }),
               items.count == 2 else {
             Issue.record("Expected two aggregate projections")
             return
         }
         guard case .aggregate(
             .arrayAgg(.column(let value), let orderBy, let distinct)
-        ) = items[0].expression else {
+        ) = try projectionExpression(items[0]) else {
             Issue.record("Expected ARRAY_AGG")
             return
         }
@@ -516,7 +514,7 @@ struct SQLParserTests {
 
         guard case .aggregate(
             .groupConcat(.column(let joined), let separator, let isDistinct)
-        ) = items[1].expression else {
+        ) = try projectionExpression(items[1]) else {
             Issue.record("Expected GROUP_CONCAT")
             return
         }
@@ -542,7 +540,7 @@ struct SPARQLParserTests {
         let query = try parser.parseSelect(sparql)
         print("[TEST] testParseSimpleSelect END")
 
-        #expect(query.projection != Projection.all)
+        #expect(query.projection != [ProjectionItem.wildcard()])
     }
 
     @Test("Parse SELECT *")
@@ -551,7 +549,7 @@ struct SPARQLParserTests {
         let parser = SPARQLParser()
         let query = try parser.parseSelect(sparql)
 
-        #expect(query.projection == Projection.all)
+        #expect(query.projection == [ProjectionItem.wildcard()])
     }
 
     @Test("Parse SELECT with FILTER")
@@ -574,7 +572,7 @@ struct SPARQLParserTests {
         let parser = SPARQLParser()
         let query = try parser.parseSelect(sparql)
 
-        #expect(query.limit == 10)
+        #expect(query.pagination.limit == .count(.fixed(10), withTies: false))
     }
 
     @Test("Parse SELECT with ORDER BY")
@@ -791,14 +789,15 @@ struct SPARQLParserTests {
         let parser = SPARQLParser()
         let query = try parser.parseSelect(sparql)
 
-        if case .items(let items) = query.projection {
+        let items = query.projection
+        if items.allSatisfy({ if case .expression = $0 { return true }; return false }) {
             #expect(items.count == 1)
-            #expect(items[0].alias == "cnt")
-            if case .aggregate(.count(let arg, distinct: let d)) = items[0].expression {
+            #expect(try projectionAlias(items[0]) == "cnt")
+            if case .aggregate(.count(let arg, distinct: let d)) = try projectionExpression(items[0]) {
                 #expect(arg == nil)
                 #expect(d == false)
             } else {
-                Issue.record("Expected COUNT(*) aggregate, got \(items[0].expression)")
+                Issue.record("Expected COUNT(*) aggregate, got \(try projectionExpression(items[0]))")
             }
         } else {
             Issue.record("Expected items projection")
@@ -811,13 +810,14 @@ struct SPARQLParserTests {
         let parser = SPARQLParser()
         let query = try parser.parseSelect(sparql)
 
-        if case .items(let items) = query.projection {
+        let items = query.projection
+        if items.allSatisfy({ if case .expression = $0 { return true }; return false }) {
             #expect(items.count == 1)
-            if case .aggregate(.count(let arg, distinct: let d)) = items[0].expression {
+            if case .aggregate(.count(let arg, distinct: let d)) = try projectionExpression(items[0]) {
                 #expect(arg == .variable(Variable("s")))
                 #expect(d == true)
             } else {
-                Issue.record("Expected COUNT(DISTINCT ?s) aggregate, got \(items[0].expression)")
+                Issue.record("Expected COUNT(DISTINCT ?s) aggregate, got \(try projectionExpression(items[0]))")
             }
         } else {
             Issue.record("Expected items projection")
@@ -830,13 +830,14 @@ struct SPARQLParserTests {
         let parser = SPARQLParser()
         let query = try parser.parseSelect(sparql)
 
-        if case .items(let items) = query.projection {
+        let items = query.projection
+        if items.allSatisfy({ if case .expression = $0 { return true }; return false }) {
             #expect(items.count == 1)
-            if case .aggregate(.sum(let arg, distinct: let d)) = items[0].expression {
+            if case .aggregate(.sum(let arg, distinct: let d)) = try projectionExpression(items[0]) {
                 #expect(arg == .variable(Variable("val")))
                 #expect(d == false)
             } else {
-                Issue.record("Expected SUM aggregate, got \(items[0].expression)")
+                Issue.record("Expected SUM aggregate, got \(try projectionExpression(items[0]))")
             }
         } else {
             Issue.record("Expected items projection")
@@ -849,14 +850,15 @@ struct SPARQLParserTests {
         let parser = SPARQLParser()
         let query = try parser.parseSelect(sparql)
 
-        if case .items(let items) = query.projection {
+        let items = query.projection
+        if items.allSatisfy({ if case .expression = $0 { return true }; return false }) {
             #expect(items.count == 1)
-            if case .aggregate(.groupConcat(let arg, separator: let sep, distinct: let d)) = items[0].expression {
+            if case .aggregate(.groupConcat(let arg, separator: let sep, distinct: let d)) = try projectionExpression(items[0]) {
                 #expect(arg == .variable(Variable("name")))
                 #expect(sep == ", ")
                 #expect(d == false)
             } else {
-                Issue.record("Expected GROUP_CONCAT aggregate, got \(items[0].expression)")
+                Issue.record("Expected GROUP_CONCAT aggregate, got \(try projectionExpression(items[0]))")
             }
         } else {
             Issue.record("Expected items projection")

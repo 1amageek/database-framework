@@ -103,6 +103,8 @@ extension Literal {
                     type = .sql(.jsonb)
                 case .array(let array):
                     type = .sql(.array(array.elementType))
+                case .composite(let record):
+                    type = .sql(.composite(record.type))
                 case .interval, .intervalInfinity:
                     type = .sql(.interval())
                 case .time:

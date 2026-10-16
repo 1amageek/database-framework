@@ -20,17 +20,17 @@ struct SubqueryTests {
         //      WHERE sub.total > 1000
 
         let innerQuery = SelectQuery(
-            projection: .items([
+            projection: [
                 ProjectionItem(.column(ColumnRef(column: "id"))),
                 ProjectionItem(.aggregate(.sum(.column(ColumnRef(column: "amount")), distinct: false)), alias: "total")
-            ]),
+            ],
             source: .table(TableRef("orders")),
             groupBy: [.column(ColumnRef(column: "id"))]
         )
 
         let outerQuery = SelectQuery(
-            projection: .all,
-            source: .subquery(innerQuery, alias: "sub"),
+            projection: [.wildcard()],
+            source: .aliased(.subquery(innerQuery), name: "sub"),
             filter: .greaterThan(
                 .column(ColumnRef(table: "sub", column: "total")),
                 .literal(.int(1000))
@@ -38,16 +38,17 @@ struct SubqueryTests {
         )
 
         // Verify structure
-        #expect(outerQuery.projection == .all)
+        #expect(outerQuery.projection == [.wildcard()])
         #expect(outerQuery.filter != nil)
 
-        if case .subquery(let sub, let alias) = outerQuery.source {
+        if case .aliased(.subquery(let sub), let alias, _) = outerQuery.source {
             #expect(alias == "sub")
             #expect(sub.groupBy != nil)
             #expect(sub.groupBy?.count == 1)
-            if case .items(let items) = sub.projection {
+            let items = sub.projection
+        if items.allSatisfy({ if case .expression = $0 { return true }; return false }) {
                 #expect(items.count == 2)
-                #expect(items[1].alias == "total")
+                #expect(try projectionAlias(items[1]) == "total")
             }
         } else {
             Issue.record("Expected subquery source")
@@ -63,27 +64,27 @@ struct SubqueryTests {
         //      ) AS level2 WHERE rank < 10
 
         let base = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(TableRef("base")),
             filter: .equal(.column(ColumnRef(column: "active")), .literal(.bool(true)))
         )
 
         let level1 = SelectQuery(
-            projection: .all,
-            source: .subquery(base, alias: "level1"),
+            projection: [.wildcard()],
+            source: .aliased(.subquery(base), name: "level1"),
             filter: .greaterThan(.column(ColumnRef(column: "score")), .literal(.int(50)))
         )
 
         let level2 = SelectQuery(
-            projection: .all,
-            source: .subquery(level1, alias: "level2"),
+            projection: [.wildcard()],
+            source: .aliased(.subquery(level1), name: "level2"),
             filter: .lessThan(.column(ColumnRef(column: "rank")), .literal(.int(10)))
         )
 
         // Verify 2 levels of nesting
-        if case .subquery(let l1, let alias2) = level2.source {
+        if case .aliased(.subquery(let l1), let alias2, _) = level2.source {
             #expect(alias2 == "level2")
-            if case .subquery(let l0, let alias1) = l1.source {
+            if case .aliased(.subquery(let l0), let alias1, _) = l1.source {
                 #expect(alias1 == "level1")
                 if case .table(let ref) = l0.source {
                     #expect(ref.table == "base")
@@ -107,26 +108,26 @@ struct SubqueryTests {
         // ) AS level3 WHERE status = 'approved'
 
         let base = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(TableRef("base")),
             filter: .equal(.column(ColumnRef(column: "active")), .literal(.bool(true)))
         )
 
         let level1 = SelectQuery(
-            projection: .all,
-            source: .subquery(base, alias: "level1"),
+            projection: [.wildcard()],
+            source: .aliased(.subquery(base), name: "level1"),
             filter: .greaterThan(.column(ColumnRef(column: "score")), .literal(.int(50)))
         )
 
         let level2 = SelectQuery(
-            projection: .all,
-            source: .subquery(level1, alias: "level2"),
+            projection: [.wildcard()],
+            source: .aliased(.subquery(level1), name: "level2"),
             filter: .lessThan(.column(ColumnRef(column: "rank")), .literal(.int(10)))
         )
 
         let level3 = SelectQuery(
-            projection: .all,
-            source: .subquery(level2, alias: "level3"),
+            projection: [.wildcard()],
+            source: .aliased(.subquery(level2), name: "level3"),
             filter: .equal(.column(ColumnRef(column: "status")), .literal(.string("approved")))
         )
 
@@ -135,7 +136,7 @@ struct SubqueryTests {
 
         var depth = 0
         var current: DataSource? = level3.source
-        while case .subquery(let inner, _) = current {
+        while case .aliased(.subquery(let inner), _, _) = current {
             depth += 1
             current = inner.source
         }
@@ -149,7 +150,7 @@ struct SubqueryTests {
         // SQL: SELECT * FROM users WHERE id IN (SELECT user_id FROM premium_members)
 
         let subquery = SelectQuery(
-            projection: .items([ProjectionItem(.column(ColumnRef(column: "user_id")))]),
+            projection: [ProjectionItem(.column(ColumnRef(column: "user_id")))],
             source: .table(TableRef("premium_members"))
         )
 
@@ -160,7 +161,7 @@ struct SubqueryTests {
         )
 
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(TableRef("users")),
             filter: inCondition
         )
@@ -169,7 +170,8 @@ struct SubqueryTests {
             if case .column(let col) = left {
                 #expect(col.column == "id")
             }
-            if case .items(let items) = sub.projection {
+            let items = sub.projection
+        if items.allSatisfy({ if case .expression = $0 { return true }; return false }) {
                 #expect(items.count == 1)
             }
         }
@@ -180,7 +182,7 @@ struct SubqueryTests {
         // SQL: SELECT * FROM users WHERE id NOT IN (SELECT user_id FROM banned_users)
 
         let subquery = SelectQuery(
-            projection: .items([ProjectionItem(.column(ColumnRef(column: "user_id")))]),
+            projection: [ProjectionItem(.column(ColumnRef(column: "user_id")))],
             source: .table(TableRef("banned_users"))
         )
 
@@ -190,7 +192,7 @@ struct SubqueryTests {
         ))
 
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(TableRef("users")),
             filter: notInCondition
         )
@@ -213,8 +215,8 @@ struct SubqueryTests {
         // )
 
         let correlatedSubquery = SelectQuery(
-            projection: .items([ProjectionItem(.literal(.int(1)))]),
-            source: .table(TableRef(table: "orders", alias: "o")),
+            projection: [ProjectionItem(.literal(.int(1)))],
+            source: .aliased(.table(TableRef(table: "orders")), name: "o"),
             filter: .and(
                 .equal(
                     .column(ColumnRef(table: "o", column: "user_id")),
@@ -230,8 +232,8 @@ struct SubqueryTests {
         let existsCondition = Expression.exists(correlatedSubquery)
 
         let query = SelectQuery(
-            projection: .all,
-            source: .table(TableRef(table: "users", alias: "u")),
+            projection: [.wildcard()],
+            source: .aliased(.table(TableRef(table: "users")), name: "u"),
             filter: existsCondition
         )
 
@@ -251,8 +253,8 @@ struct SubqueryTests {
         // )
 
         let correlatedSubquery = SelectQuery(
-            projection: .items([ProjectionItem(.literal(.int(1)))]),
-            source: .table(TableRef(table: "orders", alias: "o")),
+            projection: [ProjectionItem(.literal(.int(1)))],
+            source: .aliased(.table(TableRef(table: "orders")), name: "o"),
             filter: .equal(
                 .column(ColumnRef(table: "o", column: "product_id")),
                 .column(ColumnRef(table: "p", column: "id"))
@@ -262,8 +264,8 @@ struct SubqueryTests {
         let notExistsCondition = Expression.not(.exists(correlatedSubquery))
 
         let query = SelectQuery(
-            projection: .all,
-            source: .table(TableRef(table: "products", alias: "p")),
+            projection: [.wildcard()],
+            source: .aliased(.table(TableRef(table: "products")), name: "p"),
             filter: notExistsCondition
         )
 
@@ -284,9 +286,9 @@ struct SubqueryTests {
         //      FROM users
 
         let scalarSubquery = SelectQuery(
-            projection: .items([
+            projection: [
                 ProjectionItem(.aggregate(.count(nil, distinct: false)))
-            ]),
+            ],
             source: .table(TableRef("orders")),
             filter: .equal(
                 .column(ColumnRef(column: "user_id")),
@@ -295,19 +297,21 @@ struct SubqueryTests {
         )
 
         let query = SelectQuery(
-            projection: .items([
+            projection: [
                 ProjectionItem(.column(ColumnRef(column: "name"))),
                 ProjectionItem(.subquery(scalarSubquery), alias: "order_count")
-            ]),
+            ],
             source: .table(TableRef("users"))
         )
 
-        if case .items(let items) = query.projection {
+        let items = query.projection
+        if items.allSatisfy({ if case .expression = $0 { return true }; return false }) {
             #expect(items.count == 2)
-            #expect(items[1].alias == "order_count")
-            if case .subquery(let sub) = items[1].expression {
-                if case .items(let subItems) = sub.projection {
-                    if case .aggregate(.count(nil, distinct: false)) = subItems[0].expression {
+            #expect(try projectionAlias(items[1]) == "order_count")
+            if case .subquery(let sub) = try projectionExpression(items[1]) {
+                let subItems = sub.projection
+        if subItems.allSatisfy({ if case .expression = $0 { return true }; return false }) {
+                    if case .aggregate(.count(nil, distinct: false)) = try projectionExpression(subItems[0]) {
                         // OK
                     } else {
                         Issue.record("Expected COUNT aggregate")
@@ -325,33 +329,34 @@ struct SubqueryTests {
         //        (SELECT AVG(amount) FROM orders) AS avg_amount
 
         let countSubquery = SelectQuery(
-            projection: .items([ProjectionItem(.aggregate(.count(nil, distinct: false)))]),
+            projection: [ProjectionItem(.aggregate(.count(nil, distinct: false)))],
             source: .table(TableRef("orders"))
         )
 
         let sumSubquery = SelectQuery(
-            projection: .items([ProjectionItem(.aggregate(.sum(.column(ColumnRef(column: "amount")), distinct: false)))]),
+            projection: [ProjectionItem(.aggregate(.sum(.column(ColumnRef(column: "amount")), distinct: false)))],
             source: .table(TableRef("orders"))
         )
 
         let avgSubquery = SelectQuery(
-            projection: .items([ProjectionItem(.aggregate(.avg(.column(ColumnRef(column: "amount")), distinct: false)))]),
+            projection: [ProjectionItem(.aggregate(.avg(.column(ColumnRef(column: "amount")), distinct: false)))],
             source: .table(TableRef("orders"))
         )
 
         let query = SelectQuery(
-            projection: .items([
+            projection: [
                 ProjectionItem(.subquery(countSubquery), alias: "total_orders"),
                 ProjectionItem(.subquery(sumSubquery), alias: "total_amount"),
                 ProjectionItem(.subquery(avgSubquery), alias: "avg_amount")
-            ]),
+            ],
             source: .table(TableRef("dual"))  // Dummy table
         )
 
-        if case .items(let items) = query.projection {
+        let items = query.projection
+        if items.allSatisfy({ if case .expression = $0 { return true }; return false }) {
             #expect(items.count == 3)
             for item in items {
-                if case .subquery(_) = item.expression {
+                if case .subquery(_) = try projectionExpression(item) {
                     // OK
                 } else {
                     Issue.record("Expected subquery expression")
@@ -368,7 +373,7 @@ struct SubqueryTests {
         //      SELECT * FROM active_users WHERE created_at > '2024-01-01'
 
         let cteQuery = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(TableRef("users")),
             filter: .equal(.column(ColumnRef(column: "active")), .literal(.bool(true)))
         )
@@ -379,7 +384,7 @@ struct SubqueryTests {
         )
 
         let mainQuery = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(TableRef("active_users")),
             filter: .greaterThan(
                 .column(ColumnRef(column: "created_at")),
@@ -400,11 +405,11 @@ struct SubqueryTests {
         //      SELECT * FROM stats WHERE order_count > 5
 
         let cteQuery = SelectQuery(
-            projection: .items([
+            projection: [
                 ProjectionItem(.column(ColumnRef(column: "user_id"))),
                 ProjectionItem(.aggregate(.count(nil, distinct: false))),
                 ProjectionItem(.aggregate(.sum(.column(ColumnRef(column: "amount")), distinct: false)))
-            ]),
+            ],
             source: .table(TableRef("orders")),
             groupBy: [.column(ColumnRef(column: "user_id"))]
         )
@@ -416,7 +421,7 @@ struct SubqueryTests {
         )
 
         let mainQuery = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(TableRef("stats")),
             filter: .greaterThan(.column(ColumnRef(column: "order_count")), .literal(.int(5))),
             subqueries: [cte]
@@ -435,10 +440,10 @@ struct SubqueryTests {
         let cte1 = NamedSubquery(
             name: "users_stats",
             query: SelectQuery(
-                projection: .items([
+                projection: [
                     ProjectionItem(.column(ColumnRef(column: "user_id"))),
                     ProjectionItem(.aggregate(.count(nil, distinct: false)), alias: "cnt")
-                ]),
+                ],
                 source: .table(TableRef("orders")),
                 groupBy: [.column(ColumnRef(column: "user_id"))]
             )
@@ -447,14 +452,14 @@ struct SubqueryTests {
         let cte2 = NamedSubquery(
             name: "high_volume",
             query: SelectQuery(
-                projection: .all,
+                projection: [.wildcard()],
                 source: .table(TableRef("users_stats")),
                 filter: .greaterThan(.column(ColumnRef(column: "cnt")), .literal(.int(10)))
             )
         )
 
         let mainQuery = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(TableRef("high_volume")),
             subqueries: [cte1, cte2]
         )
@@ -472,7 +477,7 @@ struct SubqueryTests {
         let cte = NamedSubquery(
             name: "data",
             query: SelectQuery(
-                projection: .all,
+                projection: [.wildcard()],
                 source: .table(TableRef("large_table"))
             ),
             materialized: .materialized
@@ -483,7 +488,7 @@ struct SubqueryTests {
         let cteNotMaterialized = NamedSubquery(
             name: "data",
             query: SelectQuery(
-                projection: .all,
+                projection: [.wildcard()],
                 source: .table(TableRef("large_table"))
             ),
             materialized: .notMaterialized
@@ -502,18 +507,18 @@ struct SubqueryTests {
         //      ON u.id = s.user_id
 
         let subquery = SelectQuery(
-            projection: .items([
+            projection: [
                 ProjectionItem(.column(ColumnRef(column: "user_id"))),
                 ProjectionItem(.aggregate(.sum(.column(ColumnRef(column: "amount")), distinct: false)), alias: "total")
-            ]),
+            ],
             source: .table(TableRef("orders")),
             groupBy: [.column(ColumnRef(column: "user_id"))]
         )
 
         let join = JoinClause(
             type: .inner,
-            left: .table(TableRef(table: "users", alias: "u")),
-            right: .subquery(subquery, alias: "s"),
+            left: .aliased(.table(TableRef(table: "users")), name: "u"),
+            right: .aliased(.subquery(subquery), name: "s"),
             condition: .on(.equal(
                 .column(ColumnRef(table: "u", column: "id")),
                 .column(ColumnRef(table: "s", column: "user_id"))
@@ -521,15 +526,15 @@ struct SubqueryTests {
         )
 
         let query = SelectQuery(
-            projection: .items([
+            projection: [
                 ProjectionItem(.column(ColumnRef(table: "u", column: "name"))),
                 ProjectionItem(.column(ColumnRef(table: "s", column: "total")))
-            ]),
+            ],
             source: .join(join)
         )
 
         if case .join(let j) = query.source {
-            if case .subquery(let sub, let alias) = j.right {
+            if case .aliased(.subquery(let sub), let alias, _) = j.right {
                 #expect(alias == "s")
                 #expect(sub.groupBy != nil)
             } else {
@@ -545,14 +550,14 @@ struct SubqueryTests {
         // SQL: SELECT * FROM orders WHERE amount > (SELECT AVG(amount) FROM orders)
 
         let avgSubquery = SelectQuery(
-            projection: .items([
+            projection: [
                 ProjectionItem(.aggregate(.avg(.column(ColumnRef(column: "amount")), distinct: false)))
-            ]),
+            ],
             source: .table(TableRef("orders"))
         )
 
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(TableRef("orders")),
             filter: .greaterThan(
                 .column(ColumnRef(column: "amount")),
@@ -581,7 +586,7 @@ struct SubqueryTests {
         // This is equivalent to: price > ALL (SELECT price FROM discounted_products)
 
         let subquery = SelectQuery(
-            projection: .items([ProjectionItem(.literal(.int(1)))]),
+            projection: [ProjectionItem(.literal(.int(1)))],
             source: .table(TableRef("discounted_products"))
         )
 
@@ -589,7 +594,7 @@ struct SubqueryTests {
         let notExistsCondition = Expression.not(.exists(subquery))
 
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(TableRef("products")),
             filter: notExistsCondition
         )
@@ -608,14 +613,14 @@ struct SubqueryTests {
         // SQL: SELECT * FROM products WHERE EXISTS (SELECT 1 FROM orders WHERE product_id = products.id)
 
         let subquery = SelectQuery(
-            projection: .items([ProjectionItem(.literal(.int(1)))]),
+            projection: [ProjectionItem(.literal(.int(1)))],
             source: .table(TableRef("orders"))
         )
 
         let existsCondition = Expression.exists(subquery)
 
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(TableRef("products")),
             filter: existsCondition
         )
@@ -637,7 +642,7 @@ struct SubqueryTests {
         let parser = SQLParser()
         let query = try parser.parseSelect(sql)
 
-        if case .subquery(_, let alias) = query.source {
+        if case .aliased(.subquery(_), let alias, _) = query.source {
             #expect(alias == "active_users")
         } else {
             Issue.record("Expected subquery source")
@@ -674,13 +679,13 @@ struct SubqueryTests {
     func testEmptySubqueryResult() throws {
         // Subquery that would return no rows
         let subquery = SelectQuery(
-            projection: .items([ProjectionItem(.column(ColumnRef(column: "id")))]),
+            projection: [ProjectionItem(.column(ColumnRef(column: "id")))],
             source: .table(TableRef("empty_table")),
             filter: .literal(.bool(false))  // Always false
         )
 
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(TableRef("users")),
             filter: .inSubquery(.column(ColumnRef(column: "id")), subquery: subquery)
         )
@@ -693,15 +698,13 @@ struct SubqueryTests {
     func testSubqueryLimitOne() throws {
         // SQL: SELECT * FROM orders WHERE user_id = (SELECT id FROM users ORDER BY created_at DESC LIMIT 1)
 
-        let scalarSubquery = SelectQuery(
-            projection: .items([ProjectionItem(.column(ColumnRef(column: "id")))]),
+        let scalarSubquery = SelectQuery(projection: [ProjectionItem(.column(ColumnRef(column: "id")))],
             source: .table(TableRef("users")),
             orderBy: [SortKey(.column(ColumnRef(column: "created_at")), direction: .descending)],
-            limit: 1
-        )
+            pagination: QueryPagination(limit: .count(.fixed(1), withTies: false)))
 
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(TableRef("orders")),
             filter: .equal(
                 .column(ColumnRef(column: "user_id")),
@@ -711,7 +714,7 @@ struct SubqueryTests {
 
         if case .equal(_, let right) = query.filter {
             if case .subquery(let sub) = right {
-                #expect(sub.limit == 1)
+                #expect(sub.pagination.limit == .count(.fixed(1), withTies: false))
             }
         }
     }

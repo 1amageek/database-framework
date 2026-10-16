@@ -21,9 +21,9 @@ struct MultiJoinTests {
         //      INNER JOIN products p ON o.product_id = p.id
         //      WHERE u.country = 'JP'
 
-        let users = DataSource.table(TableRef(table: "users", alias: "u"))
-        let orders = DataSource.table(TableRef(table: "orders", alias: "o"))
-        let products = DataSource.table(TableRef(table: "products", alias: "p"))
+        let users = DataSource.aliased(.table(TableRef(table: "users")), name: "u")
+        let orders = DataSource.aliased(.table(TableRef(table: "orders")), name: "o")
+        let products = DataSource.aliased(.table(TableRef(table: "products")), name: "p")
 
         // First JOIN: users INNER JOIN orders
         let firstJoin = JoinClause(
@@ -48,7 +48,7 @@ struct MultiJoinTests {
         )
 
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .join(secondJoin),
             filter: .equal(
                 .column(ColumnRef(table: "u", column: "country")),
@@ -57,14 +57,14 @@ struct MultiJoinTests {
         )
 
         // Verify structure
-        #expect(query.projection == .all)
+        #expect(query.projection == [.wildcard()])
         #expect(query.filter != nil)
 
         // Verify nested JOINs
         if case .join(let outerJoin) = query.source {
             #expect(outerJoin.type == .inner)
-            if case .table(let productsRef) = outerJoin.right {
-                #expect(productsRef.alias == "p")
+            if case .aliased(.table, let productsAlias, _) = outerJoin.right {
+                #expect(productsAlias == "p")
             } else {
                 Issue.record("Expected products table")
             }
@@ -129,7 +129,7 @@ struct MultiJoinTests {
         )
 
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .join(join3)
         )
 
@@ -159,9 +159,9 @@ struct MultiJoinTests {
         //      INNER JOIN orders o ON u.id = o.user_id
         //      LEFT JOIN reviews r ON o.id = r.order_id
 
-        let users = DataSource.table(TableRef(table: "users", alias: "u"))
-        let orders = DataSource.table(TableRef(table: "orders", alias: "o"))
-        let reviews = DataSource.table(TableRef(table: "reviews", alias: "r"))
+        let users = DataSource.aliased(.table(TableRef(table: "users")), name: "u")
+        let orders = DataSource.aliased(.table(TableRef(table: "orders")), name: "o")
+        let reviews = DataSource.aliased(.table(TableRef(table: "reviews")), name: "r")
 
         let innerJoin = JoinClause(
             type: .inner,
@@ -184,7 +184,7 @@ struct MultiJoinTests {
         )
 
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .join(leftJoin)
         )
 
@@ -231,7 +231,7 @@ struct MultiJoinTests {
         )
 
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .join(rightJoin)
         )
 
@@ -258,7 +258,7 @@ struct MultiJoinTests {
         )
 
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .join(join)
         )
 
@@ -279,7 +279,7 @@ struct MultiJoinTests {
         )
 
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .join(join)
         )
 
@@ -297,8 +297,8 @@ struct MultiJoinTests {
         //      FROM employees e
         //      LEFT JOIN employees m ON e.manager_id = m.id
 
-        let employees = DataSource.table(TableRef(table: "employees", alias: "e"))
-        let managers = DataSource.table(TableRef(table: "employees", alias: "m"))
+        let employees = DataSource.aliased(.table(TableRef(table: "employees")), name: "e")
+        let managers = DataSource.aliased(.table(TableRef(table: "employees")), name: "m")
 
         let selfJoin = JoinClause(
             type: .left,
@@ -311,26 +311,27 @@ struct MultiJoinTests {
         )
 
         let query = SelectQuery(
-            projection: .items([
+            projection: [
                 ProjectionItem(.column(ColumnRef(table: "e", column: "name"))),
                 ProjectionItem(.column(ColumnRef(table: "m", column: "name")), alias: "manager")
-            ]),
+            ],
             source: .join(selfJoin)
         )
 
-        if case .items(let items) = query.projection {
+        let items = query.projection
+        if items.allSatisfy({ if case .expression = $0 { return true }; return false }) {
             #expect(items.count == 2)
-            #expect(items[1].alias == "manager")
+            #expect(try projectionAlias(items[1]) == "manager")
         }
 
         // Verify both sides reference same table
         if case .join(let j) = query.source {
-            if case .table(let leftRef) = j.left,
-               case .table(let rightRef) = j.right {
+            if case .aliased(.table(let leftRef), let leftAlias, _) = j.left,
+               case .aliased(.table(let rightRef), let rightAlias, _) = j.right {
                 #expect(leftRef.table == "employees")
                 #expect(rightRef.table == "employees")
-                #expect(leftRef.alias == "e")
-                #expect(rightRef.alias == "m")
+                #expect(leftAlias == "e")
+                #expect(rightAlias == "m")
             }
         }
     }
@@ -342,9 +343,9 @@ struct MultiJoinTests {
         //      LEFT JOIN categories p ON c.parent_id = p.id
         //      LEFT JOIN categories g ON p.parent_id = g.id
 
-        let child = DataSource.table(TableRef(table: "categories", alias: "c"))
-        let parent = DataSource.table(TableRef(table: "categories", alias: "p"))
-        let grandparent = DataSource.table(TableRef(table: "categories", alias: "g"))
+        let child = DataSource.aliased(.table(TableRef(table: "categories")), name: "c")
+        let parent = DataSource.aliased(.table(TableRef(table: "categories")), name: "p")
+        let grandparent = DataSource.aliased(.table(TableRef(table: "categories")), name: "g")
 
         let join1 = JoinClause(
             type: .left,
@@ -367,19 +368,20 @@ struct MultiJoinTests {
         )
 
         let query = SelectQuery(
-            projection: .items([
+            projection: [
                 ProjectionItem(.column(ColumnRef(table: "c", column: "name")), alias: "category"),
                 ProjectionItem(.column(ColumnRef(table: "p", column: "name")), alias: "parent"),
                 ProjectionItem(.column(ColumnRef(table: "g", column: "name")), alias: "grandparent")
-            ]),
+            ],
             source: .join(join2)
         )
 
-        if case .items(let items) = query.projection {
+        let items = query.projection
+        if items.allSatisfy({ if case .expression = $0 { return true }; return false }) {
             #expect(items.count == 3)
-            #expect(items[0].alias == "category")
-            #expect(items[1].alias == "parent")
-            #expect(items[2].alias == "grandparent")
+            #expect(try projectionAlias(items[0]) == "category")
+            #expect(try projectionAlias(items[1]) == "parent")
+            #expect(try projectionAlias(items[2]) == "grandparent")
         }
     }
 
@@ -415,7 +417,7 @@ struct MultiJoinTests {
         )
 
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .join(join)
         )
 
@@ -465,7 +467,7 @@ struct MultiJoinTests {
         )
 
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .join(join)
         )
 
@@ -492,7 +494,7 @@ struct MultiJoinTests {
         )
 
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .join(join)
         )
 
@@ -516,7 +518,7 @@ struct MultiJoinTests {
         )
 
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .join(join)
         )
 
@@ -543,7 +545,7 @@ struct MultiJoinTests {
         )
 
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .join(join)
         )
 
@@ -565,7 +567,7 @@ struct MultiJoinTests {
         )
 
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .join(join)
         )
 
@@ -581,34 +583,32 @@ struct MultiJoinTests {
         // SQL: SELECT * FROM users u,
         //      LATERAL (SELECT * FROM orders o WHERE o.user_id = u.id ORDER BY created_at DESC LIMIT 3) AS recent_orders
 
-        let correlatedSubquery = SelectQuery(
-            projection: .all,
-            source: .table(TableRef(table: "orders", alias: "o")),
+        let correlatedSubquery = SelectQuery(projection: [.wildcard()],
+            source: .aliased(.table(TableRef(table: "orders")), name: "o"),
             filter: .equal(
                 .column(ColumnRef(table: "o", column: "user_id")),
                 .column(ColumnRef(table: "u", column: "id"))
             ),
             orderBy: [SortKey(.column(ColumnRef(column: "created_at")), direction: .descending)],
-            limit: 3
-        )
+            pagination: QueryPagination(limit: .count(.fixed(3), withTies: false)))
 
         let lateralJoin = JoinClause(
             type: .lateral,
-            left: .table(TableRef(table: "users", alias: "u")),
-            right: .subquery(correlatedSubquery, alias: "recent_orders"),
+            left: .aliased(.table(TableRef(table: "users")), name: "u"),
+            right: .aliased(.subquery(correlatedSubquery), name: "recent_orders"),
             condition: nil
         )
 
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .join(lateralJoin)
         )
 
         if case .join(let j) = query.source {
             #expect(j.type == .lateral)
-            if case .subquery(let sub, let alias) = j.right {
+            if case .aliased(.subquery(let sub), let alias, _) = j.right {
                 #expect(alias == "recent_orders")
-                #expect(sub.limit == 3)
+                #expect(sub.pagination.limit == .count(.fixed(3), withTies: false))
             } else {
                 Issue.record("Expected subquery")
             }
@@ -622,25 +622,22 @@ struct MultiJoinTests {
 
         let lateralJoin = JoinClause(
             type: .leftLateral,
-            left: .table(TableRef(table: "users", alias: "u")),
-            right: .subquery(
-                SelectQuery(
-                    projection: .items([
+            left: .aliased(.table(TableRef(table: "users")), name: "u"),
+            right: .aliased(.subquery(SelectQuery(
+                    projection: [
                         ProjectionItem(.aggregate(.count(nil, distinct: false)), alias: "cnt")
-                    ]),
+                    ],
                     source: .table(TableRef("orders")),
                     filter: .equal(
                         .column(ColumnRef(column: "user_id")),
                         .column(ColumnRef(table: "u", column: "id"))
                     )
-                ),
-                alias: "order_count"
-            ),
+                )), name: "order_count"),
             condition: .on(.literal(.bool(true)))
         )
 
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .join(lateralJoin)
         )
 
@@ -707,7 +704,7 @@ struct MultiJoinTests {
             return
         }
         #expect(join.type == .leftLateral)
-        guard case .subquery(_, let alias) = join.right else {
+        guard case .aliased(.subquery(_), let alias, _) = join.right else {
             Issue.record("Expected a LATERAL subquery")
             return
         }
@@ -771,7 +768,7 @@ struct MultiJoinTests {
         )
 
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .join(join)
         )
 

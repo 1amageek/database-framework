@@ -50,6 +50,15 @@ ReadPolicy -> sealed authorization -> ReadSession closure
   widen authority or weaken the complete-model entry point.
 - Per-entity authorization after decode supplements, not replaces,
   pre-storage list/field admission.
+- List ordering requirements resolve output aliases and ordinals through the
+  original source bindings to physical entity fields. Whole-row keys include
+  every source field; whole-row field selection includes its physical field.
+  A bare source alias becomes a whole row only after ordinary column lookup
+  fails. These ordering requirements remain separate from field-read coverage.
+  A derived source retains its underlying physical dependencies in its own
+  aliased output bindings, including when a JOIN also has physical-table
+  siblings. Ordering a derived output conservatively requires those source
+  dependencies; ordering an ordinary sibling field remains precise.
 - A scoped range cursor uses the StorageKit state-owned validation contract;
   Read supplies the scope lease and does not wrap a second cursor state.
 
@@ -65,6 +74,53 @@ requirement -> validate coverage -> begin scoped closure/create admission
 
 The immutable session owns policy, lease, transaction, clocks, root, scope,
 and meter. Admission cannot outlive or replace its closure/scope.
+
+S08 [SQLRelations](../QueryExecution/SQLRelations/DESIGN.md) producers and CTE
+prefix caches are invocation-owned consumers of this admission. They close
+authoritatively before session invalidation and transaction closure. They
+cannot acquire an independent snapshot, extend scope lifetime through a
+retained output value, or reset the operation meter. Existing cursor registry
+claims remain session-owned until invalidation; producer cleanup tests compare
+the live-session entry baseline and require zero after the session closes.
+
+Optional Base global finalization borrows an existing admitted member session
+through `finalizeCompositionRelation`. The facade enforces identical meter,
+active operation and sealed policy while QueryExecution applies selected
+operators to retained inputs. It forwards this session's transaction and
+temporal environment and validates scope again before returning. It neither
+opens a second context nor grants new Base source capabilities. Base closes
+the borrowed session/snapshot before exposing events; selected merge and
+authorization tests own this boundary's success and denial evidence.
+
+Bound output metadata crosses the session facade as QueryExecution's immutable
+DatabaseRetainedQueryColumns, with its construction/storage payload leases.
+The consumer keeps that owner through destination metadata admission. Read does
+not return a naked composite descriptor after releasing its binding claim.
+An empty polymorphic page constructed from this owner retains the same immutable
+metadata and claims until its last page copy ends, even after the producing
+binding scope and the caller's original metadata owner have ended.
+Source-scoped Base evaluation borrows the original admitted member context and
+session through an internal callback, then validates scope before returning
+only the selected value/claims. No new context replaces the member identity.
+When a global finalizer borrows another member, an explicit internal bridge
+validates the parent operation, clears only its inherited operation-borrow
+slot for the nested admission, and validates the parent again on return.
+The nested member still establishes its own snapshot membership, Base lease,
+execution binding, policy and active read scope. Ordinary implicit cross-scope
+operation borrowing remains rejected. This prevents a foreign task-local lease
+from being mistaken for the newly admitted member's authority.
+Global count resolution happens once before source materialization, and its
+resolved value is forwarded into finalization. LIMIT zero still binds metadata
+and emits no source reads or output rows.
+
+Fixed list pagination retains its existing bounded authorization. An expression
+count has an explicit deferred admission state, retaining its declaration
+identity and requiring unbounded-list permission before evaluating the count.
+After authorization is sealed, QueryExecution evaluates its bigint window once
+without widening that authority. A denied unbounded capability is a typed
+pre-storage denial, not a silent nil/default interpretation or permission to
+execute a count subquery. Field/list requirements of admitted nested counts
+remain part of the original preflight.
 
 ## Failure, Concurrency, and Constraints
 

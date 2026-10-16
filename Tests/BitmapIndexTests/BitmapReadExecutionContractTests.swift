@@ -278,8 +278,7 @@ struct BitmapReadExecutionContractTests {
     private func bitmapPolymorphicQuery() throws -> SelectQuery {
         let groupIdentifier =
             BitmapAuthorizationPolymorphicItem.polymorphableType
-        return SelectQuery(
-            projection: .all,
+        return SelectQuery(projection: [.wildcard()],
             source: .logical(
                 LogicalSourceRef(
                     kindIdentifier: LogicalSourceKind.polymorphic,
@@ -300,7 +299,6 @@ struct BitmapReadExecutionContractTests {
                         ])
                     ]
                 )
-            )
-        )
+            ))
     }
 }

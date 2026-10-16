@@ -100,10 +100,28 @@ public enum SPARQLSelectPlanCompiler {
         if isSubquery, query.dataset != .implicit {
             throw SPARQLSelectPlanCompilationError.explicitDatasetInSubquery
         }
-        let slice = try SPARQLSlice(
-            offset: query.offset ?? 0,
-            limit: query.limit
-        )
+        let offset: UInt64
+        switch query.pagination.offset {
+        case nil: offset = 0
+        case .fixed(let value): offset = value
+        case .expression:
+            throw SPARQLExpressionCompilationError.unsupportedExpression("SQL pagination expression")
+        }
+        let limit: UInt64?
+        switch query.pagination.limit {
+        case nil, .all: limit = nil
+        case .count(.fixed(let value), withTies: false): limit = value
+        case .count:
+            throw SPARQLExpressionCompilationError.unsupportedExpression("SQL pagination expression or WITH TIES")
+        }
+        let distinct: Bool
+        switch query.quantifier {
+        case .all: distinct = false
+        case .distinct: distinct = true
+        case .distinctOn:
+            throw SPARQLExpressionCompilationError.unsupportedExpression("SQL DISTINCT ON")
+        }
+        let slice = try SPARQLSlice(offset: offset, limit: limit)
         var aggregateRewriter = SPARQLAggregateRewriter()
         var rewrittenProjection = try rewriteProjection(
             query.projection,
@@ -172,20 +190,11 @@ public enum SPARQLSelectPlanCompiler {
             rewrittenOrderBy: queryLevel.rewrittenOrderBy,
             limits: context.expressionLimits
         )
-        let distinctFromProjection: Bool
-        if case .distinctItems = query.projection {
-            distinctFromProjection = true
-        } else {
-            distinctFromProjection = false
-        }
-
         return SPARQLSelectExecutionPlan(
             ordered: consume ordered,
             projectionVariables: projection,
             projectionIsIdentity: projectionIsIdentity,
-            duplicatePolicy: query.distinct
-                    || query.reduced
-                    || distinctFromProjection
+            duplicatePolicy: distinct || query.reduced
                 ? .distinct
                 : .preserve,
             slice: includesSolutionSlice ? slice : try SPARQLSlice()
@@ -193,182 +202,92 @@ public enum SPARQLSelectPlanCompiler {
     }
 
     private static func projectionVariables(
-        for projection: Projection,
+        for projection: [ProjectionItem],
         algebra: ExecutionPattern,
         additionalVariables: [String],
         inputVariables: Set<String>,
         requiresInScopeVariables: Bool
     ) throws -> [String] {
         let availableVariables = algebra.outputVariables.union(inputVariables)
-        switch projection {
-        case .all:
-            var variables = availableVariables
-            variables = Set(
-                variables.lazy.filter {
-                    !SPARQLInternalVariable.isInternal($0)
-                }
-            )
-            for variable in additionalVariables {
-                variables.insert(prefixedVariable(variable))
-            }
+        if projection == [.wildcard()] {
+            var variables = Set(availableVariables.filter { !SPARQLInternalVariable.isInternal($0) })
+            variables.formUnion(additionalVariables.map(prefixedVariable))
             return variables.sorted()
-        case .allFrom:
-            throw SPARQLSelectPlanCompilationError
-                .allFromProjectionUnsupported
-        case .items(let items), .distinctItems(let items):
-            var variables: [String] = []
-            variables.reserveCapacity(items.count)
-            var seen: Set<String> = []
-            for item in items {
-                let variable = try projectionVariable(from: item)
-                if requiresInScopeVariables {
-                    try validateReferences(
-                        [variable],
-                        availableVariables: availableVariables
-                    )
-                }
-                guard seen.insert(variable).inserted else {
-                    throw SPARQLSelectPlanCompilationError
-                        .duplicateProjectionVariable(variable)
-                }
-                variables.append(variable)
-            }
-            return variables
         }
+        var variables: [String] = []
+        var seen: Set<String> = []
+        for item in projection {
+            let variable = try projectionVariable(from: item)
+            if requiresInScopeVariables {
+                try validateReferences([variable], availableVariables: availableVariables)
+            }
+            guard seen.insert(variable).inserted else {
+                throw SPARQLSelectPlanCompilationError.duplicateProjectionVariable(variable)
+            }
+            variables.append(variable)
+        }
+        return variables
     }
 
-    private static func projectionVariable(
-        from item: ProjectionItem
-    ) throws -> String {
-        if let alias = item.alias {
-            return prefixedVariable(alias)
+    private static func projectionVariable(from item: ProjectionItem) throws -> String {
+        guard case .expression(let expression, let alias) = item else {
+            throw SPARQLSelectPlanCompilationError.allFromProjectionUnsupported
         }
-        switch item.expression {
-        case .variable(let variable):
-            return prefixedVariable(variable.name)
-        case .column(let column):
-            return prefixedVariable(column.column)
+        if let alias { return prefixedVariable(alias) }
+        switch expression {
+        case .variable(let variable): return prefixedVariable(variable.name)
+        case .column(let column): return prefixedVariable(column.column)
         case .aggregate:
-            throw GraphPatternConversionError
-                .unsupportedAggregateExpression(
-                    "aggregate projection without an alias"
-                )
-        default:
-            throw GraphPatternConversionError
-                .projectionExpressionRequiresAlias
+            throw GraphPatternConversionError.unsupportedAggregateExpression("aggregate projection without an alias")
+        default: throw GraphPatternConversionError.projectionExpressionRequiresAlias
         }
     }
 
     private static func rewriteProjection(
-        _ projection: Projection,
-        using rewriter: inout SPARQLAggregateRewriter
-    ) throws -> Projection {
-        let items: [ProjectionItem]
-        let isDistinct: Bool
-        switch projection {
-        case .items(let projectionItems),
-             .distinctItems(let projectionItems):
-            items = projectionItems
-            if case .distinctItems = projection {
-                isDistinct = true
-            } else {
-                isDistinct = false
+        _ projection: [ProjectionItem], using rewriter: inout SPARQLAggregateRewriter
+    ) throws -> [ProjectionItem] {
+        if projection == [.wildcard()] { return projection }
+        return try projection.map { item in
+            guard case .expression(let expression, let alias) = item else {
+                throw SPARQLSelectPlanCompilationError.allFromProjectionUnsupported
             }
-        case .all:
-            return .all
-        case .allFrom(let source):
-            return .allFrom(source)
-        }
-
-        var rewrittenItems: [ProjectionItem] = []
-        rewrittenItems.reserveCapacity(items.count)
-        for item in items {
-            if item.alias == nil {
-                switch item.expression {
-                case .variable, .column:
-                    break
-                default:
-                    throw GraphPatternConversionError
-                        .projectionExpressionRequiresAlias
+            if alias == nil {
+                switch expression {
+                case .variable, .column: break
+                default: throw GraphPatternConversionError.projectionExpressionRequiresAlias
                 }
             }
             let occurrenceCount = rewriter.aggregateOccurrenceCount
-            let expression = try rewriter.rewrite(item.expression)
-            if rewriter.aggregateOccurrenceCount != occurrenceCount,
-               item.alias == nil {
-                throw GraphPatternConversionError
-                    .projectionExpressionRequiresAlias
+            let rewritten = try rewriter.rewrite(expression)
+            if rewriter.aggregateOccurrenceCount != occurrenceCount, alias == nil {
+                throw GraphPatternConversionError.projectionExpressionRequiresAlias
             }
-            rewrittenItems.append(
-                ProjectionItem(expression, alias: item.alias)
-            )
+            return .expression(rewritten, alias: alias)
         }
-        return isDistinct
-            ? .distinctItems(consume rewrittenItems)
-            : .items(consume rewrittenItems)
     }
 
     private static func rewriteGroupedProjection(
-        _ projection: Projection,
-        groupedExpressions: SPARQLGroupedExpressionBindings,
-        directlyGroupedVariables: Set<String>,
-        aggregateRewriter: inout SPARQLAggregateRewriter
-    ) throws -> Projection {
-        let items: [ProjectionItem]
-        let isDistinct: Bool
-        switch projection {
-        case .items(let projectionItems):
-            items = projectionItems
-            isDistinct = false
-        case .distinctItems(let projectionItems):
-            items = projectionItems
-            isDistinct = true
-        case .all, .allFrom:
-            return projection
-        }
-
-        var rewrittenItems: [ProjectionItem] = []
-        rewrittenItems.reserveCapacity(items.count)
-        for item in items {
-            var scopeRewriter = SPARQLGroupScopeExpressionRewriter(
+        _ projection: [ProjectionItem], groupedExpressions: SPARQLGroupedExpressionBindings,
+        directlyGroupedVariables: Set<String>, aggregateRewriter: inout SPARQLAggregateRewriter
+    ) throws -> [ProjectionItem] {
+        if projection == [.wildcard()] { return projection }
+        return try projection.map { item in
+            guard case .expression(let expression, let alias) = item else {
+                throw SPARQLSelectPlanCompilationError.allFromProjectionUnsupported
+            }
+            var rewriter = SPARQLGroupScopeExpressionRewriter(
                 groupedExpressions: groupedExpressions,
                 directlyGroupedVariables: directlyGroupedVariables,
-                eligibleVariables: [],
-                protectedVariables: []
-            )
-            rewrittenItems.append(
-                ProjectionItem(
-                    try scopeRewriter.rewrite(
-                        item.expression,
-                        aggregateRewriter: &aggregateRewriter
-                    ),
-                    alias: item.alias
-                )
-            )
+                eligibleVariables: [], protectedVariables: [])
+            return .expression(try rewriter.rewrite(expression, aggregateRewriter: &aggregateRewriter), alias: alias)
         }
-        return isDistinct
-            ? .distinctItems(consume rewrittenItems)
-            : .items(consume rewrittenItems)
     }
 
-    private static func projectionAliasVariables(
-        in projection: Projection
-    ) -> Set<String> {
-        let items: [ProjectionItem]
-        switch projection {
-        case .items(let projectionItems),
-             .distinctItems(let projectionItems):
-            items = projectionItems
-        case .all, .allFrom:
-            return []
-        }
-        var variables: Set<String> = []
-        for item in items {
-            if let alias = item.alias {
-                variables.insert(prefixedVariable(alias))
-            }
-        }
-        return variables
+    private static func projectionAliasVariables(in projection: [ProjectionItem]) -> Set<String> {
+        Set(projection.compactMap { item in
+            guard case .expression(_, let alias) = item, let alias else { return nil }
+            return prefixedVariable(alias)
+        })
     }
 
     private static func validateReferences(

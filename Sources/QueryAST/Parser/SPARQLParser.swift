@@ -420,7 +420,7 @@ public final class SPARQLParser {
     ) throws -> Expression {
         let source = try makeStructuralNode(DataSource.graphPattern(pattern))
         let query = try makeStructuralNode(
-            SelectQuery(projection: .all, source: source)
+            SelectQuery(projection: [.wildcard()], source: source)
         )
         let exists = try makeStructuralNode(Expression.exists(query))
         if negated {
@@ -1642,19 +1642,18 @@ extension SPARQLParser {
                 groupBy: modifiers.groupBy.isEmpty ? nil : modifiers.groupBy,
                 having: modifiers.combinedHaving,
                 orderBy: modifiers.orderBy.isEmpty ? nil : modifiers.orderBy,
-                limit: modifiers.limit,
-                offset: modifiers.offset,
-                distinct: distinct,
+                quantifier: distinct ? .distinct : .all,
+                pagination: QueryPagination(limit: modifiers.limit.map { .count(.fixed($0), withTies: false) }, offset: modifiers.offset.map { .fixed($0) }),
                 reduced: reduced,
                 dataset: dataset
             )
         )
     }
 
-    private func parseSelectClause() throws -> Projection {
+    private func parseSelectClause() throws -> [ProjectionItem] {
         if case .symbol("*") = currentToken {
             advance()
-            return .all
+            return [.wildcard()]
         }
 
         var items: [ProjectionItem] = []
@@ -1700,7 +1699,7 @@ extension SPARQLParser {
                 position: input.distance(from: input.startIndex, to: position)
             )
         }
-        return .items(items)
+        return items
     }
 
     private func parseDatasetClauses() throws -> SPARQLDataset {

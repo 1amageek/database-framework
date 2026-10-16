@@ -271,8 +271,7 @@ struct RankExecutorCanonicalTests {
         )
         try await scenario.context.save()
 
-        let query = SelectQuery(
-            projection: .all,
+        let query = SelectQuery(projection: [.wildcard()],
             source: .logical(
                     LogicalSourceRef(
                         kindIdentifier: LogicalSourceKind.polymorphic,
@@ -289,8 +288,7 @@ struct RankExecutorCanonicalTests {
                         RankReadParameter.count: .int64(3),
                     ]
                 )
-            )
-        )
+            ))
         let meter = makeMeter(for: scenario.container)
         let response = try await execute(
             query,

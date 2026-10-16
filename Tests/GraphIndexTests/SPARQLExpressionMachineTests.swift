@@ -262,10 +262,8 @@ struct SPARQLExpressionMachineTests {
         let log = ResolutionLog()
         let plan = try SPARQLExpressionPlan(
             .exists(
-                SelectQuery(
-                    projection: .all,
-                    source: .graphPattern(.basic([]))
-                )
+                SelectQuery(projection: [.wildcard()],
+            source: .graphPattern(.basic([])))
             )
         )
 

@@ -296,7 +296,13 @@ evidence.
 S07 composes selected arrays and JSON through the
 [DatabaseEngine collection boundary](Sources/DatabaseEngine/DESIGN.md#s07-collection-composition).
 Existing stored value formats and transport value codecs remain authoritative;
-only expression carriage and in-process semantics change. Public ROW and
-array-subquery construction remain required S08 composition, and general
-set-function relation invocation remains required S10 composition. Each gate
-retains explicit unsupported failures until its actual execution proof exists.
+only expression carriage and in-process semantics change. S08 composes the
+[Query canonical relation contract](../database-kit/Sources/DatabaseKit/Query/DESIGN.md#s08-frozen-relational-query-carriage)
+with QueryAST's parser/emitter and DatabaseEngine's selected relation, source
+presence, CTE lifecycle and optional Base merge contracts. Public Database
+results and downstream Wire consumers must preserve that composition.
+General set-function relation invocation remains required S10 composition.
+Each implementation gate retains explicit unsupported failures until its
+actual execution proof exists. Full FoundationDB, graph-enabled Database
+portable and MultiBase portable integration, final URL verification and push
+remain the user's S18 verification boundary.

@@ -170,7 +170,7 @@ struct CompositionSnapshotAuthorizationIsolationTests {
         let firstContext = session.base(fixture.firstBaseID).newContext()
         let secondContext = session.base(fixture.secondBaseID).newContext()
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(TableRef(Anchor.persistableType))
         )
         let execution = ReadExecutionContext(
@@ -279,7 +279,7 @@ struct CompositionSnapshotAuthorizationIsolationTests {
             authorization: fixture.ownerAuthorization
         ).base(fixture.firstBaseID).newContext()
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(TableRef(Anchor.persistableType))
         )
         let execution = ReadExecutionContext(

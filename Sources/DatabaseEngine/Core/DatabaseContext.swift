@@ -2319,7 +2319,7 @@ extension DatabaseContext {
                 )
             }
             let selectQuery = SelectQuery(
-                projection: .all,
+                projection: [.wildcard()],
                 source: .logical(
                     LogicalSourceRef(
                         kindIdentifier: LogicalSourceKind.polymorphic,

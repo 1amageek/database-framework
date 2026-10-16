@@ -1,6 +1,7 @@
 #if MultiBase
 import DatabaseKit
 import DatabaseRuntime
+import DatabaseTypes
 import StorageKit
 import Synchronization
 import TestSupport
@@ -17,6 +18,17 @@ struct CompositionQueryExecutorTests {
 
     private enum DecisionTestError: Error {
         case rollbackRequested
+    }
+
+    private final class CountingCompositionClock: WallClock {
+        private let state = Mutex(0)
+
+        var readCount: Int { state.withLock { $0 } }
+
+        var now: Timestamp {
+            state.withLock { $0 += 1 }
+            return Timestamp(secondsSinceUnixEpoch: 2)
+        }
     }
 
     private actor DecisionOperationProbe {
@@ -71,10 +83,10 @@ struct CompositionQueryExecutorTests {
         let parameters = [QueryParameter(position: 1, name: "value", value: .primitive(.null), type: .sql(.bigint))]
         let empty = try await executeParameterizedQuery(
             SelectQuery(
-                projection: .items([
+                projection: [
                     ProjectionItem(.parameter(.position(1)), alias: "position"),
                     ProjectionItem(.parameter(.name("value")), alias: "name"),
-                ]),
+                ],
                 source: .table(TableRef(Item.persistableType))
             ), source: source, parameters: parameters, fixture: fixture
         )
@@ -87,10 +99,10 @@ struct CompositionQueryExecutorTests {
         let raw = [QueryParameter(position: 1, name: "value", value: .primitive(.int64(2)))]
         let filtered = try await executeParameterizedQuery(
             SelectQuery(
-                projection: .items([
+                projection: [
                     ProjectionItem(.column(ColumnRef("rank")), alias: "rank"),
                     ProjectionItem(.parameter(.name("value")), alias: "parameter"),
-                ]),
+                ],
                 source: .table(TableRef(Item.persistableType)),
                 filter: .greaterThanOrEqual(.column(ColumnRef("rank")), .parameter(.position(1))),
                 orderBy: [SortKey(.column(ColumnRef("rank")), direction: .ascending)]
@@ -100,7 +112,7 @@ struct CompositionQueryExecutorTests {
         #expect(filtered.rows.allSatisfy { $0.row.values[1] == .primitive(.int64(2)) })
         let aggregate = try await executeParameterizedQuery(
             SelectQuery(
-                projection: .items([ProjectionItem(.aggregate(.sum(.parameter(.name("value")), distinct: false)), alias: "sum")]),
+                projection: [ProjectionItem(.aggregate(.sum(.parameter(.name("value")), distinct: false)), alias: "sum")],
                 source: .table(TableRef(Item.persistableType)),
                 filter: .greaterThanOrEqual(.column(ColumnRef("rank")), .parameter(.position(1)))
             ), source: source, parameters: raw, fixture: fixture
@@ -118,15 +130,26 @@ struct CompositionQueryExecutorTests {
         let joined = try await executeParameterizedQuery(join, source: source, parameters: raw, fixture: fixture)
         #expect(joined.rows.count == 1)
         #expect(joined.rows[0].row.values == [.primitive(.int64(1)), .primitive(.int64(2))])
+        let orderedJoin = try await executeParameterizedQuery(join.replacing(orderBy: [SortKey(
+            .subtract(.literal(.int(0)), .column(ColumnRef(table: "world", column: "rank"))))])
+            .replacing(pagination: QueryPagination(limit: .count(.expression(.parameter(.position(1))), withTies: true))),
+            source: source, parameters: raw, fixture: fixture)
+        #expect(orderedJoin.rows.map { $0.row.values } == joined.rows.map { $0.row.values })
+        let skippedAggregate = try await executeParameterizedQuery(
+            SelectQuery(projection: [ProjectionItem(.aggregate(.count(nil, distinct: false)), alias: "total")],
+                source: .table(TableRef(Item.persistableType)), pagination: QueryPagination(
+                    offset: .expression(.parameter(.position(1))))),
+            source: source, parameters: raw, fixture: fixture)
+        #expect(skippedAggregate.rows.isEmpty)
         let probe = PublicationEventProbe()
         let execution = ReadExecutionContext(options: .default, monotonicClock: fixture.container.monotonicClock)
         await #expect(throws: DatabaseExpressionEvaluationError.typeMismatch(operation: "ambiguous parameter type")) {
             try await CompositionQueryPlanner(structuralLimits: execution.queryStructuralLimits).execute(
                 SelectQuery(
-                    projection: .items([
+                    projection: [
                         ProjectionItem(.parameter(.position(1)), alias: "earlier"),
                         ProjectionItem(.cast(.parameter(.name("value")), targetType: .bigint), alias: "later"),
-                    ]), source: .table(TableRef(Item.persistableType))
+                    ], source: .table(TableRef(Item.persistableType))
                 ), source: source,
                 options: CompositionQueryExecutionOptions(pageSize: 1, readContext: execution,
                     parameters: [QueryParameter(position: 1, name: "value", value: .primitive(.null))])
@@ -152,6 +175,241 @@ struct CompositionQueryExecutorTests {
         return await probe.result()
     }
 
+    @Test("Selected global keys preserve non-output expressions, SQL peers and DISTINCT ON", .timeLimit(.minutes(2)))
+    func selectedGlobalKeysAndPeers() async throws {
+        let clock = CountingCompositionClock()
+        let fixture = try await makeFixture(readerCanReadSecondary: true)
+        defer { await fixture.container.shutdown() }
+        try await insert([("one", 1), ("three", 3)], baseID: fixture.primaryBaseID, fixture: fixture)
+        try await insert([("two", 2), ("four", 4)], baseID: fixture.secondaryBaseID, fixture: fixture)
+        let source = fixture.container.session(authorization: fixture.readerAuthorization).composition(fixture.compositionID)
+        let rank = DatabaseKit.Expression.column(ColumnRef("rank"))
+        let descending = SelectQuery(projection: [ProjectionItem(.column(ColumnRef("id")), alias: "label")],
+            source: .table(TableRef(Item.persistableType)),
+            orderBy: [SortKey(.subtract(.literal(.int(0)), rank))])
+        let ordered = try await executeParameterizedQuery(descending, source: source, parameters: [], fixture: fixture)
+        #expect(ordered.columns.map(\.name) == ["label"])
+        #expect(ordered.rows.map { $0.row.values[0] } == ["four", "three", "two", "one"].map { .primitive(.string($0)) })
+        #expect(ordered.rows.allSatisfy { $0.row.annotations.isEmpty })
+
+        let parity = DatabaseKit.Expression.modulo(rank, .literal(.int(2)))
+        let peers = SelectQuery(projection: [ProjectionItem(rank, alias: "position")],
+            source: .table(TableRef(Item.persistableType)), orderBy: [SortKey(parity)],
+            pagination: QueryPagination(limit: .count(.expression(.parameter(.position(1))), withTies: true)))
+        let tied = try await executeParameterizedQuery(peers, source: source,
+            parameters: [QueryParameter(position: 1, value: .primitive(.int64(1)), type: .sql(.bigint))], fixture: fixture)
+        #expect(tied.rows.count == 2)
+        #expect(Set(tied.rows.map { $0.row.values[0] }) == Set([QueryValue.primitive(.int64(2)), .primitive(.int64(4))]))
+
+        let representatives = peers.replacing(quantifier: .distinctOn([parity]))
+            .replacing(orderBy: [SortKey(parity), SortKey(rank, direction: .descending)])
+            .replacing(pagination: QueryPagination())
+        let distinct = try await executeParameterizedQuery(representatives, source: source, parameters: [], fixture: fixture)
+        #expect(distinct.rows.map { $0.row.values[0] } == [.primitive(.int64(4)), .primitive(.int64(3))])
+        #expect(distinct.rows.map(\.origin) == [.source(fixture.secondaryBaseID), .source(fixture.primaryBaseID)])
+
+        let byOrdinal = peers.replacing(orderBy: [SortKey(.literal(.int(1)), direction: .descending)])
+            .replacing(pagination: QueryPagination(limit: .count(.fixed(2), withTies: false),
+                offset: .expression(.parameter(.position(1)))))
+        let page = try await executeParameterizedQuery(byOrdinal, source: source,
+            parameters: [QueryParameter(position: 1, value: .primitive(.int64(1)), type: .sql(.bigint))], fixture: fixture)
+        #expect(page.rows.map { $0.row.values[0] } == [.primitive(.int64(3)), .primitive(.int64(2))])
+
+        let count = DatabaseKit.Expression.cast(.function(FunctionCall(name: "date_part", arguments: [
+            .literal(.string("second")), .function(FunctionCall(name: "clock_timestamp", arguments: []))
+        ])), targetType: .bigint)
+        let captured = source.makeSQLTemporalEnvironment()
+        // Count SQL evaluation separately from control-metadata transaction timestamps.
+        let environment = SQLTemporalEnvironment(transactionInstant: captured.transactionInstant,
+            statementInstant: captured.statementInstant, wallClock: clock, configuration: captured.configuration)
+        let execution = ReadExecutionContext(options: .default, monotonicClock: fixture.container.monotonicClock,
+            temporalEnvironment: environment)
+        let probe = CompositionRowProbe()
+        let baseline = clock.readCount
+        try await CompositionQueryPlanner(structuralLimits: execution.queryStructuralLimits).execute(
+            descending.replacing(pagination: QueryPagination(limit: .count(.expression(count), withTies: false))),
+            source: source, options: CompositionQueryExecutionOptions(pageSize: 1, readContext: execution)
+        ) { event in await probe.receive(event) }
+        #expect(clock.readCount - baseline == 1)
+        #expect(await probe.rows().count == 2)
+    }
+
+    @Test("Selected temporal identity merges lineage and SQL NULL defaults stay global", .timeLimit(.minutes(2)))
+    func selectedTemporalIdentityAndNullOrder() async throws {
+        let fixture = try await makeFixture(readerCanReadSecondary: true)
+        defer { await fixture.container.shutdown() }
+        try await insert([("one", 1)], baseID: fixture.primaryBaseID, fixture: fixture)
+        try await insert([("two", 2)], baseID: fixture.secondaryBaseID, fixture: fixture)
+        let source = fixture.container.session(authorization: fixture.readerAuthorization).composition(fixture.compositionID)
+        let month = try QueryIntervalValue(period: CalendarPeriod(months: 1, days: 0), time: TimeSpan(seconds: 0))
+        let days = try QueryIntervalValue(period: CalendarPeriod(months: 0, days: 30), time: TimeSpan(seconds: 0))
+        let rank = DatabaseKit.Expression.column(ColumnRef("rank"))
+        let condition = DatabaseKit.Expression.equal(rank, .literal(.int(1)))
+        let interval = DatabaseKit.Expression.caseWhen(cases: [CaseWhenPair(condition: condition,
+            result: .literal(.queryValue(.interval(month), type: .sql(.interval()))))],
+            elseResult: .literal(.queryValue(.interval(days), type: .sql(.interval()))))
+        let query = SelectQuery(projection: [ProjectionItem(interval, alias: "duration")],
+            source: .table(TableRef(Item.persistableType)), orderBy: [SortKey(.column(ColumnRef("duration")))],
+            quantifier: .distinct)
+        let result = try await executeParameterizedQuery(query, source: source, parameters: [], fixture: fixture)
+        try #require(result.rows.count == 1)
+        #expect(result.columns.map(\.type) == [.sql(.interval())])
+        #expect(result.rows[0].origin == .derived(contributors: [fixture.primaryBaseID, fixture.secondaryBaseID].sorted()))
+
+        let nullable = DatabaseKit.Expression.caseWhen(cases: [CaseWhenPair(condition: condition,
+            result: .cast(.literal(.null), targetType: .bigint))], elseResult: rank)
+        let nulls = SelectQuery(projection: [ProjectionItem(rank, alias: "position")],
+            source: .table(TableRef(Item.persistableType)), orderBy: [SortKey(nullable)])
+        let ascending = try await executeParameterizedQuery(nulls, source: source, parameters: [], fixture: fixture)
+        #expect(ascending.rows.map { $0.row.values[0] } == [.primitive(.int64(2)), .primitive(.int64(1))])
+        let descending = try await executeParameterizedQuery(nulls.replacing(orderBy: [SortKey(nullable, direction: .descending)]),
+            source: source, parameters: [], fixture: fixture)
+        #expect(descending.rows.map { $0.row.values[0] } == [.primitive(.int64(1)), .primitive(.int64(2))])
+
+        let joinedSource = DataSource.join(JoinClause(type: .left,
+            left: .aliased(.table(TableRef(Item.persistableType)), name: "a"),
+            right: .aliased(.table(TableRef(Item.persistableType)), name: "b"),
+            condition: .on(.and(.equal(.column(ColumnRef(table: "a", column: "id")),
+                .column(ColumnRef(table: "b", column: "id"))),
+                .equal(.column(ColumnRef(table: "a", column: "rank")), .literal(.int(1)))))))
+        let joined = SelectQuery(projection: [ProjectionItem(.wholeRow("b"), alias: "member"),
+            ProjectionItem(.column(ColumnRef(table: "a", column: "rank")), alias: "position")],
+            source: joinedSource, orderBy: [SortKey(.column(ColumnRef("position")))])
+        let presence = try await executeParameterizedQuery(joined, source: source, parameters: [], fixture: fixture)
+        try #require(presence.rows.count == 2)
+        if case .composite = presence.rows[0].row.values[0] {} else { Issue.record("Expected present joined whole row") }
+        #expect(presence.rows[1].row.values[0].isNull)
+        #expect(presence.rows.map(\.origin) == [.source(fixture.primaryBaseID), .source(fixture.secondaryBaseID)])
+
+        let inner = SelectQuery(projection: [ProjectionItem(.column(ColumnRef(table: "b", column: "rank")))],
+            source: .aliased(.table(TableRef(Item.persistableType)), name: "b"),
+            filter: .equal(.column(ColumnRef(table: "b", column: "id")), .column(ColumnRef(table: "a", column: "id"))))
+        let correlated = SelectQuery(projection: [ProjectionItem(.column(ColumnRef(table: "a", column: "rank")), alias: "position"),
+            ProjectionItem(.subquery(inner), alias: "local_value")],
+            source: .aliased(.table(TableRef(Item.persistableType)), name: "a"), orderBy: [SortKey(.literal(.int(1)))])
+        let local = try await executeParameterizedQuery(correlated, source: source, parameters: [], fixture: fixture)
+        #expect(local.rows.map { $0.row.values } == [
+            [.primitive(.int64(1)), .primitive(.int64(1))],
+            [.primitive(.int64(2)), .primitive(.int64(2))],
+        ])
+    }
+
+    @Test("Selected global retained sort fails without publication and releases its exact claims", .timeLimit(.minutes(2)))
+    func selectedGlobalBudgetAndRelease() async throws {
+        let fixture = try await makeFixture(readerCanReadSecondary: true)
+        defer { await fixture.container.shutdown() }
+        try await insert([("one", 1), ("three", 3)], baseID: fixture.primaryBaseID, fixture: fixture)
+        try await insert([("two", 2), ("four", 4)], baseID: fixture.secondaryBaseID, fixture: fixture)
+        let source = fixture.container.session(authorization: fixture.readerAuthorization).composition(fixture.compositionID)
+        let query = SelectQuery(projection: [ProjectionItem(.column(ColumnRef("id")))],
+            source: .table(TableRef(Item.persistableType)),
+            orderBy: [SortKey(.column(ColumnRef("rank")))])
+        let calibrated = ReadExecutionContext(options: .default, monotonicClock: fixture.container.monotonicClock)
+        try await CompositionQueryPlanner(structuralLimits: calibrated.queryStructuralLimits).execute(query,
+            source: source, options: CompositionQueryExecutionOptions(pageSize: 1, readContext: calibrated)) { _ in true }
+        #expect(calibrated.workMeter.retainedIntermediateBytes == 0)
+        #expect(calibrated.workMeter.retainedIntermediateRows == 0)
+        let maximum = calibrated.workMeter.peakIntermediateBytes
+        #expect(maximum > 0)
+        let budget = ExecutionBudget(maximumRows: 100, maximumWorkUnits: 1_000_000,
+            maximumIntermediateRows: 10_000, maximumIntermediateBytes: maximum - 1, timeoutMilliseconds: 30_000)
+        let limited = ReadExecutionContext(options: ReadExecutionOptions(pageSize: 1, budget: budget),
+            monotonicClock: fixture.container.monotonicClock)
+        let publication = PublicationEventProbe()
+        await #expect(throws: DatabaseWorkLimitError.self) {
+            try await CompositionQueryPlanner(structuralLimits: limited.queryStructuralLimits).execute(query,
+                source: source, options: CompositionQueryExecutionOptions(pageSize: 1, readContext: limited)) { _ in
+                    await publication.receive()
+                    return true
+                }
+        }
+        #expect(await publication.receivedCount() == 0)
+        #expect(limited.workMeter.retainedIntermediateBytes == 0)
+        #expect(limited.workMeter.retainedIntermediateRows == 0)
+        let recovered = try await source.execute(query)
+        #expect(recovered.rows.count == 4)
+
+        let aggregate = SelectQuery(projection: [ProjectionItem(.aggregate(.count(nil, distinct: false)), alias: "total")],
+            source: .table(TableRef(Item.persistableType)))
+        for plan in [query, aggregate, crossBaseQuery(fixture: fixture, joinType: .inner)] {
+            let zero = ReadExecutionContext(options: .default, monotonicClock: fixture.container.monotonicClock)
+            let zeroPublication = PublicationEventProbe()
+            try await CompositionQueryPlanner(structuralLimits: zero.queryStructuralLimits).execute(
+                plan.replacing(pagination: QueryPagination(limit: .count(.expression(.parameter(.position(1))), withTies: false))),
+                source: source, options: CompositionQueryExecutionOptions(pageSize: 1, readContext: zero,
+                    parameters: [QueryParameter(position: 1, value: .primitive(.int64(0)), type: .sql(.bigint))])
+            ) { _ in await zeroPublication.receive(); return true }
+            #expect(await zeroPublication.receivedCount() == 1)
+            #expect(zero.workMeter.consumedRows == 0)
+            #expect(zero.workMeter.retainedIntermediateBytes == 0)
+            #expect(zero.workMeter.retainedIntermediateRows == 0)
+        }
+
+        let countQuery = SelectQuery(projection: [ProjectionItem(.literal(.int(1)))], source: .values([[]]))
+        let unsupported = query.replacing(pagination: QueryPagination(
+            limit: .count(.expression(.subquery(countQuery)), withTies: false)))
+        let scope = ReadExecutionContext(options: .default, monotonicClock: fixture.container.monotonicClock)
+        let countPublication = PublicationEventProbe()
+        await #expect(throws: CanonicalReadError.self) {
+            try await CompositionQueryPlanner(structuralLimits: scope.queryStructuralLimits).execute(unsupported,
+                source: source, options: CompositionQueryExecutionOptions(pageSize: 1, readContext: scope)) { _ in
+                    await countPublication.receive()
+                    return true
+                }
+        }
+        #expect(await countPublication.receivedCount() == 0)
+        #expect(scope.workMeter.retainedIntermediateBytes == 0)
+        #expect(scope.workMeter.retainedIntermediateRows == 0)
+    }
+
+    @Test("Selected CHAR, array, numeric and composite keys retain their declared meaning", .timeLimit(.minutes(2)))
+    func selectedRichKeyMeaning() async throws {
+        let fixture = try await makeFixture(readerCanReadSecondary: true)
+        defer { await fixture.container.shutdown() }
+        try await insert([("one", 1)], baseID: fixture.primaryBaseID, fixture: fixture)
+        try await insert([("two", 2)], baseID: fixture.secondaryBaseID, fixture: fixture)
+        let source = fixture.container.session(authorization: fixture.readerAuthorization).composition(fixture.compositionID)
+        let rank = DatabaseKit.Expression.column(ColumnRef("rank"))
+        let condition = DatabaseKit.Expression.equal(rank, .literal(.int(1)))
+        let char = DataType.char(length: nil)
+        let numeric = DataType.decimal(precision: nil, scale: nil)
+        let month = try QueryIntervalValue(period: CalendarPeriod(months: 1, days: 0), time: TimeSpan(seconds: 0))
+        let days = try QueryIntervalValue(period: CalendarPeriod(months: 0, days: 30), time: TimeSpan(seconds: 0))
+        let scaled = try QueryNumericValue(value: ExactDecimal(coefficient: 125, scale: 2), displayScale: 5)
+        let plain = try QueryNumericValue(value: ExactDecimal(coefficient: 125, scale: 2), displayScale: 2)
+        let expressions: [DatabaseKit.Expression] = [
+            .collate(.caseWhen(cases: [CaseWhenPair(condition: condition,
+                result: .literal(.queryValue(.primitive(.string("a")), type: .sql(char))))],
+                elseResult: .literal(.queryValue(.primitive(.string("a  ")), type: .sql(char)))), collation: .c),
+            .caseWhen(cases: [CaseWhenPair(condition: condition,
+                result: .literal(.queryValue(.numeric(scaled), type: .sql(numeric))))],
+                elseResult: .literal(.queryValue(.numeric(plain), type: .sql(numeric)))),
+            .array([.caseWhen(cases: [CaseWhenPair(condition: condition,
+                result: .literal(.queryValue(.interval(month), type: .sql(.interval()))))],
+                elseResult: .literal(.queryValue(.interval(days), type: .sql(.interval()))))]),
+        ]
+        for expression in expressions {
+            let query = SelectQuery(projection: [ProjectionItem(expression, alias: "value")],
+                source: .table(TableRef(Item.persistableType)), orderBy: [SortKey(.literal(.int(1)))], quantifier: .distinct)
+            let result = try await executeParameterizedQuery(query, source: source, parameters: [], fixture: fixture)
+            #expect(result.rows.count == 1)
+            #expect(result.rows[0].origin == .derived(contributors: [fixture.primaryBaseID, fixture.secondaryBaseID].sorted()))
+        }
+        let composite = SelectQuery(projection: [ProjectionItem(.row([rank, .cast(.literal(.null), targetType: .text)]), alias: "value")],
+            source: .table(TableRef(Item.persistableType)), orderBy: [SortKey(.literal(.int(1)), direction: .descending)])
+        let ordered = try await executeParameterizedQuery(composite, source: source, parameters: [], fixture: fixture)
+        guard case .sql(.composite(let descriptor)) = ordered.columns[0].type,
+              case .composite(let first) = ordered.rows[0].row.values[0],
+              case .composite(let second) = ordered.rows[1].row.values[0] else {
+            Issue.record("Expected retained selected composite descriptors and values")
+            return
+        }
+        #expect(descriptor.columns.map(\.name) == ["f1", "f2"])
+        #expect(first.fields[0] == .primitive(.int64(2)))
+        #expect(second.fields[0] == .primitive(.int64(1)))
+        #expect(first.fields[1].isNull && second.fields[1].isNull)
+    }
+
     @Test("Composition numeric aggregates retain widened state and release after final overflow")
     func selectedNumericAggregateWorkspace() async throws {
         let fixture = try await makeFixture(readerCanReadSecondary: true)
@@ -167,7 +425,7 @@ struct CompositionQueryExecutorTests {
         let failureContext = ReadExecutionContext(options: .default, monotonicClock: fixture.container.monotonicClock)
         do {
             try await CompositionQueryPlanner(structuralLimits: failureContext.queryStructuralLimits).execute(
-                SelectQuery(projection: .items([ProjectionItem(.aggregate(.sum(operand, distinct: false)), alias: "sum")]),
+                SelectQuery(projection: [ProjectionItem(.aggregate(.sum(operand, distinct: false)), alias: "sum")],
                             source: .table(TableRef(Item.persistableType))), source: source,
                 options: CompositionQueryExecutionOptions(pageSize: 1, readContext: failureContext, parameters: parameters)
             ) { _ in true }
@@ -180,10 +438,10 @@ struct CompositionQueryExecutorTests {
         let signed = DatabaseKit.Expression.multiply(operand,
             .cast(.column(ColumnRef("rank")), targetType: .decimal(precision: nil, scale: nil)))
         let valid = try await executeParameterizedQuery(
-            SelectQuery(projection: .items([
+            SelectQuery(projection: [
                 ProjectionItem(.aggregate(.avg(operand, distinct: false)), alias: "average"),
                 ProjectionItem(.aggregate(.sum(signed, distinct: false)), alias: "sum"),
-            ]), source: .table(TableRef(Item.persistableType))), source: source, parameters: parameters, fixture: fixture)
+            ], source: .table(TableRef(Item.persistableType))), source: source, parameters: parameters, fixture: fixture)
         #expect(valid.rows.count == 1)
         #expect(valid.columns.map(\.type) == [numericType, numericType])
         let expected = QueryValue.numeric(try QueryNumericValue(
@@ -192,7 +450,7 @@ struct CompositionQueryExecutorTests {
         let scaledParameters = [QueryParameter(position: 1, value: .numeric(try QueryNumericValue(
             value: ExactDecimal(coefficient: 125, scale: 2), displayScale: 5)), type: numericType)]
         let scaled = try await executeParameterizedQuery(
-            SelectQuery(projection: .items([ProjectionItem(.aggregate(.sum(operand, distinct: false)), alias: "sum")]),
+            SelectQuery(projection: [ProjectionItem(.aggregate(.sum(operand, distinct: false)), alias: "sum")],
                         source: .table(TableRef(Item.persistableType))), source: source,
             parameters: scaledParameters, fixture: fixture)
         #expect(scaled.rows[0].row.values == [.numeric(try QueryNumericValue(
@@ -200,10 +458,10 @@ struct CompositionQueryExecutorTests {
         let primitiveParameters = [QueryParameter(position: 1,
             value: .primitive(.decimal(ExactDecimal(coefficient: 125, scale: 2))), type: numericType)]
         let primitive = try await executeParameterizedQuery(
-            SelectQuery(projection: .items([
+            SelectQuery(projection: [
                 ProjectionItem(.aggregate(.sum(operand, distinct: false)), alias: "sum"),
                 ProjectionItem(.aggregate(.avg(operand, distinct: false)), alias: "average"),
-            ]), source: .table(TableRef(Item.persistableType))), source: source,
+            ], source: .table(TableRef(Item.persistableType))), source: source,
             parameters: primitiveParameters, fixture: fixture)
         #expect(primitive.rows[0].row.values == [
             .numeric(try QueryNumericValue(value: ExactDecimal(coefficient: 375, scale: 2), displayScale: 2)),
@@ -326,10 +584,10 @@ struct CompositionQueryExecutorTests {
             authorization: fixture.readerAuthorization
         ).composition(fixture.compositionID)
         let query = SelectQuery(
-            projection: .items([
+            projection: [
                 ProjectionItem(.cast(.literal(.null), targetType: .bigint), alias: "same"),
                 ProjectionItem(.column(ColumnRef("rank")), alias: "same"),
-            ]),
+            ],
             source: .table(TableRef(Item.persistableType))
         )
         let empty = try await source.execute(query)
@@ -415,7 +673,7 @@ struct CompositionQueryExecutorTests {
         )
 
         let aggregateQuery = SelectQuery(
-            projection: .items([
+            projection: [
                 ProjectionItem(
                     .aggregate(
                         .min(.column(ColumnRef(column: "id")))
@@ -428,7 +686,7 @@ struct CompositionQueryExecutorTests {
                     ),
                     alias: "maximum"
                 ),
-            ]),
+            ],
             source: .table(TableRef(Item.persistableType))
         )
         let aggregateSource = fixture.container.session(
@@ -661,7 +919,7 @@ struct CompositionQueryExecutorTests {
                     .queryStructuralLimits
             ).execute(
                 SelectQuery(
-                    projection: .items([
+                    projection: [
                         ProjectionItem(
                             .aggregate(
                                 .sum(
@@ -671,7 +929,7 @@ struct CompositionQueryExecutorTests {
                             ),
                             alias: "invalidSum"
                         )
-                    ]),
+                    ],
                     source: .table(TableRef(Item.persistableType))
                 ),
                 source: aggregateSource,
@@ -698,24 +956,20 @@ struct CompositionQueryExecutorTests {
             failingAggregateContext.workMeter.retainedIntermediateBytes == 0
         )
 
-        let streamedRows = try await aggregateSource.execute(
+        // This canonical query retains admitted source relations before global LIMIT.
+        // Its result uses the standard budget; exact aggregate bounds are verified above.
+        let selectedRows = try await aggregateSource.execute(
             SelectQuery(
-                projection: .all,
+                projection: [.wildcard()],
                 source: .table(TableRef(Item.persistableType)),
-                limit: 2
+                pagination: QueryPagination(limit: .count(.fixed(2), withTies: false))
             ),
             options: ReadExecutionOptions(
                 pageSize: 1,
-                budget: ExecutionBudget(
-                    maximumRows: 100,
-                    maximumWorkUnits: 100_000,
-                    maximumIntermediateRows: 8,
-                    maximumIntermediateBytes: 4 * 1_024 * 1_024,
-                    timeoutMilliseconds: 30_000
-                )
+                budget: ExecutionBudget()
             )
         )
-        #expect(streamedRows.rows.count == 2)
+        #expect(selectedRows.rows.count == 2)
     }
 
     @Test("Composition validates structure before opening a read snapshot")
@@ -739,7 +993,7 @@ struct CompositionQueryExecutorTests {
         await #expect(throws: QueryStructuralValidationError.self) {
             try await planner.execute(
                 SelectQuery(
-                    projection: .all,
+                    projection: [.wildcard()],
                     source: .table(TableRef(Item.persistableType))
                 ),
                 source: source,
@@ -757,6 +1011,36 @@ struct CompositionQueryExecutorTests {
         #expect(readContext.workMeter.retainedIntermediateBytes == 0)
     }
 
+    @Test("Unadmitted Composition sources reject canonical metadata before opening member reads", .timeLimit(.minutes(2)))
+    func unsupportedSourcesRejectBeforeMemberRead() async throws {
+        let fixture = try await makeFixture(readerCanReadSecondary: true)
+        defer { await fixture.container.shutdown() }
+        fixture.secondaryEngine.requestShutdown()
+        await fixture.secondaryEngine.waitUntilShutdown()
+        let source = fixture.container.session(authorization: fixture.readerAuthorization).composition(fixture.compositionID)
+        let leaf = SelectQuery(projection: [.wildcard()], source: .table(TableRef(Item.persistableType)))
+        let queries = [
+            leaf.replacing(source: .subquery(leaf)),
+            leaf.replacing(source: .values([[.literal(.int(1))]])),
+            leaf.replacing(source: .setOperation(operator: .intersect, quantifier: .all, left: leaf, right: leaf)),
+            leaf.replacing(subqueries: [NamedSubquery(name: "unused", query: leaf, materialized: .materialized)]),
+        ]
+        for query in queries {
+            let execution = ReadExecutionContext(options: .default, monotonicClock: fixture.container.monotonicClock)
+            let publication = PublicationEventProbe()
+            await #expect(throws: CompositionQueryError.self) {
+                try await CompositionQueryPlanner(structuralLimits: execution.queryStructuralLimits).execute(query,
+                    source: source, options: CompositionQueryExecutionOptions(pageSize: 1, readContext: execution)) { _ in
+                        await publication.receive()
+                        return true
+                    }
+            }
+            #expect(await publication.receivedCount() == 0)
+            #expect(execution.workMeter.retainedIntermediateRows == 0)
+            #expect(execution.workMeter.retainedIntermediateBytes == 0)
+        }
+    }
+
     @Test("Composition publishes retained events only after all producer leases close")
     func eventsFollowAuthoritativeSnapshotClose() async throws {
         let fixture = try await makeFixture(readerCanReadSecondary: true)
@@ -768,7 +1052,7 @@ struct CompositionQueryExecutorTests {
         let context = ReadExecutionContext(options: .default,
             monotonicClock: fixture.container.monotonicClock)
         let planner = CompositionQueryPlanner(structuralLimits: context.queryStructuralLimits)
-        let query = SelectQuery(projection: .all,
+        let query = SelectQuery(projection: [.wildcard()],
             source: .table(TableRef(Item.persistableType)))
         let received = PublicationEventProbe()
         try await planner.execute(query, source: source,
@@ -1452,9 +1736,9 @@ struct CompositionQueryExecutorTests {
                 structuralLimits: readContext.queryStructuralLimits
             ).execute(
                 SelectQuery(
-                    projection: .all,
+                    projection: [.wildcard()],
                     source: .table(TableRef(Item.persistableType)),
-                    distinct: true
+                    quantifier: .distinct
                 ),
                 source: source,
                 options: CompositionQueryExecutionOptions(
@@ -1495,7 +1779,7 @@ struct CompositionQueryExecutorTests {
                 structuralLimits: aggregateContext.queryStructuralLimits
             ).execute(
                 SelectQuery(
-                    projection: .items([
+                    projection: [
                         ProjectionItem(
                             .aggregate(
                                 .min(.column(ColumnRef(column: "id")))
@@ -1508,7 +1792,7 @@ struct CompositionQueryExecutorTests {
                             ),
                             alias: "maximum"
                         ),
-                    ]),
+                    ],
                     source: .table(TableRef(Item.persistableType))
                 ),
                 source: source,
@@ -1553,7 +1837,8 @@ struct CompositionQueryExecutorTests {
 
     private func makeFixture(
         readerCanReadSecondary: Bool,
-        secondarySharesControlDomain: Bool = false
+        secondarySharesControlDomain: Bool = false,
+        wallClock: any WallClock = FixedTestWallClock()
     ) async throws -> Fixture {
         let controlDomainID = try DatabaseStorageDomain.ID("control")
         let secondaryDomainID = try DatabaseStorageDomain.ID("secondary")
@@ -1618,7 +1903,7 @@ struct CompositionQueryExecutorTests {
                 name: "composition-typed-query",
                 storageTopology: topology,
                 monotonicClock: TestProcessMonotonicClock(),
-                wallClock: FixedTestWallClock()
+                wallClock: wallClock
             ),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
                 executionIdentity: DatabaseExecutionRuntimeIdentity(
@@ -1721,7 +2006,7 @@ struct CompositionQueryExecutorTests {
         joinType: JoinType
     ) -> SelectQuery {
         SelectQuery(
-            projection: .items([
+            projection: [
                 ProjectionItem(
                     .column(ColumnRef(table: "world", column: "rank")),
                     alias: "worldRank"
@@ -1730,27 +2015,17 @@ struct CompositionQueryExecutorTests {
                     .column(ColumnRef(table: "tenant", column: "rank")),
                     alias: "tenantRank"
                 ),
-            ]),
+            ],
             source: .join(
                 JoinClause(
                     type: joinType,
                     left: .base(
                         fixture.primaryBaseID,
-                        .table(
-                            TableRef(
-                                table: Item.persistableType,
-                                alias: "world"
-                            )
-                        )
+                        .aliased(.table(TableRef(Item.persistableType)), name: "world")
                     ),
                     right: .base(
                         fixture.secondaryBaseID,
-                        .table(
-                            TableRef(
-                                table: Item.persistableType,
-                                alias: "tenant"
-                            )
-                        )
+                        .aliased(.table(TableRef(Item.persistableType)), name: "tenant")
                     ),
                     condition: .on(
                         .equal(

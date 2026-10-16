@@ -569,7 +569,7 @@ struct GraphTableExecutionTests {
         #expect(sql.contains(#"GRAPH_TABLE("social""#))
         #expect(sql.contains("MATCH"))
         #expect(sql.contains("COLUMNS"))
-        let query = SelectQuery(projection: .all, source: .graphTable(source))
+        let query = SelectQuery(projection: [.wildcard()], source: .graphTable(source))
         #expect(try SQLParser().parseSelect(SQLSerializer().serialize(query)) == query)
     }
 
@@ -583,12 +583,12 @@ struct GraphTableExecutionTests {
         )
 
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .graphTable(source),
             filter: .greaterThan(.column(ColumnRef(column: "age")), .literal(.int(18)))
         )
 
-        #expect(query.projection == .all)
+        #expect(query.projection == [.wildcard()])
         #expect(query.filter != nil)
 
         if case .graphTable(let gt) = query.source {

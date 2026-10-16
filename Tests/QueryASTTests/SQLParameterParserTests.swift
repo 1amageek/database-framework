@@ -14,10 +14,10 @@ struct SQLParameterParserTests {
             return
         }
 
-        #expect(query.projection == .items([
+        #expect(query.projection == [
             ProjectionItem(.parameter(.position(1)), alias: "firstvalue"),
             ProjectionItem(.parameter(.position(2)), alias: "secondvalue"),
-        ]))
+        ])
         #expect(query.filter == .equal(.col("id"), .parameter(.position(3))))
     }
 
@@ -31,13 +31,17 @@ struct SQLParameterParserTests {
             return
         }
 
-        #expect(query.projection == .items([
+        #expect(query.projection == [
             ProjectionItem(.parameter(.name("title")), alias: "title"),
-        ]))
+        ])
         #expect(query.filter == .and(
             .equal(.col("id"), .parameter(.position(1))),
             .equal(.col("source"), .parameter(.position(2)))
         ))
+        #expect(try SQLParser().parseSelect("SELECT :FROM AS value, :\"Exact Name\"").projection == [
+            ProjectionItem(.parameter(.name("FROM")), alias: "value"),
+            ProjectionItem(.parameter(.name("Exact Name"))),
+        ])
     }
 
     @Test("parser reuse resets anonymous positions")
@@ -50,9 +54,9 @@ struct SQLParameterParserTests {
             return
         }
 
-        #expect(query.projection == .items([
+        #expect(query.projection == [
             ProjectionItem(.parameter(.position(1))),
-        ]))
+        ])
     }
 
     @Test("malformed and mixed positional markers are rejected")
@@ -74,6 +78,9 @@ struct SQLParameterParserTests {
         }
         #expect(throws: SQLParser.ParseError.self) {
             _ = try SQLParser().parse("SELECT :1 FROM Event")
+        }
+        for sql in ["SELECT : name", "SELECT :/* comment */name", "SELECT :\nname"] {
+            #expect(throws: SQLParser.ParseError.self) { _ = try SQLParser().parse(sql) }
         }
     }
 }

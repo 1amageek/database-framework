@@ -91,6 +91,19 @@ S16 owns final remote diagnostic presentation.
 
 ## Runtime Flows
 
+### S08 relational composition
+
+The [Query carriage authority](../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md#s08-frozen-relational-query-carriage)
+supplies the single projection/source/set/pagination model. Its consuming
+[Parser contract](Parser/DESIGN.md#s08-relational-grammar-and-construction-provenance)
+and [Builder contract](Builder/DESIGN.md#s08-relational-emission-and-lossless-construction)
+own syntax and emission respectively. The module composes those children;
+it does not infer relation scope, composite presence, CTE demand or SQL
+comparison from accepted syntax. Source occurrences survive every new child
+edge and SPARQL remains subject to its own language validation. S08 acceptance
+requires the children’s runtime witnesses and the public Database execution
+path, rather than a parser-only round trip.
+
 Parser consumes request-local lexer state, validates syntax and the final
 semantic structure, then transfers an immutable statement. Builder constructs
 that same structure; canonical serialization validates support and emits

@@ -107,8 +107,8 @@ struct SPARQLParserStrictnessTests {
         let query = try SPARQLParser().parseSelect(
             "SELECT * WHERE { ?s ?p ?o } OFFSET 4 LIMIT 9"
         )
-        #expect(query.limit == 9)
-        #expect(query.offset == 4)
+        #expect(query.pagination.limit == .count(.fixed(9), withTies: false))
+        #expect(query.pagination.offset == .fixed(4))
     }
 
     @Test("LIMIT and OFFSET reject missing, invalid, overflow, and duplicate values")

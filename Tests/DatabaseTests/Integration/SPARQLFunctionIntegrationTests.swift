@@ -450,8 +450,7 @@ struct SPARQLFunctionIntegrationTests {
             }
         }
 
-        let explicitDatasetQuery = SelectQuery(
-            projection: .all,
+        let explicitDatasetQuery = SelectQuery(projection: [.wildcard()],
             source: .table(TableRef("SPARQLFunctionUser")),
             filter: .greaterThan(
                 .column(ColumnRef(column: "age")),
@@ -463,8 +462,7 @@ struct SPARQLFunctionIntegrationTests {
                     "http://example.org/named1",
                     "http://example.org/named2",
                 ]
-            )
-        )
+            ))
 
         do {
             _ = try await executeRewritten(explicitDatasetQuery)
@@ -479,14 +477,12 @@ struct SPARQLFunctionIntegrationTests {
             )
         }
 
-        let executableQuery = SelectQuery(
-            projection: .all,
+        let executableQuery = SelectQuery(projection: [.wildcard()],
             source: .table(TableRef("SPARQLFunctionUser")),
             filter: .greaterThan(
                 .column(ColumnRef(column: "age")),
                 .literal(.int(25))
-            )
-        )
+            ))
         let response = try await executeRewritten(executableQuery)
         #expect(response.rows.count == 1)
         let nameSlot = try #require(response.columns.firstIndex { $0.name == "name" })
@@ -495,12 +491,11 @@ struct SPARQLFunctionIntegrationTests {
         #expect(!response.columns[nameSlot].isNullable)
         #expect(response.rows[0].values[nameSlot] == .primitive(.string("Alice")))
 
-        let scalarQuery = SelectQuery(
-            projection: .items([ProjectionItem(.patternMatch(
+        let scalarQuery = SelectQuery(projection: [ProjectionItem(.patternMatch(
                 subject: .concatenate(.string("a"), .string("%")),
                 pattern: .concatenate(.string("a"), .string("!%")),
-                escape: .string("!"), kind: .like))]),
-            source: .values([[]], columnNames: []))
+                escape: .string("!"), kind: .like))],
+            source: .values([[]]))
         let scalarResponse = try await executeRewritten(scalarQuery)
         #expect(scalarResponse.rows.count == 1)
         #expect(scalarResponse.rows[0].values == [.primitive(.bool(true))])

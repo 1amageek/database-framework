@@ -39,7 +39,7 @@ struct VersionDeclarationTests {
             VERSION "1.2"
             SELECT * WHERE { ?s ?p ?o }
             """#)
-        #expect(query.projection == .all)
+        #expect(query.projection == [.wildcard()])
     }
 
     @Test("VERSION with PREFIX")
@@ -49,7 +49,7 @@ struct VersionDeclarationTests {
             PREFIX ex: <http://example.org/>
             SELECT * WHERE { ?s ex:name ?o }
             """#)
-        #expect(query.projection == .all)
+        #expect(query.projection == [.wildcard()])
     }
 
     @Test("VERSION via parse() statement")
@@ -131,14 +131,15 @@ struct SPARQL12FunctionTests {
         let query = try parseQuery(#"""
             SELECT (STRLANGDIR("text", "ar", "rtl") AS ?lit) WHERE {}
             """#)
-        guard case .items(let items) = query.projection else {
+        let items = query.projection
+        guard items.allSatisfy({ if case .expression = $0 { return true }; return false }) else {
             Issue.record("Expected projection items, got \(query.projection)")
             return
         }
         #expect(items.count == 1)
         if let proj = items.first {
-            #expect(proj.alias == "lit")
-            guard case .function(let call) = proj.expression else {
+            #expect(try projectionAlias(proj) == "lit")
+            guard case .function(let call) = try projectionExpression(proj) else {
                 Issue.record("Expected function call")
                 return
             }
@@ -249,7 +250,7 @@ struct ReifiedTripleTests {
         let query = try parseQuery("""
             SELECT * WHERE { ?x ?y ?z . FILTER (ISTRIPLE(<< ?a ?b ?c ~?r >>)) }
             """)
-        #expect(query.projection == .all)
+        #expect(query.projection == [.wildcard()])
     }
 }
 
@@ -482,7 +483,7 @@ struct VersionEdgeCaseTests {
             PREFIX ex: <http://example.org/ns/>
             SELECT * WHERE { ?s <#name> ?o }
             """#)
-        #expect(query.projection == .all)
+        #expect(query.projection == [.wildcard()])
     }
 
     @Test("VERSION 1.1")
@@ -491,7 +492,7 @@ struct VersionEdgeCaseTests {
             VERSION "1.1"
             SELECT * WHERE { ?s ?p ?o }
             """#)
-        #expect(query.projection == .all)
+        #expect(query.projection == [.wildcard()])
     }
 
     @Test("BASE resolves absolute-path references against the authority")
@@ -550,12 +551,13 @@ struct FunctionEdgeCaseTests {
         let query = try parseQuery(#"""
             SELECT (STRLANGDIR(STR(?label), "en", "ltr") AS ?directed) WHERE { ?s <http://example.org/label> ?label }
             """#)
-        guard case .items(let items) = query.projection else {
+        let items = query.projection
+        guard items.allSatisfy({ if case .expression = $0 { return true }; return false }) else {
             Issue.record("Expected projection items")
             return
         }
         #expect(items.count == 1)
-        #expect(items[0].alias == "directed")
+        #expect(try projectionAlias(items[0]) == "directed")
     }
 
     @Test("Nested function calls: STRLEN(STRLANGDIR(...))")
@@ -563,12 +565,13 @@ struct FunctionEdgeCaseTests {
         let query = try parseQuery(#"""
             SELECT (STRLEN(STRLANGDIR("text", "en", "ltr")) AS ?len) WHERE {}
             """#)
-        guard case .items(let items) = query.projection else {
+        let items = query.projection
+        guard items.allSatisfy({ if case .expression = $0 { return true }; return false }) else {
             Issue.record("Expected projection items")
             return
         }
         #expect(items.count == 1)
-        guard case .function(let call) = items[0].expression else {
+        guard case .function(let call) = try projectionExpression(items[0]) else {
             Issue.record("Expected function call")
             return
         }
@@ -708,7 +711,7 @@ struct LateralJoinTests {
             Issue.record("Expected .subquery right, got \(right)")
             return
         }
-        #expect(subquery.limit == 1)
+        #expect(subquery.pagination.limit == .count(.fixed(1), withTies: false))
     }
 
     @Test("LATERAL with OPTIONAL inside")

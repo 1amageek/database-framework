@@ -33,7 +33,7 @@ struct SQLParserMutationTests {
         #expect(assignments.count == 1)
         #expect(predicate != nil)
         #expect(query.returning?.count == 2)
-        #expect(query.returning?[1].alias == "eventtitle")
+        #expect(try projectionAlias(#require(query.returning?[1])) == "eventtitle")
     }
 
     @Test("INSERT SELECT and DEFAULT VALUES are canonical sources")
@@ -92,11 +92,9 @@ struct SQLParserMutationTests {
         #expect(query.target.table == "event")
         #expect(query.target.alias == "event")
         #expect(query.assignments.map(\.column) == ["title", "revision"])
-        #expect(query.from == .table(
-            TableRef(table: "importrow", alias: "row")
-        ))
+        #expect(query.from == .aliased(.table(TableRef(table: "importrow")), name: "row"))
         #expect(query.filter != nil)
-        #expect(query.returning?.first?.alias == "id")
+        #expect(try projectionAlias(#require(query.returning?.first)) == "id")
         let scenarios: [(String, String, String?)] = [
             ("UPDATE \"items\" SET \"value\" = :value", "items", nil),
             ("UPDATE set SET value = :value", "set", nil),
@@ -110,7 +108,7 @@ struct SQLParserMutationTests {
             #expect(update.target.alias == alias)
             #expect(update.assignments == [Assignment(column: "value", value: .parameter(.name("value")))])
         }
-        #expect(try SQLParser().parseSelect("SELECT id FROM items SET").source == .table(TableRef(table: "items", alias: "set")))
+        #expect(try SQLParser().parseSelect("SELECT id FROM items SET").source == .aliased(.table(TableRef(table: "items")), name: "set"))
     }
 
     @Test("DELETE preserves USING, predicate, and RETURNING")
@@ -127,9 +125,7 @@ struct SQLParserMutationTests {
             return
         }
         #expect(query.target.alias == "event")
-        #expect(query.using == .table(
-            TableRef(table: "expiredevent", alias: "expired")
-        ))
+        #expect(query.using == .aliased(.table(TableRef(table: "expiredevent")), name: "expired"))
         #expect(query.filter != nil)
         #expect(query.returning?.count == 1)
         guard case .delete(let aliased) = try SQLParser().parse("DELETE FROM items SET WHERE SET.id = :id RETURNING id") else {

@@ -122,26 +122,40 @@ struct SQLTemporalExecutionTests {
         let month = try QueryIntervalValue(period: CalendarPeriod(months: 1, days: 0), time: TimeSpan(seconds: 0))
         let days = try QueryIntervalValue(period: CalendarPeriod(months: 0, days: 30), time: TimeSpan(seconds: 0))
         let day = try QueryIntervalValue(period: CalendarPeriod(months: 0, days: 1), time: TimeSpan(seconds: 0))
-        let source = DataSource.values([[.queryValue(.interval(month), type: .sql(.interval()))], [.queryValue(.interval(days), type: .sql(.interval()))], [.queryValue(.interval(day), type: .sql(.interval()))]], columnNames: ["i"])
-        let distinct = try await context.query(SelectQuery(projection: .items([ProjectionItem(.col("i"))]), source: source, orderBy: [SortKey(.col("i"))], distinct: true))
+        let source = DataSource.aliased(.values([[.literal(.queryValue(.interval(month), type: .sql(.interval())))], [.literal(.queryValue(.interval(days), type: .sql(.interval())))], [.literal(.queryValue(.interval(day), type: .sql(.interval())))]]), name: "values", columns: ["i"])
+        let distinct = try await context.query(SelectQuery(projection: [ProjectionItem(.col("i"))],
+            source: source,
+            orderBy: [SortKey(.col("i"))],
+            quantifier: .distinct))
         #expect(distinct.rows.count == 2 && distinct.rows[0].values == [.interval(day)])
-        let grouped = try await context.query(SelectQuery(projection: .items([ProjectionItem(.col("i")), ProjectionItem(.aggregate(.count(nil, distinct: false)))]), source: source, groupBy: [.col("i")], orderBy: [SortKey(.col("i"))]))
+        let grouped = try await context.query(SelectQuery(projection: [ProjectionItem(.col("i")), ProjectionItem(.aggregate(.count(nil, distinct: false)))],
+            source: source,
+            groupBy: [.col("i")],
+            orderBy: [SortKey(.col("i"))]))
         #expect(grouped.rows.count == 2)
         #expect(grouped.rows[0].values[1] == .primitive(.int64(1)))
         #expect(grouped.rows[1].values[1] == .primitive(.int64(2)))
-        let aggregate = try await context.query(SelectQuery(projection: .items([ProjectionItem(.aggregate(.count(.col("i"), distinct: true))), ProjectionItem(.aggregate(.min(.col("i")))), ProjectionItem(.aggregate(.max(.col("i"))))]), source: source))
+        let aggregate = try await context.query(SelectQuery(projection: [ProjectionItem(.aggregate(.count(.col("i"), distinct: true))), ProjectionItem(.aggregate(.min(.col("i")))), ProjectionItem(.aggregate(.max(.col("i"))))],
+            source: source))
         #expect(aggregate.rows[0].values == [.primitive(.int64(2)), .interval(day), .interval(month)])
-        let joined = try await context.query(SelectQuery(projection: .items([ProjectionItem(.col("a", "i"))]), source: .join(JoinClause(type: .inner, left: .subquery(SelectQuery(projection: .all, source: source), alias: "a"), right: .subquery(SelectQuery(projection: .all, source: source), alias: "b"), condition: .on(.equal(.col("a", "i"), .col("b", "i")))))))
+        let joined = try await context.query(SelectQuery(projection: [ProjectionItem(.col("a", "i"))],
+            source: .join(JoinClause(type: .inner, left: .aliased(.subquery(SelectQuery(projection: [.wildcard()],
+            source: source)), name: "a"), right: .aliased(.subquery(SelectQuery(projection: [.wildcard()],
+            source: source)), name: "b"), condition: .on(.equal(.col("a", "i"), .col("b", "i")))))))
         #expect(joined.rows.count == 5)
         let local = try QueryTimeValue(microsecondsSinceMidnight: 43_200_000_000)
         let utc = try QueryTimeValue(microsecondsSinceMidnight: 36_000_000_000)
         let east = QueryTimeWithTimeZoneValue(time: local, utcOffsetSeconds: 7200)
         let zero = QueryTimeWithTimeZoneValue(time: utc, utcOffsetSeconds: 0)
-        let offsetSource = DataSource.values([[.queryValue(.timeWithTimeZone(zero), type: .sql(.time(withTimeZone: true)))], [.queryValue(.timeWithTimeZone(east), type: .sql(.time(withTimeZone: true)))], [.queryValue(.timeWithTimeZone(east), type: .sql(.time(withTimeZone: true)))]], columnNames: ["i"])
-        let offsetDistinct = try await context.query(SelectQuery(projection: .distinctItems([ProjectionItem(.col("i"))]), source: offsetSource, orderBy: [SortKey(.col("i"))]))
+        let offsetSource = DataSource.aliased(.values([[.literal(.queryValue(.timeWithTimeZone(zero), type: .sql(.time(withTimeZone: true))))], [.literal(.queryValue(.timeWithTimeZone(east), type: .sql(.time(withTimeZone: true))))], [.literal(.queryValue(.timeWithTimeZone(east), type: .sql(.time(withTimeZone: true))))]]), name: "values", columns: ["i"])
+        let offsetDistinct = try await context.query(SelectQuery(projection: [ProjectionItem(.col("i"))],
+            source: offsetSource,
+            orderBy: [SortKey(.col("i"))],
+            quantifier: .distinct))
         #expect(offsetDistinct.rows.map(\.values) == [[.timeWithTimeZone(east)], [.timeWithTimeZone(zero)]])
-        let infiniteSource = DataSource.values([[.queryValue(.dateInfinity(.positive), type: .sql(.date))], [.queryValue(.dateInfinity(.negative), type: .sql(.date))], [.queryValue(.dateInfinity(.positive), type: .sql(.date))]], columnNames: ["i"])
-        let infinite = try await context.query(SelectQuery(projection: .items([ProjectionItem(.aggregate(.count(.col("i"), distinct: true))), ProjectionItem(.aggregate(.min(.col("i")))), ProjectionItem(.aggregate(.max(.col("i"))))]), source: infiniteSource))
+        let infiniteSource = DataSource.aliased(.values([[.literal(.queryValue(.dateInfinity(.positive), type: .sql(.date)))], [.literal(.queryValue(.dateInfinity(.negative), type: .sql(.date)))], [.literal(.queryValue(.dateInfinity(.positive), type: .sql(.date)))]]), name: "values", columns: ["i"])
+        let infinite = try await context.query(SelectQuery(projection: [ProjectionItem(.aggregate(.count(.col("i"), distinct: true))), ProjectionItem(.aggregate(.min(.col("i")))), ProjectionItem(.aggregate(.max(.col("i"))))],
+            source: infiniteSource))
         #expect(infinite.rows[0].values == [.primitive(.int64(2)), .dateInfinity(.negative), .dateInfinity(.positive)])
     }
 

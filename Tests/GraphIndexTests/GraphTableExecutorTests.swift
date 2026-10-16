@@ -266,10 +266,8 @@ struct GraphTableExecutorTests {
                     .node(NodePattern(variable: "a")),
                     .edge(EdgePattern(
                         labels: ["KNOWS"],
-                        properties: [PropertyBinding(key: "since", value: .subquery(SelectQuery(
-                            projection: .items([ProjectionItem(.literal(.int(2020)))]),
-                            source: .table(TableRef("dummy"))
-                        )))],
+                        properties: [PropertyBinding(key: "since", value: .subquery(SelectQuery(projection: [ProjectionItem(.literal(.int(2020)))],
+            source: .table(TableRef("dummy")))))],
                         direction: .outgoing
                     )),
                     .node(NodePattern(variable: "b")),

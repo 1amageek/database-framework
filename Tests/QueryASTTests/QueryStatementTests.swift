@@ -35,7 +35,7 @@ struct SQLDMLStatementTests {
     @Test("InsertQuery with SELECT")
     func testInsertWithSelect() throws {
         let selectQuery = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(TableRef("other_users"))
         )
         let insert = InsertQuery(
@@ -44,7 +44,7 @@ struct SQLDMLStatementTests {
         )
 
         if case .select(let query) = insert.source {
-            #expect(query.projection == .all)
+            #expect(query.projection == [.wildcard()])
         } else {
             Issue.record("Expected SELECT source")
         }
@@ -572,7 +572,7 @@ struct QueryStatementAnalysisTests {
 
     @Test("isReadOnly")
     func testIsReadOnly() throws {
-        let select = QueryStatement.select(SelectQuery(projection: .all, source: .table(TableRef("users"))))
+        let select = QueryStatement.select(SelectQuery(projection: [.wildcard()], source: .table(TableRef("users"))))
         #expect(select.isReadOnly == true)
 
         let ask = QueryStatement.ask(AskQuery(pattern: .basic([])))
@@ -630,7 +630,7 @@ struct QueryStatementAnalysisTests {
             #expect(statement.isModification == true)
         }
 
-        let select = QueryStatement.select(SelectQuery(projection: .all, source: .table(TableRef("users"))))
+        let select = QueryStatement.select(SelectQuery(projection: [.wildcard()], source: .table(TableRef("users"))))
         #expect(select.isModification == false)
     }
 
@@ -669,7 +669,7 @@ struct QueryStatementAnalysisTests {
         )
         #expect(dropSPARQL.isSchemaDefinition == false)
 
-        let select = QueryStatement.select(SelectQuery(projection: .all, source: .table(TableRef("users"))))
+        let select = QueryStatement.select(SelectQuery(projection: [.wildcard()], source: .table(TableRef("users"))))
         #expect(select.isSchemaDefinition == false)
     }
 }

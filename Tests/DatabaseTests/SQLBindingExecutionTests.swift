@@ -288,8 +288,8 @@ struct SQLBindingExecutionTests {
         try await context.indexQueryContext.withSession(workMeter: workMeter) { session in
             let baseline = workMeter.retainedIntermediateBytes
             let prepared = try await context.prepareSQLSelectForCanonicalExecution(
-                SelectQuery(projection: .items([ProjectionItem(.parameter(.position(1)), alias: "value")]),
-                            source: .values([[]], columnNames: [])),
+                SelectQuery(projection: [ProjectionItem(.parameter(.position(1)), alias: "value")],
+            source: .values([[]])),
                 workMeter: workMeter,
                 session: session,
                 structuralLimits: .default,

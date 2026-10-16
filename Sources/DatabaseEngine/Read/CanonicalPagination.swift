@@ -171,24 +171,28 @@ public enum CanonicalQueryPagination {
             selectQuery,
             limits: options.queryStructuralLimits
         )
-        guard let queryOffset = Int(
-            exactly: selectQuery.offset ?? 0
-        ) else {
-            throw CanonicalReadError.unsupportedSelectQuery(
-                "Pagination offset exceeds the platform integer range"
-            )
-        }
-        let logicalLimit: Int?
-        if let limit = selectQuery.limit {
-            guard let limit = Int(exactly: limit) else {
-                throw CanonicalReadError.unsupportedSelectQuery(
-                    "Pagination limit exceeds the platform integer range"
-                )
+        func fixed(_ count: QueryCount?, name: String) throws -> UInt64? {
+            guard let count else { return nil }
+            guard case .fixed(let value) = count else {
+                throw CanonicalReadError.unsupportedSelectQuery("Expression pagination requires selected invocation evaluation")
             }
-            logicalLimit = limit
-        } else {
-            logicalLimit = nil
+            return value
         }
+        let rawOffset = try rowsAreLogicalQueryRelative ? 0 : fixed(selectQuery.pagination.offset, name: "OFFSET") ?? 0
+        guard let queryOffset = Int(exactly: rawOffset) else {
+            throw CanonicalReadError.paginationValueExceedsRuntimeRange(name: "OFFSET", value: rawOffset)
+        }
+        let rawLimit: UInt64?
+        if rowsAreLogicalQueryRelative { rawLimit = nil }
+        else if case .count(let count, _) = selectQuery.pagination.limit { rawLimit = try fixed(count, name: "LIMIT") }
+        else { rawLimit = nil }
+        let logicalLimit: Int?
+        if let rawLimit {
+            guard let value = Int(exactly: rawLimit) else {
+                throw CanonicalReadError.paginationValueExceedsRuntimeRange(name: "LIMIT", value: rawLimit)
+            }
+            logicalLimit = value
+        } else { logicalLimit = nil }
         let requestedPageSize = try options.resolvePageSize()
         guard requestedPageSize.map({ $0 > 0 }) ?? true else {
             throw CanonicalReadError.unsupportedSelectQuery(

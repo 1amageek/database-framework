@@ -199,12 +199,10 @@ struct GraphTableCanonicalContractTests {
                 precondition: .notExists
             )
             return try await scenario.context.query(
-                SelectQuery(
-                    projection: .all,
-                    source: .graphTable(
+                SelectQuery(projection: [.wildcard()],
+            source: .graphTable(
                         Self.source(path: Self.linearPath())
-                    )
-                )
+                    ))
             )
         }
 

@@ -50,8 +50,8 @@ extension CanonicalSQLJSONEvaluator {
         }
     }
 
-    static func extract(_ value: QueryValue, path: [QueryValue], text: Bool,
-        plan: inout SQLJSONPlan, objectOnly: Bool = false) throws -> QueryValue {
+    static func extract<Path: Collection>(_ value: QueryValue, path: Path, text: Bool,
+        plan: inout SQLJSONPlan, objectOnly: Bool = false) throws -> QueryValue where Path.Element == QueryValue {
         if path.contains(where: { $0.isNull }) { return .primitive(.null) }
         switch value {
         case .json(let json):

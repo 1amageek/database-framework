@@ -7,25 +7,40 @@ final class CanonicalBoundSelect: Sendable {
     let filter: CanonicalBoundExpression?
     let groupBy: [CanonicalBoundExpression]
     let having: CanonicalBoundExpression?
-    let orderBy: [CanonicalBoundExpression]
+    let orderBy: [CanonicalBoundKey]
+    let distinctOn: [CanonicalBoundKey]
+    let pagination: CanonicalBoundPagination
+    let ctes: [CanonicalBoundCTE]
+    let bindingMetadata: CanonicalBindingMetadata?
+    let metadataLease: DatabaseQueryPayloadLease?
     let sourcePlan: CanonicalSourceBindingPlan?
 
     init(columns: [QueryColumn], projection: [CanonicalBoundExpression],
          filter: CanonicalBoundExpression?, groupBy: [CanonicalBoundExpression],
-         having: CanonicalBoundExpression?, orderBy: [CanonicalBoundExpression],
-         sourcePlan: CanonicalSourceBindingPlan? = nil) {
+         having: CanonicalBoundExpression?, orderBy: [CanonicalBoundKey],
+         sourcePlan: CanonicalSourceBindingPlan? = nil,
+         distinctOn: [CanonicalBoundKey] = [],
+         pagination: CanonicalBoundPagination = CanonicalBoundPagination(),
+         ctes: [CanonicalBoundCTE] = [], metadataLease: DatabaseQueryPayloadLease? = nil,
+         bindingMetadata: CanonicalBindingMetadata? = nil) {
+        self.metadataLease = metadataLease
+        self.bindingMetadata = bindingMetadata
         self.columns = columns
         self.projection = projection
         self.filter = filter
         self.groupBy = groupBy
         self.having = having
         self.orderBy = orderBy
+        self.distinctOn = distinctOn
+        self.pagination = pagination
+        self.ctes = ctes
         self.sourcePlan = sourcePlan
     }
 
     func withSourcePlan(_ sourcePlan: CanonicalSourceBindingPlan) -> CanonicalBoundSelect {
         CanonicalBoundSelect(columns: columns, projection: projection, filter: filter,
                              groupBy: groupBy, having: having, orderBy: orderBy,
-                             sourcePlan: sourcePlan)
+                             sourcePlan: sourcePlan, distinctOn: distinctOn,
+                             pagination: pagination, ctes: ctes, metadataLease: metadataLease, bindingMetadata: bindingMetadata)
     }
 }

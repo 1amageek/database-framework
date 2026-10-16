@@ -1516,7 +1516,7 @@ public struct DatabaseReadSession: Sendable {
     public func boundQueryColumns(
         _ query: SelectQuery,
         parameters: [QueryParameter] = []
-    ) throws -> [QueryColumn] {
+    ) throws -> DatabaseRetainedQueryColumns {
         let (owners, operation) = try scope.beginOperation()
         defer { operation.end() }
         let columns = try owners.context.boundQueryColumns(
@@ -1565,6 +1565,139 @@ public struct DatabaseReadSession: Sendable {
             return response
         }
     }
+
+    #if DATABASE_MULTI_BASE
+    func executeCompositionCrossBaseJoin(
+        _ query: SelectQuery,
+        join: JoinClause,
+        leftRows: consuming DatabaseRetainedQueryRows,
+        leftTable: TableRef,
+        rightRows: consuming DatabaseRetainedQueryRows,
+        rightTable: TableRef,
+        execution: ReadExecutionContext,
+        parameters: [QueryParameter],
+        resolvedPagination: SQLResolvedPagination
+    ) async throws -> DatabaseSharedRetainedQueryRows {
+        try scope.requireWorkMeter(execution.workMeter)
+        let left = DatabaseReadResultBox(consume leftRows)
+        let right = DatabaseReadResultBox(consume rightRows)
+        return try await scope.withOperation { owners, operation in
+            try await owners.policy.withAuthorization {
+                let result = try await owners.context.executeCompositionCrossBaseJoin(
+                    query, join: join, leftRows: left.take(), leftTable: leftTable,
+                    rightRows: right.take(), rightTable: rightTable,
+                    options: execution, session: self, parameters: parameters,
+                    resolvedPagination: resolvedPagination
+                )
+                try operation.validate()
+                return result
+            }
+        }
+    }
+
+    func materializeCompositionSource(
+        _ query: SelectQuery,
+        execution: ReadExecutionContext,
+        parameters: [QueryParameter]
+    ) async throws -> CanonicalRelation {
+        try scope.requireWorkMeter(execution.workMeter)
+        return try await scope.withOperation { owners, operation in
+            try await owners.policy.withAuthorization {
+                let result = try await owners.context.materializeCompositionSource(
+                    query, execution: execution, session: self, parameters: parameters
+                )
+                try operation.validate()
+                return result
+            }
+        }
+    }
+
+    func finalizeCompositionRelation(
+        _ query: SelectQuery,
+        relation: CanonicalRelation,
+        execution: ReadExecutionContext,
+        parameters: [QueryParameter],
+        mergeDuplicateAnnotations: @escaping @Sendable (
+            [String: FieldValue], [String: FieldValue]
+        ) throws -> [String: FieldValue],
+        sourceEvaluation: CanonicalSourceEvaluationDispatcher? = nil,
+        resolvedPagination: SQLResolvedPagination? = nil
+    ) async throws -> DatabaseSharedRetainedQueryRows {
+        try scope.requireWorkMeter(execution.workMeter)
+        return try await scope.withOperation { owners, operation in
+            try await owners.policy.withAuthorization {
+                let result = try await owners.context.finalizeCompositionRelation(
+                    query, relation: relation, execution: execution, session: self,
+                    parameters: parameters,
+                    mergeDuplicateAnnotations: mergeDuplicateAnnotations,
+                    sourceEvaluation: sourceEvaluation,
+                    resolvedPagination: resolvedPagination
+                )
+                try operation.validate()
+                return result
+            }
+        }
+    }
+
+    func withCompositionSourceEvaluation(
+        _ body: @escaping @Sendable (
+            DatabaseContext, DatabaseReadSession
+        ) async throws -> DatabaseContext.ProjectedQueryValue
+    ) async throws -> DatabaseContext.ProjectedQueryValue {
+        try await scope.withOperation { owners, operation in
+            try await owners.policy.withAuthorization {
+                let result = try await body(owners.context, self)
+                try operation.validate()
+                return result
+            }
+        }
+    }
+
+    /// Starts an independently validated member scope rather than borrowing a
+    /// different member's task-local operation lease.
+    static func withIndependentCompositionSourceEvaluation(
+        _ body: @Sendable () async throws -> DatabaseContext.ProjectedQueryValue
+    ) async throws -> DatabaseContext.ProjectedQueryValue {
+        let parentOperation = DatabaseReadScopeOperationLease.current
+        try parentOperation?.validate()
+        let result = try await DatabaseReadScopeOperationLease.$current.withValue(nil) {
+            try await body()
+        }
+        try parentOperation?.validate()
+        return result
+    }
+
+    func resolveCompositionPagination(
+        _ query: SelectQuery,
+        parameters: [QueryParameter],
+        execution: ReadExecutionContext
+    ) async throws -> SQLResolvedPagination {
+        try scope.requireWorkMeter(execution.workMeter)
+        return try await scope.withOperation { owners, operation in
+            try await owners.policy.withAuthorization {
+                let result = try await owners.context.resolveCompositionPagination(
+                    query, parameters: parameters, execution: execution, session: self
+                )
+                try operation.validate()
+                return result
+            }
+        }
+    }
+
+    func validateCompositionPagination(
+        _ query: SelectQuery,
+        parameters: [QueryParameter],
+        execution: ReadExecutionContext
+    ) throws {
+        try scope.requireWorkMeter(execution.workMeter)
+        let (owners, operation) = try scope.beginOperation()
+        defer { operation.end() }
+        try owners.context.validateCompositionPagination(
+            query, parameters: parameters, execution: execution
+        )
+        try operation.validate()
+    }
+    #endif
 
     @_spi(DatabaseExecution)
     public func retainedCanonicalPage(

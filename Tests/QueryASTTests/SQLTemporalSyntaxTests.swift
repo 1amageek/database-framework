@@ -124,8 +124,9 @@ struct SQLTemporalSyntaxTests {
     private func integer(_ value: Int32) -> Expression { .literal(.queryValue(.primitive(.int32(value)), type: .sql(.integer))) }
     private func expression(_ sql: String) throws -> Expression {
         let query = try SQLParser().parseSelect("SELECT " + sql)
-        guard case .items(let items) = query.projection, items.count == 1 else { throw SQLSerializationError.invalidStructure("Expected one projection") }
-        return items[0].expression
+        let items = query.projection
+        guard items.allSatisfy({ if case .expression = $0 { return true }; return false }), items.count == 1 else { throw SQLSerializationError.invalidStructure("Expected one projection") }
+        return try projectionExpression(items[0])
     }
     private func roundTrip(_ sql: String) throws -> Expression {
         let value = try expression(sql)

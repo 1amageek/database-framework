@@ -59,6 +59,7 @@ public struct PolymorphicQueryPage: Sendable {
     public let results: [PolymorphicQueryResult]
     public let continuation: QueryContinuation?
     public let metadata: [String: FieldValue]
+    private let retainedColumns: DatabaseRetainedQueryColumns?
 
     public init(
         columns: [QueryColumn],
@@ -74,6 +75,25 @@ public struct PolymorphicQueryPage: Sendable {
         self.results = results
         self.continuation = continuation
         self.metadata = metadata
+        self.retainedColumns = nil
+    }
+
+    @_spi(PolymorphicRuntime)
+    public init(
+        columns: DatabaseRetainedQueryColumns,
+        results: [PolymorphicQueryResult],
+        continuation: QueryContinuation?,
+        metadata: [String: FieldValue]
+    ) throws {
+        try QueryColumn.validate(columns.columns)
+        guard results.allSatisfy({ $0.columns == columns.columns }) else {
+            throw QueryValueError.incompatibleType
+        }
+        self.columns = columns.columns
+        self.results = results
+        self.continuation = continuation
+        self.metadata = metadata
+        self.retainedColumns = columns
     }
 }
 
@@ -215,7 +235,7 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
     @_spi(PolymorphicRuntime)
     public func makeSelectQuery(accessPath: AccessPath?) -> SelectQuery {
         SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .logical(
                 LogicalSourceRef(
                     kindIdentifier: LogicalSourceKind.polymorphic,
@@ -224,14 +244,14 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
             ),
             accessPath: accessPath,
             orderBy: orderBy.isEmpty ? nil : orderBy,
-            limit: limit,
-            offset: offset
+            pagination: QueryPagination(limit: limit.map { .count(.fixed($0), withTies: false) },
+                                        offset: offset.map(QueryCount.fixed))
         )
     }
 
     /// Resolves declared output columns without executing the logical query.
     @_spi(PolymorphicRuntime)
-    public func boundColumns() throws -> [QueryColumn] {
+    public func boundColumns() throws -> DatabaseRetainedQueryColumns {
         try context.boundQueryColumns(makeSelectQuery())
     }
 

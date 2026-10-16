@@ -53,7 +53,7 @@ enum FusionPreflight {
                         try DatabaseReadPolicy.listRequirement(
                             entityName: connected.edgeEntity,
                             selectQuery: SelectQuery(
-                                projection: .all,
+                                projection: [.wildcard()],
                                 source: .table(
                                     TableRef(
                                         connected.edgeEntity,
@@ -341,7 +341,6 @@ enum FusionPreflight {
             }
             let plan = try prepare(
                 resolvedPlan,
-                context: context,
                 policy: policy,
                 workMeter: workMeter
             )
@@ -454,7 +453,6 @@ enum FusionPreflight {
     /// Runs feature-owned validation only after field authorization succeeds.
     static func prepare(
         _ resolved: FusionResolvedPlan,
-        context: DatabaseContext,
         policy: DatabaseReadPolicy,
         workMeter: DatabaseWorkMeter
     ) throws -> FusionPreparedPlan {
@@ -531,26 +529,8 @@ enum FusionPreflight {
                         executor: executor
                     )
                 case .filter(let expression):
-                    try context.validateFusionRelationalInput(
-                        SelectQuery(
-                            projection: .all,
-                            source: .table(resolved.tableRef),
-                            filter: expression,
-                            limit: input.limit.map(UInt64.init)
-                        ),
-                        entity: entity
-                    )
                     operation = .filter(expression)
                 case .order(let keys):
-                    try context.validateFusionRelationalInput(
-                        SelectQuery(
-                            projection: .all,
-                            source: .table(resolved.tableRef),
-                            orderBy: keys,
-                            limit: input.limit.map(UInt64.init)
-                        ),
-                        entity: entity
-                    )
                     operation = .order(keys)
                 case .connected(let source, let resolution):
                     guard let resultField = entity.fieldMapByName[
@@ -685,14 +665,14 @@ enum FusionPreflight {
                 throw FusionExecutionError.relationalSubqueryNotSupported
             }
             let query = SelectQuery(
-                projection: .all,
+                projection: [.wildcard()],
                 source: .table(tableRef),
                 filter: expression,
-                limit: input.limit
+                pagination: QueryPagination(limit: input.limit.map { .count(.fixed($0), withTies: false) })
             )
             operation = .filter(expression)
             authorizationPlan = .make(
-                query: query.replacing(projection: .items([])),
+                query: query.replacing(projection: []),
                 schema: schema
             )
         case .order(let keys):
@@ -705,14 +685,14 @@ enum FusionPreflight {
                 }
             }
             let query = SelectQuery(
-                projection: .all,
+                projection: [.wildcard()],
                 source: .table(tableRef),
                 orderBy: keys,
-                limit: input.limit
+                pagination: QueryPagination(limit: input.limit.map { .count(.fixed($0), withTies: false) })
             )
             operation = .order(keys)
             authorizationPlan = .make(
-                query: query.replacing(projection: .items([])),
+                query: query.replacing(projection: []),
                 schema: schema
             )
         case .connected(let source):

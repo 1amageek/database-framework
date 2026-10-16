@@ -232,6 +232,16 @@ Schema entity + operation/context decision
   -> RequestSecurityPolicyDelegate -> field policy -> existing transaction
 ```
 
+Field-read dependency collection preserves the admitted query nesting range
+without retaining unrelated source-case temporaries on every recursive descent.
+Source dispatch only selects a case; JOIN descent retains its left bindings and
+right correlation scope, then performs condition dependency collection and
+output-ordinal remapping after both children return. This preserves left-before-
+right traversal, LATERAL scope, conservative lineage and field authorization;
+it changes neither authority nor the structural nesting limit. The existing
+`SQLRowExecutionTests.contextualNullSetColumns` near-limit source fixtures and
+`DatabaseFieldReadAuthorizationPlanTests` verify the composed pre-read path.
+
 The server owns configuration and role selection. Framework tests must exercise
 allow, deny, entity mismatch, malformed identity, and dynamic Partition identity;
 server integration must exercise actual persisted CRUD and rejected credentials.
@@ -256,7 +266,7 @@ lifecycle that composes it with mutation, schema, and StorageKit contracts.
 
 | Path | Confirmed behavior | Remaining planned change |
 |---|---|---|
-| [Canonical rows](QueryExecution/DatabaseContext+CanonicalRows.swift) | Source rows use field-name maps; projection validation rejects duplicate output names. | Typed positional relation result bound before evaluation. |
+| [Canonical rows](QueryExecution/DatabaseContext+CanonicalRows.swift) | S01 onward uses bound positional descriptors and retains duplicate output names; S07 adds selected collection cells. | S08 relation, composite-presence and demand-driven CTE composition is owned by QueryExecution. |
 | [Statement mutation](Mutation/DatabaseEntityStatementMutationExecutor.swift) | INSERT/UPDATE/DELETE run on supplied transaction; RETURNING and INSERT SELECT are rejected. | Complete DML using one admitted transaction and retained RETURNING result. |
 | [Schema publication](Schema/DBContainer+SchemaPublication.swift) | Schema registry and generation metadata are persisted transactionally. | Logical SQL catalog and transaction-scoped DDL candidate publication. |
 | [Mutation journal](Transaction/TransactionMutationJournal.swift) | First-seen identity order, net mutation effects, and footprint reservations are retained. | Restore logical journal state when StorageKit checkpoint rolls back. |
@@ -265,6 +275,24 @@ These observations come from source and existing test definitions. S00 has
 not supplied new runtime SQL compatibility evidence.
 
 #### Execution composition and transaction authority
+
+S08 composes [QueryExecution's selected relation contract](QueryExecution/DESIGN.md#s08-frozen-relational-execution)
+and its SQLRelations child with the existing Read session boundary and
+[Base's optional global merge contract](Base/DESIGN.md#s08-selected-relational-merge-contract).
+Binding and producer completion precede the module's existing closure and
+Ready transition. This module neither implements a second CTE lifecycle nor
+converts selected rich keys back to primitive ordering. Non-default MultiBase
+and the user's S18 verification deferrals remain unchanged.
+
+Field-security preflight consumes the same ordered source-column contract.
+Its persisted-field provenance tracks source output ordinals through joins
+and aliases; a merged USING key can retain both contributing physical fields.
+Alias column lists rename by ordinal, preserving duplicate names and partial
+lists. This provenance does not evaluate SQL types or expressions. Required
+join conditions and selected expressions retain their original field grants;
+an alias must neither widen access nor require unrelated hidden fields.
+Focused authorization-plan and public permission tests must agree with bound
+source layout before the changed SQL path is accepted.
 
 ```text
 statement/block operation owner

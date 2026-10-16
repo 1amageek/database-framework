@@ -65,6 +65,15 @@ final class CanonicalSourceLayout: Sendable {
         precondition(self.visibleSlots.allSatisfy(slots.indices.contains))
     }
 
+    func sourcePresenceIndex(named name: String) -> Int? {
+        var offset = 0
+        for scopes in frameScopes {
+            if let index = scopes.firstIndex(of: name) { return offset + index }
+            offset += scopes.count
+        }
+        return nil
+    }
+
     func matching(_ column: ColumnRef) -> [Int] {
         var offset = 0
         for (frame, count) in frameSizes.enumerated() {
@@ -95,6 +104,7 @@ struct CanonicalSourceRow: Sendable {
     let annotations: [String: FieldValue]
     let version: PersistableVersionToken?
     let payloadLeases: [DatabaseQueryPayloadLease]
+    let sourcePresence: [Bool]
     private let ambiguityOverride: Set<String>?
 
     init(
@@ -103,7 +113,8 @@ struct CanonicalSourceRow: Sendable {
         annotations: [String: FieldValue] = [:],
         version: PersistableVersionToken? = nil,
         payloadLeases: [DatabaseQueryPayloadLease] = [],
-        ambiguityOverride: Set<String>? = nil
+        ambiguityOverride: Set<String>? = nil,
+        sourcePresence: [Bool]? = nil
     ) {
         precondition(values.count == layout.slots.count)
         self.values = values
@@ -112,6 +123,8 @@ struct CanonicalSourceRow: Sendable {
         self.version = version
         self.payloadLeases = payloadLeases
         self.ambiguityOverride = ambiguityOverride
+        self.sourcePresence = sourcePresence ?? Array(repeating: true, count: layout.frameScopes.reduce(0) { $0 + $1.count })
+        precondition(self.sourcePresence.count == layout.frameScopes.reduce(0) { $0 + $1.count })
     }
 
     init(
@@ -229,13 +242,26 @@ struct CanonicalSourceRow: Sendable {
                 }, bindingSlots: boundAddresses
             ),
             annotations: annotations.merging(other.annotations) { current, _ in current },
-            payloadLeases: payloadLeases + other.payloadLeases
+            payloadLeases: payloadLeases + other.payloadLeases,
+            sourcePresence: sourcePresence + other.sourcePresence
         )
+    }
+
+    func replacingAnnotations(_ annotations: [String: FieldValue], retaining lease: DatabaseQueryPayloadLease) -> Self {
+        Self(values: values, layout: layout, annotations: annotations, version: version,
+            payloadLeases: payloadLeases + [lease], ambiguityOverride: ambiguityOverride, sourcePresence: sourcePresence)
+    }
+
+    func sourceIsPresent(at index: Int) throws -> Bool {
+        guard sourcePresence.indices.contains(index) else {
+            throw DatabaseExpressionEvaluationError.typeMismatch(operation: "bound source presence address")
+        }
+        return sourcePresence[index]
     }
 
     func retainingPayload(_ lease: DatabaseQueryPayloadLease) -> Self {
         Self(values: values, layout: layout, annotations: annotations, version: version,
-             payloadLeases: payloadLeases + [lease], ambiguityOverride: ambiguityOverride)
+             payloadLeases: payloadLeases + [lease], ambiguityOverride: ambiguityOverride, sourcePresence: sourcePresence)
     }
 
     func queryValue(for column: ColumnRef) -> QueryValue? {
@@ -340,7 +366,7 @@ struct CanonicalSourceRow: Sendable {
             payloadLeases: payloadLeases + outer.payloadLeases,
             ambiguityOverride: ambiguousUnqualifiedColumns.union(
                 outer.ambiguousUnqualifiedColumns.subtracting(localNames)
-            )
+            ), sourcePresence: sourcePresence + outer.sourcePresence
         )
     }
 
@@ -377,7 +403,7 @@ struct CanonicalSourceRow: Sendable {
 
 }
 
-fileprivate struct CanonicalRelationScope: Sendable, Equatable {
+struct CanonicalRelationScope: Sendable, Equatable {
     let name: String
     let columns: [String]
     let types: [QueryColumnType?]
@@ -392,7 +418,7 @@ fileprivate struct CanonicalRelationScope: Sendable, Equatable {
     }
 }
 
-fileprivate struct CanonicalRelationSchema: Sendable, Equatable {
+struct CanonicalRelationSchema: Sendable, Equatable {
     let unscopedColumns: [String]
     let unscopedTypes: [QueryColumnType?]
     let unscopedNullability: [Bool]
@@ -563,11 +589,12 @@ fileprivate struct CanonicalRelationSchema: Sendable, Equatable {
 
     func nullRow() -> CanonicalSourceRow {
         let layout = layout
-        return CanonicalSourceRow(values: Array(repeating: .primitive(.null), count: layout.slots.count), layout: layout)
+        return CanonicalSourceRow(values: Array(repeating: .primitive(.null), count: layout.slots.count), layout: layout,
+            sourcePresence: Array(repeating: false, count: layout.frameScopes.reduce(0) { $0 + $1.count }))
     }
 }
 
-private typealias CanonicalRetainedRows =
+typealias CanonicalRetainedRows =
     DatabaseSharedRetainedArray<CanonicalSourceRow>
 private typealias CanonicalRetainedGroups =
     DatabaseSharedRetainedArray<CanonicalGroupedRow>
@@ -1047,7 +1074,7 @@ private func preadmitExpressionPayload(
 
     switch expression {
     case .currentValue, .literal, .column, .variable, .parameter, .bound,
-            .aggregate, .subquery, .exists:
+            .aggregate, .subquery, .arraySubquery, .wholeRow, .exists:
         break
     case .concatenate(let lhs, let rhs), .add(let lhs, let rhs),
             .subtract(let lhs, let rhs),
@@ -1080,7 +1107,8 @@ private func preadmitExpressionPayload(
         try retainChild(subject)
         try retainChild(pattern)
         if let escape { try retainChild(escape) }
-    case .negate(let nested),
+    case .collate(let nested, _), .field(let nested, _), .fieldExpansion(let nested),
+            .negate(let nested),
             .not(let nested), .truthTest(let nested, _, _),
             .isNull(let nested),
             .isNotNull(let nested),
@@ -1309,7 +1337,7 @@ func withPostClosureReadSnapshot(
     )
 }
 
-private struct CanonicalRelation: Sendable {
+struct CanonicalRelation: Sendable {
     let schema: CanonicalRelationSchema
     let rows: CanonicalRetainedRows
 
@@ -1349,13 +1377,9 @@ func canonicalQueryRequiresAggregation(_ query: SelectQuery) -> Bool {
     ) == true {
         return true
     }
-    switch query.projection {
-    case .all, .allFrom:
+    return query.projection.contains { item in
+        if case .expression(let expression, _) = item { return canonicalExpressionContainsAggregate(expression) }
         return false
-    case .items(let items), .distinctItems(let items):
-        return items.contains {
-            canonicalExpressionContainsAggregate($0.expression)
-        }
     }
 }
 
@@ -1392,7 +1416,8 @@ private func canonicalExpressionContainsAggregate(
         return canonicalExpressionContainsAggregate(subject)
             || canonicalExpressionContainsAggregate(pattern)
             || (escape.map(canonicalExpressionContainsAggregate) ?? false)
-    case .negate(let nested), .not(let nested), .truthTest(let nested, _, _), .isNull(let nested),
+    case .collate(let nested, _), .field(let nested, _), .fieldExpansion(let nested),
+            .negate(let nested), .not(let nested), .truthTest(let nested, _, _), .isNull(let nested),
             .isNotNull(let nested),             .regex(let nested, _, _), .cast(let nested, _),
             .isTriple(let nested), .subject(let nested),
             .predicate(let nested), .object(let nested):
@@ -1424,7 +1449,7 @@ private func canonicalExpressionContainsAggregate(
         return canonicalExpressionContainsAggregate(subject)
             || canonicalExpressionContainsAggregate(predicate)
             || canonicalExpressionContainsAggregate(object)
-    case .currentValue, .literal, .column, .variable, .parameter, .bound, .subquery,
+    case .wholeRow, .arraySubquery, .currentValue, .literal, .column, .variable, .parameter, .bound, .subquery,
             .exists:
         return false
     }
@@ -1454,6 +1479,7 @@ final class CanonicalSourceBindingPlan: Sendable {
     fileprivate let children: [CanonicalSourceBindingPlan]
     fileprivate let queryPlan: CanonicalBoundSelect?
     fileprivate let condition: CanonicalBoundExpression?
+    fileprivate let valueBindings: [[CanonicalBoundExpression]]
     fileprivate let query: SelectQuery?
     fileprivate let binding: CanonicalQueryBindingEnvironment
     fileprivate let namedSubqueries: [NamedSubquery]
@@ -1462,18 +1488,18 @@ final class CanonicalSourceBindingPlan: Sendable {
 
     fileprivate init(source: DataSource, schema: CanonicalRelationSchema,
         children: [CanonicalSourceBindingPlan] = [], queryPlan: CanonicalBoundSelect? = nil,
-        condition: CanonicalBoundExpression? = nil, query: SelectQuery? = nil,
+        condition: CanonicalBoundExpression? = nil, query: SelectQuery? = nil, valueBindings: [[CanonicalBoundExpression]] = [],
         binding: CanonicalQueryBindingEnvironment, namedSubqueries: [NamedSubquery],
         reservation: DatabaseIntermediateReservation, bindingFrames: [CanonicalSourceLayout]? = nil) {
         self.bindingFrames = bindingFrames ?? [schema.layout]
         self.source = source; self.schema = schema; self.children = children
-        self.queryPlan = queryPlan; self.condition = condition; self.query = query
+        self.queryPlan = queryPlan; self.condition = condition; self.query = query; self.valueBindings = valueBindings
         self.binding = binding; self.namedSubqueries = namedSubqueries; self.reservation = reservation
     }
 
     fileprivate func owning(_ query: SelectQuery) -> CanonicalSourceBindingPlan {
         CanonicalSourceBindingPlan(source: source, schema: schema, children: children,
-            queryPlan: queryPlan, condition: condition, query: query, binding: binding,
+            queryPlan: queryPlan, condition: condition, query: query, valueBindings: valueBindings, binding: binding,
             namedSubqueries: namedSubqueries, reservation: reservation, bindingFrames: bindingFrames)
     }
 }
@@ -1515,6 +1541,11 @@ fileprivate struct CanonicalQueryBindingEnvironment: Sendable {
     }
 }
 
+typealias CanonicalSourceEvaluationDispatcher = @Sendable (
+    [String: FieldValue],
+    @escaping @Sendable (DatabaseContext, DatabaseReadSession) async throws -> DatabaseContext.ProjectedQueryValue
+) async throws -> DatabaseContext.ProjectedQueryValue
+
 private struct CanonicalQueryEvaluationContext: Sendable {
     let options: ReadExecutionContext
     let transaction: DatabaseReadTransaction
@@ -1523,6 +1554,9 @@ private struct CanonicalQueryEvaluationContext: Sendable {
     let namedSubqueries: [NamedSubquery]
     let queryBinding: CanonicalQueryBindingEnvironment?
     let boundPlan: CanonicalBoundSelect?
+    let cteEnvironment: SQLCTEEnvironment
+    let sourceEvaluation: CanonicalSourceEvaluationDispatcher?
+    let sourceQuery: SelectQuery?
     let outerRow: CanonicalSourceRow?
     let preparedFusionGraph: FusionPreparedQueryGraph
     let fusionSession: DatabaseReadSession
@@ -1530,12 +1564,14 @@ private struct CanonicalQueryEvaluationContext: Sendable {
     init(options: ReadExecutionContext, transaction: DatabaseReadTransaction,
          partitionValues: FieldObject?, partitionMode: CanonicalPartitionRoutingMode,
          namedSubqueries: [NamedSubquery], queryBinding: CanonicalQueryBindingEnvironment? = nil,
-         boundPlan: CanonicalBoundSelect? = nil, outerRow: CanonicalSourceRow?,
-         preparedFusionGraph: FusionPreparedQueryGraph, fusionSession: DatabaseReadSession) {
+         boundPlan: CanonicalBoundSelect? = nil, cteEnvironment: SQLCTEEnvironment = SQLCTEEnvironment(), outerRow: CanonicalSourceRow?,
+         preparedFusionGraph: FusionPreparedQueryGraph, fusionSession: DatabaseReadSession,
+         sourceEvaluation: CanonicalSourceEvaluationDispatcher? = nil, sourceQuery: SelectQuery? = nil) {
         self.options = options; self.transaction = transaction; self.partitionValues = partitionValues
         self.partitionMode = partitionMode; self.namedSubqueries = namedSubqueries
         self.queryBinding = queryBinding; self.boundPlan = boundPlan; self.outerRow = outerRow
-        self.preparedFusionGraph = preparedFusionGraph; self.fusionSession = fusionSession
+        self.preparedFusionGraph = preparedFusionGraph; self.fusionSession = fusionSession; self.cteEnvironment = cteEnvironment
+        self.sourceEvaluation = sourceEvaluation; self.sourceQuery = sourceQuery
     }
 
 }
@@ -1717,7 +1753,9 @@ extension DatabaseContext {
         columns: [QueryColumn]
     ) -> CanonicalBoundSelect {
         CanonicalBoundSelect(columns: columns, projection: plan.projection, filter: plan.filter,
-            groupBy: plan.groupBy, having: plan.having, orderBy: plan.orderBy, sourcePlan: plan.sourcePlan)
+            groupBy: plan.groupBy, having: plan.having, orderBy: plan.orderBy, sourcePlan: plan.sourcePlan,
+            distinctOn: plan.distinctOn, pagination: plan.pagination, ctes: plan.ctes,
+            metadataLease: plan.metadataLease, bindingMetadata: plan.bindingMetadata)
     }
 
     /// Runs a preflighted relational Fusion input on the caller-owned
@@ -1738,7 +1776,7 @@ extension DatabaseContext {
         let selected = try suppliedPlan ?? boundFusionRelationalQueries([selectQuery], parameters: parameters,
             options: internalOptions)[0]
         let boundPlan: CanonicalBoundSelect
-        if case .all = selectQuery.projection, case .table(let table) = selectQuery.source {
+        if selectQuery.projection == [.wildcard()], case .table(let table) = selectQuery.source {
             let entity = try resolveEntity(named: table.table)
             guard let allowed = authorization.admittedFieldNames(forEntityName: entity.name) else {
                 throw DatabaseReadSessionError.authorizationMismatch
@@ -1789,7 +1827,7 @@ extension DatabaseContext {
         let selected = try suppliedPlan ?? boundFusionRelationalQueries([selectQuery], parameters: parameters,
             options: internalOptions)[0]
         let boundPlan: CanonicalBoundSelect
-        if case .all = selectQuery.projection { boundPlan = fusionProjection(selected, columns: declared) }
+        if selectQuery.projection == [.wildcard()] { boundPlan = fusionProjection(selected, columns: declared) }
         else { boundPlan = selected }
         let queryBinding = boundPlan.sourcePlan?.binding
         let layoutFootprint = try CanonicalRelationalFootprintMeter.sourceLayoutFootprint(
@@ -1842,30 +1880,6 @@ extension DatabaseContext {
                 preparedFusionGraph: preparedFusionGraph,
                 fusionSession: authorizedSession
             )
-        )
-    }
-
-    /// Resolves relational bindings before Fusion opens a physical index.
-    func validateFusionRelationalInput(
-        _ selectQuery: SelectQuery,
-        entity: Schema.Entity
-    ) throws {
-        guard case .table(let tableRef) = selectQuery.source else {
-            throw CanonicalReadError.unsupportedSelectQuery(
-                "A Fusion relational input must use a table source"
-            )
-        }
-        try validateRelationalQueryBindings(
-            selectQuery,
-            sourceSchema: try CanonicalRelationSchema(
-                scopes: [
-                    CanonicalRelationScope(
-                        name: tableRef.alias ?? tableRef.effectiveName,
-                        columns: entity.allFields
-                    )
-                ]
-            ),
-            outerRow: nil
         )
     }
 
@@ -2105,7 +2119,8 @@ extension DatabaseContext {
             case .patternMatch(let subject, let pattern, let escape, _):
                 collect(subject); collect(pattern)
                 if let escape { collect(escape) }
-            case .negate(let operand), .not(let operand), .truthTest(let operand, _, _),
+            case .collate(let operand, _), .field(let operand, _), .fieldExpansion(let operand),
+         .negate(let operand), .not(let operand), .truthTest(let operand, _, _),
                     .isNull(let operand), .isNotNull(let operand),
                     .regex(let operand, _, _),
                     .cast(let operand, _), .isTriple(let operand),
@@ -2151,14 +2166,14 @@ extension DatabaseContext {
                 collect(subject)
                 collect(predicate)
                 collect(object)
-            case .subquery(let subquery), .exists(let subquery):
+            case .arraySubquery(let subquery), .subquery(let subquery), .exists(let subquery):
                 names.formUnion(
                     referencedTableNames(
                         in: subquery,
                         among: visibleCandidates
                     )
                 )
-            case .currentValue, .literal, .column, .variable, .parameter, .bound:
+            case .wholeRow, .currentValue, .literal, .column, .variable, .parameter, .bound:
                 break
             }
         }
@@ -2219,7 +2234,7 @@ extension DatabaseContext {
                 if visibleCandidates.contains(table.table) {
                     names.insert(table.table)
                 }
-            case .subquery(let subquery, _):
+            case .subquery(let subquery):
                 names.formUnion(
                     referencedTableNames(
                         in: subquery,
@@ -2232,12 +2247,12 @@ extension DatabaseContext {
                 if case .on(let expression) = join.condition {
                     collect(expression)
                 }
-            case .union(let sources), .unionAll(let sources),
-                    .intersect(let sources):
-                sources.forEach(collect)
-            case .except(let lhs, let rhs):
-                collect(lhs)
-                collect(rhs)
+            case .aliased(let nested, _, _): collect(nested)
+            case .setOperation(_, _, let lhs, let rhs):
+                names.formUnion(referencedTableNames(in: lhs, among: visibleCandidates))
+                names.formUnion(referencedTableNames(in: rhs, among: visibleCandidates))
+            case .values(let rows):
+                for row in rows { for expression in row { collect(expression) } }
             #if DATABASE_MULTI_BASE
             case .base(_, let source):
                 collect(source)
@@ -2254,7 +2269,7 @@ extension DatabaseContext {
                     .namedGraph(_, let pattern),
                     .service(_, let pattern, _):
                 collect(pattern)
-            case .logical, .values:
+            case .logical:
                 break
             }
         }
@@ -2268,12 +2283,7 @@ extension DatabaseContext {
             )
         }
         collect(query.source)
-        switch query.projection {
-        case .items(let items), .distinctItems(let items):
-            items.forEach { collect($0.expression) }
-        case .all, .allFrom:
-            break
-        }
+        for item in query.projection { if case .expression(let expression, _) = item { collect(expression) } }
         if let filter = query.filter { collect(filter) }
         for expression in query.groupBy ?? [] { collect(expression) }
         if let having = query.having { collect(having) }
@@ -2293,229 +2303,6 @@ extension DatabaseContext {
             fields: plan
         )
         return try await operation(authorization)
-    }
-
-    private func validateRelationalQueryBindings(
-        _ query: SelectQuery,
-        sourceSchema: CanonicalRelationSchema,
-        outerRow: CanonicalSourceRow?,
-        namedSubqueries: [NamedSubquery] = [],
-        queryBinding: CanonicalQueryBindingEnvironment? = nil
-    ) throws {
-        _ = try canonicalProjectionColumns(
-            query.projection,
-            sourceSchema: sourceSchema
-        )
-        switch query.projection {
-        case .items(let items), .distinctItems(let items):
-            for item in items {
-                try validateExpressionBindings(
-                    item.expression,
-                    sourceSchema: sourceSchema,
-                    outerRow: outerRow,
-                    namedSubqueries: namedSubqueries, queryBinding: queryBinding
-                )
-            }
-        case .all, .allFrom:
-            break
-        }
-        if let filter = query.filter {
-            try validateExpressionBindings(
-                filter,
-                sourceSchema: sourceSchema,
-                outerRow: outerRow,
-                namedSubqueries: namedSubqueries, queryBinding: queryBinding
-            )
-        }
-        for expression in query.groupBy ?? [] {
-            try validateExpressionBindings(
-                expression,
-                sourceSchema: sourceSchema,
-                outerRow: outerRow,
-                namedSubqueries: namedSubqueries, queryBinding: queryBinding
-            )
-        }
-        if let having = query.having {
-            try validateExpressionBindings(
-                having,
-                sourceSchema: sourceSchema,
-                outerRow: outerRow,
-                namedSubqueries: namedSubqueries, queryBinding: queryBinding
-            )
-        }
-        for sortKey in query.orderBy ?? [] {
-            let expression = try groupedOrderExpression(
-                sortKey.expression,
-                projection: query.projection
-            )
-            try validateExpressionBindings(
-                expression,
-                sourceSchema: sourceSchema,
-                outerRow: outerRow,
-                namedSubqueries: namedSubqueries, queryBinding: queryBinding
-            )
-        }
-
-        guard canonicalQueryRequiresAggregation(query) else { return }
-        let groupBy = query.groupBy ?? []
-        let fullSourceRow = sourceSchema.nullRow()
-        let currentColumnNames = Set(sourceSchema.unscopedColumns).union(
-            sourceSchema.scopes.flatMap { $0.columns }
-        )
-        let maskedParentRow = outerRow.map { parent in
-            CanonicalSourceRow(values: parent.values, layout: parent.layout,
-                annotations: parent.annotations, version: parent.version, payloadLeases: parent.payloadLeases,
-                ambiguityOverride: parent.ambiguousUnqualifiedColumns.union(currentColumnNames))
-        }
-        let groupedOuterRow = groupedOuterScope(
-            sourceRow: fullSourceRow,
-            groupBy: groupBy
-        ).overlaying(outer: maskedParentRow)
-
-        func validateGrouped(_ expression: Expression) throws {
-            guard !groupBy.contains(expression) else { return }
-            try validateGroupedSubqueryBindings(
-                expression,
-                groupedOuterRow: groupedOuterRow,
-                fullSourceRow: fullSourceRow,
-                namedSubqueries: namedSubqueries, queryBinding: queryBinding
-            )
-        }
-
-        switch query.projection {
-        case .items(let items), .distinctItems(let items):
-            for item in items { try validateGrouped(item.expression) }
-        case .all, .allFrom:
-            break
-        }
-        if let having = query.having {
-            try validateGrouped(having)
-        }
-        for sortKey in query.orderBy ?? [] {
-            try validateGrouped(
-                try groupedOrderExpression(
-                    sortKey.expression,
-                    projection: query.projection
-                )
-            )
-        }
-    }
-
-    private func validateGroupedSubqueryBindings(
-        _ expression: Expression,
-        groupedOuterRow: CanonicalSourceRow,
-        fullSourceRow: CanonicalSourceRow,
-        namedSubqueries: [NamedSubquery],
-        queryBinding: CanonicalQueryBindingEnvironment? = nil
-    ) throws {
-        func validate(_ nested: Expression) throws {
-            try validateGroupedSubqueryBindings(
-                nested,
-                groupedOuterRow: groupedOuterRow,
-                fullSourceRow: fullSourceRow,
-                namedSubqueries: namedSubqueries, queryBinding: queryBinding
-            )
-        }
-
-        func validateNested(_ query: SelectQuery) throws {
-            do {
-                _ = try validateNestedQueryBindings(
-                    query,
-                    outerSchema: try CanonicalRelationSchema(),
-                    outerRow: groupedOuterRow,
-                    namedSubqueries: namedSubqueries, queryBinding: queryBinding
-                )
-            } catch CanonicalReadError.expressionEvaluation(
-                .missingColumn(let column), _
-            ) where sourceRow(fullSourceRow, containsColumnNamed: column) {
-                throw CanonicalReadError.aggregateEvaluation(
-                    .invalidGroupedExpression(
-                        "Correlated column '\(column)' is neither grouped nor aggregated"
-                    )
-                )
-            } catch CanonicalReadError.expressionEvaluation(
-                .ambiguousColumn(let column), _
-            ) where sourceRow(fullSourceRow, containsColumnNamed: column) {
-                throw CanonicalReadError.aggregateEvaluation(
-                    .invalidGroupedExpression(
-                        "Correlated column '\(column)' is neither grouped nor aggregated"
-                    )
-                )
-            }
-        }
-
-        switch expression {
-        case .concatenate(let lhs, let rhs), .add(let lhs, let rhs), .subtract(let lhs, let rhs),
-                .multiply(let lhs, let rhs), .divide(let lhs, let rhs),
-                .modulo(let lhs, let rhs), .equal(let lhs, let rhs),
-                .notEqual(let lhs, let rhs), .lessThan(let lhs, let rhs),
-                .lessThanOrEqual(let lhs, let rhs),
-                .greaterThan(let lhs, let rhs),
-                .greaterThanOrEqual(let lhs, let rhs),
-                .and(let lhs, let rhs), .or(let lhs, let rhs),
-                .isDistinctFrom(let lhs, let rhs, _), .nullIf(let lhs, let rhs),
-                .collectionOperation(_, let lhs, let rhs):
-            try validate(lhs)
-            try validate(rhs)
-        case .arrayAccess(let base, let subscripts):
-            try validate(base)
-            for item in subscripts {
-                switch item {
-                case .index(let value): try validate(value)
-                case .slice(let lower, let upper):
-                    if let lower { try validate(lower) }
-                    if let upper { try validate(upper) }
-                }
-            }
-        case .patternMatch(let subject, let pattern, let escape, _):
-            try validate(subject); try validate(pattern)
-            if let escape { try validate(escape) }
-        case .negate(let nested), .not(let nested), .truthTest(let nested, _, _), .isNull(let nested),
-                .isNotNull(let nested),                 .regex(let nested, _, _), .cast(let nested, _),
-                .isTriple(let nested), .subject(let nested),
-                .predicate(let nested), .object(let nested):
-            try validate(nested)
-        case .between(let nested, let lower, let upper):
-            try validate(nested)
-            try validate(lower)
-            try validate(upper)
-        case .inList(let nested, let values),
-                .notInList(let nested, let values):
-            try validate(nested)
-            for value in values { try validate(value) }
-        case .quantifiedComparison(let lhs, _, _, let source):
-            try validate(lhs)
-            switch source {
-            case .array(let value): try validate(value)
-            case .subquery(let query): try validateNested(query)
-            }
-        case .inSubquery(let nested, let query):
-            try validate(nested)
-            try validateNested(query)
-        case .function(let function):
-            for argument in function.arguments { try validate(argument) }
-        case .caseWhen(let operand, let pairs, let fallback):
-            if let operand { try validate(operand) }
-            for pair in pairs {
-                try validate(pair.condition)
-                try validate(pair.result)
-            }
-            if let fallback { try validate(fallback) }
-        case .coalesce(let values), .array(let values), .row(let values), .greatest(let values), .least(let values):
-            for value in values { try validate(value) }
-        case .triple(let subject, let predicate, let object):
-            try validate(subject)
-            try validate(predicate)
-            try validate(object)
-        case .subquery(let query), .exists(let query):
-            try validateNested(query)
-        case .aggregate:
-            // Aggregate arguments are evaluated against each source row, not
-            // against the grouped representative.
-            return
-        case .currentValue, .literal, .column, .variable, .parameter, .bound:
-            return
-        }
     }
 
     private func sourceRow(
@@ -2549,244 +2336,9 @@ extension DatabaseContext {
             payloadLeases: sourceRow.payloadLeases)
     }
 
-    private func validateExpressionBindings(
-        _ expression: Expression,
-        sourceSchema: CanonicalRelationSchema,
-        outerRow: CanonicalSourceRow?,
-        namedSubqueries: [NamedSubquery] = [],
-        queryBinding: CanonicalQueryBindingEnvironment? = nil
-    ) throws {
-        func validate(_ nested: Expression) throws {
-            try validateExpressionBindings(
-                nested,
-                sourceSchema: sourceSchema,
-                outerRow: outerRow,
-                namedSubqueries: namedSubqueries, queryBinding: queryBinding
-            )
-        }
 
-        switch expression {
-        case .column(let column):
-            try validateColumnBinding(
-                column,
-                sourceSchema: sourceSchema,
-                outerRow: outerRow
-            )
-        case .concatenate(let lhs, let rhs), .add(let lhs, let rhs), .subtract(let lhs, let rhs),
-                .multiply(let lhs, let rhs), .divide(let lhs, let rhs),
-                .modulo(let lhs, let rhs), .equal(let lhs, let rhs),
-                .notEqual(let lhs, let rhs), .lessThan(let lhs, let rhs),
-                .lessThanOrEqual(let lhs, let rhs),
-                .greaterThan(let lhs, let rhs),
-                .greaterThanOrEqual(let lhs, let rhs),
-                .and(let lhs, let rhs), .or(let lhs, let rhs),
-                .isDistinctFrom(let lhs, let rhs, _), .nullIf(let lhs, let rhs),
-                .collectionOperation(_, let lhs, let rhs):
-            try validate(lhs)
-            try validate(rhs)
-        case .arrayAccess(let base, let subscripts):
-            try validate(base)
-            for item in subscripts {
-                switch item {
-                case .index(let value): try validate(value)
-                case .slice(let lower, let upper):
-                    if let lower { try validate(lower) }
-                    if let upper { try validate(upper) }
-                }
-            }
-        case .patternMatch(let subject, let pattern, let escape, _):
-            try validate(subject); try validate(pattern)
-            if let escape { try validate(escape) }
-        case .negate(let operand), .not(let operand), .truthTest(let operand, _, _),
-                .isNull(let operand), .isNotNull(let operand),
-                .regex(let operand, _, _),
-                .cast(let operand, _), .isTriple(let operand),
-                .subject(let operand), .predicate(let operand),
-                .object(let operand):
-            try validate(operand)
-        case .between(let operand, let lower, let upper):
-            try validate(operand)
-            try validate(lower)
-            try validate(upper)
-        case .inList(let operand, let values),
-                .notInList(let operand, let values):
-            try validate(operand)
-            for value in values { try validate(value) }
-        case .quantifiedComparison(let lhs, _, _, let source):
-            try validate(lhs)
-            switch source {
-            case .array(let value): try validate(value)
-            case .subquery(let query):
-                let count = try validateNestedQueryBindings(query, outerSchema: sourceSchema,
-                    outerRow: outerRow, namedSubqueries: namedSubqueries, queryBinding: queryBinding)
-                guard count == 1 else { throw CanonicalReadError.invalidMembershipSubquery(columnCount: count) }
-            }
-        case .inSubquery(let operand, let query):
-            try validate(operand)
-            let columnCount = try validateNestedQueryBindings(
-                query,
-                outerSchema: sourceSchema,
-                outerRow: outerRow,
-                namedSubqueries: namedSubqueries, queryBinding: queryBinding
-            )
-            guard columnCount == 1 else {
-                throw CanonicalReadError.invalidMembershipSubquery(
-                    columnCount: columnCount
-                )
-            }
-        case .aggregate(let aggregate):
-            try validateAggregateBindings(
-                aggregate,
-                sourceSchema: sourceSchema,
-                outerRow: outerRow,
-                namedSubqueries: namedSubqueries, queryBinding: queryBinding
-            )
-        case .function(let function):
-            for argument in function.arguments { try validate(argument) }
-        case .caseWhen(let operand, let cases, let elseResult):
-            if let operand { try validate(operand) }
-            for pair in cases {
-                try validate(pair.condition)
-                try validate(pair.result)
-            }
-            if let elseResult { try validate(elseResult) }
-        case .coalesce(let expressions), .array(let expressions), .row(let expressions),
-             .greatest(let expressions), .least(let expressions):
-            for expression in expressions { try validate(expression) }
-        case .triple(let subject, let predicate, let object):
-            try validate(subject)
-            try validate(predicate)
-            try validate(object)
-        case .subquery(let query):
-            let columnCount = try validateNestedQueryBindings(
-                query,
-                outerSchema: sourceSchema,
-                outerRow: outerRow,
-                namedSubqueries: namedSubqueries, queryBinding: queryBinding
-            )
-            guard columnCount == 1 else {
-                throw CanonicalReadError.invalidScalarSubquery(
-                    rowCount: nil,
-                    columnCount: columnCount
-                )
-            }
-        case .exists(let query):
-            _ = try validateNestedQueryBindings(
-                query,
-                outerSchema: sourceSchema,
-                outerRow: outerRow,
-                namedSubqueries: namedSubqueries, queryBinding: queryBinding
-            )
-        case .currentValue, .literal, .variable, .parameter, .bound:
-            break
-        }
-    }
 
-    private func validateAggregateBindings(
-        _ aggregate: AggregateFunction,
-        sourceSchema: CanonicalRelationSchema,
-        outerRow: CanonicalSourceRow?,
-        namedSubqueries: [NamedSubquery],
-        queryBinding: CanonicalQueryBindingEnvironment? = nil
-    ) throws {
-        func validate(_ expression: Expression) throws {
-            try validateExpressionBindings(
-                expression,
-                sourceSchema: sourceSchema,
-                outerRow: outerRow,
-                namedSubqueries: namedSubqueries, queryBinding: queryBinding
-            )
-        }
-        switch aggregate {
-        case .count(let expression, _):
-            if let expression { try validate(expression) }
-        case .sum(let expression, _), .avg(let expression, _),
-                .min(let expression), .max(let expression),
-                .groupConcat(let expression, _, _),
-                .sample(let expression):
-            try validate(expression)
-        case .arrayAgg(let expression, let orderBy, _):
-            try validate(expression)
-            for sortKey in orderBy ?? [] {
-                try validate(sortKey.expression)
-            }
-        }
-    }
 
-    private func validateNestedQueryBindings(
-        _ query: SelectQuery,
-        outerSchema: CanonicalRelationSchema,
-        outerRow: CanonicalSourceRow?,
-        namedSubqueries: [NamedSubquery],
-        queryBinding: CanonicalQueryBindingEnvironment? = nil
-    ) throws -> Int {
-        let visibleNamedSubqueries = try mergeNamedSubqueries(
-            local: query.subqueries ?? [],
-            inherited: namedSubqueries
-        )
-        if sourceRequiresRuntimeInferredSchema(
-            query.source,
-            namedSubqueries: visibleNamedSubqueries, queryBinding: queryBinding
-        ) {
-            switch query.projection {
-            case .items, .distinctItems:
-                return try canonicalProjectionColumns(
-                    query.projection,
-                    sourceSchema: CanonicalRelationSchema()
-                ).count
-            case .all, .allFrom:
-                throw CanonicalReadError.unsupportedSelectQuery(
-                    "A nested query over a runtime-inferred source must declare exactly one output column"
-                )
-            }
-        }
-        let sourceSchema = try canonicalRelationSchema(
-            for: query.source,
-            namedSubqueries: visibleNamedSubqueries, queryBinding: queryBinding
-        )
-        let syntheticOuterRow = outerSchema.nullRow().overlaying(
-            outer: outerRow
-        )
-        try validateRelationalQueryBindings(
-            query,
-            sourceSchema: sourceSchema,
-            outerRow: syntheticOuterRow,
-            namedSubqueries: visibleNamedSubqueries, queryBinding: queryBinding
-        )
-        try validateStaticJoinBindings(
-            query.source,
-            namedSubqueries: visibleNamedSubqueries, queryBinding: queryBinding,
-            outerRow: syntheticOuterRow
-        )
-        return try canonicalProjectionColumns(
-            query.projection,
-            sourceSchema: sourceSchema
-        ).count
-    }
-
-    private func validateColumnBinding(
-        _ column: ColumnRef,
-        sourceSchema: CanonicalRelationSchema,
-        outerRow: CanonicalSourceRow?
-    ) throws {
-        let local = sourceSchema.layout.matching(column)
-        if local.count > 1 {
-            throw CanonicalReadError.expressionEvaluation(.ambiguousColumn(column.displayName))
-        }
-        if local.count == 1 { return }
-        if let qualifier = column.table,
-           sourceSchema.scopes.contains(where: { $0.name == qualifier }) {
-            throw CanonicalReadError.expressionEvaluation(.missingColumn(column.displayName))
-        }
-        if let outerRow {
-            let outer = outerRow.layout.matching(column)
-            if outer.count > 1 || (column.table == nil && outerRow.ambiguousUnqualifiedColumns.contains(column.column)) {
-                throw CanonicalReadError.expressionEvaluation(.ambiguousColumn(column.displayName))
-            }
-            if outer.count == 1 { return }
-        }
-        throw CanonicalReadError.expressionEvaluation(.missingColumn(column.displayName))
-    }
 
     private func finalizeRelationalRows(
         _ selectQuery: SelectQuery,
@@ -2847,7 +2399,7 @@ extension DatabaseContext {
             )
             let orderedGroups = try await applyGroupedOrder(
                 residualOrderBy,
-                boundOrder: boundPlan.orderBy,
+                boundOrder: boundPlan.orderBy.map { $0.expression },
                 to: havingGroups,
                 projection: selectQuery.projection,
                 groupBy: selectQuery.groupBy ?? [],
@@ -2875,7 +2427,7 @@ extension DatabaseContext {
                         residualOrderBy,
                         projection: selectQuery.projection
                     ),
-                    boundOrder: boundPlan.orderBy,
+                    boundOrder: boundPlan.orderBy.map { $0.expression },
                     to: filteredRows,
                     workMeter: options.workMeter,
                     evaluationContext: evaluationContext
@@ -2892,7 +2444,7 @@ extension DatabaseContext {
         }
 
         let distinctRows: CanonicalRetainedQueryRows
-        if selectQuery.distinct {
+        if selectQuery.quantifier == .distinct {
             distinctRows = try canonicalUniqueRows(
                 projectedRows,
                 workMeter: options.workMeter
@@ -2923,7 +2475,7 @@ extension DatabaseContext {
     /// Applies the canonical relational pipeline to two already-authorized
     /// Base-local table inputs. Only the Composition planner may call this
     /// boundary; ordinary Base execution rejects Base-qualified sources.
-    package func executeCompositionCrossBaseJoin(
+    func executeCompositionCrossBaseJoin(
         _ selectQuery: SelectQuery,
         join: JoinClause,
         leftRows: consuming DatabaseRetainedQueryRows,
@@ -2931,7 +2483,8 @@ extension DatabaseContext {
         rightRows: consuming DatabaseRetainedQueryRows,
         rightTable: TableRef,
         options: ReadExecutionContext,
-        parameters: [QueryParameter] = []
+        session: DatabaseReadSession, parameters: [QueryParameter] = [],
+        resolvedPagination: SQLResolvedPagination? = nil
     ) async throws -> DatabaseSharedRetainedQueryRows {
         guard join.type == .inner else {
             throw CompositionQueryError.unsupportedPlan(
@@ -2988,7 +2541,7 @@ extension DatabaseContext {
             parameters: try CanonicalParameterBindingState(parameters: parameters, workMeter: options.workMeter),
             workMeter: options.workMeter, occurrences: nil, occurrence: nil, allowingSPARQLFunctions: false)
         let binder = try typeBinder(schema: inputSchema, namedSubqueries: [], queryBinding: binding)
-        let boundQuery = try binder.bindSelect(resolvedQueryReferences(selectQuery, sourceSchema: inputSchema))
+        let boundQuery = try binder.bindSelect(selectQuery)
         let boundCondition: CanonicalBoundExpression?
         if case .on(let expression) = join.condition {
             boundCondition = try binder.bind(expression, contextualType: .sql(.boolean))
@@ -2999,19 +2552,771 @@ extension DatabaseContext {
             right: CanonicalRelation(schema: rightSchema, rows: right, schemaLayout: rightLayout),
             type: join.type, condition: join.condition, boundCondition: boundCondition, workMeter: options.workMeter
         )
-        let collecting = try await finalizeRelationalRows(
-            selectQuery, sourceRows: joined.rows, sourceSchema: joined.schema,
-            residualFilter: selectQuery.filter, residualOrderBy: selectQuery.orderBy, options: options, boundPlan: boundQuery
-        )
-        guard collecting.continuation == nil,
-              collecting.visibleRange == 0..<collecting.rows.count else {
-            throw CompositionQueryError.workspaceCorrupted
+        let context = try compositionEvaluationContext(selectQuery, plan: boundQuery, binding: binding,
+            execution: options, session: session)
+        return try await withSQLTemporalStatement(environment: context.options.temporalEnvironment ?? session.temporalEnvironment) {
+            let pagination: SQLResolvedPagination
+            if let resolvedPagination { pagination = resolvedPagination }
+            else { pagination = try await evaluatePagination(boundQuery.pagination, context: context) }
+            let result = try await finalizeSelectedRows(selectQuery, relation: joined, plan: boundQuery,
+                pagination: pagination, context: context)
+            return try outputQueryRows(result, columns: boundQuery.columns, meter: options.workMeter,
+                metadataLeases: retainedBindingClaims(boundQuery, workMeter: options.workMeter))
         }
-        // The Composition snapshot owns the producing resource close. Carry
-        // collecting rows and their claims into its event owner without promotion.
-        return collecting.rows
     }
     #endif
+
+    #if DATABASE_MULTI_BASE
+    func materializeCompositionSource(_ query: SelectQuery, execution: ReadExecutionContext,
+        session: DatabaseReadSession, parameters: [QueryParameter]
+    ) async throws -> CanonicalRelation {
+        let binding = CanonicalQueryBindingEnvironment(parameters: try CanonicalParameterBindingState(
+            parameters: parameters, workMeter: execution.workMeter), workMeter: execution.workMeter,
+            occurrences: nil, occurrence: nil, allowingSPARQLFunctions: false)
+        let plan = try bindCanonicalQuery(query, inherited: [], outerSchemas: [], binding: binding)
+        try binding.parameters.finalize()
+        guard let source = plan.sourcePlan else { throw CanonicalReadError.unsupportedSelectQuery("Composition source has no executable binding") }
+        let context = try compositionEvaluationContext(query, plan: plan, binding: binding, execution: execution, session: session)
+        return try await withSQLTemporalStatement(environment: context.options.temporalEnvironment ?? session.temporalEnvironment) {
+            try await drainSQLProducer(makeSourceProducer(query.source, plan: source, context: context,
+                authorizationQuery: query), meter: execution.workMeter)
+        }
+    }
+
+    func finalizeCompositionRelation(_ query: SelectQuery, relation: CanonicalRelation,
+        execution: ReadExecutionContext, session: DatabaseReadSession, parameters: [QueryParameter],
+        mergeDuplicateAnnotations: @escaping @Sendable ([String: FieldValue], [String: FieldValue]) throws -> [String: FieldValue],
+        sourceEvaluation: CanonicalSourceEvaluationDispatcher? = nil,
+        resolvedPagination: SQLResolvedPagination? = nil
+    ) async throws -> DatabaseSharedRetainedQueryRows {
+        guard relation.rows.workMeter === execution.workMeter else { throw DatabaseIntermediateReservationError.workMeterMismatch }
+        let binding = CanonicalQueryBindingEnvironment(parameters: try CanonicalParameterBindingState(
+            parameters: parameters, workMeter: execution.workMeter), workMeter: execution.workMeter,
+            occurrences: nil, occurrence: nil, allowingSPARQLFunctions: false)
+        let binder = try typeBinder(schema: relation.schema, namedSubqueries: [], queryBinding: binding)
+        let plan = try binder.bindSelect(query)
+        try binding.parameters.finalize()
+        let context = try compositionEvaluationContext(query, plan: plan, binding: binding, execution: execution, session: session, sourceEvaluation: sourceEvaluation)
+        return try await withSQLTemporalStatement(environment: context.options.temporalEnvironment ?? session.temporalEnvironment) {
+            let pagination: SQLResolvedPagination
+            if let resolvedPagination { pagination = resolvedPagination }
+            else { pagination = try await evaluatePagination(plan.pagination, context: context) }
+            let result = try await finalizeSelectedRows(query, relation: relation, plan: plan,
+                pagination: pagination, context: context, mergeDuplicateAnnotations: mergeDuplicateAnnotations)
+            return try outputQueryRows(result, columns: plan.columns, meter: execution.workMeter,
+                metadataLeases: retainedBindingClaims(plan, workMeter: execution.workMeter))
+        }
+    }
+
+    func resolveCompositionPagination(_ query: SelectQuery, parameters: [QueryParameter],
+        execution: ReadExecutionContext, session: DatabaseReadSession) async throws -> SQLResolvedPagination {
+        try validateCompositionPagination(query, parameters: parameters, execution: execution)
+        let state = try CanonicalParameterBindingState(parameters: parameters, workMeter: execution.workMeter)
+        let binding = CanonicalQueryBindingEnvironment(parameters: state, workMeter: execution.workMeter,
+            occurrences: nil, occurrence: nil, allowingSPARQLFunctions: false)
+        let binder = try typeBinder(schema: CanonicalRelationSchema(), namedSubqueries: [], queryBinding: binding)
+        let pagination = try binder.bindPagination(query.pagination, localColumnCount: 0)
+        let plan = CanonicalBoundSelect(columns: [], projection: [], filter: nil, groupBy: [], having: nil,
+            orderBy: [], pagination: pagination)
+        let context = try compositionEvaluationContext(query, plan: plan, binding: binding,
+            execution: execution, session: session)
+        return try await withSQLTemporalStatement(environment: context.options.temporalEnvironment ?? session.temporalEnvironment) {
+            try await evaluatePagination(pagination, context: context)
+        }
+    }
+
+    func validateCompositionPagination(_ query: SelectQuery, parameters: [QueryParameter],
+        execution: ReadExecutionContext) throws {
+        var counts: [QueryCount] = []
+        if let offset = query.pagination.offset { counts.append(offset) }
+        if case .count(let limit, _) = query.pagination.limit { counts.append(limit) }
+        for count in counts {
+            if case .expression(let expression) = count,
+               try FusionSelectQueryGraphWalker.containsNestedQuery(in: expression, workMeter: execution.workMeter) {
+                throw CanonicalReadError.unsupportedSelectQuery("Composition pagination subqueries require an explicit global evaluation scope")
+            }
+        }
+        let state = try CanonicalParameterBindingState(parameters: parameters, workMeter: execution.workMeter)
+        let binding = CanonicalQueryBindingEnvironment(parameters: state, workMeter: execution.workMeter,
+            occurrences: nil, occurrence: nil, allowingSPARQLFunctions: false)
+        let binder = try typeBinder(schema: CanonicalRelationSchema(), namedSubqueries: [], queryBinding: binding)
+        let pagination = try binder.bindPagination(query.pagination, localColumnCount: 0)
+        func validate(_ count: CanonicalBoundCount?) throws {
+            guard case .expression(let root) = count else { return }
+            var pending = [root]
+            while let expression = pending.popLast() {
+                try execution.workMeter.consume(at: .bindingCandidate)
+                guard expression.subqueryBinding == nil else {
+                    throw CanonicalReadError.unsupportedSelectQuery("Composition pagination subqueries require an explicit global evaluation scope")
+                }
+                pending.append(contentsOf: expression.children)
+            }
+        }
+        try validate(pagination.offset); try validate(pagination.limit)
+    }
+
+    private func compositionEvaluationContext(_ query: SelectQuery, plan: CanonicalBoundSelect,
+        binding: CanonicalQueryBindingEnvironment, execution: ReadExecutionContext, session: DatabaseReadSession,
+        sourceEvaluation: CanonicalSourceEvaluationDispatcher? = nil
+    ) throws -> CanonicalQueryEvaluationContext {
+        let resolved = try FusionPreflight.resolveGraph(query, context: self, workMeter: execution.workMeter)
+        let authorization = try readPolicy().authorizeRead(listRequirements: resolved.listAuthorizationRequirements,
+            fields: resolved.authorizationPlan)
+        let prepared = try FusionPreflight.prepareGraph(resolved, authorization: authorization,
+            context: self, workMeter: execution.workMeter)
+        let authorized = try session.authorizedSession(authorization)
+        return CanonicalQueryEvaluationContext(options: execution.withTemporalEnvironment(execution.temporalEnvironment ?? session.temporalEnvironment),
+            transaction: authorized.transaction, partitionValues: nil, partitionMode: .strict,
+            namedSubqueries: [], queryBinding: binding, boundPlan: plan, outerRow: nil,
+            preparedFusionGraph: prepared, fusionSession: authorized, sourceEvaluation: sourceEvaluation, sourceQuery: query)
+    }
+    #endif
+
+    private func runtimeContext(_ context: CanonicalQueryEvaluationContext,
+        environment: SQLCTEEnvironment, outerRow: CanonicalSourceRow? = nil
+    ) -> CanonicalQueryEvaluationContext {
+        CanonicalQueryEvaluationContext(options: context.options, transaction: context.transaction,
+            partitionValues: context.partitionValues, partitionMode: context.partitionMode,
+            namedSubqueries: context.namedSubqueries, queryBinding: context.queryBinding,
+            boundPlan: context.boundPlan, cteEnvironment: environment,
+            outerRow: outerRow ?? context.outerRow, preparedFusionGraph: context.preparedFusionGraph,
+            fusionSession: context.fusionSession)
+    }
+
+    private func executeSQLRelation(_ query: SelectQuery, plan: CanonicalBoundSelect,
+        context: CanonicalQueryEvaluationContext
+    ) async throws -> CanonicalRetainedQueryResponse {
+        let producer = try await makeSelectProducer(query, plan: plan, context: context)
+        let relation = try await drainSQLProducer(producer, meter: context.options.workMeter)
+        let rows = try outputQueryRows(relation, columns: plan.columns, meter: context.options.workMeter,
+            metadataLeases: retainedBindingClaims(plan, workMeter: context.options.workMeter))
+        let page = try CanonicalQueryPagination.retainedWindow(rows: rows, selectQuery: query,
+            options: context.options, rowsAreLogicalQueryRelative: true)
+        return CanonicalRetainedQueryResponse(rows: rows, visibleRange: page.range,
+            continuation: page.continuation, metadata: [:], affectedRows: nil)
+    }
+
+    private func makeSelectProducer(_ query: SelectQuery, plan: CanonicalBoundSelect,
+        context: CanonicalQueryEvaluationContext
+    ) async throws -> any SQLRelationProducer {
+        guard let sourcePlan = plan.sourcePlan else { throw CanonicalReadError.unsupportedSelectQuery("SELECT has no source binding") }
+        let context = CanonicalQueryEvaluationContext(options: context.options, transaction: context.transaction,
+            partitionValues: context.partitionValues, partitionMode: context.partitionMode,
+            namedSubqueries: sourcePlan.namedSubqueries, queryBinding: sourcePlan.binding, boundPlan: plan,
+            cteEnvironment: context.cteEnvironment, outerRow: context.outerRow,
+            preparedFusionGraph: context.preparedFusionGraph, fusionSession: context.fusionSession)
+        var environment = context.cteEnvironment
+        var caches: [SQLCTECache] = []
+        let meter = context.options.workMeter
+        do {
+            for definition in plan.ctes {
+                let visible = environment
+                let body = definition.plan
+                let names = try aliasedColumnNames(body.columns.map { $0.name }, overrides: definition.definition.columns)
+                let schema = try CanonicalRelationSchema(unscopedColumns: names, types: body.columns.map { $0.type },
+                    nullability: body.columns.map { $0.isNullable })
+                let childContext = runtimeContext(context, environment: visible)
+                let factory: @Sendable () async throws -> any SQLRelationProducer = { [self] in
+                    let producer = try await makeSelectProducer(definition.definition.query, plan: body, context: childContext)
+                    return reframedProducer(producer, schema: schema, meter: meter)
+                }
+                if definition.definition.materialized == .notMaterialized && !definition.isVolatile {
+                    environment = environment.adding(name: definition.definition.name, factory: factory)
+                } else {
+                    let cache = try SQLCTECache(schema: schema, meter: meter, factory: factory)
+                    environment = environment.adding(name: definition.definition.name, cache: cache)
+                    caches.append(cache)
+                }
+            }
+            let active = runtimeContext(context, environment: environment)
+            let pagination = try await evaluatePagination(plan.pagination, context: active)
+            if pagination.limit == 0 {
+                let localCaches = caches
+                return SQLRelationPullProducer(schema: try outputSchema(plan.columns), meter: meter,
+                    operation: { _ in nil }, cleanup: {
+                        var failure: (any Error)?
+                        for cache in localCaches {
+                            do { try await cache.close() } catch { if failure == nil { failure = error } }
+                        }
+                        if let failure { throw failure }
+                    })
+            }
+            let source = try await makeSourceProducer(query.source, plan: sourcePlan, context: active,
+                authorizationQuery: query, allowsOuterReferences: true)
+            let outputSchema = try self.outputSchema(plan.columns)
+            if canonicalQueryRequiresAggregation(query) || !(query.orderBy?.isEmpty ?? true) || query.quantifier != .all {
+                let localCaches = caches
+                let materialized = SQLDeferredRowProducer(schema: outputSchema, meter: meter) { [self] in
+                    let relation = try await drainSQLProducer(source, meter: meter)
+                    return try await prepareSelectedRows(query, relation: relation, plan: plan,
+                        pagination: pagination, context: active)
+                }
+                return SQLRelationPullProducer(schema: outputSchema, meter: meter,
+                    operation: { _ in try await materialized.next() }, cleanup: {
+                        var failure: (any Error)?
+                        do { try await materialized.close() } catch { failure = error }
+                        do { try await source.close() } catch { if failure == nil { failure = error } }
+                        for cache in localCaches { do { try await cache.close() } catch { if failure == nil { failure = error } } }
+                        if let failure { throw failure }
+                    })
+            }
+            return SQLSelectRowProducer(schema: outputSchema, meter: meter, source: source,
+                pagination: pagination, caches: caches, predicate: { [self] row in
+                    guard let filter = plan.filter else { return true }
+                    return try await evaluateBoundBoolean(filter, on: row, context: active, workMeter: meter)
+                }, projection: { [self] row in
+                    let relation = try sqlSingleRow(row, schema: sourcePlan.schema, meter: meter)
+                    let projected = try await projectRows(relation.rows, projection: query.projection,
+                        columns: plan.columns, sourceSchema: sourcePlan.schema, workMeter: meter,
+                        evaluationContext: active, boundPlan: plan)
+                    return try relationFromOutput(projected, schema: outputSchema, meter: meter)
+                })
+        } catch {
+            let operationError = error
+            var cleanupError: (any Error)?
+            for cache in caches {
+                do { try await cache.close() } catch { if cleanupError == nil { cleanupError = error } }
+            }
+            if let cleanupError {
+                throw SQLRelationCleanupError(operationError: operationError, cleanupError: cleanupError)
+            }
+            throw operationError
+        }
+    }
+
+    private func makeSourceProducer(_ source: DataSource, plan: CanonicalSourceBindingPlan,
+        context: CanonicalQueryEvaluationContext, authorizationQuery: SelectQuery,
+        allowsOuterReferences: Bool = false
+    ) async throws -> any SQLRelationProducer {
+        let meter = context.options.workMeter
+        switch source {
+        case .table(let table):
+            if table.schema == nil, let producer = try await context.cteEnvironment.consumer(named: table.table) {
+                return reframedProducer(producer, schema: plan.schema, meter: meter)
+            }
+        case .aliased(let nested, _, _):
+            let child = try await makeSourceProducer(nested, plan: plan.children[0], context: context,
+                authorizationQuery: authorizationQuery, allowsOuterReferences: allowsOuterReferences)
+            return reframedProducer(child, schema: plan.schema, meter: meter)
+        case .subquery(let query):
+            guard let body = plan.queryPlan else { throw CanonicalReadError.unsupportedSelectQuery("A derived relation has no executable binding") }
+            let child = try await makeSelectProducer(query, plan: body, context: context)
+            return reframedProducer(child, schema: plan.schema, meter: meter)
+        case .values:
+            let empty = try CanonicalRelationSchema().nullRow()
+            return SQLRelationPullProducer(schema: plan.schema, meter: meter) { [self] index in
+                guard index < plan.valueBindings.count else { return nil }
+                let row = try await evaluateValuesRow(plan.valueBindings[index], schema: plan.schema, on: empty, context: context)
+                return try sqlSingleRow(row, schema: plan.schema, meter: meter)
+            }
+        case .join(let clause):
+            let left = try await makeSourceProducer(clause.left, plan: plan.children[0], context: context,
+                authorizationQuery: authorizationQuery, allowsOuterReferences: allowsOuterReferences)
+            let lateral = clause.type == .lateral || clause.type == .leftLateral
+            let type = lateral ? (clause.type == .leftLateral ? JoinType.left : .inner) : naturalJoinBaseType(clause.type)
+            let condition: JoinCondition?
+            switch clause.type {
+            case .natural, .naturalLeft, .naturalRight, .naturalFull:
+                condition = .using(inferNaturalJoinColumns(leftSchema: plan.children[0].schema, rightSchema: plan.children[1].schema))
+            default: condition = clause.condition
+            }
+            return try SQLJoinRowProducer(schema: plan.schema, left: left, rightSchema: plan.children[1].schema,
+                type: type, lateral: lateral, meter: meter,
+                hashKey: try selectedJoinHashKey(clause: clause, plan: plan, meter: meter),
+                rightFactory: { [self] leftRow in
+                    let active = runtimeContext(context, environment: context.cteEnvironment,
+                        outerRow: leftRow.map { $0.overlaying(outer: context.outerRow) })
+                    return try await makeSourceProducer(clause.right, plan: plan.children[1], context: active,
+                        authorizationQuery: authorizationQuery, allowsOuterReferences: lateral)
+                }, matches: { [self] left, right in
+                    try await joinMatches(left: left, right: right, condition: condition, boundCondition: plan.condition,
+                        joinType: type, evaluationContext: context, workMeter: meter, usingLayout: plan.schema.layout)
+                }, merge: { [self] left, right in try mergeSelectedJoinRows(left, right, condition: condition, schema: plan.schema, meter: meter, temporalEnvironment: context.options.temporalEnvironment) })
+        default: break
+        }
+        return SQLMaterializedRelationProducer(schema: plan.schema, meter: meter) { [self] in
+            try await materializeRows(for: source, sourcePlan: plan, namedSubqueries: context.namedSubqueries,
+                queryBinding: context.queryBinding, options: context.options, partitionValues: context.partitionValues,
+                partitionMode: context.partitionMode, transaction: context.transaction,
+                preparedFusionGraph: context.preparedFusionGraph, fusionSession: context.fusionSession,
+                authorizationQuery: authorizationQuery, outerRow: context.outerRow,
+                allowsOuterReferences: allowsOuterReferences, cteEnvironment: context.cteEnvironment)
+        }
+    }
+
+    private struct CanonicalJoinColumnPair: Sendable {
+        let left: ColumnRef
+        let right: ColumnRef
+    }
+
+    private func selectedJoinHashKey(clause: JoinClause, plan: CanonicalSourceBindingPlan,
+        meter: DatabaseWorkMeter
+    ) throws -> (@Sendable (CanonicalSourceRow, Bool) throws -> SQLJoinRowProducer.HashKey?)? {
+        switch clause.type {
+        case .inner, .left, .right, .full: break
+        default: return nil
+        }
+        guard isPhysicalJoinInput(plan.children[1]), case .on(let expression) = clause.condition,
+              let selected = plan.condition, try selected.loweredExpression == expression else { return nil }
+        var pairs = try DatabaseRetainedArrayBuilder<CanonicalJoinColumnPair>(workMeter: meter,
+            stage: .joinCandidate, layout: DatabaseRetainedArrayLayout.forElement(CanonicalJoinColumnPair.self))
+        guard try collectSelectedJoinKeys(expression, left: plan.children[0].schema,
+            right: plan.children[1].schema, into: &pairs, meter: meter) else { return nil }
+        let keys = try pairs.finish().moveToSharedOwnership(at: .joinCandidate)
+        guard !keys.isEmpty else { return nil }
+        return { [self] row, left in
+            let claim = try meter.reserveIntermediate(bytes: DatabaseIntermediateCollectionMeter.arrayFootprint(
+                count: keys.count, element: CanonicalSQLValueIdentity.self).bytes, at: .joinCandidate)
+            var values: [CanonicalSQLValueIdentity] = []
+            values.reserveCapacity(keys.count)
+            if values.capacity > keys.count {
+                try claim.reserveAdditional(bytes: DatabaseIntermediateFootprint(
+                    bytes: UInt64(MemoryLayout<CanonicalSQLValueIdentity>.stride))
+                    .multiplied(by: UInt64(values.capacity - keys.count)).bytes, at: .joinCandidate)
+            }
+            for pair in keys {
+                let reference = left ? pair.left : pair.right
+                let matches = row.layout.matching(reference)
+                guard matches.count == 1, let slot = matches.first,
+                      row.values.indices.contains(slot), let type = row.layout.types[slot] else {
+                    throw CanonicalReadError.unsupportedSelectQuery("A selected JOIN hash key lost its admitted field")
+                }
+                let value = row.values[slot]
+                if value.isNull { return nil }
+                try claim.reserveAdditional(bytes: CanonicalRelationalFootprintMeter.valueFootprint(
+                    of: value, workMeter: meter, stage: .joinCandidate).bytes, at: .joinCandidate)
+                values.append(try canonicalQueryValueIdentity(value, operation: "hash JOIN", type: type, workMeter: meter))
+            }
+            return SQLJoinRowProducer.HashKey(values: values, lease: DatabaseQueryPayloadLease(retaining: claim))
+        }
+    }
+
+    private func isPhysicalJoinInput(_ plan: CanonicalSourceBindingPlan) -> Bool {
+        switch plan.source {
+        case .table: return plan.queryPlan == nil
+        case .aliased: return plan.children.count == 1 && isPhysicalJoinInput(plan.children[0])
+        default: return false
+        }
+    }
+
+    private func collectSelectedJoinKeys(_ expression: Expression,
+        left: CanonicalRelationSchema, right: CanonicalRelationSchema,
+        into pairs: inout DatabaseRetainedArrayBuilder<CanonicalJoinColumnPair>, meter: DatabaseWorkMeter
+    ) throws -> Bool {
+        try meter.consume(at: .joinCandidate)
+        switch expression {
+        case .and(let lhs, let rhs):
+            return try collectSelectedJoinKeys(lhs, left: left, right: right, into: &pairs, meter: meter)
+                && collectSelectedJoinKeys(rhs, left: left, right: right, into: &pairs, meter: meter)
+        case .equal(.column(let lhs), .column(let rhs)) where lhs.table != nil && rhs.table != nil:
+            let forward = left.layout.matching(lhs).count == 1 && right.layout.matching(rhs).count == 1
+                && left.layout.matching(rhs).isEmpty && right.layout.matching(lhs).isEmpty
+            let reverse = left.layout.matching(rhs).count == 1 && right.layout.matching(lhs).count == 1
+                && left.layout.matching(lhs).isEmpty && right.layout.matching(rhs).isEmpty
+            guard forward != reverse else { return false }
+            let pair = CanonicalJoinColumnPair(left: forward ? lhs : rhs, right: forward ? rhs : lhs)
+            guard let leftSlot = left.layout.matching(pair.left).first,
+                  let rightSlot = right.layout.matching(pair.right).first,
+                  let type = left.slotTypes[leftSlot], type == right.slotTypes[rightSlot],
+                  case .primitive(let scalar, isArray: false) = type else { return false }
+            switch scalar {
+            case .bool, .int8, .int16, .int32, .int64, .uint8, .uint16, .uint32, .uint64,
+                 .float32, .float64, .decimal, .string, .bytes, .uuid: break
+            default: return false
+            }
+            try pairs.append(footprint: DatabaseIntermediateFootprint()) { pair }
+            return true
+        default: return false
+        }
+    }
+
+    private func reframedProducer(_ source: any SQLRelationProducer, schema: CanonicalRelationSchema,
+        meter: DatabaseWorkMeter
+    ) -> any SQLRelationProducer {
+        SQLRelationPullProducer(schema: schema, meter: meter, operation: { [self] _ in
+            guard let relation = try await source.next() else { return nil }
+            return try reframeRelation(relation, to: schema, workMeter: meter)
+        }, cleanup: { try await source.close() })
+    }
+
+    private func drainSQLProducer(_ producer: any SQLRelationProducer,
+        meter: DatabaseWorkMeter
+    ) async throws -> CanonicalRelation {
+        var rows = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(workMeter: meter,
+            stage: .bindingCandidate, layout: DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self))
+        do {
+            while let next = try await producer.next() {
+                let row = next.rows[0].retainingPayload(next.rows.payloadLease)
+                try rows.append(footprint: CanonicalRelationalFootprintMeter.sourceAliasFootprint(of: row,
+                    workMeter: meter, stage: .bindingCandidate), make: { row })
+            }
+            try await producer.close()
+            return CanonicalRelation(schema: producer.schema, rows: try rows.finish().moveToSharedOwnership(at: .bindingCandidate))
+        } catch {
+            let operationError = error
+            do { try await producer.close() } catch { throw SQLRelationCleanupError(operationError: operationError, cleanupError: error) }
+            throw operationError
+        }
+    }
+
+    private func reframeRelation(_ source: CanonicalRelation, to schema: CanonicalRelationSchema,
+        workMeter: DatabaseWorkMeter
+    ) throws -> CanonicalRelation {
+        let logical = source.schema.layout.visibleSlots
+        guard logical.count == schema.layout.slots.count else {
+            throw CanonicalReadError.unsupportedSelectQuery("Source alias output arity differs")
+        }
+        var builder = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(workMeter: workMeter,
+            stage: .bindingCandidate, layout: DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self), expectedCount: source.rows.count)
+        for row in source.rows {
+            let claim = try workMeter.reserveIntermediate(bytes:
+                DatabaseIntermediateCollectionMeter.arrayFootprint(count: logical.count,
+                    element: CanonicalSourceLayout.BindingSlot.self).multiplied(by: 8).bytes,
+                at: .bindingCandidate)
+            var selected: [Int] = []
+            var ordinals: [Int] = []
+            var bindings: [CanonicalSourceLayout.BindingSlot] = []
+            selected.reserveCapacity(logical.count); ordinals.reserveCapacity(logical.count)
+            bindings.reserveCapacity(logical.count)
+            for (ordinal, sourceSlot) in logical.enumerated() {
+                guard row.layout.bindingSlots.indices.contains(sourceSlot) else {
+                    throw DatabaseExpressionEvaluationError.typeMismatch(operation: "alias logical source slot")
+                }
+                let physical = row.layout.bindingSlots[sourceSlot].valueIndex
+                bindings.append(.init(address: schema.layout.slots[ordinal], valueIndex: physical == nil ? nil : selected.count))
+                if let physical { selected.append(physical); ordinals.append(ordinal) }
+            }
+            let layout = CanonicalSourceLayout(slots: ordinals.map { schema.layout.slots[$0] },
+                scopes: schema.layout.scopes, reservation: claim,
+                types: ordinals.map { schema.layout.types[$0] },
+                nullability: ordinals.map { schema.layout.nullability[$0] },
+                payloadLeases: schema.layout.payloadLeases, bindingSlots: bindings)
+            let footprint = try CanonicalRelationalFootprintMeter.sourceAliasFootprint(of: row, workMeter: workMeter, stage: .bindingCandidate)
+            try builder.append(footprint: footprint) {
+                // Alias projection reorders only the authorized positional vector; payload owners remain shared.
+                CanonicalSourceRow(values: selected.map { row.values[$0] }, layout: layout,
+                    annotations: row.annotations, version: row.version,
+                    payloadLeases: row.payloadLeases + [source.rows.payloadLease])
+            }
+        }
+        return CanonicalRelation(schema: schema, rows: try builder.finish().moveToSharedOwnership(at: .bindingCandidate))
+    }
+
+    private func mergeSelectedJoinRows(_ left: CanonicalSourceRow, _ right: CanonicalSourceRow,
+        condition: JoinCondition?, schema: CanonicalRelationSchema, meter: DatabaseWorkMeter,
+        temporalEnvironment: SQLTemporalEnvironment?
+    ) throws -> CanonicalSourceRow {
+        let footprint = try prospectiveJoinRowFootprint(left: left, right: right,
+            condition: condition, workMeter: meter)
+        // The merged payload owns one row before allocation; publication owns its separate row container.
+        let claim = try meter.reserveIntermediate(rows: 1, bytes: footprint.multiplied(by: 4).bytes, at: .joinCandidate)
+        let lhs = try relationSchema(for: left.layout)
+        let rhs = try relationSchema(for: right.layout)
+        let actual: CanonicalRelationSchema
+        if case .using(let columns) = condition { actual = try lhs.merged(with: rhs, coalescing: columns) }
+        else { actual = try lhs.merged(with: rhs) }
+        var consumed = Array(repeating: false, count: actual.layout.slots.count)
+        let bindings = try schema.layout.slots.map { address -> CanonicalSourceLayout.BindingSlot in
+            try meter.consume(at: .joinCandidate)
+            let index = actual.layout.slots.indices.first { !consumed[$0] && actual.layout.slots[$0] == address }
+            if let index { consumed[index] = true }
+            return .init(address: address, valueIndex: index)
+        }
+        let layout = CanonicalSourceLayout(slots: actual.layout.slots, scopes: actual.layout.scopes,
+            coalescedColumns: actual.layout.coalescedColumns, reservation: claim,
+            types: actual.layout.slots.indices.map { index in
+                let logical = bindings.firstIndex { $0.valueIndex == index }
+                return logical.flatMap { schema.layout.types[$0] }
+            }, nullability: actual.layout.slots.indices.map { index in
+                let address = actual.layout.slots[index]
+                return schema.layout.slots.firstIndex(of: address).map { schema.layout.nullability[$0] } ?? true
+            }, visibleSlots: actual.layout.visibleSlots, bindingSlots: bindings)
+        return try mergeJoinRows(left, right, condition: condition, layout: layout, workMeter: meter,
+            temporalEnvironment: temporalEnvironment ?? inheritedSQLTemporalEnvironment)
+            .retainingPayload(DatabaseQueryPayloadLease(retaining: claim))
+    }
+
+    private func evaluateValuesRow(_ bindings: [CanonicalBoundExpression], schema: CanonicalRelationSchema,
+        on row: CanonicalSourceRow, context: CanonicalQueryEvaluationContext
+    ) async throws -> CanonicalSourceRow {
+        let meter = context.options.workMeter
+        let claim = try meter.reserveIntermediate(bytes: UInt64(bindings.count) * 128 + 64, at: .bindingCandidate)
+        var values: [QueryValue] = []; var leases: [DatabaseQueryPayloadLease] = []
+        values.reserveCapacity(bindings.count); leases.reserveCapacity(bindings.count + 1)
+        for bound in bindings {
+            let value = try await evaluateBoundValue(bound, on: row, context: context, workMeter: meter)
+            try claim.reserveAdditional(bytes: UInt64(value.leases.count) * 64, at: .bindingCandidate)
+            values.append(value.value); leases.append(contentsOf: value.leases)
+        }
+        leases.append(DatabaseQueryPayloadLease(retaining: claim))
+        return CanonicalSourceRow(values: values, layout: schema.layout, payloadLeases: leases)
+    }
+
+    private func outputQueryRows(_ relation: CanonicalRelation, columns: [QueryColumn],
+        meter: DatabaseWorkMeter, metadataLeases: [DatabaseQueryPayloadLease] = []
+    ) throws -> DatabaseSharedRetainedQueryRows {
+        var builder = try DatabaseRetainedQueryRowsBuilder(columns: columns, workMeter: meter,
+            stage: .resultMaterialization, expectedCount: relation.rows.count,
+            payloadLeases: [relation.rows.payloadLease] + metadataLeases, schemaLeases: [])
+        for row in relation.rows {
+            try builder.append(QueryRow(values: row.values, columns: columns, annotations: row.annotations, version: row.version))
+        }
+        return try builder.finish().moveToSharedOwnership(at: .resultMaterialization)
+    }
+
+    private func relationFromOutput(_ rows: DatabaseSharedRetainedQueryRows, schema: CanonicalRelationSchema,
+        meter: DatabaseWorkMeter
+    ) throws -> CanonicalRelation {
+        var builder = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(workMeter: meter,
+            stage: .bindingCandidate, layout: DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self), expectedCount: rows.count)
+        for index in 0..<rows.count {
+            try rows.withElement(at: index) { row in
+                try builder.append(footprint: CanonicalRelationalFootprintMeter.positionalValueArrayFootprint(
+                    count: row.values.count, valueAt: { _ in .primitive(.null) }, annotations: row.annotations,
+                    version: row.version, workMeter: meter, stage: .bindingCandidate)) {
+                    CanonicalSourceRow(values: row.values, layout: schema.layout, annotations: row.annotations,
+                        version: row.version, payloadLeases: rows.originPayloadLeases)
+                }
+            }
+        }
+        return CanonicalRelation(schema: schema, rows: try builder.finish().moveToSharedOwnership(at: .bindingCandidate))
+    }
+
+    private func evaluatePagination(_ pagination: CanonicalBoundPagination,
+        context: CanonicalQueryEvaluationContext
+    ) async throws -> SQLResolvedPagination {
+        let row = try CanonicalRelationSchema().nullRow()
+        func count(_ bound: CanonicalBoundCount?, name: String) async throws -> UInt64? {
+            guard let bound else { return nil }
+            switch bound {
+            case .fixed(let value): return value
+            case .expression(let expression):
+                let value = try await evaluateBoundValue(expression, on: row, context: context, workMeter: context.options.workMeter)
+                if value.value.isNull { return nil }
+                guard case .primitive(let scalar) = value.value,
+                      let integer = scalar.int64Value, integer >= 0 else {
+                    throw CanonicalReadError.unsupportedSelectQuery("SQL \(name) must be a nonnegative bigint")
+                }
+                return UInt64(integer)
+            }
+        }
+        let offset = try await count(pagination.offset, name: "OFFSET") ?? 0
+        let limit = try await count(pagination.limit, name: "LIMIT")
+        if pagination.rejectsUnknownNullLimit, limit == nil {
+            throw CanonicalReadError.unsupportedSelectQuery("FETCH WITH TIES row count cannot be unknown NULL")
+        }
+        return SQLResolvedPagination(offset: offset, limit: limit, withTies: pagination.withTies)
+    }
+
+    private struct CanonicalSelectedOutputFrame: Sendable {
+        var source: CanonicalSourceRow
+        let group: CanonicalGroupedRow?
+        var projected: [ProjectedQueryValue?]
+        var ordering: [ProjectedQueryValue]
+        var distinct: [ProjectedQueryValue]
+        let ordinal: Int
+    }
+
+    private func selectedProjection(_ index: Int, frame: inout CanonicalSelectedOutputFrame,
+        plan: CanonicalBoundSelect, context: CanonicalQueryEvaluationContext
+    ) async throws -> ProjectedQueryValue {
+        if let value = frame.projected[index] { return value }
+        let value = try await evaluateBoundValue(plan.projection[index], on: frame.source,
+            group: frame.group, context: context, workMeter: context.options.workMeter)
+        frame.projected[index] = value
+        return value
+    }
+
+    private func selectedKey(_ key: CanonicalBoundKey, frame: inout CanonicalSelectedOutputFrame,
+        plan: CanonicalBoundSelect, context: CanonicalQueryEvaluationContext
+    ) async throws -> ProjectedQueryValue {
+        if let index = key.projectionIndex { return try await selectedProjection(index, frame: &frame, plan: plan, context: context) }
+        return try await evaluateBoundValue(key.expression, on: frame.source, group: frame.group,
+            context: context, workMeter: context.options.workMeter)
+    }
+
+    private func finalizeSelectedRows(_ query: SelectQuery, relation: CanonicalRelation,
+        plan: CanonicalBoundSelect, pagination: SQLResolvedPagination,
+        context: CanonicalQueryEvaluationContext,
+        mergeDuplicateAnnotations: (@Sendable ([String: FieldValue], [String: FieldValue]) throws -> [String: FieldValue])? = nil
+    ) async throws -> CanonicalRelation {
+        let producer = try await prepareSelectedRows(query, relation: relation, plan: plan,
+            pagination: pagination, context: context, mergeDuplicateAnnotations: mergeDuplicateAnnotations)
+        return try await drainSQLProducer(producer, meter: context.options.workMeter)
+    }
+
+    private func prepareSelectedRows(_ query: SelectQuery, relation: CanonicalRelation,
+        plan: CanonicalBoundSelect, pagination: SQLResolvedPagination,
+        context: CanonicalQueryEvaluationContext,
+        mergeDuplicateAnnotations: (@Sendable ([String: FieldValue], [String: FieldValue]) throws -> [String: FieldValue])? = nil
+    ) async throws -> any SQLRelationProducer {
+        let meter = context.options.workMeter
+        let filtered = try await applyFilter(query.filter, bound: plan.filter, to: relation.rows,
+            workMeter: meter, evaluationContext: context)
+        let grouped: CanonicalRetainedGroups?
+        if canonicalQueryRequiresAggregation(query) {
+            let groups = try await makeCanonicalGroups(filtered, groupBy: query.groupBy ?? [],
+                boundGroupBy: plan.groupBy, workMeter: meter, evaluationContext: context)
+            grouped = try await applyHaving(query.having, bound: plan.having, to: groups,
+                groupBy: query.groupBy ?? [], workMeter: meter, evaluationContext: context)
+        } else { grouped = nil }
+        let count = grouped?.count ?? filtered.count
+        let keyCount = plan.orderBy.count + plan.distinctOn.count + plan.columns.count
+        let frameBytes = try DatabaseIntermediateCollectionMeter.arrayFootprint(count: count, element: CanonicalSelectedOutputFrame.self)
+            .multiplied(by: 2)
+            .adding(DatabaseIntermediateFootprint(bytes: UInt64(count) * UInt64(keyCount + 1) * 192))
+        let scratch = try meter.reserveIntermediate(rows: UInt64(count), bytes: frameBytes.bytes, at: .sortInput)
+        var frames: [CanonicalSelectedOutputFrame] = []; frames.reserveCapacity(count)
+        for index in 0..<count {
+            let group = grouped.map { $0[index] }
+            let row = group?.representative ?? filtered[index]
+            var frame = CanonicalSelectedOutputFrame(source: row,
+                group: group, projected: Array(repeating: nil, count: plan.columns.count),
+                ordering: [], distinct: [], ordinal: index)
+            frame.ordering.reserveCapacity(plan.orderBy.count)
+            for key in plan.orderBy { let value = try await selectedKey(key, frame: &frame, plan: plan, context: context); frame.ordering.append(value) }
+            frame.distinct.reserveCapacity(plan.distinctOn.count)
+            for key in plan.distinctOn { let value = try await selectedKey(key, frame: &frame, plan: plan, context: context); frame.distinct.append(value) }
+            if query.quantifier == .distinct {
+                for output in plan.columns.indices { _ = try await selectedProjection(output, frame: &frame, plan: plan, context: context) }
+            }
+            frames.append(frame)
+        }
+        if !plan.orderBy.isEmpty {
+            frames = try frames.sorted { left, right in
+                for (index, key) in plan.orderBy.enumerated() {
+                    guard let sort = key.sortKey else { throw CanonicalReadError.unsupportedSelectQuery("An ORDER key lost its ordering declaration") }
+                    let comparison = try Self.selectedOrdering(left.ordering[index].value, right.ordering[index].value,
+                        bound: key.expression, using: sort, environment: context.options.temporalEnvironment, workMeter: meter)
+                    if comparison != .equal { return comparison == .lessThan }
+                }
+                return left.ordinal < right.ordinal
+            }
+        }
+        var uniqueIndices: [Int] = []; uniqueIndices.reserveCapacity(frames.count)
+        var keyRows: [[CanonicalSQLValueIdentity]] = []; keyRows.reserveCapacity(frames.count)
+        var buckets: [Int: [Int]] = [:]
+        let identityClaim = try meter.reserveIntermediate(bytes: UInt64(frames.count) * 192 + 64, at: .deduplication)
+        defer { identityClaim.release() }
+        for index in frames.indices {
+            try meter.consume(at: .deduplication)
+            if query.quantifier == .all { uniqueIndices.append(index); continue }
+            let values: [QueryValue]
+            let types: [QueryColumnType]
+            if query.quantifier == .distinct {
+                values = frames[index].projected.map { $0!.value }; types = plan.columns.map { $0.type }
+            } else {
+                values = frames[index].distinct.map { $0.value }; types = plan.distinctOn.map { $0.expression.type }
+            }
+            try identityClaim.reserveAdditional(bytes: UInt64(values.count) * 128, at: .deduplication)
+            let keys = try values.enumerated().map { try canonicalQueryValueIdentity($0.element,
+                operation: "DISTINCT", type: types[$0.offset], workMeter: meter) }
+            let hash = try CanonicalSQLValueIdentity.hash(keys, workMeter: meter, stage: .deduplication)
+            var existing: Int?
+            for candidate in buckets[hash] ?? [] {
+                if try CanonicalSQLValueIdentity.equal(keyRows[candidate], keys, workMeter: meter, stage: .deduplication) {
+                    existing = candidate; break
+                }
+            }
+            if let existing {
+                if query.quantifier == .distinct, let mergeDuplicateAnnotations {
+                    let representative = uniqueIndices[existing]
+                    let original = frames[representative].source
+                    let annotations = try mergeDuplicateAnnotations(original.annotations, frames[index].source.annotations)
+                    frames[representative].source = CanonicalSourceRow(values: original.values, layout: original.layout,
+                        annotations: annotations, version: original.version, payloadLeases: original.payloadLeases,
+                        sourcePresence: original.sourcePresence)
+                }
+            } else {
+                buckets[hash, default: []].append(keyRows.count)
+                keyRows.append(keys); uniqueIndices.append(index)
+            }
+        }
+        let lower = pagination.offset >= UInt64(uniqueIndices.count) ? uniqueIndices.count : Int(pagination.offset)
+        var upper = pagination.limit.map { value in value >= UInt64(uniqueIndices.count - lower) ? uniqueIndices.count : lower + Int(value) } ?? uniqueIndices.count
+        if pagination.withTies, upper > lower, upper < uniqueIndices.count {
+            let peer = frames[uniqueIndices[upper - 1]]
+            while upper < uniqueIndices.count {
+                let candidate = frames[uniqueIndices[upper]]
+                var equal = true
+                for (index, key) in plan.orderBy.enumerated() {
+                    guard let sort = key.sortKey else { throw CanonicalReadError.unsupportedSelectQuery("Missing peer ORDER key") }
+                    if try Self.selectedOrdering(peer.ordering[index].value, candidate.ordering[index].value,
+                        bound: key.expression, using: sort, environment: context.options.temporalEnvironment, workMeter: meter) != .equal {
+                        equal = false; break
+                    }
+                }
+                if !equal { break }
+                upper += 1
+            }
+        }
+        let schema = try outputSchema(plan.columns)
+        let selectedFrames = frames
+        let positions = uniqueIndices
+        let outputLower = lower
+        let outputUpper = upper
+        return SQLRelationPullProducer(schema: schema, meter: meter, operation: { [self] index in
+            guard index < outputUpper - outputLower else { return nil }
+            var frame = selectedFrames[positions[outputLower + index]]
+            var values: [QueryValue] = []; var leases = frame.source.payloadLeases + [filtered.payloadLease]
+            if let grouped { leases.append(grouped.payloadLease) }
+            let payloadClaim = try meter.reserveIntermediate(bytes:
+                DatabaseIntermediateCollectionMeter.arrayFootprint(count: plan.columns.count,
+                    element: QueryValue.self).multiplied(by: 4).bytes + 64, at: .projection)
+            values.reserveCapacity(plan.columns.count)
+            for column in plan.columns.indices {
+                let cell = try await selectedProjection(column, frame: &frame, plan: plan, context: context)
+                try payloadClaim.reserveAdditional(bytes: UInt64(cell.leases.count) * 64, at: .projection)
+                values.append(try CanonicalQueryTypeBinder.normalize(cell.value, to: plan.columns[column].type))
+                leases.append(contentsOf: cell.leases)
+            }
+            leases.append(DatabaseQueryPayloadLease(retaining: payloadClaim))
+            let row = CanonicalSourceRow(values: values, layout: schema.layout, annotations: frame.source.annotations,
+                version: frame.source.version, payloadLeases: leases)
+            return try sqlSingleRow(row, schema: schema, meter: meter)
+        }, cleanup: { scratch.release() })
+    }
+
+    private func validateDistinctOrderPrefix(distinct: [CanonicalBoundKey], ordering: [CanonicalBoundKey],
+        meter: DatabaseWorkMeter) throws {
+        var remaining = Set(distinct.indices)
+        for key in ordering {
+            if let index = try remaining.first(where: { index in
+                let candidate = distinct[index]
+                return try candidate.isSemanticallyEquivalent(to: key, workMeter: meter,
+                    isVolatileSubquery: selectedPlanIsVolatile)
+            }) { remaining.remove(index) }
+            else if !remaining.isEmpty {
+                throw CanonicalReadError.unsupportedSelectQuery("DISTINCT ON expressions must match initial ORDER BY expressions")
+            }
+        }
+    }
+
+    private func selectedPlanIsVolatile(_ plan: CanonicalBoundSelect) -> Bool {
+        func expression(_ value: CanonicalBoundExpression) -> Bool {
+            if case .function(let call) = value.expression,
+               call.name.lowercased() == "clock_timestamp" { return true }
+            if let nested = value.subqueryBinding, selectedPlanIsVolatile(nested) { return true }
+            return value.children.contains(where: expression)
+        }
+        func source(_ value: CanonicalSourceBindingPlan) -> Bool {
+            if let query = value.queryPlan, selectedPlanIsVolatile(query) { return true }
+            if let condition = value.condition, expression(condition) { return true }
+            return value.valueBindings.contains { $0.contains(where: expression) }
+                || value.children.contains(where: source)
+        }
+        if plan.projection.contains(where: expression) || plan.groupBy.contains(where: expression)
+            || plan.orderBy.contains(where: { expression($0.expression) })
+            || plan.distinctOn.contains(where: { expression($0.expression) }) { return true }
+        if let filter = plan.filter, expression(filter) { return true }
+        if let having = plan.having, expression(having) { return true }
+        for count in [plan.pagination.offset, plan.pagination.limit] {
+            if case .expression(let value) = count, expression(value) { return true }
+        }
+        if let root = plan.sourcePlan, source(root) { return true }
+        return plan.ctes.contains { $0.isVolatile }
+    }
+
 
     private func queryCanonical(
         _ selectQuery: SelectQuery,
@@ -3023,6 +3328,7 @@ extension DatabaseContext {
         queryBinding: CanonicalQueryBindingEnvironment? = nil,
         boundPlan suppliedPlan: CanonicalBoundSelect? = nil,
         outerRow: CanonicalSourceRow? = nil,
+        cteEnvironment: SQLCTEEnvironment = SQLCTEEnvironment(),
         preparedFusionGraph: FusionPreparedQueryGraph,
         fusionSession: DatabaseReadSession,
         admittedListAuthorizationRequirement:
@@ -3057,10 +3363,30 @@ extension DatabaseContext {
             partitionMode: partitionMode,
             namedSubqueries: namedSubqueries, queryBinding: queryBinding,
             boundPlan: boundPlan,
+            cteEnvironment: cteEnvironment,
             outerRow: outerRow,
             preparedFusionGraph: preparedFusionGraph,
             fusionSession: fusionSession
         )
+        let fixedPagination: Bool
+        switch (selectQuery.pagination.offset, selectQuery.pagination.limit) {
+        case (.expression?, _), (_, .count(.expression, _)?): fixedPagination = false
+        case (_, .count(_, withTies: true)?): fixedPagination = false
+        default: fixedPagination = true
+        }
+        let directTable: Bool
+        if case .table = selectQuery.source, sourcePlan.queryPlan == nil,
+           selectQuery.subqueries == nil, selectQuery.groupBy == nil, selectQuery.having == nil,
+           selectQuery.quantifier == .all, fixedPagination, !selectedPlanIsVolatile(boundPlan),
+           !boundPlan.columns.contains(where: { column in
+               if case .sql(.composite) = column.type { return true }; return false
+           }) {
+            directTable = true
+        } else { directTable = false }
+        if !selectQuery.source.usesSPARQLSemantics, selectQuery.accessPath == nil, !directTable {
+            return try await executeSQLRelation(selectQuery, plan: boundPlan, context: evaluationContext)
+        }
+
         if let accessPath = selectQuery.accessPath {
             return try await executeAccessPathRows(
                 selectQuery,
@@ -3467,6 +3793,8 @@ extension DatabaseContext {
                             .multiplied(by: bounds.collectionElementCount).multiplied(by: 2)
                         footprint = try footprint.adding(nodes).adding(elements)
                             .adding(DatabaseIntermediateFootprint(bytes: bounds.minimumJSONBStorageByteCount))
+                            .adding(DatabaseIntermediateFootprint(bytes:
+                                CanonicalRelationalFootprintMeter.decodedQueryValueStructureAllowance(bounds)))
                         try workMeter.consume(bounds.nodeCount, at: .projection)
                     } else {
                         try QueryFieldStorageAdapter.validateDescriptor(declaredType, fieldType: field.type, isArray: field.isArray)
@@ -3556,7 +3884,8 @@ extension DatabaseContext {
             try rows.append(footprint: CanonicalRelationalFootprintMeter.sourceAliasFootprint(of: row,
                 workMeter: workMeter), make: {
                     CanonicalSourceRow(values: row.values, layout: layout, annotations: row.annotations,
-                        version: row.version, payloadLeases: row.payloadLeases + [relation.rows.payloadLease])
+                        version: row.version, payloadLeases: row.payloadLeases + [relation.rows.payloadLease],
+                        sourcePresence: row.sourcePresence)
                 })
         }
         return CanonicalRelation(schema: relation.schema.retaining(layout: layout),
@@ -3696,6 +4025,24 @@ extension DatabaseContext {
         guard let boundPlan = evaluationContext?.boundPlan else {
             throw CanonicalReadError.unsupportedSelectQuery("Table planning has no executable SELECT binding")
         }
+        let selectedPagination: SQLResolvedPagination?
+        let expressionCount: Bool
+        switch (boundPlan.pagination.offset, boundPlan.pagination.limit) {
+        case (.expression?, _), (_, .expression?): expressionCount = true
+        default: expressionCount = false
+        }
+        let distinctOn: Bool
+        if case .distinctOn = selectQuery.quantifier { distinctOn = true } else { distinctOn = false }
+        let compositeOutput = boundPlan.columns.contains { column in
+            if case .sql(.composite) = column.type { return true }; return false
+        }
+        if selectQuery.accessPath != nil,
+           expressionCount || boundPlan.pagination.withTies || distinctOn || compositeOutput || selectedPlanIsVolatile(boundPlan) {
+            guard let evaluationContext else {
+                throw CanonicalReadError.unsupportedSelectQuery("Selected index operators require an admitted invocation scope")
+            }
+            selectedPagination = try await evaluatePagination(boundPlan.pagination, context: evaluationContext)
+        } else { selectedPagination = nil }
         let physicalFilter: Expression?
         if let bound = boundPlan.filter {
             if let converted = try primitiveBoundPredicate(bound) { physicalFilter = converted }
@@ -3706,7 +4053,7 @@ extension DatabaseContext {
         let filterEquivalent = selectQuery.filter == nil || physicalFilter != nil
         let orderEquivalent = try (selectQuery.orderBy ?? []).enumerated().allSatisfy { index, key in
             guard boundPlan.orderBy.indices.contains(index) else { return false }
-            return try permitsPrimitivePushdown(boundPlan.orderBy[index], original: key.expression)
+            return try permitsPrimitivePushdown(boundPlan.orderBy[index].expression, original: key.expression)
         }
         let permitsPushdown = filterEquivalent && orderEquivalent
         // Filter eligibility is independent of ORDER eligibility. A checked
@@ -3714,23 +4061,54 @@ extension DatabaseContext {
         // run afterward; LIMIT/OFFSET wait for both residual stages.
         var physicalQuery = selectQuery.replacing(filter: physicalFilter)
             .replacing(orderBy: orderEquivalent ? selectQuery.orderBy : nil)
-        if !permitsPushdown { physicalQuery = physicalQuery.replacing(limit: nil).replacing(offset: nil) }
+        if !permitsPushdown { physicalQuery = physicalQuery.replacing(pagination: QueryPagination()) }
+        if let selectedPagination {
+            physicalQuery = physicalQuery.replacing(pagination: QueryPagination()).replacing(quantifier: .all)
+            if selectedPagination.limit == 0 {
+                // Typed planning still validates the explicit path and source metadata, then fetches no candidates.
+                physicalQuery = physicalQuery.replacing(filter: nil).replacing(orderBy: nil)
+                    .replacing(pagination: QueryPagination(limit: .count(.fixed(0), withTies: false)))
+            }
+        }
         let pushdown = try await fetchTableSourceRows(
             runtime: runtime,
             sourceName: sourceName,
             selectQuery: physicalQuery,
             authorizationRequirement: authorizationRequirement,
-            options: permitsPushdown ? options : executionContextWithoutExternalPageWindow(options),
+            options: permitsPushdown && selectedPagination == nil ? options : executionContextWithoutExternalPageWindow(options),
             transaction: transaction
         )
+
+        if let selectedPagination, let evaluationContext {
+            let actualSchema = try admittedRelationSchema(for: pushdown.sourceLayout)
+            let input = CanonicalRelation(schema: actualSchema, rows: pushdown.rows)
+            let addressed = try addressingBoundSource(input,
+                schema: boundPlan.sourcePlan?.schema ?? actualSchema, workMeter: options.workMeter)
+            let result: CanonicalRelation
+            if selectedPagination.limit == 0 {
+                let empty = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(workMeter: options.workMeter,
+                    stage: .projection, layout: DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self), expectedCount: 0)
+                result = CanonicalRelation(schema: try outputSchema(boundPlan.columns),
+                    rows: try empty.finish().moveToSharedOwnership(at: .projection))
+            } else {
+                result = try await finalizeSelectedRows(selectQuery, relation: addressed,
+                    plan: boundPlan, pagination: selectedPagination, context: evaluationContext)
+            }
+            let rows = try outputQueryRows(result, columns: boundPlan.columns, meter: options.workMeter,
+                metadataLeases: retainedBindingClaims(boundPlan, workMeter: options.workMeter))
+            let page = try CanonicalQueryPagination.retainedWindow(rows: rows, selectQuery: selectQuery,
+                options: options, rowsAreLogicalQueryRelative: true)
+            return CanonicalRetainedQueryResponse(rows: rows, visibleRange: page.range,
+                continuation: page.continuation, metadata: [:], affectedRows: nil)
+        }
 
         // When LIMIT/OFFSET are pushed down to the typed fetch, strip them from the
         // pagination input so pagination doesn't re-apply them.
         let paginationQuery: SelectQuery
         if pushdown.limitPushed || pushdown.offsetPushed {
             var modified = selectQuery
-            if pushdown.limitPushed { modified = modified.replacing(limit: nil) }
-            if pushdown.offsetPushed { modified = modified.replacing(offset: nil) }
+            if pushdown.limitPushed { modified = modified.replacing(pagination: QueryPagination(offset: modified.pagination.offset)) }
+            if pushdown.offsetPushed { modified = modified.replacing(pagination: QueryPagination(limit: modified.pagination.limit)) }
             paginationQuery = modified
         } else {
             paginationQuery = selectQuery
@@ -3837,7 +4215,7 @@ extension DatabaseContext {
         )
         let sourceName = tableRef.alias ?? tableRef.effectiveName
         let select = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(tableRef)
         )
         let sourceOptions = executionContextWithoutExternalPageWindow(options)
@@ -3968,7 +4346,7 @@ extension DatabaseContext {
             group: group,
             selectQuery: selectQuery
         )
-        let sourceName = logicalSource.alias ?? logicalSource.effectiveName
+        let sourceName = logicalSource.effectiveName
         let sourceRows = try materializePolymorphicSourceRows(
             entities,
             group: group,
@@ -4001,7 +4379,8 @@ extension DatabaseContext {
         fusionSession: DatabaseReadSession,
         authorizationQuery: SelectQuery,
         outerRow: CanonicalSourceRow? = nil,
-        allowsOuterReferences: Bool = false
+        allowsOuterReferences: Bool = false,
+        cteEnvironment: SQLCTEEnvironment = SQLCTEEnvironment()
     ) async throws -> CanonicalRelation {
         switch source {
         case .table(let tableRef):
@@ -4054,7 +4433,7 @@ extension DatabaseContext {
                 group: group,
                 selectQuery: authorizationQuery
             )
-            let sourceName = logicalSource.alias ?? logicalSource.effectiveName
+            let sourceName = logicalSource.effectiveName
             let relation = try materializePolymorphicSourceRows(
                 entities,
                 group: group,
@@ -4064,7 +4443,7 @@ extension DatabaseContext {
             )
             return try addressingBoundSource(relation, schema: sourcePlan.schema, workMeter: options.workMeter)
 
-        case .subquery(let query, let alias):
+        case .subquery(let query):
             let response = try await queryCanonical(
                 query,
                 options: options,
@@ -4081,7 +4460,7 @@ extension DatabaseContext {
                 response.visibleRows,
                 query: query,
                 explicitColumns: nil,
-                alias: alias,
+                alias: nil,
                 namedSubqueries: namedSubqueries, queryBinding: queryBinding,
                 workMeter: options.workMeter
             )
@@ -4103,103 +4482,34 @@ extension DatabaseContext {
             )
             return try addressingBoundSource(relation, schema: sourcePlan.schema, workMeter: options.workMeter)
 
-        case .union(let sources):
-            return try await materializeUnionRows(
-                sources,
-                deduplicate: true,
-                sourcePlan: sourcePlan,
-                namedSubqueries: namedSubqueries, queryBinding: queryBinding,
-                options: options,
-                partitionValues: partitionValues,
-                partitionMode: partitionMode,
-                transaction: transaction,
-                preparedFusionGraph: preparedFusionGraph,
-                fusionSession: fusionSession,
-                authorizationQuery: authorizationQuery,
-                outerRow: outerRow,
-                allowsOuterReferences: allowsOuterReferences
-            )
+        case .setOperation(let operation, let quantifier, let left, let right):
+            return try await materializeBinarySet(operation: operation, quantifier: quantifier,
+                left: left, right: right, sourcePlan: sourcePlan, namedSubqueries: namedSubqueries,
+                queryBinding: queryBinding, options: options, partitionValues: partitionValues,
+                partitionMode: partitionMode, transaction: transaction, preparedFusionGraph: preparedFusionGraph,
+                fusionSession: fusionSession, outerRow: outerRow, cteEnvironment: cteEnvironment)
+        case .aliased(let nested, _, _):
+            let relation = try await materializeRows(for: nested, sourcePlan: sourcePlan.children[0],
+                namedSubqueries: namedSubqueries, queryBinding: queryBinding, options: options,
+                partitionValues: partitionValues, partitionMode: partitionMode, transaction: transaction,
+                preparedFusionGraph: preparedFusionGraph, fusionSession: fusionSession,
+                authorizationQuery: authorizationQuery, outerRow: outerRow, allowsOuterReferences: allowsOuterReferences)
+            return try reframeRelation(relation, to: sourcePlan.schema, workMeter: options.workMeter)
 
-        case .unionAll(let sources):
-            return try await materializeUnionRows(
-                sources,
-                deduplicate: false,
-                sourcePlan: sourcePlan,
-                namedSubqueries: namedSubqueries, queryBinding: queryBinding,
-                options: options,
-                partitionValues: partitionValues,
-                partitionMode: partitionMode,
-                transaction: transaction,
-                preparedFusionGraph: preparedFusionGraph,
-                fusionSession: fusionSession,
-                authorizationQuery: authorizationQuery,
-                outerRow: outerRow,
-                allowsOuterReferences: allowsOuterReferences
-            )
-
-        case .intersect(let sources):
-            return try await materializeIntersectRows(
-                sources,
-                sourcePlan: sourcePlan,
-                namedSubqueries: namedSubqueries, queryBinding: queryBinding,
-                options: options,
-                partitionValues: partitionValues,
-                partitionMode: partitionMode,
-                transaction: transaction,
-                preparedFusionGraph: preparedFusionGraph,
-                fusionSession: fusionSession,
-                authorizationQuery: authorizationQuery,
-                outerRow: outerRow,
-                allowsOuterReferences: allowsOuterReferences
-            )
-
-        case .except(let lhs, let rhs):
-            return try await materializeExceptRows(
-                lhs,
-                rhs,
-                sourcePlan: sourcePlan,
-                namedSubqueries: namedSubqueries, queryBinding: queryBinding,
-                options: options,
-                partitionValues: partitionValues,
-                partitionMode: partitionMode,
-                transaction: transaction,
-                preparedFusionGraph: preparedFusionGraph,
-                fusionSession: fusionSession,
-                authorizationQuery: authorizationQuery,
-                outerRow: outerRow,
-                allowsOuterReferences: allowsOuterReferences
-            )
-
-        case .values(let rows, _):
+        case .values(let rows):
             let schema = sourcePlan.schema
-            let names = schema.unscopedColumns
-            let layoutFootprint = try CanonicalRelationalFootprintMeter.sourceLayoutFootprint(
-                fieldNames: names, sourceName: nil, workMeter: options.workMeter, stage: .bindingCandidate)
-            let layoutClaim = try options.workMeter.reserveIntermediate(bytes: layoutFootprint.bytes, at: .bindingCandidate)
-            let layout = CanonicalSourceLayout(slots: names.map { .init(name: $0, scope: nil) },
-                reservation: layoutClaim, types: schema.slotTypes, nullability: schema.slotNullability)
-            var retained = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
-                workMeter: options.workMeter, stage: .bindingCandidate,
-                layout: DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self), expectedCount: rows.count)
-            for literals in rows {
-                try options.workMeter.consume(at: .bindingCandidate)
-                let footprint = try prospectiveLiteralSourceRowFootprint(
-                    fieldNames: names, literals: literals, workMeter: options.workMeter, stage: .bindingCandidate)
-                try retained.append(footprint: footprint) {
-                    let values = try literals.enumerated().map { index, literal -> QueryValue in
-                        let value: QueryValue
-                        if case .queryValue(let rich, _) = literal { value = rich }
-                        else { value = .primitive(try literal.toFieldValue()) }
-                        guard let type = schema.slotTypes[index] else {
-                            throw CanonicalReadError.unsupportedSelectQuery("VALUES column type is unresolved")
-                        }
-                        return try CanonicalQueryTypeBinder.normalizeSourceCarrier(value, to: type)
-                    }
-                    return CanonicalSourceRow(values: values, layout: layout)
-                }
+            let empty = try CanonicalRelationSchema().nullRow()
+            let context = CanonicalQueryEvaluationContext(options: options, transaction: transaction,
+                partitionValues: partitionValues, partitionMode: partitionMode, namedSubqueries: namedSubqueries,
+                queryBinding: queryBinding, outerRow: outerRow, preparedFusionGraph: preparedFusionGraph, fusionSession: fusionSession)
+            var retained = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(workMeter: options.workMeter,
+                stage: .bindingCandidate, layout: DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self), expectedCount: rows.count)
+            for bindings in sourcePlan.valueBindings {
+                let row = try await evaluateValuesRow(bindings, schema: schema, on: empty, context: context)
+                try retained.append(footprint: CanonicalRelationalFootprintMeter.sourceAliasFootprint(of: row,
+                    workMeter: options.workMeter, stage: .bindingCandidate), make: { row })
             }
-            return CanonicalRelation(schema: schema,
-                rows: try retained.finish().moveToSharedOwnership(at: .bindingCandidate), schemaLayout: layout)
+            return CanonicalRelation(schema: schema, rows: try retained.finish().moveToSharedOwnership(at: .bindingCandidate))
 
         case .graphTable(let graphTableSource):
             guard let executor = try readPolicy().graphTableSourceExecutor else {
@@ -4213,15 +4523,15 @@ extension DatabaseContext {
                 types: rawColumns.map { $0.type }, nullability: rawColumns.map { $0.isNullable })
             let graphRows = try materializeLogicalSourceRows(consume sourceRows, sourceName: nil,
                 workMeter: options.workMeter, stage: .bindingCandidate)
-            let projection: Projection
+            let projection: [ProjectionItem]
             let outputColumns: [QueryColumn]
             if let columns = graphTableSource.columns, !columns.isEmpty {
-                projection = .items(columns.map { ProjectionItem($0.expression, alias: $0.alias) })
+                projection = columns.map { ProjectionItem($0.expression, alias: $0.alias) }
                 guard let plan = sourcePlan.queryPlan else {
                     throw CanonicalReadError.unsupportedSelectQuery("GRAPH_TABLE projection has no executable binding")
                 }
                 outputColumns = plan.columns
-            } else { projection = .all; outputColumns = rawColumns }
+            } else { projection = [.wildcard()]; outputColumns = rawColumns }
             let projected = try await projectRows(graphRows, projection: projection, columns: outputColumns,
                 sourceSchema: rawSchema, workMeter: options.workMeter,
                 evaluationContext: CanonicalQueryEvaluationContext(options: options, transaction: transaction,
@@ -4231,7 +4541,7 @@ extension DatabaseContext {
                     preparedFusionGraph: preparedFusionGraph, fusionSession: fusionSession))
             let view = CanonicalRetainedQueryRowView(owner: projected, range: 0..<projected.count)
             return try materializeQueryRelation(view, query: authorizationQuery,
-                explicitColumns: nil, alias: graphTableSource.alias,
+                explicitColumns: nil, alias: nil,
                 namedSubqueries: namedSubqueries, queryBinding: queryBinding, workMeter: options.workMeter)
 
         case .graphPattern:
@@ -4242,7 +4552,7 @@ extension DatabaseContext {
             let sourceRows = try await executor.executeInTransaction(
                 session: sourceSession,
                 selectQuery: SelectQuery(
-                    projection: .all,
+                    projection: [.wildcard()],
                     source: source
                 ),
                 options: options,
@@ -4271,7 +4581,7 @@ extension DatabaseContext {
             let sourceRows = try await executor.executeInTransaction(
                 session: sourceSession,
                 selectQuery: SelectQuery(
-                    projection: .all,
+                    projection: [.wildcard()],
                     source: source
                 ),
                 options: options,
@@ -4576,7 +4886,8 @@ extension DatabaseContext {
                             try mergeJoinRows(
                                 left,
                                 right,
-                                condition: condition, layout: outputLayout
+                                condition: condition, layout: outputLayout, workMeter: workMeter,
+                                temporalEnvironment: evaluationContext?.options.temporalEnvironment ?? inheritedSQLTemporalEnvironment
                             )
                         }
                     )
@@ -4634,7 +4945,8 @@ extension DatabaseContext {
                     boundCondition: boundCondition,
                     joinType: type,
                     evaluationContext: evaluationContext,
-                    workMeter: workMeter
+                    workMeter: workMeter,
+                    usingLayout: outputLayout
                 ) {
                     matched = true
                     matchedRightIndexes.insert(rightIndex)
@@ -4649,7 +4961,8 @@ extension DatabaseContext {
                             try mergeJoinRows(
                                 leftRow,
                                 rightRow,
-                                condition: condition, layout: outputLayout
+                                condition: condition, layout: outputLayout, workMeter: workMeter,
+                                temporalEnvironment: evaluationContext?.options.temporalEnvironment ?? inheritedSQLTemporalEnvironment
                             )
                         }
                     )
@@ -4668,7 +4981,8 @@ extension DatabaseContext {
                         try mergeJoinRows(
                             leftRow,
                             emptyRight,
-                            condition: condition, layout: outputLayout
+                            condition: condition, layout: outputLayout, workMeter: workMeter,
+                                temporalEnvironment: evaluationContext?.options.temporalEnvironment ?? inheritedSQLTemporalEnvironment
                         )
                     }
                 )
@@ -4688,7 +5002,8 @@ extension DatabaseContext {
                         try mergeJoinRows(
                             emptyLeft,
                             rightRow,
-                            condition: condition, layout: outputLayout
+                            condition: condition, layout: outputLayout, workMeter: workMeter,
+                                temporalEnvironment: evaluationContext?.options.temporalEnvironment ?? inheritedSQLTemporalEnvironment
                         )
                     }
                 )
@@ -4760,11 +5075,15 @@ extension DatabaseContext {
         _ left: CanonicalSourceRow,
         _ right: CanonicalSourceRow,
         condition: JoinCondition?,
-        layout: CanonicalSourceLayout
+        layout: CanonicalSourceLayout,
+        workMeter: DatabaseWorkMeter,
+        temporalEnvironment: SQLTemporalEnvironment?
     ) throws -> CanonicalSourceRow {
         let coalescing: [String]
         if case .using(let columns) = condition { coalescing = columns } else { coalescing = [] }
         let coalesced = Set(coalescing)
+        let conversionClaim = coalescing.isEmpty ? nil : try workMeter.reserveIntermediate(bytes: 128, at: .joinCandidate)
+        var conversionLeases: [DatabaseQueryPayloadLease] = []
         var values: [QueryValue] = []
         values.reserveCapacity(layout.slots.count)
         for name in coalescing {
@@ -4775,7 +5094,17 @@ extension DatabaseContext {
             guard let type = layout.types[values.count] else {
                 throw CanonicalReadError.unsupportedSelectQuery("JOIN USING output type is missing")
             }
-            values.append(try CanonicalQueryTypeBinder.normalize(lhs.isNull ? rhs : lhs, to: type))
+            let source = lhs.isNull ? right : left
+            guard let slot = source.layout.matching(reference).first, let sourceType = source.layout.types[slot] else {
+                throw CanonicalReadError.unsupportedSelectQuery("JOIN USING input type is missing")
+            }
+            let converted = try CanonicalSQLScalarCast.alignSource(lhs.isNull ? rhs : lhs, from: sourceType, to: type,
+                temporalEnvironment: temporalEnvironment, workMeter: workMeter,
+                limits: Self.selectedValueLimits(context: nil, meter: workMeter))
+            values.append(converted.value)
+            if let lease = converted.lease {
+                try CanonicalBindingStorage.append(lease, to: &conversionLeases, reservation: conversionClaim)
+            }
         }
         for source in [left, right] {
             for index in source.layout.slots.indices
@@ -4793,9 +5122,14 @@ extension DatabaseContext {
         guard values.count == layout.slots.count else {
             throw CanonicalReadError.unsupportedSelectQuery("JOIN positional schema and row differ")
         }
+        if let conversionClaim {
+            try CanonicalBindingStorage.append(DatabaseQueryPayloadLease(retaining: conversionClaim),
+                to: &conversionLeases, reservation: conversionClaim)
+        }
         return CanonicalSourceRow(values: values, layout: layout,
             annotations: left.annotations.merging(right.annotations) { current, _ in current },
-            payloadLeases: left.payloadLeases + right.payloadLeases)
+            payloadLeases: left.payloadLeases + right.payloadLeases + conversionLeases,
+            sourcePresence: left.sourcePresence + right.sourcePresence)
     }
 
     private enum CanonicalJoinKeySource: Hashable {
@@ -4925,7 +5259,8 @@ extension DatabaseContext {
                        boundCondition: boundCondition,
                        joinType: type,
                        evaluationContext: evaluationContext,
-                       workMeter: workMeter
+                       workMeter: workMeter,
+                       usingLayout: outputLayout
                    ) == false {
                     continue
                 }
@@ -4942,7 +5277,8 @@ extension DatabaseContext {
                         try mergeJoinRows(
                             left,
                             right,
-                            condition: condition, layout: outputLayout
+                            condition: condition, layout: outputLayout, workMeter: workMeter,
+                                temporalEnvironment: evaluationContext?.options.temporalEnvironment ?? inheritedSQLTemporalEnvironment
                         )
                     }
                 )
@@ -4959,7 +5295,8 @@ extension DatabaseContext {
                         try mergeJoinRows(
                             left,
                             emptyRight,
-                            condition: condition, layout: outputLayout
+                            condition: condition, layout: outputLayout, workMeter: workMeter,
+                                temporalEnvironment: evaluationContext?.options.temporalEnvironment ?? inheritedSQLTemporalEnvironment
                         )
                     }
                 )
@@ -4979,7 +5316,8 @@ extension DatabaseContext {
                         try mergeJoinRows(
                             emptyLeft,
                             right,
-                            condition: condition, layout: outputLayout
+                            condition: condition, layout: outputLayout, workMeter: workMeter,
+                                temporalEnvironment: evaluationContext?.options.temporalEnvironment ?? inheritedSQLTemporalEnvironment
                         )
                     }
                 )
@@ -5092,7 +5430,8 @@ extension DatabaseContext {
         boundCondition: CanonicalBoundExpression? = nil,
         joinType: JoinType,
         evaluationContext: CanonicalQueryEvaluationContext?,
-        workMeter: DatabaseWorkMeter
+        workMeter: DatabaseWorkMeter,
+        usingLayout: CanonicalSourceLayout
     ) async throws -> Bool {
         if joinType == .cross {
             return true
@@ -5101,13 +5440,24 @@ extension DatabaseContext {
         guard let condition else { return true }
         switch condition {
         case .using(let columns):
-            for column in columns {
+            for (index, column) in columns.enumerated() {
                 guard let leftSlot = left.layout.matching(ColumnRef(column)).first,
                       let rightSlot = right.layout.matching(ColumnRef(column)).first else { return false }
-                let leftType = left.layout.types[leftSlot] ?? .primitive(.string)
-                let rightType = right.layout.types[rightSlot] ?? .primitive(.string)
-                if try Self.selectedComparison(left.values[leftSlot], right.values[rightSlot], comparison: .equal,
-                    leftType: leftType, rightType: rightType, temporalEnvironment: evaluationContext?.options.temporalEnvironment ?? inheritedSQLTemporalEnvironment, workMeter: workMeter) != true { return false }
+                guard let leftType = left.layout.types[leftSlot], let rightType = right.layout.types[rightSlot],
+                      usingLayout.types.indices.contains(index), let selectedType = usingLayout.types[index] else {
+                    throw CanonicalReadError.unsupportedSelectQuery("JOIN USING has no selected key type")
+                }
+                let environment = evaluationContext?.options.temporalEnvironment ?? inheritedSQLTemporalEnvironment
+                let lhs = try CanonicalSQLScalarCast.alignSource(left.values[leftSlot], from: leftType, to: selectedType,
+                    temporalEnvironment: environment, workMeter: workMeter,
+                    limits: Self.selectedValueLimits(context: evaluationContext, meter: workMeter))
+                let rhs = try CanonicalSQLScalarCast.alignSource(right.values[rightSlot], from: rightType, to: selectedType,
+                    temporalEnvironment: environment, workMeter: workMeter,
+                    limits: Self.selectedValueLimits(context: evaluationContext, meter: workMeter))
+                defer { withExtendedLifetime(lhs) {}; withExtendedLifetime(rhs) {} }
+                if try Self.selectedComparison(lhs.value, rhs.value, comparison: .equal,
+                    leftType: selectedType, rightType: selectedType, temporalEnvironment: environment,
+                    workMeter: workMeter) != true { return false }
             }
             return true
         case .on(let expression):
@@ -5140,15 +5490,8 @@ extension DatabaseContext {
         leftSchema: CanonicalRelationSchema,
         rightSchema: CanonicalRelationSchema
     ) -> [String] {
-        let leftColumns = Set(
-            leftSchema.unscopedColumns
-                + leftSchema.scopes.flatMap { $0.columns }
-        )
-        let rightColumns = Set(
-            rightSchema.unscopedColumns
-                + rightSchema.scopes.flatMap { $0.columns }
-        )
-        return Array(leftColumns.intersection(rightColumns)).sorted()
+        let rightNames = Set(rightSchema.visibleColumns)
+        return leftSchema.visibleColumns.filter { rightNames.contains($0) }
     }
 
     private func naturalJoinBaseType(_ type: JoinType) -> JoinType {
@@ -5159,8 +5502,10 @@ extension DatabaseContext {
             return .right
         case .naturalFull:
             return .full
-        default:
+        case .natural:
             return .inner
+        default:
+            return type
         }
     }
 
@@ -5177,6 +5522,95 @@ extension DatabaseContext {
             }
         }
         return nil
+    }
+
+    private func materializeBinarySet(operation: SetOperator, quantifier: SetQuantifier,
+        left: SelectQuery, right: SelectQuery, sourcePlan: CanonicalSourceBindingPlan,
+        namedSubqueries: [NamedSubquery], queryBinding: CanonicalQueryBindingEnvironment?,
+        options: ReadExecutionContext, partitionValues: FieldObject?, partitionMode: CanonicalPartitionRoutingMode,
+        transaction: DatabaseReadTransaction, preparedFusionGraph: FusionPreparedQueryGraph,
+        fusionSession: DatabaseReadSession, outerRow: CanonicalSourceRow?,
+        cteEnvironment: SQLCTEEnvironment = SQLCTEEnvironment()
+    ) async throws -> CanonicalRelation {
+        let meter = options.workMeter
+        guard let leftPlan = sourcePlan.children[0].queryPlan, let rightPlan = sourcePlan.children[1].queryPlan else {
+            throw CanonicalReadError.unsupportedSelectQuery("A set operand has no executable query binding")
+        }
+        func operand(_ query: SelectQuery, _ plan: CanonicalBoundSelect) async throws -> CanonicalRelation {
+            let context = CanonicalQueryEvaluationContext(options: executionContextWithoutExternalPageWindow(options),
+                transaction: transaction, partitionValues: partitionValues, partitionMode: partitionMode,
+                namedSubqueries: namedSubqueries, queryBinding: queryBinding, boundPlan: plan,
+                cteEnvironment: cteEnvironment, outerRow: outerRow,
+                preparedFusionGraph: preparedFusionGraph, fusionSession: fusionSession)
+            return try await drainSQLProducer(makeSelectProducer(query, plan: plan, context: context), meter: meter)
+        }
+        let lhs = try await operand(left, leftPlan)
+        let rhs = try await operand(right, rightPlan)
+        let layout = try admittedSetOperationLayout(sourcePlan.schema, retaining: lhs.rows.payloadLease,
+            and: rhs.rows.payloadLease, workMeter: meter)
+        let environment = options.temporalEnvironment ?? fusionSession.temporalEnvironment
+        let leftRows = try alignSetOperationRows(lhs, to: sourcePlan.schema, layout: layout,
+            workMeter: meter, temporalEnvironment: environment)
+        let rightRows = try alignSetOperationRows(rhs, to: sourcePlan.schema, layout: layout,
+            workMeter: meter, temporalEnvironment: environment)
+        let rightKeyCount = operation == .union ? 0 : rightRows.count
+        let state = try meter.reserveIntermediate(bytes: UInt64(rightKeyCount) * 256 + 128, at: .deduplication)
+        defer { state.release() }
+        var keys: [(key: CanonicalRowValueIdentity, count: Int)] = []
+        var buckets: [Int: [Int]] = [:]
+        keys.reserveCapacity(rightKeyCount); buckets.reserveCapacity(rightKeyCount)
+        if operation != .union {
+            for row in rightRows {
+                let key = try identityRow(row, operation: "set operation", workMeter: meter)
+                let hash = try CanonicalSQLValueIdentity.hash(key.values, workMeter: meter, stage: .deduplication)
+                var matching: Int?
+                for index in buckets[hash] ?? [] {
+                    if try CanonicalSQLValueIdentity.equal(keys[index].key.values, key.values, workMeter: meter, stage: .deduplication) { matching = index; break }
+                }
+                if let matching { keys[matching].count += 1 }
+                else { buckets[hash, default: []].append(keys.count); keys.append((key, 1)) }
+            }
+        }
+        var output = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(workMeter: meter,
+            stage: .deduplication, layout: DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self))
+        var seen: CanonicalSQLIdentitySet?
+        if quantifier == .distinct { seen = try CanonicalSQLIdentitySet(workMeter: meter, stage: .deduplication) }
+        for row in leftRows {
+            try meter.consume(at: .deduplication)
+            if operation == .union && quantifier == .all {
+                try output.append(footprint: CanonicalRelationalFootprintMeter.sourceAliasFootprint(of: row,
+                    workMeter: meter, stage: .deduplication), make: { row.retainingPayload(leftRows.payloadLease) })
+                continue
+            }
+            let key = try identityRow(row, operation: "set operation", workMeter: meter)
+            var include = operation == .union
+            if operation != .union {
+                let hash = try CanonicalSQLValueIdentity.hash(key.values, workMeter: meter, stage: .deduplication)
+                var matching: Int?
+                for index in buckets[hash] ?? [] {
+                    if try CanonicalSQLValueIdentity.equal(keys[index].key.values, key.values, workMeter: meter, stage: .deduplication) { matching = index; break }
+                }
+                let available = matching.map { keys[$0].count > 0 } ?? false
+                if available, quantifier == .all, let matching { keys[matching].count -= 1 }
+                include = operation == .intersect ? available : !available
+            }
+            if include, let unique = try seen?.insert(key.values) { include = unique }
+            if include {
+                try output.append(footprint: CanonicalRelationalFootprintMeter.sourceAliasFootprint(of: row,
+                    workMeter: meter, stage: .deduplication), make: { row.retainingPayload(leftRows.payloadLease) })
+            }
+        }
+        if operation == .union {
+            for row in rightRows {
+                let include = try quantifier == .all || seen?.insert(identityRow(row, operation: "UNION", workMeter: meter).values) == true
+                if include {
+                    try output.append(footprint: CanonicalRelationalFootprintMeter.sourceAliasFootprint(of: row,
+                        workMeter: meter, stage: .deduplication), make: { row.retainingPayload(rightRows.payloadLease) })
+                }
+            }
+        }
+        return CanonicalRelation(schema: sourcePlan.schema.retaining(layout: layout),
+            rows: try output.finish().moveToSharedOwnership(at: .deduplication))
     }
 
     private func materializeUnionRows(
@@ -5778,7 +6212,7 @@ extension DatabaseContext {
         }
         func requiresRelation(_ expression: CanonicalBoundExpression) -> Bool {
             switch expression.expression {
-            case .aggregate, .subquery, .exists, .inSubquery: return true
+            case .aggregate, .subquery, .arraySubquery, .exists, .inSubquery: return true
             case .quantifiedComparison(_, _, _, .subquery): return true
             default: return expression.children.contains(where: requiresRelation)
             }
@@ -5790,7 +6224,7 @@ extension DatabaseContext {
         return (result.value, result.leases)
     }
 
-    private struct ProjectedQueryValue {
+    struct ProjectedQueryValue: Sendable {
         let value: QueryValue
         let leases: [DatabaseQueryPayloadLease]
         let payloadIsRetained: Bool
@@ -5839,11 +6273,45 @@ extension DatabaseContext {
         context: CanonicalQueryEvaluationContext?,
         workMeter: DatabaseWorkMeter
     ) async throws -> ProjectedQueryValue {
-        try await Self.evaluateSelectedValue(bound, on: row, group: group,
+        #if DATABASE_MULTI_BASE
+        if let context, let dispatch = context.sourceEvaluation {
+            guard let query = context.sourceQuery, let plan = context.boundPlan, let binding = context.queryBinding else {
+                throw CanonicalReadError.unsupportedSelectQuery("A Composition evaluation lost its selected query scope")
+            }
+            return try await dispatch(row.annotations) { origin, session in
+                let active = try origin.compositionEvaluationContext(query, plan: plan, binding: binding,
+                    execution: context.options, session: session)
+                return try await Self.evaluateSelectedValue(bound, on: row, group: group,
+                    effectiveRow: suppliedRow, context: active, databaseContext: origin, workMeter: workMeter)
+            }
+        }
+        #endif
+        return try await Self.evaluateSelectedValue(bound, on: row, group: group,
             effectiveRow: suppliedRow, context: context, databaseContext: self, workMeter: workMeter)
     }
 
     private static func evaluateSelectedValue(
+        _ bound: CanonicalBoundExpression,
+        on row: CanonicalSourceRow,
+        group: CanonicalGroupedRow? = nil,
+        effectiveRow suppliedRow: CanonicalSourceRow? = nil,
+        context: CanonicalQueryEvaluationContext?,
+        databaseContext: DatabaseContext?,
+        temporalEnvironment suppliedTemporalEnvironment: SQLTemporalEnvironment? = nil,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> ProjectedQueryValue {
+        // Fast-path async resumes can accumulate across child nodes and projection columns.
+        await Task.yield()
+        try workMeter.checkpoint(at: .expressionEvaluation)
+        let value = try await evaluateSelectedNode(bound, on: row, group: group,
+            effectiveRow: suppliedRow, context: context, databaseContext: databaseContext,
+            temporalEnvironment: suppliedTemporalEnvironment, workMeter: workMeter)
+        await Task.yield()
+        try workMeter.checkpoint(at: .expressionEvaluation)
+        return value
+    }
+
+    private static func evaluateSelectedNode(
         _ bound: CanonicalBoundExpression,
         on row: CanonicalSourceRow,
         group: CanonicalGroupedRow? = nil,
@@ -5888,6 +6356,27 @@ extension DatabaseContext {
             }
             return try normalized(ProjectedQueryValue(value: effectiveRow.values[physical], leases: [], payloadIsRetained: true))
         }
+        if let whole = bound.wholeRow {
+            guard try effectiveRow.sourceIsPresent(at: whole.presenceIndex) else {
+                return try normalized(ProjectedQueryValue(value: .primitive(.null), leases: [], payloadIsRetained: false))
+            }
+            let limits = selectedValueLimits(context: context, meter: workMeter)
+            let fieldClaim = try workMeter.reserveIntermediate(bytes:
+                DatabaseIntermediateCollectionMeter.arrayFootprint(count: whole.fieldSlots.count,
+                    element: QueryValue.self).bytes, at: .expressionEvaluation)
+            defer { fieldClaim.release() }
+            let fields = try whole.fieldSlots.map { slot -> QueryValue in
+                guard effectiveRow.layout.bindingSlots.indices.contains(slot),
+                      let physical = effectiveRow.layout.bindingSlots[slot].valueIndex,
+                      effectiveRow.values.indices.contains(physical) else {
+                    throw DatabaseExpressionEvaluationError.typeMismatch(operation: "whole-row field address")
+                }
+                return effectiveRow.values[physical]
+            }
+            let result = try CanonicalSQLCompositeEvaluator.construct(type: whole.type, fields: fields, workMeter: workMeter, limits: limits)
+            let leases = effectiveRow.payloadLeases + effectiveRow.layout.payloadLeases + (result.lease.map { [$0] } ?? [])
+            return try normalized(ProjectedQueryValue(value: result.value, leases: leases, payloadIsRetained: true))
+        }
         switch bound.expression {
         case .truthTest(_, let target, let negated):
             let value = try await child(0).value
@@ -5917,7 +6406,7 @@ extension DatabaseContext {
                 guard !value.value.isNull else { continue }
                 if let current = selected {
                     if try selectedComparison(value.value, current.value,
-                        comparison: greatest ? .greaterThan : .lessThan, leftType: bound.type, rightType: bound.type, temporalEnvironment: temporalEnvironment, workMeter: workMeter) == true { selected = value }
+                        comparison: greatest ? .greaterThan : .lessThan, leftType: bound.type, rightType: bound.type, temporalEnvironment: temporalEnvironment, mode: bound.comparisonMode, workMeter: workMeter) == true { selected = value }
                 } else { selected = value }
             }
             return try normalized(selected ?? ProjectedQueryValue(value: .primitive(.null),
@@ -5925,7 +6414,7 @@ extension DatabaseContext {
         case .nullIf:
             let left = try await child(0)
             let right = try await child(1)
-            if try selectedComparison(left.value, right.value, comparison: .equal, leftType: bound.children[0].type, rightType: bound.children[1].type, temporalEnvironment: temporalEnvironment, workMeter: workMeter) == true {
+            if try selectedComparison(left.value, right.value, comparison: .equal, leftType: bound.children[0].type, rightType: bound.children[1].type, temporalEnvironment: temporalEnvironment, mode: bound.comparisonMode, workMeter: workMeter) == true {
                 return try normalized(ProjectedQueryValue(value: .primitive(.null), leases: [], payloadIsRetained: false))
             }
             return try normalized(left)
@@ -5937,7 +6426,7 @@ extension DatabaseContext {
                 let selected = try coerceSelectedComparisonValue(member, from: sourceType,
                     to: bound.children[0].type, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
                 defer { withExtendedLifetime(selected) {} }
-                guard let value = try selectedComparison(left.value, selected.value, comparison: comparison, leftType: bound.children[0].type, rightType: bound.children[0].type, temporalEnvironment: temporalEnvironment, workMeter: workMeter) else {
+                guard let value = try selectedComparison(left.value, selected.value, comparison: comparison, leftType: bound.children[0].type, rightType: bound.children[0].type, temporalEnvironment: temporalEnvironment, mode: bound.comparisonMode, workMeter: workMeter) else {
                     sawNull = true
                     return nil
                 }
@@ -5959,7 +6448,7 @@ extension DatabaseContext {
                     }
                 }
             case .subquery(let query):
-                guard let plan = bound.subqueryBinding, plan.columns.count == 1 else {
+                guard let plan = bound.subqueryBinding, !plan.columns.isEmpty else {
                     throw CanonicalReadError.invalidMembershipSubquery(columnCount: bound.subqueryBinding?.columns.count ?? 0)
                 }
                 guard let databaseContext else {
@@ -5968,11 +6457,15 @@ extension DatabaseContext {
                 let response = try await databaseContext.executeNestedQuery(query, boundPlan: plan, outerRow: effectiveRow, context: context)
                 let rows = response.visibleRows
                 for index in 0..<rows.count {
-                    var member: QueryValue?
-                    rows.withElement(at: index) { member = $0.values[0] }
-                    guard let member else { throw CanonicalReadError.invalidMembershipSubquery(columnCount: 0) }
-                    if let result = try examine(member, sourceType: plan.columns[0].type),
-                       (quantifier == .any && result) || (quantifier == .all && !result) {
+                    var fields: [QueryValue] = []
+                    rows.withElement(at: index) { fields = $0.values }
+                    let member = try selectedMembershipValue(fields, columns: plan.columns, bound: bound,
+                        context: context, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
+                    let result = try selectedComparison(left.value, member.value, comparison: comparison,
+                        leftType: bound.children[0].type, rightType: bound.children[0].type,
+                        temporalEnvironment: temporalEnvironment, mode: bound.comparisonMode, workMeter: workMeter)
+                    if result == nil { sawNull = true }
+                    if let result, (quantifier == .any && result) || (quantifier == .all && !result) {
                         return ProjectedQueryValue(value: .primitive(.bool(result)), leases: [], payloadIsRetained: false)
                     }
                 }
@@ -6006,7 +6499,7 @@ extension DatabaseContext {
                         defer { withExtendedLifetime(left) {} }
                         let right = try await evaluateSelectedValue(comparison.children[1], on: row, group: group,
                             effectiveRow: effectiveRow, context: context, databaseContext: databaseContext, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
-                        matches = try selectedComparison(left.value, right.value, comparison: .equal, leftType: comparison.children[0].type, rightType: comparison.children[1].type, temporalEnvironment: temporalEnvironment, workMeter: workMeter) == true
+                        matches = try selectedComparison(left.value, right.value, comparison: .equal, leftType: comparison.children[0].type, rightType: comparison.children[1].type, temporalEnvironment: temporalEnvironment, mode: bound.comparisonMode, workMeter: workMeter) == true
                     } catch let cause as DatabaseExpressionEvaluationError {
                         throw CanonicalReadError.expressionEvaluation(cause, occurrence: comparison.occurrence)
                     }
@@ -6037,10 +6530,30 @@ extension DatabaseContext {
                 context: context, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
         case .isNull, .isNotNull:
             let value = try await child(0)
+            if case .sql(.composite) = bound.children[0].type {
+                return try await evaluateBoundKernel(bound, children: [value], on: effectiveRow,
+                    context: context, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
+            }
             let result: Bool
-            if case .isNull = bound.expression { result = value.value.isNull }
-            else { result = !value.value.isNull }
+            if case .isNull = bound.expression { result = value.value.isNull } else { result = !value.value.isNull }
             return ProjectedQueryValue(value: .primitive(.bool(result)), leases: [], payloadIsRetained: false)
+        case .arraySubquery(let query):
+            guard let plan = bound.subqueryBinding, plan.columns.count == 1, let databaseContext else {
+                throw CanonicalReadError.invalidScalarSubquery(rowCount: nil, columnCount: bound.subqueryBinding?.columns.count)
+            }
+            let response = try await databaseContext.executeNestedQuery(query, boundPlan: plan,
+                outerRow: effectiveRow, context: context)
+            let rows = response.visibleRows
+            let scratch = try workMeter.reserveIntermediate(bytes: DatabaseIntermediateCollectionMeter.arrayFootprint(
+                count: rows.count, element: QueryValue.self).bytes, at: .expressionEvaluation)
+            defer { scratch.release() }
+            var values: [QueryValue] = []; values.reserveCapacity(rows.count)
+            for index in 0..<rows.count { rows.withElement(at: index) { values.append($0.values[0]) } }
+            let result = try CanonicalSQLArrayEvaluator.assembleSubquery(values, columnType: plan.columns[0].type,
+                resultType: bound.type, temporalEnvironment: temporalEnvironment, workMeter: workMeter,
+                limits: selectedValueLimits(context: context, meter: workMeter))
+            return try normalized(ProjectedQueryValue(value: result.value,
+                leases: response.rows.originPayloadLeases + (result.lease.map { [$0] } ?? []), payloadIsRetained: true))
         case .subquery(let query), .exists(let query), .inSubquery(_, let query):
             guard let plan = bound.subqueryBinding else {
                 throw CanonicalReadError.unsupportedSelectQuery("A nested expression has no executable SELECT binding")
@@ -6050,30 +6563,55 @@ extension DatabaseContext {
             guard let databaseContext else {
                 throw DatabaseExpressionEvaluationError.unsupportedExpression("scalar subquery requires a query context")
             }
+            if case .exists = bound.expression, query.quantifier == .all,
+               !canonicalQueryRequiresAggregation(query) {
+                let exists = try await databaseContext.executeExists(query, plan: plan,
+                    outerRow: effectiveRow, context: context)
+                return ProjectedQueryValue(value: .primitive(.bool(exists)), leases: [], payloadIsRetained: false)
+            }
             let response = try await databaseContext.executeNestedQuery(query, boundPlan: plan,
                 outerRow: effectiveRow, context: context)
             let rows = response.visibleRows
             if case .exists = bound.expression {
                 return ProjectedQueryValue(value: .primitive(.bool(!rows.isEmpty)), leases: [], payloadIsRetained: false)
             }
-            guard plan.columns.count == 1 else {
-                throw CanonicalReadError.invalidScalarSubquery(rowCount: nil, columnCount: plan.columns.count)
+            if case .sql(.composite(let type)) = bound.type, plan.columns.count != 1 {
+                guard rows.count <= 1 else { throw CanonicalReadError.invalidScalarSubquery(rowCount: rows.count, columnCount: nil) }
+                if rows.isEmpty { return try normalized(ProjectedQueryValue(value: .primitive(.null), leases: [], payloadIsRetained: false)) }
+                var fields: [QueryValue] = []
+                rows.withElement(at: 0) { fields = $0.values }
+                let fieldClaim = try workMeter.reserveIntermediate(bytes:
+                    DatabaseIntermediateCollectionMeter.arrayFootprint(count: fields.count,
+                        element: ProjectedQueryValue.self).multiplied(by: 2).bytes, at: .expressionEvaluation)
+                defer { fieldClaim.release() }
+                var selected: [ProjectedQueryValue] = []; selected.reserveCapacity(fields.count)
+                for index in fields.indices {
+                    selected.append(try coerceSelectedComparisonValue(fields[index], from: plan.columns[index].type,
+                        to: type.columns[index].type, temporalEnvironment: temporalEnvironment, workMeter: workMeter))
+                }
+                let result = try CanonicalSQLCompositeEvaluator.construct(type: type, fields: selected.map { $0.value },
+                    workMeter: workMeter, limits: selectedValueLimits(context: context, meter: workMeter))
+                return try normalized(ProjectedQueryValue(value: result.value,
+                    leases: response.rows.originPayloadLeases + selected.flatMap { $0.leases }
+                        + (result.lease.map { [$0] } ?? []), payloadIsRetained: true))
             }
             if let candidate {
                 var sawNull = false
                 for index in 0..<rows.count {
-                    var member: QueryValue?
-                    rows.withElement(at: index) { member = $0.values[0] }
-                    guard let member else { throw CanonicalReadError.invalidMembershipSubquery(columnCount: 0) }
-                    if member.isNull || candidate.value.isNull { sawNull = true; continue }
-                    let selectedMember = try coerceSelectedComparisonValue(member,
-                        from: plan.columns[0].type, to: bound.children[0].type, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
-                    defer { withExtendedLifetime(selectedMember) {} }
-                    if try selectedComparison(candidate.value, selectedMember.value, comparison: .equal, leftType: bound.children[0].type, rightType: bound.children[0].type, temporalEnvironment: temporalEnvironment, workMeter: workMeter) == true {
-                        return ProjectedQueryValue(value: .primitive(.bool(true)), leases: [], payloadIsRetained: false)
-                    }
+                    var fields: [QueryValue] = []
+                    rows.withElement(at: index) { fields = $0.values }
+                    let member = try selectedMembershipValue(fields, columns: plan.columns, bound: bound,
+                        context: context, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
+                    let result = try selectedComparison(candidate.value, member.value, comparison: .equal,
+                        leftType: bound.children[0].type, rightType: bound.children[0].type,
+                        temporalEnvironment: temporalEnvironment, mode: bound.comparisonMode, workMeter: workMeter)
+                    if result == true { return ProjectedQueryValue(value: .primitive(.bool(true)), leases: [], payloadIsRetained: false) }
+                    if result == nil { sawNull = true }
                 }
                 return ProjectedQueryValue(value: .primitive(sawNull ? .null : .bool(false)), leases: [], payloadIsRetained: false)
+            }
+            guard plan.columns.count == 1 else {
+                throw CanonicalReadError.invalidScalarSubquery(rowCount: nil, columnCount: plan.columns.count)
             }
             guard rows.count <= 1 else {
                 throw CanonicalReadError.invalidScalarSubquery(rowCount: rows.count, columnCount: nil)
@@ -6139,9 +6677,9 @@ extension DatabaseContext {
                     if let current = selected {
                         switch aggregate {
                         case .min:
-                            if try selectedComparison(cell.value, current.value, comparison: .lessThan, leftType: input.type, rightType: input.type, temporalEnvironment: temporalEnvironment, workMeter: workMeter) == true { selected = cell }
+                            if try selectedComparison(cell.value, current.value, comparison: .lessThan, leftType: input.type, rightType: input.type, temporalEnvironment: temporalEnvironment, mode: bound.comparisonMode, workMeter: workMeter) == true { selected = cell }
                         case .max:
-                            if try selectedComparison(cell.value, current.value, comparison: .greaterThan, leftType: input.type, rightType: input.type, temporalEnvironment: temporalEnvironment, workMeter: workMeter) == true { selected = cell }
+                            if try selectedComparison(cell.value, current.value, comparison: .greaterThan, leftType: input.type, rightType: input.type, temporalEnvironment: temporalEnvironment, mode: bound.comparisonMode, workMeter: workMeter) == true { selected = cell }
                         default: break
                         }
                     } else { selected = cell }
@@ -6172,9 +6710,17 @@ extension DatabaseContext {
         }
     }
 
+    private static func selectedValueLimits(context: CanonicalQueryEvaluationContext?, meter: DatabaseWorkMeter) -> QueryValueLimits {
+        let structural = context?.options.queryStructuralLimits ?? .default
+        return QueryValueLimits(maximumRetainedBytes: min(structural.maximumRetainedBytes, meter.budget.maximumIntermediateBytes),
+            maximumTotalNodes: min(structural.maximumTotalNodes, meter.budget.maximumWorkUnits),
+            maximumNestingDepth: min(structural.maximumNestingDepth, meter.budget.maximumWorkUnits),
+            maximumCollectionElements: min(structural.maximumCollectionElements, meter.budget.maximumWorkUnits))
+    }
+
     private static func selectedCollectionType(_ type: QueryColumnType?) -> Bool {
         switch type {
-        case .sql(.array)?, .sql(.json)?, .sql(.jsonb)?: return true
+        case .sql(.array)?, .sql(.json)?, .sql(.jsonb)?, .sql(.composite)?: return true
         default: return false
         }
     }
@@ -6195,7 +6741,7 @@ extension DatabaseContext {
 
     private static func selectedJSONFunction(_ name: String) -> Bool {
         switch name {
-        case "to_json", "to_jsonb", "array_to_json", "json_build_array", "jsonb_build_array",
+        case "to_json", "to_jsonb", "array_to_json", "row_to_json", "json_build_array", "jsonb_build_array",
              "json_build_object", "jsonb_build_object", "json_typeof", "jsonb_typeof",
              "json_array_length", "jsonb_array_length", "json_extract_path", "jsonb_extract_path",
              "json_extract_path_text", "jsonb_extract_path_text", "jsonb_set", "jsonb_insert",
@@ -6255,8 +6801,10 @@ extension DatabaseContext {
         bound: CanonicalBoundExpression, using key: SortKey,
         environment: SQLTemporalEnvironment?, workMeter: DatabaseWorkMeter) throws -> QueryComparison {
         do {
+            let selected = SortKey(key.expression, direction: key.direction,
+                nulls: key.nulls ?? (key.direction == .ascending ? .last : .first))
             return try CanonicalSQLValueSemantics.compareValues(left, right, type: bound.type,
-                using: key, environment: environment, workMeter: workMeter)
+                using: selected, environment: environment, workMeter: workMeter)
         } catch let cause as SQLTimeZoneError {
             throw CanonicalReadError.expressionEvaluation(.timeZone(cause), occurrence: bound.occurrence)
         } catch let cause as DatabaseExpressionEvaluationError {
@@ -6264,13 +6812,50 @@ extension DatabaseContext {
         }
     }
 
+    private static func selectedMembershipValue(_ fields: [QueryValue], columns: [QueryColumn],
+        bound: CanonicalBoundExpression, context: CanonicalQueryEvaluationContext?,
+        temporalEnvironment: SQLTemporalEnvironment?, workMeter: DatabaseWorkMeter
+    ) throws -> ProjectedQueryValue {
+        guard fields.count == columns.count else {
+            throw CanonicalReadError.invalidMembershipSubquery(columnCount: fields.count)
+        }
+        if columns.count == 1 {
+            return try coerceSelectedComparisonValue(fields[0], from: columns[0].type,
+                to: bound.children[0].type, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
+        }
+        guard case .sql(.composite(let type)) = bound.children[0].type,
+              bound.subqueryComparisonTypes.count == fields.count else {
+            throw CanonicalReadError.invalidMembershipSubquery(columnCount: columns.count)
+        }
+        let claim = try workMeter.reserveIntermediate(bytes:
+            DatabaseIntermediateCollectionMeter.arrayFootprint(count: fields.count,
+                element: ProjectedQueryValue.self).multiplied(by: 2).bytes, at: .expressionEvaluation)
+        defer { claim.release() }
+        var selected: [ProjectedQueryValue] = []
+        selected.reserveCapacity(fields.count)
+        for index in fields.indices {
+            selected.append(try coerceSelectedComparisonValue(fields[index], from: columns[index].type,
+                to: bound.subqueryComparisonTypes[index], temporalEnvironment: temporalEnvironment, workMeter: workMeter))
+        }
+        let result = try CanonicalSQLCompositeEvaluator.construct(type: type, fields: selected.map { $0.value },
+            workMeter: workMeter, limits: selectedValueLimits(context: context, meter: workMeter))
+        return ProjectedQueryValue(value: result.value,
+            leases: selected.flatMap { $0.leases } + (result.lease.map { [$0] } ?? []), payloadIsRetained: true)
+    }
+
     private static func selectedComparison(
         _ left: QueryValue, _ right: QueryValue, comparison: DatabaseKit.ComparisonOperator,
         leftType: QueryColumnType, rightType: QueryColumnType,
-        temporalEnvironment: SQLTemporalEnvironment? = nil, workMeter: DatabaseWorkMeter
+        temporalEnvironment: SQLTemporalEnvironment? = nil, mode: CanonicalSQLCompositeComparisonMode = .record,
+        workMeter: DatabaseWorkMeter
     ) throws -> Bool? {
         try workMeter.consume(at: .expressionEvaluation)
         if left.isNull || right.isNull { return nil }
+        if case .sql(.composite) = leftType {
+            return try CanonicalSQLCompositeEvaluator.comparePredicate(left, right,
+                leftType: leftType, rightType: rightType, comparison: comparison,
+                mode: mode, environment: temporalEnvironment, workMeter: workMeter)
+        }
         do {
             if comparison == .equal || comparison == .notEqual {
                 let equal = try CanonicalSQLValueSemantics.equalValues(left, right,
@@ -6295,32 +6880,11 @@ extension DatabaseContext {
         _ value: QueryValue, from source: QueryColumnType, to target: QueryColumnType,
         temporalEnvironment: SQLTemporalEnvironment? = nil, workMeter: DatabaseWorkMeter
     ) throws -> ProjectedQueryValue {
-        if CanonicalQueryTypeBinder.temporalType(source) != nil, CanonicalQueryTypeBinder.temporalType(target) != nil {
-            guard let temporalEnvironment else { throw DatabaseExpressionEvaluationError.missingTemporalEnvironment }
-            let result = try CanonicalSQLTemporalEvaluator.cast(value, from: source, to: target, context: .implicit,
-                environment: temporalEnvironment, workMeter: workMeter)
-            return ProjectedQueryValue(value: result, leases: [], payloadIsRetained: false)
-        }
-        if case .sql(.char) = source, target == .sql(.text) {
-            let result = try CanonicalSQLScalarCast.evaluatePayload(value, from: source, to: target,
-                context: .implicit, workMeter: workMeter)
-            return ProjectedQueryValue(value: result.withValue { .primitive(copy $0) },
-                leases: result.retainedReservation.map { [DatabaseQueryPayloadLease(retaining: $0)] } ?? [],
-                payloadIsRetained: result.retainedReservation != nil)
-        }
-        if QueryValueValidator.accepts(value, type: target) {
-            return ProjectedQueryValue(value: value, leases: [], payloadIsRetained: true)
-        }
-        if case .sql(let targetType) = target, selectedNumericCastTarget(targetType) {
-            let input = CanonicalBoundExpression(expression: .literal(.queryValue(value, type: source)),
-                type: source, isNullable: true)
-            let cast = CanonicalBoundExpression(expression: .cast(input.expression, targetType: targetType),
-                type: target, isNullable: true, children: [input])
-            return ProjectedQueryValue(value: try CanonicalSQLNumericEvaluator.evaluate(cast, operands: [value], workMeter: workMeter),
-                leases: [], payloadIsRetained: false)
-        }
-        return ProjectedQueryValue(value: try CanonicalQueryTypeBinder.normalize(value, to: target),
-            leases: [], payloadIsRetained: false)
+        let result = try CanonicalSQLScalarCast.coerce(value, from: source, to: target,
+            temporalEnvironment: temporalEnvironment, workMeter: workMeter,
+            limits: selectedValueLimits(context: nil, meter: workMeter))
+        return ProjectedQueryValue(value: result.value, leases: result.lease.map { [$0] } ?? [],
+            payloadIsRetained: result.lease != nil || QueryValueValidator.accepts(value, type: target))
     }
 
     private static func evaluateBoundKernel(
@@ -6383,6 +6947,30 @@ extension DatabaseContext {
                 environment: temporalEnvironment, workMeter: workMeter)
             return ProjectedQueryValue(value: try bound.normalize(value), leases: children.flatMap { $0.leases }, payloadIsRetained: false)
         }
+        if case .cast = bound.expression, bound.sourceAlignment {
+            guard let input = bound.children.first, let value = children.first?.value else {
+                throw DatabaseExpressionEvaluationError.typeMismatch(operation: "selected source alignment arity")
+            }
+            let result = try CanonicalSQLScalarCast.alignSource(value, from: input.type, to: bound.type,
+                temporalEnvironment: temporalEnvironment, workMeter: workMeter, limits: limits)
+            var leases = children.flatMap { $0.leases }
+            if let lease = result.lease { leases.append(lease) }
+            return ProjectedQueryValue(value: try bound.normalize(result.value), leases: leases,
+                payloadIsRetained: !leases.isEmpty)
+        }
+        let compositeOperation: Bool
+        switch bound.expression {
+        case .row, .field, .fieldExpansion, .collate: compositeOperation = true
+        case .equal, .notEqual, .lessThan, .lessThanOrEqual, .greaterThan, .greaterThanOrEqual, .isNull, .isNotNull:
+            compositeOperation = bound.children.contains { if case .sql(.composite) = $0.type { return true }; return false }
+        default: compositeOperation = false
+        }
+        if compositeOperation {
+            let result = try CanonicalSQLCompositeEvaluator.evaluate(bound, operands: children.map { $0.value },
+                temporalEnvironment: temporalEnvironment, workMeter: workMeter, limits: limits)
+            let leases = children.flatMap { $0.leases } + (result.lease.map { [$0] } ?? [])
+            return ProjectedQueryValue(value: try bound.normalize(result.value), leases: leases, payloadIsRetained: !leases.isEmpty)
+        }
         switch bound.expression {
         case .array, .arrayAccess: return try collectionResult(array: true)
         case .collectionOperation:
@@ -6413,9 +7001,9 @@ extension DatabaseContext {
                 throw DatabaseExpressionEvaluationError.typeMismatch(operation: "selected BETWEEN arity")
             }
             let lower = try selectedComparison(children[0].value, children[1].value,
-                comparison: .greaterThanOrEqual, leftType: bound.children[0].type, rightType: bound.children[1].type, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
+                comparison: .greaterThanOrEqual, leftType: bound.children[0].type, rightType: bound.children[1].type, temporalEnvironment: temporalEnvironment, mode: bound.comparisonMode, workMeter: workMeter)
             let upper = try selectedComparison(children[0].value, children[2].value,
-                comparison: .lessThanOrEqual, leftType: bound.children[0].type, rightType: bound.children[2].type, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
+                comparison: .lessThanOrEqual, leftType: bound.children[0].type, rightType: bound.children[2].type, temporalEnvironment: temporalEnvironment, mode: bound.comparisonMode, workMeter: workMeter)
             if lower == false || upper == false { return try booleanResult(false) }
             if lower == nil || upper == nil { return try booleanResult(nil) }
             return try booleanResult(true)
@@ -6428,7 +7016,7 @@ extension DatabaseContext {
             var sawNull = false
             for (index, member) in children.enumerated().dropFirst() {
                 let result = try selectedComparison(candidate.value, member.value,
-                    comparison: .equal, leftType: bound.children[0].type, rightType: bound.children[index].type, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
+                    comparison: .equal, leftType: bound.children[0].type, rightType: bound.children[index].type, temporalEnvironment: temporalEnvironment, mode: bound.comparisonMode, workMeter: workMeter)
                 if result == true { return try booleanResult(!negated) }
                 if result == nil { sawNull = true }
             }
@@ -6507,7 +7095,8 @@ extension DatabaseContext {
                 type: bound.children[index].type, isNullable: bound.children[index].isNullable)
         }
         let executable = CanonicalBoundExpression(expression: bound.expression, type: bound.type,
-            isNullable: bound.isNullable, children: operands, castContext: bound.castContext)
+            isNullable: bound.isNullable, children: operands, castContext: bound.castContext,
+            sourceAlignment: bound.sourceAlignment)
         let expression = try executable.materializing(in: row.values)
         // Only selected, already-evaluated operands reach the primitive kernel.
         // This call performs no column, parameter, aggregate, or subquery lookup.
@@ -6520,7 +7109,7 @@ extension DatabaseContext {
 
     private func projectRows(
         _ rows: CanonicalRetainedRows,
-        projection: Projection,
+        projection: [ProjectionItem],
         columns: [QueryColumn],
         sourceSchema: CanonicalRelationSchema,
         workMeter: DatabaseWorkMeter,
@@ -6565,13 +7154,8 @@ extension DatabaseContext {
         var retained = try DatabaseRetainedArrayBuilder<QueryRow>(
             workMeter: workMeter, stage: .projection,
             layout: DatabaseRetainedArrayLayout.forElement(QueryRow.self), expectedCount: rows.count)
-        let selectedSlots: [Int]?
-        let expressions: [Expression]?
-        switch projection {
-        case .all: selectedSlots = try sourceSchema.wildcardSlots(scope: nil); expressions = nil
-        case .allFrom(let scope): selectedSlots = try sourceSchema.wildcardSlots(scope: scope); expressions = nil
-        case .items(let items), .distinctItems(let items): selectedSlots = nil; expressions = items.map { $0.expression }
-        }
+        let selectedSlots: [Int]? = nil
+        let expressions = boundPlan.projection.map { $0.expression }
         for row in rows {
             try workMeter.consume(at: .projection)
             let scratchFootprint = try DatabaseIntermediateCollectionMeter.arrayFootprint(count: columns.count, element: QueryValue.self)
@@ -6593,7 +7177,7 @@ extension DatabaseContext {
                 retainedPayload.reserveCapacity(columns.count)
                 var values: [QueryValue] = []
                 values.reserveCapacity(columns.count)
-                for (index, _) in (expressions ?? []).enumerated() {
+                for (index, _) in expressions.enumerated() {
                     let cell = try await evaluateBoundValue(boundPlan.projection[index], on: row,
                         context: evaluationContext, workMeter: workMeter)
                     try retainDerived(cell.leases)
@@ -6614,7 +7198,6 @@ extension DatabaseContext {
         let result = DatabaseSharedRetainedQueryRows(
             storage: try retained.finish().moveToSharedOwnership(at: .projection), columns: columns,
             payloadLeases: leases, schemaLeases: [schemaClaim])
-        if case .distinctItems = projection { return try canonicalUniqueRows(result, workMeter: workMeter) }
         return result
     }
 
@@ -6889,7 +7472,7 @@ extension DatabaseContext {
         _ orderBy: [SortKey]?,
         boundOrder: [CanonicalBoundExpression],
         to groups: CanonicalRetainedGroups,
-        projection: Projection,
+        projection: [ProjectionItem],
         groupBy: [Expression],
         workMeter: DatabaseWorkMeter,
         evaluationContext: CanonicalQueryEvaluationContext?
@@ -6995,16 +7578,10 @@ extension DatabaseContext {
     }
 
     private func projectionReferenceIndex(
-        _ expression: Expression,
-        projection: Projection,
-        sourceSchema: CanonicalRelationSchema,
-        prefersInput: Bool
+        _ expression: Expression, projection: [ProjectionItem],
+        sourceSchema: CanonicalRelationSchema, prefersInput: Bool
     ) throws -> Int? {
-        let items: [ProjectionItem]
-        switch projection {
-        case .items(let value), .distinctItems(let value): items = value
-        case .all, .allFrom: return nil
-        }
+        let items = try expandedProjectionItems(projection, sourceSchema: sourceSchema)
         if case .literal(.int(let position)) = expression {
             guard position > 0, let ordinal = Int(exactly: position), ordinal <= items.count else {
                 throw CanonicalReadError.unsupportedSelectQuery("Output ordinal is outside the projection")
@@ -7013,70 +7590,54 @@ extension DatabaseContext {
         }
         guard case .column(let reference) = expression, reference.table == nil else { return nil }
         if prefersInput, !sourceSchema.layout.matching(reference).isEmpty { return nil }
-        let indices = items.indices.filter {
-            (items[$0].alias ?? canonicalProjectionName(for: items[$0].expression, index: $0)) == reference.column
-        }
+        let indices = items.indices.filter { (items[$0].alias ?? canonicalProjectionName(for: items[$0].expression, index: $0)) == reference.column }
         guard let index = indices.first else { return nil }
-        guard indices.allSatisfy({ items[$0].expression == items[index].expression }) else {
+        guard indices.allSatisfy({ candidate in
+            let expression = items[candidate].expression
+            let selected = items[index].expression
+            if expression == selected { return true }
+            guard case .column(let left) = expression, case .column(let right) = selected else { return false }
+            let leftSlots = sourceSchema.layout.matching(left)
+            let rightSlots = sourceSchema.layout.matching(right)
+            return leftSlots.count == 1 && rightSlots.count == 1 && leftSlots[0] == rightSlots[0]
+        }) else {
             throw CanonicalReadError.expressionEvaluation(.ambiguousColumn(reference.displayName))
         }
         return index
     }
 
+    private func expandedProjectionItems(
+        _ projection: [ProjectionItem], sourceSchema: CanonicalRelationSchema
+    ) throws -> [(expression: Expression, alias: String?)] {
+        var result: [(expression: Expression, alias: String?)] = []
+        for item in projection {
+            switch item {
+            case .expression(let expression, let alias): result.append((expression, alias))
+            case .wildcard(let scope):
+                for index in try sourceSchema.wildcardSlots(scope: scope) {
+                    let slot = sourceSchema.layout.slots[index]
+                    result.append((.column(ColumnRef(table: slot.scope, column: slot.name)), nil))
+                }
+            }
+        }
+        return result
+    }
+
     private func groupedOrderExpression(
-        _ expression: Expression,
-        projection: Projection,
-        sourceSchema: CanonicalRelationSchema? = nil,
-        prefersInput: Bool = false
+        _ expression: Expression, projection: [ProjectionItem],
+        sourceSchema: CanonicalRelationSchema? = nil, prefersInput: Bool = false
     ) throws -> Expression {
-        let items: [ProjectionItem]?
-        switch projection {
-        case .items(let value), .distinctItems(let value): items = value
-        case .all, .allFrom: items = nil
+        guard let sourceSchema else { return expression }
+        if let index = try projectionReferenceIndex(expression, projection: projection,
+            sourceSchema: sourceSchema, prefersInput: prefersInput) {
+            return try expandedProjectionItems(projection, sourceSchema: sourceSchema)[index].expression
         }
-        if case .literal(.int(let position)) = expression {
-            guard position > 0, let ordinal = Int(exactly: position) else {
-                throw CanonicalReadError.unsupportedSelectQuery("Output ordinal is outside the projection")
-            }
-            if let items {
-                guard ordinal <= items.count else {
-                    throw CanonicalReadError.unsupportedSelectQuery("Output ordinal is outside the projection")
-                }
-                return items[ordinal - 1].expression
-            }
-            if let sourceSchema {
-                let scope: String?
-                if case .allFrom(let name) = projection { scope = name } else { scope = nil }
-                let slots = try sourceSchema.wildcardSlots(scope: scope)
-                guard ordinal <= slots.count else {
-                    throw CanonicalReadError.unsupportedSelectQuery("Output ordinal is outside the projection")
-                }
-                let slot = sourceSchema.layout.slots[slots[ordinal - 1]]
-                return .column(ColumnRef(table: slot.scope, column: slot.name))
-            }
-        }
-        guard case .column(let column) = expression, column.table == nil else { return expression }
-        if prefersInput, let sourceSchema {
-            let matches = sourceSchema.layout.matching(column)
-            if matches.count > 1 {
-                throw CanonicalReadError.expressionEvaluation(.ambiguousColumn(column.displayName))
-            }
-            if !matches.isEmpty { return expression }
-        }
-        guard let items else { return expression }
-        let matches = items.enumerated().filter {
-            ($0.element.alias ?? canonicalProjectionName(for: $0.element.expression, index: $0.offset)) == column.column
-        }
-        guard let first = matches.first else { return expression }
-        guard matches.allSatisfy({ $0.element.expression == first.element.expression }) else {
-            throw CanonicalReadError.expressionEvaluation(.ambiguousColumn(column.displayName))
-        }
-        return first.element.expression
+        return expression
     }
 
     private func resolvedOrderBy(
         _ orderBy: [SortKey]?,
-        projection: Projection,
+        projection: [ProjectionItem],
         sourceSchema: CanonicalRelationSchema? = nil
     ) throws -> [SortKey]? {
         try orderBy?.map { key in
@@ -7104,14 +7665,35 @@ extension DatabaseContext {
     ) throws -> Value {
         do { return try resolve() }
         catch let cause as CanonicalReadError {
-            guard let binding, binding.occurrences != nil else { throw cause }
-            throw CanonicalSQLBindingFailure(cause: .read(cause), occurrence: binding.occurrence,
-                root: binding.root ?? binding.occurrence)
+            try throwLocatedBindingFailure(cause, binding: binding)
         } catch let cause as DatabaseExpressionEvaluationError {
-            guard let binding, binding.occurrences != nil else { throw cause }
-            throw CanonicalSQLBindingFailure(cause: .expression(cause), occurrence: binding.occurrence,
-                root: binding.root ?? binding.occurrence)
+            try throwLocatedBindingFailure(cause, binding: binding)
         }
+    }
+
+    private func throwLocatedBindingFailure(_ cause: CanonicalReadError,
+        binding: CanonicalQueryBindingEnvironment?
+    ) throws -> Never {
+        try throwLocatedBindingFailure(.read(cause), binding: binding)
+    }
+
+    private func throwLocatedBindingFailure(_ cause: DatabaseExpressionEvaluationError,
+        binding: CanonicalQueryBindingEnvironment?
+    ) throws -> Never {
+        try throwLocatedBindingFailure(.expression(cause), binding: binding)
+    }
+
+    private func throwLocatedBindingFailure(_ cause: CanonicalSQLBindingCause,
+        binding: CanonicalQueryBindingEnvironment?
+    ) throws -> Never {
+        guard let binding, binding.occurrences != nil else {
+            switch cause {
+            case .read(let error): throw error
+            case .expression(let error): throw error
+            }
+        }
+        throw CanonicalSQLBindingFailure(cause: cause, occurrence: binding.occurrence,
+            root: binding.root ?? binding.occurrence)
     }
 
     private func resolvedQueryReferences(
@@ -7135,164 +7717,63 @@ extension DatabaseContext {
     }
 
     private func projectGroupedRows(
-        _ groups: CanonicalRetainedGroups,
-        projection: Projection,
-        columns: [QueryColumn],
-        sourceSchema: CanonicalRelationSchema,
-        groupBy: [Expression],
-        workMeter: DatabaseWorkMeter,
-        evaluationContext: CanonicalQueryEvaluationContext?,
-        boundPlan suppliedPlan: CanonicalBoundSelect? = nil
+        _ groups: CanonicalRetainedGroups, projection: [ProjectionItem], columns: [QueryColumn],
+        sourceSchema: CanonicalRelationSchema, groupBy: [Expression], workMeter: DatabaseWorkMeter,
+        evaluationContext: CanonicalQueryEvaluationContext?, boundPlan suppliedPlan: CanonicalBoundSelect? = nil
     ) async throws -> CanonicalRetainedQueryRows {
-        guard let boundPlan = suppliedPlan ?? evaluationContext?.boundPlan else {
+        guard let plan = suppliedPlan ?? evaluationContext?.boundPlan else {
             throw CanonicalReadError.unsupportedSelectQuery("Grouped projection has no executable SELECT binding")
         }
-        let selectedSlots: [Int]?
-        switch projection {
-        case .all:
-            selectedSlots = try sourceSchema.wildcardSlots(scope: nil)
-        case .allFrom(let scope):
-            selectedSlots = try sourceSchema.wildcardSlots(scope: scope)
-        case .items, .distinctItems:
-            selectedSlots = nil
-        }
-        var rows = try DatabaseRetainedQueryRowsBuilder(
-            columns: columns, workMeter: workMeter, stage: .projection,
-            expectedCount: groups.count, payloadLeases: [groups.payloadLease], schemaLeases: [])
+        var output = try DatabaseRetainedQueryRowsBuilder(columns: columns, workMeter: workMeter,
+            stage: .projection, expectedCount: groups.count, payloadLeases: [groups.payloadLease], schemaLeases: [])
+        var resultLeases: [DatabaseQueryPayloadLease] = []
+        let leaseClaim = try workMeter.reserveIntermediate(bytes: 64, at: .projection)
         for group in groups {
-            try workMeter.consume(at: .projection)
-            if let selectedSlots {
-                guard selectedSlots.count == columns.count else {
-                    throw QueryRowCodecError.arityMismatch(expected: columns.count, actual: selectedSlots.count)
-                }
-                func value(at ordinal: Int) throws -> QueryValue {
-                    let slot = selectedSlots[ordinal]
-                    guard group.representative.values.indices.contains(slot) else {
-                        throw CanonicalReadError.unsupportedSelectQuery("Grouped source row slot is missing")
-                    }
-                    return try CanonicalQueryTypeBinder.normalize(
-                        group.representative.values[slot], to: columns[ordinal].type
-                    )
-                }
-                try rows.append(
-                    footprint: CanonicalRelationalFootprintMeter.positionalValueArrayFootprint(
-                        count: columns.count, valueAt: { _ in .primitive(.null) },
-                        annotations: group.representative.annotations, version: nil,
-                        workMeter: workMeter, stage: .projection
-                    ),
-                    make: {
-                        var values: [QueryValue] = []
-                        values.reserveCapacity(columns.count)
-                        for ordinal in columns.indices { values.append(try value(at: ordinal)) }
-                        return try QueryRow(values: values, columns: columns,
-                                            annotations: group.representative.annotations)
-                    }
-                )
-                continue
+            var values: [QueryValue] = []
+            let scratch = try workMeter.reserveIntermediate(bytes: UInt64(columns.count) * 128, at: .projection)
+            defer { scratch.release() }
+            for bound in plan.projection {
+                let cell = try await evaluateBoundValue(bound, on: group.representative, group: group,
+                    context: evaluationContext, workMeter: workMeter)
+                try leaseClaim.reserveAdditional(bytes: UInt64(cell.leases.count) * 64, at: .projection)
+                resultLeases.append(contentsOf: cell.leases)
+                values.append(cell.value)
             }
-            switch projection {
-            case .items(let items), .distinctItems(let items):
-                guard items.count == columns.count else {
-                    throw QueryRowCodecError.arityMismatch(expected: columns.count, actual: items.count)
-                }
-                let cellFootprint = try DatabaseIntermediateCollectionMeter.arrayFootprint(
-                    count: items.count, element: ProjectedQueryValue.self)
-                let cellReservation = try workMeter.reserveIntermediate(bytes: cellFootprint.bytes, at: .projection)
-                defer { cellReservation.release() }
-                var evaluated: [ProjectedQueryValue] = []
-                evaluated.reserveCapacity(items.count)
-                for (index, _) in items.enumerated() {
-                    evaluated.append(
-                        try await evaluateBoundValue(
-                            boundPlan.projection[index],
-                            on: group.representative,
-                            group: group,
-                            context: evaluationContext,
-                            workMeter: workMeter
-                        )
-                    )
-                }
-                func value(at ordinal: Int) throws -> QueryValue {
-                    try CanonicalQueryTypeBinder.normalize(evaluated[ordinal].value, to: columns[ordinal].type)
-                }
-                try rows.append(
-                    footprint: CanonicalRelationalFootprintMeter.positionalValueArrayFootprint(
-                        count: columns.count, valueAt: value,
-                        annotations: [:], version: nil,
-                        workMeter: workMeter, stage: .projection
-                    ),
-                    make: {
-                        var values: [QueryValue] = []
-                        values.reserveCapacity(columns.count)
-                        for ordinal in columns.indices { values.append(try value(at: ordinal)) }
-                        return try QueryRow(values: values, columns: columns)
-                    }
-                )
-                continue
-            case .all, .allFrom:
-                throw CanonicalReadError.unsupportedSelectQuery("Grouped wildcard slots are unavailable")
+            try output.append(QueryRow(values: values, columns: columns, annotations: group.representative.annotations))
+        }
+        let rows = try output.finish().moveToSharedOwnership(at: .projection)
+        return DatabaseSharedRetainedQueryRows(storage: try retainedQueryRowStorage(rows, workMeter: workMeter),
+            columns: columns, payloadLeases: rows.originPayloadLeases + resultLeases + [DatabaseQueryPayloadLease(retaining: leaseClaim)],
+            schemaLeases: rows.schemaLeases)
+    }
+
+    private func retainedQueryRowStorage(_ rows: DatabaseSharedRetainedQueryRows,
+        workMeter: DatabaseWorkMeter) throws -> DatabaseSharedRetainedArray<QueryRow> {
+        var builder = try DatabaseRetainedArrayBuilder<QueryRow>(workMeter: workMeter, stage: .projection,
+            layout: DatabaseRetainedArrayLayout.forElement(QueryRow.self), expectedCount: rows.count)
+        for index in 0..<rows.count {
+            try rows.withElement(at: index) { row in
+                try builder.append(footprint: CanonicalRelationalFootprintMeter.positionalValueArrayFootprint(
+                    count: row.values.count, valueAt: { _ in .primitive(.null) }, annotations: row.annotations,
+                    version: row.version, workMeter: workMeter, stage: .projection), make: { copy row })
             }
         }
-        let projectedRows = try rows.finish().moveToSharedOwnership(at: .projection)
-        if case .distinctItems = projection {
-            return try canonicalUniqueRows(
-                projectedRows,
-                workMeter: workMeter
-            )
-        }
-        return projectedRows
+        return try builder.finish().moveToSharedOwnership(at: .projection)
     }
 
     private func validateGroupedWildcardProjection(
-        _ projection: Projection,
-        sourceSchema: CanonicalRelationSchema,
-        groupBy: [Expression]
+        _ projection: [ProjectionItem], sourceSchema: CanonicalRelationSchema, groupBy: [Expression]
     ) throws {
-        func requireGroupedColumn(
-            _ column: String,
-            sourceName: String?
-        ) throws {
-            let unqualified = Expression.column(ColumnRef(column))
-            let isGrouped: Bool
-            if let sourceName {
-                let qualified = Expression.column(
-                    ColumnRef(table: sourceName, column: column)
-                )
-                isGrouped = groupBy.contains(qualified)
-                    || (sourceSchema.occurrenceCount(of: column) == 1
-                        && groupBy.contains(unqualified))
-            } else {
-                isGrouped = groupBy.contains(unqualified)
-            }
-            guard isGrouped else {
-                let displayName = sourceName.map { "\($0).\(column)" }
-                    ?? column
-                throw CanonicalReadError.aggregateEvaluation(
-                    .invalidGroupedExpression(
-                        "Wildcard projection contains non-grouped column '\(displayName)'"
-                    )
-                )
-            }
-        }
-
-        switch projection {
-        case .items, .distinctItems:
-            return
-        case .all:
-            for index in sourceSchema.layout.visibleSlots {
+        for item in projection {
+            guard case .wildcard(let qualifier) = item else { continue }
+            for index in try sourceSchema.wildcardSlots(scope: qualifier) {
                 let slot = sourceSchema.layout.slots[index]
-                try requireGroupedColumn(slot.name, sourceName: slot.scope)
-            }
-        case .allFrom(let sourceName):
-            guard let scope = sourceSchema.scopes.first(
-                where: { $0.name == sourceName }
-            ) else {
-                throw CanonicalReadError.unsupportedSelectQuery(
-                    "Projection source '\(sourceName)' not found"
-                )
-            }
-            for column in scope.columns {
-                try requireGroupedColumn(column, sourceName: sourceName)
+                let qualified = Expression.column(ColumnRef(table: slot.scope, column: slot.name))
+                let unqualified = Expression.column(ColumnRef(slot.name))
+                guard groupBy.contains(qualified) || (sourceSchema.occurrenceCount(of: slot.name) == 1 && groupBy.contains(unqualified)) else {
+                    throw CanonicalReadError.aggregateEvaluation(.invalidGroupedExpression(
+                        "Wildcard projection contains non-grouped column '\(slot.name)'"))
+                }
             }
         }
     }
@@ -7682,6 +8163,35 @@ extension DatabaseContext {
         return .borrowing(try evaluator.evaluate(expression))
     }
 
+    private func executeExists(_ query: SelectQuery, plan: CanonicalBoundSelect,
+        outerRow: CanonicalSourceRow, context: CanonicalQueryEvaluationContext?
+    ) async throws -> Bool {
+        guard let context else {
+            throw CanonicalReadError.unsupportedSelectQuery("EXISTS requires an admitted query scope")
+        }
+        let selected = CanonicalBoundSelect(columns: [], projection: [], filter: plan.filter,
+            groupBy: [], having: nil, orderBy: [], sourcePlan: plan.sourcePlan,
+            pagination: plan.pagination, ctes: plan.ctes,
+            metadataLease: plan.metadataLease, bindingMetadata: plan.bindingMetadata)
+        let active = CanonicalQueryEvaluationContext(options: executionContextWithoutExternalPageWindow(context.options),
+            transaction: context.transaction, partitionValues: context.partitionValues,
+            partitionMode: context.partitionMode, namedSubqueries: context.namedSubqueries,
+            queryBinding: context.queryBinding, boundPlan: selected, cteEnvironment: context.cteEnvironment,
+            outerRow: outerRow, preparedFusionGraph: context.preparedFusionGraph, fusionSession: context.fusionSession)
+        let producer = try await makeSelectProducer(query.replacing(projection: []).replacing(orderBy: nil),
+            plan: selected, context: active)
+        do {
+            let exists = try await producer.next() != nil
+            try await producer.close()
+            return exists
+        } catch {
+            let primary = error
+            do { try await producer.close() }
+            catch { throw SQLRelationCleanupError(operationError: primary, cleanupError: error) }
+            throw primary
+        }
+    }
+
     private func executeNestedQuery(
         _ query: SelectQuery,
         boundPlan: CanonicalBoundSelect? = nil,
@@ -7702,6 +8212,7 @@ extension DatabaseContext {
             inheritedSubqueries: context.namedSubqueries, queryBinding: context.queryBinding,
             boundPlan: boundPlan,
             outerRow: outerRow,
+            cteEnvironment: context.cteEnvironment,
             preparedFusionGraph: context.preparedFusionGraph,
             fusionSession: context.fusionSession
         )
@@ -7887,7 +8398,8 @@ extension DatabaseContext {
                 case .patternMatch(let subject, let pattern, let escape, _):
                     if let escape { try push(.expression(escape)) }
                     try push(.expression(pattern)); try push(.expression(subject))
-                case .negate(let child), .not(let child), .truthTest(let child, _, _), .isNull(let child),
+                case .collate(let child, _), .field(let child, _), .fieldExpansion(let child),
+                     .negate(let child), .not(let child), .truthTest(let child, _, _), .isNull(let child),
                      .isNotNull(let child), .regex(let child, _, _), .cast(let child, _), .isTriple(let child),
                      .subject(let child), .predicate(let child), .object(let child):
                     try push(.expression(child))
@@ -7917,7 +8429,7 @@ extension DatabaseContext {
                         for key in (keys ?? []).reversed() { try push(.expression(key.expression)) }
                         try push(.expression(child))
                     }
-                case .subquery(let nested), .exists(let nested):
+                case .arraySubquery(let nested), .subquery(let nested), .exists(let nested):
                     try push(.statement(nested))
                 case .quantifiedComparison(let lhs, _, _, let source):
                     switch source {
@@ -7929,23 +8441,21 @@ extension DatabaseContext {
                     try push(.statement(nested)); try push(.expression(child))
                 case .triple(let subject, let predicate, let object):
                     try push(.expression(object)); try push(.expression(predicate)); try push(.expression(subject))
-                case .currentValue, .literal, .column, .variable, .parameter, .bound: break
+                case .wholeRow, .currentValue, .literal, .column, .variable, .parameter, .bound: break
                 }
             case .source(let value):
                 switch value {
-                case .subquery(let nested, _): try push(.statement(nested))
+                case .subquery(let nested): try push(.statement(nested))
+                case .aliased(let child, _, _): try push(.source(child))
                 case .join(let join):
                     if case .on(let condition) = join.condition { try push(.expression(condition)) }
                     try push(.source(join.right)); try push(.source(join.left))
-                case .union(let sources), .unionAll(let sources), .intersect(let sources):
-                    for child in sources.reversed() { try push(.source(child)) }
-                case .except(let left, let right):
-                    try push(.source(right)); try push(.source(left))
-                case .values(let rows, _):
-                    for row in rows {
-                        let allowance = UInt64(row.count).multipliedReportingOverflow(by: 1024)
-                        guard !allowance.overflow else { throw DatabaseExpressionEvaluationError.numericOverflow }
-                        try addBytes(allowance.partialValue)
+                case .setOperation(_, _, let left, let right):
+                    try push(.statement(right)); try push(.statement(left))
+                case .values(let rows):
+                    for row in rows.reversed() {
+                        try addBytes(128)
+                        for expression in row.reversed() { try push(.expression(expression)) }
                     }
                 case .graphTable(let table):
                     for item in (table.columns ?? []).reversed() { try push(.expression(item.expression)) }
@@ -7959,10 +8469,13 @@ extension DatabaseContext {
                 if let having = value.having { try push(.expression(having)) }
                 for group in (value.groupBy ?? []).reversed() { try push(.expression(group)) }
                 if let filter = value.filter { try push(.expression(filter)) }
-                switch value.projection {
-                case .items(let items), .distinctItems(let items):
-                    for item in items.reversed() { try push(.expression(item.expression)) }
-                case .all, .allFrom: break
+                if case .expression(let expression) = value.pagination.limit.map({ limit -> QueryCount? in
+                    if case .count(let count, _) = limit { return count }; return nil
+                }) ?? nil { try push(.expression(expression)) }
+                if case .expression(let expression) = value.pagination.offset { try push(.expression(expression)) }
+                if case .distinctOn(let keys) = value.quantifier { for key in keys.reversed() { try push(.expression(key)) } }
+                for item in value.projection.reversed() {
+                    if case .expression(let expression, _) = item { try push(.expression(expression)) }
                 }
                 for definition in (value.subqueries ?? []).reversed() { try push(.statement(definition.query)) }
                 try push(.source(value.source))
@@ -7997,45 +8510,130 @@ extension DatabaseContext {
     ) throws -> CanonicalBoundSelect {
         do {
         try binding.workMeter.consume(at: .bindingCandidate)
-        let claim = try binding.planReservation ?? binding.workMeter.reserveIntermediate(
-            bytes: prospectiveBindingPlanBytes(query, workMeter: binding.workMeter), at: .bindingCandidate)
+        let claim = try canonicalBindingReservation(query, binding: binding)
         var binding = binding
         binding.planReservation = claim
+        let scope = try bindCanonicalQueryScope(query, inherited: inherited, outerSchemas: outerSchemas, binding: binding)
+        let source = try bindCanonicalSource(query.source, namedSubqueries: scope.named,
+            outerSchemas: outerSchemas, binding: scope.scoped.child(.source))
+        return try finishCanonicalQueryBinding(query, source: source, namedSubqueries: scope.named,
+            outerSchemas: outerSchemas, binding: binding, scopedBinding: scope.scoped, ctes: scope.ctes, reservation: claim)
+        } catch let cause as DatabaseExpressionEvaluationError {
+            try throwQueryBindingExpressionFailure(cause, binding: binding)
+        } catch let failure as CanonicalReadError {
+            try throwLocatedBindingFailure(failure, binding: binding)
+        }
+    }
+
+    private func canonicalBindingReservation(_ query: SelectQuery, binding: CanonicalQueryBindingEnvironment
+    ) throws -> DatabaseIntermediateReservation {
+        if let reservation = binding.planReservation { return reservation }
+        return try binding.workMeter.reserveIntermediate(
+            bytes: prospectiveBindingPlanBytes(query, workMeter: binding.workMeter), at: .bindingCandidate)
+    }
+
+    private func throwQueryBindingExpressionFailure(_ cause: DatabaseExpressionEvaluationError,
+        binding: CanonicalQueryBindingEnvironment
+    ) throws -> Never {
+        guard binding.occurrences != nil else { throw CanonicalReadError.expressionEvaluation(cause) }
+        try throwLocatedBindingFailure(cause, binding: binding)
+    }
+
+    private func bindCanonicalQueryScope(_ query: SelectQuery, inherited: [NamedSubquery],
+        outerSchemas: [CanonicalRelationSchema], binding: CanonicalQueryBindingEnvironment
+    ) throws -> (named: [NamedSubquery], scoped: CanonicalQueryBindingEnvironment, ctes: [CanonicalBoundCTE]) {
         let local = query.subqueries ?? []
         let named = try mergeNamedSubqueries(local: local, inherited: inherited)
         var visible = inherited
         var scoped = binding
+        var ctes: [CanonicalBoundCTE] = []
         for (index, definition) in local.enumerated() {
             let child = scoped.child(.cte, index: UInt32(index))
             let plan = try bindCanonicalQuery(definition.query, inherited: visible,
                 outerSchemas: outerSchemas, binding: child)
-            guard definition.columns == nil || definition.columns?.count == plan.columns.count else {
+            guard definition.columns == nil || (definition.columns?.count ?? 0) <= plan.columns.count else {
                 throw CanonicalReadError.unsupportedSelectQuery("CTE column count differs from its query")
             }
+            ctes.append(CanonicalBoundCTE(identity: index, definition: definition, plan: plan,
+                referenceCount: 1, isVolatile: selectedPlanIsVolatile(plan)))
             scoped.namedPlans = CanonicalNamedBindingScope(parent: scoped.namedPlans, name: definition.name, plan: plan)
             visible.insert(definition, at: 0)
         }
-        let source = try bindCanonicalSource(query.source, namedSubqueries: named,
-            outerSchemas: outerSchemas, binding: scoped.child(.source))
+        return (named, scoped, ctes)
+    }
+
+    private func finishCanonicalQueryBinding(_ query: SelectQuery, source: CanonicalSourceBindingPlan,
+        namedSubqueries named: [NamedSubquery], outerSchemas: [CanonicalRelationSchema],
+        binding: CanonicalQueryBindingEnvironment, scopedBinding scoped: CanonicalQueryBindingEnvironment,
+        ctes: [CanonicalBoundCTE], reservation claim: DatabaseIntermediateReservation
+    ) throws -> CanonicalBoundSelect {
         let resolved = try resolvedQueryReferences(query, sourceSchema: source.schema, queryBinding: scoped)
-        let plan: CanonicalBoundSelect
-        if query.source.usesSPARQLSemantics {
-            let columns = try canonicalProjectionColumns(query.projection, sourceSchema: source.schema)
-                .enumerated().map { index, name in
-                    try QueryColumn(number: UInt32(index + 1), name: name, type: .primitive(.rdfTerm), isNullable: true)
-                }
-            plan = CanonicalBoundSelect(columns: columns, projection: [], filter: nil, groupBy: [], having: nil, orderBy: [])
-        } else {
-            let binder = try typeBinder(schema: source.schema, namedSubqueries: named,
-                queryBinding: scoped, outerSchemas: outerSchemas)
-            let projected = try binder.bindSelect(resolved.replacing(filter: nil)
-                .replacing(groupBy: nil).replacing(having: nil).replacing(orderBy: nil),
-                occurrence: binding.occurrence)
-            let filter = try resolved.filter.map {
-                try binder.bind($0, contextualType: .sql(.boolean), occurrence: scoped.child(.filter).occurrence)
+        let plan = try bindCanonicalSelectProjection(resolved, original: query, source: source,
+            namedSubqueries: named, outerSchemas: outerSchemas, binding: scoped, ctes: ctes)
+        return try finishCanonicalQueryPlan(resolved, plan: plan, source: source,
+            namedSubqueries: named, outerSchemas: outerSchemas, binding: binding,
+            scopedBinding: scoped, reservation: claim)
+    }
+
+    private func bindCanonicalSelectProjection(_ resolved: SelectQuery, original query: SelectQuery,
+        source: CanonicalSourceBindingPlan, namedSubqueries: [NamedSubquery],
+        outerSchemas: [CanonicalRelationSchema], binding: CanonicalQueryBindingEnvironment,
+        ctes: [CanonicalBoundCTE]
+    ) throws -> CanonicalBoundSelect {
+        if query.source.usesSPARQLSemantics { return try bindCanonicalSPARQLProjection(query, source: source) }
+        let binder = try typeBinder(schema: source.schema, namedSubqueries: namedSubqueries,
+            queryBinding: binding, outerSchemas: outerSchemas)
+        let projected = try binder.bindProjection(resolved.projection, occurrence: binding.occurrence)
+        return try bindCanonicalSelectClauses(resolved, original: query, projected: projected,
+            binder: binder, source: source, binding: binding, ctes: ctes)
+    }
+
+    private func bindCanonicalSPARQLProjection(_ query: SelectQuery,
+        source: CanonicalSourceBindingPlan
+    ) throws -> CanonicalBoundSelect {
+        let columns = try canonicalProjectionColumns(query.projection, sourceSchema: source.schema)
+            .enumerated().map { index, name in
+                try QueryColumn(number: UInt32(index + 1), name: name, type: .primitive(.rdfTerm), isNullable: true)
             }
-            let groups = try (resolved.groupBy ?? []).enumerated().map { index, expression in
-                try locatingBindingReference(scoped.child(.groupBy, index: UInt32(index))) {
+        return CanonicalBoundSelect(columns: columns, projection: [], filter: nil, groupBy: [], having: nil, orderBy: [])
+    }
+
+    private func bindCanonicalSelectClauses(_ resolved: SelectQuery, original query: SelectQuery,
+        projected: CanonicalBoundSelect, binder: CanonicalQueryTypeBinder,
+        source: CanonicalSourceBindingPlan, binding: CanonicalQueryBindingEnvironment,
+        ctes: [CanonicalBoundCTE]
+    ) throws -> CanonicalBoundSelect {
+        let filter = try bindCanonicalPredicate(resolved.filter, binder: binder, binding: binding.child(.filter))
+        let groups = try bindCanonicalGroupKeys(resolved, original: query, projected: projected,
+            source: source, binder: binder, binding: binding)
+        let having = try bindCanonicalPredicate(resolved.having, binder: binder, binding: binding.child(.having))
+        let ordering = try bindCanonicalOrderKeys(query, projected: projected, binder: binder, binding: binding)
+        let distinctOn = try bindCanonicalDistinctKeys(query, projected: projected, ordering: ordering,
+            binder: binder, binding: binding)
+        let pagination = try binder.bindPagination(query.pagination,
+            localColumnCount: source.schema.layout.slots.count, sql: !query.source.usesSPARQLSemantics)
+        guard !pagination.withTies || !ordering.isEmpty else {
+            throw CanonicalReadError.unsupportedSelectQuery("WITH TIES requires ORDER BY")
+        }
+        return CanonicalBoundSelect(columns: projected.columns, projection: projected.projection,
+            filter: filter, groupBy: groups, having: having, orderBy: ordering,
+            distinctOn: distinctOn, pagination: pagination, ctes: ctes,
+            metadataLease: projected.metadataLease, bindingMetadata: projected.bindingMetadata)
+    }
+
+    private func bindCanonicalPredicate(_ expression: Expression?, binder: CanonicalQueryTypeBinder,
+        binding: CanonicalQueryBindingEnvironment
+    ) throws -> CanonicalBoundExpression? {
+        guard let expression else { return nil }
+        return try binder.bind(expression, contextualType: .sql(.boolean), occurrence: binding.occurrence)
+    }
+
+    private func bindCanonicalGroupKeys(_ resolved: SelectQuery, original query: SelectQuery,
+        projected: CanonicalBoundSelect, source: CanonicalSourceBindingPlan,
+        binder: CanonicalQueryTypeBinder, binding: CanonicalQueryBindingEnvironment
+    ) throws -> [CanonicalBoundExpression] {
+        try (resolved.groupBy ?? []).enumerated().map { index, expression in
+            try locatingBindingReference(binding.child(.groupBy, index: UInt32(index))) {
                 if canonicalExpressionContainsAggregate(expression) {
                     throw CanonicalReadError.aggregateEvaluation(.invalidGroupedExpression("GROUP BY cannot contain aggregates"))
                 }
@@ -8044,23 +8642,61 @@ extension DatabaseContext {
                         sourceSchema: source.schema, prefersInput: true) {
                     return projected.projection[output]
                 }
-                return try binder.bind(expression, occurrence: scoped.child(.groupBy, index: UInt32(index)).occurrence)
-                }
+                return try binder.bind(expression, occurrence: binding.child(.groupBy, index: UInt32(index)).occurrence)
             }
-            let having = try resolved.having.map {
-                try binder.bind($0, contextualType: .sql(.boolean), occurrence: scoped.child(.having).occurrence)
-            }
-            let ordering = try (resolved.orderBy ?? []).enumerated().map { index, key in
-                if let original = query.orderBy?[index].expression,
-                   let output = try projectionReferenceIndex(original, projection: query.projection,
-                        sourceSchema: source.schema, prefersInput: false) {
-                    return projected.projection[output]
-                }
-                return try binder.bind(key.expression, occurrence: scoped.child(.orderBy, index: UInt32(index)).occurrence)
-            }
-            plan = CanonicalBoundSelect(columns: projected.columns, projection: projected.projection,
-                filter: filter, groupBy: groups, having: having, orderBy: ordering)
         }
+    }
+
+    private func bindCanonicalOrderKeys(_ query: SelectQuery, projected: CanonicalBoundSelect,
+        binder: CanonicalQueryTypeBinder, binding: CanonicalQueryBindingEnvironment
+    ) throws -> [CanonicalBoundKey] {
+        let isSet: Bool
+        if case .setOperation = query.source { isSet = true } else { isSet = false }
+        return try (query.orderBy ?? []).enumerated().map { index, key in
+            try binder.bindOrderKey(key, projection: projected.projection, output: projected.columns,
+                allowSourceExpressions: !isSet, occurrence: binding.child(.orderBy, index: UInt32(index)).occurrence,
+                isVolatileSubquery: selectedPlanIsVolatile)
+        }
+    }
+
+    private func bindCanonicalDistinctKeys(_ query: SelectQuery, projected: CanonicalBoundSelect,
+        ordering: [CanonicalBoundKey], binder: CanonicalQueryTypeBinder,
+        binding: CanonicalQueryBindingEnvironment
+    ) throws -> [CanonicalBoundKey] {
+        if case .distinctOn(let expressions) = query.quantifier {
+            let keys = try expressions.enumerated().map { index, expression in
+                let key = try binder.bindOrderKey(SortKey(expression), projection: projected.projection,
+                    output: projected.columns, occurrence: binding.child(.distinctOn, index: UInt32(index)).occurrence,
+                    isVolatileSubquery: selectedPlanIsVolatile)
+                return CanonicalBoundKey(expression: key.expression, projectionIndex: key.projectionIndex,
+                    occurrence: key.occurrence)
+            }
+            try validateDistinctOrderPrefix(distinct: keys, ordering: ordering, meter: binding.workMeter)
+            return keys
+        }
+        if query.quantifier == .distinct {
+            for column in projected.columns { try binder.requireSQLComparison(column.type, operation: "DISTINCT") }
+        }
+        return []
+    }
+
+    private func finishCanonicalQueryPlan(_ resolved: SelectQuery, plan: CanonicalBoundSelect,
+        source: CanonicalSourceBindingPlan, namedSubqueries: [NamedSubquery],
+        outerSchemas: [CanonicalRelationSchema], binding: CanonicalQueryBindingEnvironment,
+        scopedBinding: CanonicalQueryBindingEnvironment, reservation: DatabaseIntermediateReservation
+    ) throws -> CanonicalBoundSelect {
+        try validateCanonicalGroupedBinding(resolved, plan: plan, source: source, binding: binding)
+        let owned = CanonicalSourceBindingPlan(source: source.source, schema: source.schema,
+            children: source.children, queryPlan: source.queryPlan, condition: source.condition,
+            query: resolved, valueBindings: source.valueBindings, binding: scopedBinding,
+            namedSubqueries: namedSubqueries, reservation: reservation,
+            bindingFrames: [source.schema.layout] + outerSchemas.map { $0.layout })
+        return plan.withSourcePlan(owned)
+    }
+
+    private func validateCanonicalGroupedBinding(_ resolved: SelectQuery, plan: CanonicalBoundSelect,
+        source: CanonicalSourceBindingPlan, binding: CanonicalQueryBindingEnvironment
+    ) throws {
         if canonicalQueryRequiresAggregation(resolved) {
             func grouped(_ value: CanonicalBoundExpression) -> Bool {
                 plan.groupBy.contains { key in
@@ -8111,7 +8747,7 @@ extension DatabaseContext {
                 if let filter = nested.filter { try validateOuterExpression(filter, frames: nestedSource.bindingFrames) }
                 for expression in nested.groupBy { try validateOuterExpression(expression, frames: nestedSource.bindingFrames) }
                 if let having = nested.having { try validateOuterExpression(having, frames: nestedSource.bindingFrames) }
-                for expression in nested.orderBy { try validateOuterExpression(expression, frames: nestedSource.bindingFrames) }
+                for key in nested.orderBy { try validateOuterExpression(key.expression, frames: nestedSource.bindingFrames) }
                 try validateOuterSource(nestedSource)
             }
             func validate(_ value: CanonicalBoundExpression) throws {
@@ -8125,152 +8761,390 @@ extension DatabaseContext {
             }
             for expression in plan.projection { try validate(expression) }
             if let having = plan.having { try validate(having) }
-            for key in plan.orderBy { try validate(key) }
+            for key in plan.orderBy { try validate(key.expression) }
             try validateGroupedWildcardProjection(resolved.projection,
                 sourceSchema: source.schema, groupBy: resolved.groupBy ?? [])
         }
-        let owned = CanonicalSourceBindingPlan(source: source.source, schema: source.schema,
-            children: source.children, queryPlan: source.queryPlan, condition: source.condition,
-            query: resolved, binding: scoped, namedSubqueries: named, reservation: claim,
-            bindingFrames: [source.schema.layout] + outerSchemas.map { $0.layout })
-        return plan.withSourcePlan(owned)
+    }
+
+    private func bindCanonicalValues(_ rows: [[DatabaseKit.Expression]], namedSubqueries: [NamedSubquery],
+        outerSchemas: [CanonicalRelationSchema], binding: CanonicalQueryBindingEnvironment,
+        reservation claim: DatabaseIntermediateReservation
+    ) throws -> (schema: CanonicalRelationSchema, valueBindings: [[CanonicalBoundExpression]]) {
+        var valueBindings: [[CanonicalBoundExpression]] = []
+        let schema: CanonicalRelationSchema
+        let empty = try CanonicalRelationSchema()
+        let binder = try typeBinder(schema: empty, namedSubqueries: namedSubqueries,
+            queryBinding: binding, outerSchemas: outerSchemas)
+        typealias ValueCell = (bound: CanonicalBoundExpression, original: DatabaseKit.Expression?)
+        let scratch = try binding.workMeter.reserveIntermediate(bytes: 256, at: .bindingCandidate)
+        defer { scratch.release() }
+        var known: [[ValueCell]] = []
+        for (rowIndex, expressions) in rows.enumerated() {
+            var cells: [ValueCell] = []
+            for (cellIndex, expression) in expressions.enumerated() {
+                try binding.workMeter.consume(at: .bindingCandidate)
+                let occurrence = binding.child(.valuesRow, index: UInt32(rowIndex))
+                    .child(.valuesCell, index: UInt32(cellIndex)).occurrence
+                let bound = try binder.bind(expression, occurrence: occurrence)
+                if case .fieldExpansion = expression {
+                    guard let source = bound.children.first,
+                          case .sql(.composite(let descriptor)) = source.type else {
+                        throw DatabaseExpressionEvaluationError.typeMismatch(operation: "VALUES field expansion")
+                    }
+                    for (ordinal, field) in descriptor.columns.enumerated() {
+                        try binding.workMeter.consume(at: .bindingCandidate)
+                        let selected = CanonicalBoundExpression(expression: .field(source.expression, name: field.name),
+                            type: field.type, isNullable: source.isNullable || field.isNullable,
+                            children: [source], occurrence: occurrence, fieldOrdinal: ordinal)
+                        try CanonicalBindingStorage.append((bound: selected, original: nil), to: &cells, reservation: scratch)
+                    }
+                } else {
+                    try CanonicalBindingStorage.append((bound: bound, original: expression), to: &cells, reservation: scratch)
+                }
+            }
+            try CanonicalBindingStorage.append(cells, to: &known, reservation: scratch)
+        }
+        let width = known.first?.count ?? 0
+        guard known.allSatisfy({ $0.count == width }) else {
+            throw CanonicalReadError.unsupportedSelectQuery("VALUES expanded row arity differs")
+        }
+        func contextualNull(_ value: CanonicalBoundExpression) -> Bool {
+            if case .field = value.expression, let ordinal = value.fieldOrdinal,
+               let source = value.children.first, case .row = source.expression,
+               source.children.indices.contains(ordinal) {
+                return contextualNull(source.children[ordinal])
+            }
+            return expressionIsContextualNull(value.expression)
+        }
+        var types: [QueryColumnType] = []
+        var inputs: [QueryColumnType] = []
+        for column in 0..<width {
+            inputs.removeAll(keepingCapacity: true)
+            for row in known where !contextualNull(row[column].bound) {
+                try CanonicalBindingStorage.append(row[column].bound.type, to: &inputs, reservation: scratch)
+            }
+            try CanonicalBindingStorage.append(binder.commonSourceType(inputs), to: &types, reservation: scratch)
+        }
+        for row in known {
+            var selected: [CanonicalBoundExpression] = []
+            for (column, cell) in row.enumerated() {
+                let value: CanonicalBoundExpression
+                if let original = cell.original {
+                    value = try binder.bindSourceValue(original, to: types[column], occurrence: cell.bound.occurrence)
+                } else {
+                    guard let source = cell.bound.children.first, let ordinal = cell.bound.fieldOrdinal,
+                          case .sql(.composite(let descriptor)) = source.type else {
+                        throw DatabaseExpressionEvaluationError.typeMismatch(operation: "VALUES expanded field binding")
+                    }
+                    var fields: [QueryColumn] = []
+                    for (fieldIndex, field) in descriptor.columns.enumerated() {
+                        let target = try QueryColumn(number: field.number, name: field.name,
+                            type: types[column - ordinal + fieldIndex], isNullable: field.isNullable)
+                        try CanonicalBindingStorage.append(target, to: &fields, reservation: scratch)
+                    }
+                    let contextual = try CanonicalBindingStorage.composite(columns: fields, workMeter: binding.workMeter)
+                    let rebound = try binder.bind(source.expression, contextualType: .sql(.composite(contextual.type)),
+                        occurrence: source.occurrence)
+                    guard case .sql(.composite(let selectedDescriptor)) = rebound.type else {
+                        throw DatabaseExpressionEvaluationError.typeMismatch(operation: "VALUES contextual composite binding")
+                    }
+                    let field = selectedDescriptor.columns[ordinal]
+                    let selectedField = CanonicalBoundExpression(expression: .field(rebound.expression, name: field.name),
+                        type: field.type, isNullable: rebound.isNullable || field.isNullable,
+                        children: [rebound], occurrence: cell.bound.occurrence, fieldOrdinal: ordinal,
+                        metadataLease: contextual.lease)
+                    value = try binder.bindSourceValue(selectedField, to: types[column])
+                }
+                try CanonicalBindingStorage.append(value, to: &selected, reservation: claim)
+            }
+            try CanonicalBindingStorage.append(selected, to: &valueBindings, reservation: claim)
+        }
+        // Explicit optional elements avoid Swift's implicit array runtime cast, unavailable in Embedded.
+        schema = try CanonicalRelationSchema(unscopedColumns: (0..<width).map { "column\($0 + 1)" },
+            types: types.map { .some($0) }, nullability: (0..<width).map { column in known.contains { $0[column].bound.isNullable } })
+        return (schema, valueBindings)
+    }
+
+    private func bindCanonicalSource(_ source: DataSource, namedSubqueries: [NamedSubquery],
+        outerSchemas: [CanonicalRelationSchema], binding: CanonicalQueryBindingEnvironment
+    ) throws -> CanonicalSourceBindingPlan {
+        do {
+            try binding.workMeter.consume(at: .bindingCandidate)
+            guard let claim = binding.planReservation else {
+                throw CanonicalReadError.unsupportedSelectQuery("Source binding has no admitted plan owner")
+            }
+            switch source {
+            case .table:
+                return try bindCanonicalTableSource(source, namedSubqueries: namedSubqueries,
+                    outerSchemas: outerSchemas, binding: binding, reservation: claim)
+            case .aliased:
+                return try bindCanonicalAliasedSource(source, namedSubqueries: namedSubqueries,
+                    outerSchemas: outerSchemas, binding: binding, reservation: claim)
+            case .subquery:
+                return try bindCanonicalSubquerySource(source, namedSubqueries: namedSubqueries,
+                    outerSchemas: outerSchemas, binding: binding, reservation: claim)
+            case .values:
+                return try bindCanonicalValuesSource(source, namedSubqueries: namedSubqueries,
+                    outerSchemas: outerSchemas, binding: binding, reservation: claim)
+            case .join:
+                return try bindCanonicalJoinSource(source, namedSubqueries: namedSubqueries,
+                    outerSchemas: outerSchemas, binding: binding, reservation: claim)
+            case .setOperation:
+                return try bindCanonicalSetSource(source, namedSubqueries: namedSubqueries,
+                    outerSchemas: outerSchemas, binding: binding, reservation: claim)
+            case .graphTable:
+                return try bindCanonicalGraphTableSource(source, namedSubqueries: namedSubqueries,
+                    outerSchemas: outerSchemas, binding: binding, reservation: claim)
+            default:
+                return try bindCanonicalNonrelationalSource(source, namedSubqueries: namedSubqueries,
+                    outerSchemas: outerSchemas, binding: binding, reservation: claim)
+            }
+        } catch let cause as CanonicalReadError {
+            try throwLocatedBindingFailure(cause, binding: binding)
         } catch let cause as DatabaseExpressionEvaluationError {
-            guard binding.occurrences != nil else { throw CanonicalReadError.expressionEvaluation(cause) }
-            throw CanonicalSQLBindingFailure(cause: .expression(cause), occurrence: binding.occurrence,
-                root: binding.root ?? binding.occurrence)
-        } catch let failure as CanonicalReadError {
-            guard binding.occurrences != nil else { throw failure }
-            throw CanonicalSQLBindingFailure(cause: .read(failure), occurrence: binding.occurrence,
-                root: binding.root ?? binding.occurrence)
+            try throwLocatedBindingFailure(cause, binding: binding)
         }
     }
 
-    private func bindCanonicalSource(
-        _ source: DataSource,
-        namedSubqueries: [NamedSubquery],
-        outerSchemas: [CanonicalRelationSchema],
-        binding: CanonicalQueryBindingEnvironment
+    private func admittedCanonicalSource(_ source: DataSource, schema: CanonicalRelationSchema,
+        children: [CanonicalSourceBindingPlan] = [], queryPlan: CanonicalBoundSelect? = nil,
+        condition: CanonicalBoundExpression? = nil, valueBindings: [[CanonicalBoundExpression]] = [],
+        namedSubqueries: [NamedSubquery], outerSchemas: [CanonicalRelationSchema],
+        binding: CanonicalQueryBindingEnvironment, reservation claim: DatabaseIntermediateReservation
     ) throws -> CanonicalSourceBindingPlan {
-        do {
-        try binding.workMeter.consume(at: .bindingCandidate)
-        guard let claim = binding.planReservation else {
-            throw CanonicalReadError.unsupportedSelectQuery("Source binding has no admitted plan owner")
-        }
-        var children: [CanonicalSourceBindingPlan] = []
-        var queryPlan: CanonicalBoundSelect?
-        var condition: CanonicalBoundExpression?
-        let schema: CanonicalRelationSchema
-        switch source {
-        case .table(let table):
-            guard table.schema == nil else {
-                throw CanonicalReadError.unsupportedSource("SQL schema-qualified relation lookup is not available")
-            }
-            if let named = namedSubqueries.first(where: { $0.name == table.table }) {
-                guard let plan = try binding.namedPlans.resolve(named.name, workMeter: binding.workMeter) else {
-                    throw CanonicalReadError.unsupportedSelectQuery("A CTE has no earlier bound definition")
-                }
-                queryPlan = plan
-                try claim.reserveAdditional(bytes: UInt64(plan.columns.count) * 512, at: .bindingCandidate)
-                let names = named.columns ?? plan.columns.map { $0.name }
-                schema = try CanonicalRelationSchema(scopes: [CanonicalRelationScope(name: table.effectiveName,
-                    columns: names, types: plan.columns.map { $0.type }, nullability: plan.columns.map { $0.isNullable })])
-            } else {
-                let entity = try resolveEntity(named: table.table)
-                try claim.reserveAdditional(bytes: UInt64(entity.allFields.count) * 512, at: .bindingCandidate)
-                schema = try tableRelationSchema(table)
-            }
-        case .subquery(let query, let alias):
-            let plan = try bindCanonicalQuery(query, inherited: namedSubqueries, outerSchemas: outerSchemas,
-                binding: binding.child(.subquery))
-            queryPlan = plan
-            try claim.reserveAdditional(bytes: UInt64(plan.columns.count) * 512, at: .bindingCandidate)
-            schema = try CanonicalRelationSchema(scopes: [CanonicalRelationScope(name: alias,
-                columns: plan.columns.map { $0.name }, types: plan.columns.map { $0.type }, nullability: plan.columns.map { $0.isNullable })])
-        case .join(let join):
-            try validateJoinDeclaration(join)
-            let left = try bindCanonicalSource(join.left, namedSubqueries: namedSubqueries,
-                outerSchemas: outerSchemas, binding: binding.child(.joinLeft))
-            let lateral = join.type == .lateral || join.type == .leftLateral
-            let right = try bindCanonicalSource(join.right, namedSubqueries: namedSubqueries,
-                outerSchemas: lateral ? [left.schema] + outerSchemas : outerSchemas,
-                binding: binding.child(.joinRight))
-            children = [left, right]
-            try claim.reserveAdditional(bytes: UInt64(left.schema.layout.slots.count + right.schema.layout.slots.count) * 512,
-                at: .bindingCandidate)
-            let joinCondition: JoinCondition?
-            switch join.type {
-            case .natural, .naturalLeft, .naturalRight, .naturalFull:
-                joinCondition = .using(inferNaturalJoinColumns(leftSchema: left.schema, rightSchema: right.schema))
-            default: joinCondition = join.condition
-            }
-            try validateJoinCondition(joinCondition, leftSchema: left.schema, rightSchema: right.schema, type: join.type)
-            if case .on(let expression) = joinCondition {
-                condition = try typeBinder(schema: left.schema.merged(with: right.schema),
-                    namedSubqueries: namedSubqueries, queryBinding: binding, outerSchemas: outerSchemas)
-                    .bind(expression, contextualType: .sql(.boolean),
-                          occurrence: binding.child(.joinCondition).occurrence)
-            }
-            let leftSchema: CanonicalRelationSchema
-            let rightSchema: CanonicalRelationSchema
-            switch join.type {
-            case .left, .naturalLeft, .leftLateral: leftSchema = left.schema; rightSchema = try right.schema.nullExtended()
-            case .right, .naturalRight: leftSchema = try left.schema.nullExtended(); rightSchema = right.schema
-            case .full, .naturalFull: leftSchema = try left.schema.nullExtended(); rightSchema = try right.schema.nullExtended()
-            default: leftSchema = left.schema; rightSchema = right.schema
-            }
-            schema = try joinOutputSchema(leftSchema, rightSchema, condition: joinCondition)
-        case .graphTable(let graphTable):
-            let policy = try readPolicy()
-            guard let executor = policy.graphTableSourceExecutor else {
-                throw CanonicalReadError.unsupportedSource("GRAPH_TABLE executor is not registered")
-            }
-            let raw = try executor.columns(graphTableSource: graphTable, schema: policy.schema)
-            try claim.reserveAdditional(bytes: UInt64(raw.count) * 512, at: .bindingCandidate)
-            let rawSchema = try CanonicalRelationSchema(unscopedColumns: raw.map { $0.name },
-                types: raw.map { $0.type }, nullability: raw.map { $0.isNullable })
-            let projection: Projection
-            if let columns = graphTable.columns, !columns.isEmpty {
-                projection = .items(columns.map { ProjectionItem($0.expression, alias: $0.alias) })
-            } else { projection = .all }
-            let projected = try typeBinder(schema: rawSchema, namedSubqueries: namedSubqueries,
-                queryBinding: binding, outerSchemas: outerSchemas).bindSelect(
-                    SelectQuery(projection: projection, source: source), occurrence: binding.occurrence)
-            queryPlan = projected
-            let output = try CanonicalRelationSchema(unscopedColumns: projected.columns.map { $0.name },
-                types: projected.columns.map { $0.type }, nullability: projected.columns.map { $0.isNullable })
-            if let alias = graphTable.alias { schema = try output.applyingAlias(alias) } else { schema = output }
-        case .union(let sources), .unionAll(let sources), .intersect(let sources):
-            children = try sources.enumerated().map { index, child in
-                try bindCanonicalSource(child, namedSubqueries: namedSubqueries, outerSchemas: outerSchemas,
-                    binding: binding.child(.source, index: UInt32(index)))
-            }
-            schema = try setOperationSchema(sources: sources, namedSubqueries: namedSubqueries,
-                queryBinding: binding, requiresEquality: { if case .unionAll = source { return false }; return true }(),
-                outerSchemas: outerSchemas)
-        case .except(let left, let right):
-            children = try [bindCanonicalSource(left, namedSubqueries: namedSubqueries, outerSchemas: outerSchemas,
-                                binding: binding.child(.joinLeft)),
-                            bindCanonicalSource(right, namedSubqueries: namedSubqueries, outerSchemas: outerSchemas,
-                                binding: binding.child(.joinRight))]
-            schema = try setOperationSchema(sources: [left, right], namedSubqueries: namedSubqueries,
-                queryBinding: binding, outerSchemas: outerSchemas)
-        default:
-            schema = try canonicalRelationSchema(for: source, namedSubqueries: namedSubqueries,
-                queryBinding: binding, outerSchemas: outerSchemas)
-        }
+        try claim.reserveAdditional(bytes: UInt64(schema.layout.slots.count) * 512
+            + UInt64(valueBindings.reduce(0) { $0 + $1.count }) * 1024, at: .bindingCandidate)
         return CanonicalSourceBindingPlan(source: source, schema: schema, children: children,
-            queryPlan: queryPlan, condition: condition, binding: binding,
+            queryPlan: queryPlan, condition: condition, valueBindings: valueBindings, binding: binding,
             namedSubqueries: namedSubqueries, reservation: claim,
             bindingFrames: [schema.layout] + outerSchemas.map { $0.layout })
-        } catch let cause as DatabaseExpressionEvaluationError {
-            guard binding.occurrences != nil else { throw CanonicalReadError.expressionEvaluation(cause) }
-            throw CanonicalSQLBindingFailure(cause: .expression(cause), occurrence: binding.occurrence,
-                root: binding.root ?? binding.occurrence)
-        } catch let failure as CanonicalReadError {
-            guard binding.occurrences != nil else { throw failure }
-            throw CanonicalSQLBindingFailure(cause: .read(failure), occurrence: binding.occurrence,
-                root: binding.root ?? binding.occurrence)
+    }
+
+    private func bindCanonicalNonrelationalSource(_ source: DataSource, namedSubqueries: [NamedSubquery],
+        outerSchemas: [CanonicalRelationSchema], binding: CanonicalQueryBindingEnvironment,
+        reservation claim: DatabaseIntermediateReservation
+    ) throws -> CanonicalSourceBindingPlan {
+        let schema: CanonicalRelationSchema
+        switch source {
+        case .logical(let logical):
+            guard logical.kindIdentifier == LogicalSourceKind.polymorphic else { throw CanonicalReadError.unsupportedSource("Unknown logical source") }
+            schema = try polymorphicRelationSchema(container.polymorphicGroup(identifier: logical.identifier), sourceName: logical.effectiveName)
+        case .graphPattern(let pattern), .namedGraph(_, let pattern):
+            let names = sparqlVariables(in: pattern)
+            schema = try CanonicalRelationSchema(unscopedColumns: names, types: names.map { _ in .primitive(.rdfTerm) })
+        case .service(let endpoint, _, _):
+            throw CanonicalReadError.unsupportedSource("SERVICE source '\(endpoint)' requires its graph executor")
+        #if DATABASE_MULTI_BASE
+        case .base(_, let nested):
+            schema = try canonicalRelationSchema(for: nested, namedSubqueries: namedSubqueries, queryBinding: binding, outerSchemas: outerSchemas)
+        #endif
+        default:
+            throw CanonicalReadError.unsupportedSelectQuery("A relational source reached the nonrelational binder")
         }
+        return try admittedCanonicalSource(source, schema: schema, namedSubqueries: namedSubqueries,
+            outerSchemas: outerSchemas, binding: binding, reservation: claim)
+    }
+
+    private func bindCanonicalTableSource(_ source: DataSource,
+        namedSubqueries: [NamedSubquery], outerSchemas: [CanonicalRelationSchema],
+        binding: CanonicalQueryBindingEnvironment, reservation claim: DatabaseIntermediateReservation
+    ) throws -> CanonicalSourceBindingPlan {
+        guard case .table(let table) = source else {
+            throw CanonicalReadError.unsupportedSelectQuery("Source kind does not match its table binding path")
+        }
+        let schema: CanonicalRelationSchema
+        var queryPlan: CanonicalBoundSelect? = nil
+        // FIXME(INCOMPLETE_IMPLEMENTATION): S11 namespace resolution is not implemented.
+        // The selected source binder rejects qualified names before reads; completion requires catalog-backed schema lookup.
+        guard table.schema == nil else {
+            throw CanonicalReadError.unsupportedSource("SQL schema-qualified relation lookup requires S11")
+        }
+        if let named = namedSubqueries.first(where: { $0.name == table.table }) {
+            guard let plan = try binding.namedPlans.resolve(named.name, workMeter: binding.workMeter) else {
+                throw CanonicalReadError.unsupportedSelectQuery("A CTE has no earlier bound definition")
+            }
+            queryPlan = plan
+            let names = try aliasedColumnNames(plan.columns.map { $0.name }, overrides: named.columns)
+            schema = try CanonicalRelationSchema(scopes: [CanonicalRelationScope(name: table.table,
+                columns: names, types: plan.columns.map { $0.type }, nullability: plan.columns.map { $0.isNullable })])
+        } else { schema = try tableRelationSchema(table) }
+        return try admittedCanonicalSource(source, schema: schema, queryPlan: queryPlan, namedSubqueries: namedSubqueries,
+            outerSchemas: outerSchemas, binding: binding, reservation: claim)
+    }
+
+    private func bindCanonicalAliasedSource(_ source: DataSource,
+        namedSubqueries: [NamedSubquery], outerSchemas: [CanonicalRelationSchema],
+        binding: CanonicalQueryBindingEnvironment, reservation claim: DatabaseIntermediateReservation
+    ) throws -> CanonicalSourceBindingPlan {
+        guard case .aliased(let nested, let name, let columns) = source else {
+            throw CanonicalReadError.unsupportedSelectQuery("Source kind does not match its aliased binding path")
+        }
+        let schema: CanonicalRelationSchema
+        var children: [CanonicalSourceBindingPlan] = []
+        let child = try bindCanonicalSource(nested, namedSubqueries: namedSubqueries,
+            outerSchemas: outerSchemas, binding: binding.child(.source))
+        children = [child]
+        let visible = child.schema.layout.visibleSlots
+        schema = try CanonicalRelationSchema(scopes: [CanonicalRelationScope(name: name,
+            columns: aliasedColumnNames(child.schema.visibleColumns, overrides: columns),
+            types: visible.map { child.schema.slotTypes[$0] }, nullability: visible.map { child.schema.slotNullability[$0] })])
+        return try admittedCanonicalSource(source, schema: schema, children: children, namedSubqueries: namedSubqueries,
+            outerSchemas: outerSchemas, binding: binding, reservation: claim)
+    }
+
+    private func bindCanonicalSubquerySource(_ source: DataSource,
+        namedSubqueries: [NamedSubquery], outerSchemas: [CanonicalRelationSchema],
+        binding: CanonicalQueryBindingEnvironment, reservation claim: DatabaseIntermediateReservation
+    ) throws -> CanonicalSourceBindingPlan {
+        guard case .subquery(let query) = source else {
+            throw CanonicalReadError.unsupportedSelectQuery("Source kind does not match its subquery binding path")
+        }
+        let schema: CanonicalRelationSchema
+        var queryPlan: CanonicalBoundSelect? = nil
+        let plan = try bindCanonicalQuery(query, inherited: namedSubqueries, outerSchemas: outerSchemas,
+            binding: binding.child(.subquery))
+        queryPlan = plan
+        schema = try CanonicalRelationSchema(unscopedColumns: plan.columns.map { $0.name },
+            types: plan.columns.map { $0.type }, nullability: plan.columns.map { $0.isNullable })
+        return try admittedCanonicalSource(source, schema: schema, queryPlan: queryPlan, namedSubqueries: namedSubqueries,
+            outerSchemas: outerSchemas, binding: binding, reservation: claim)
+    }
+
+    private func bindCanonicalValuesSource(_ source: DataSource,
+        namedSubqueries: [NamedSubquery], outerSchemas: [CanonicalRelationSchema],
+        binding: CanonicalQueryBindingEnvironment, reservation claim: DatabaseIntermediateReservation
+    ) throws -> CanonicalSourceBindingPlan {
+        guard case .values(let rows) = source else {
+            throw CanonicalReadError.unsupportedSelectQuery("Source kind does not match its values binding path")
+        }
+        let schema: CanonicalRelationSchema
+        var valueBindings: [[CanonicalBoundExpression]] = []
+        let selected = try bindCanonicalValues(rows, namedSubqueries: namedSubqueries,
+            outerSchemas: outerSchemas, binding: binding, reservation: claim)
+        schema = selected.schema
+        valueBindings = selected.valueBindings
+        return try admittedCanonicalSource(source, schema: schema, valueBindings: valueBindings, namedSubqueries: namedSubqueries,
+            outerSchemas: outerSchemas, binding: binding, reservation: claim)
+    }
+
+    private func bindCanonicalJoinSource(_ source: DataSource,
+        namedSubqueries: [NamedSubquery], outerSchemas: [CanonicalRelationSchema],
+        binding: CanonicalQueryBindingEnvironment, reservation claim: DatabaseIntermediateReservation
+    ) throws -> CanonicalSourceBindingPlan {
+        guard case .join(let join) = source else {
+            throw CanonicalReadError.unsupportedSelectQuery("Source kind does not match its join binding path")
+        }
+        try validateJoinDeclaration(join)
+        let left = try bindCanonicalSource(join.left, namedSubqueries: namedSubqueries,
+            outerSchemas: outerSchemas, binding: binding.child(.joinLeft))
+        let lateral = join.type == .lateral || join.type == .leftLateral
+        let right = try bindCanonicalSource(join.right, namedSubqueries: namedSubqueries,
+            outerSchemas: lateral ? [left.schema] + outerSchemas : outerSchemas, binding: binding.child(.joinRight))
+        return try finishCanonicalJoinSource(source, join: join, left: left, right: right,
+            namedSubqueries: namedSubqueries, outerSchemas: outerSchemas, binding: binding, reservation: claim)
+    }
+
+    private func finishCanonicalJoinSource(_ source: DataSource, join: JoinClause,
+        left: CanonicalSourceBindingPlan, right: CanonicalSourceBindingPlan,
+        namedSubqueries: [NamedSubquery], outerSchemas: [CanonicalRelationSchema],
+        binding: CanonicalQueryBindingEnvironment, reservation claim: DatabaseIntermediateReservation
+    ) throws -> CanonicalSourceBindingPlan {
+        let schema: CanonicalRelationSchema
+        var children: [CanonicalSourceBindingPlan] = []
+        var condition: CanonicalBoundExpression? = nil
+        children = [left, right]
+        let selectedCondition: JoinCondition?
+        switch join.type {
+        case .natural, .naturalLeft, .naturalRight, .naturalFull:
+            selectedCondition = .using(inferNaturalJoinColumns(leftSchema: left.schema, rightSchema: right.schema))
+        default: selectedCondition = join.condition
+        }
+        try validateJoinCondition(selectedCondition, leftSchema: left.schema, rightSchema: right.schema, type: join.type)
+        if case .on(let expression) = selectedCondition {
+            condition = try typeBinder(schema: left.schema.merged(with: right.schema),
+                namedSubqueries: namedSubqueries, queryBinding: binding, outerSchemas: outerSchemas)
+                .bind(expression, contextualType: .sql(.boolean), occurrence: binding.child(.joinCondition).occurrence)
+        }
+        let leftSchema = (join.type == .right || join.type == .naturalRight || join.type == .full || join.type == .naturalFull)
+            ? try left.schema.nullExtended() : left.schema
+        let rightSchema = (join.type == .left || join.type == .naturalLeft || join.type == .full || join.type == .naturalFull || join.type == .leftLateral)
+            ? try right.schema.nullExtended() : right.schema
+        schema = try joinOutputSchema(leftSchema, rightSchema, condition: selectedCondition)
+        return try admittedCanonicalSource(source, schema: schema, children: children, condition: condition, namedSubqueries: namedSubqueries,
+            outerSchemas: outerSchemas, binding: binding, reservation: claim)
+    }
+
+    private func bindCanonicalSetSource(_ source: DataSource,
+        namedSubqueries: [NamedSubquery], outerSchemas: [CanonicalRelationSchema],
+        binding: CanonicalQueryBindingEnvironment, reservation claim: DatabaseIntermediateReservation
+    ) throws -> CanonicalSourceBindingPlan {
+        guard case .setOperation(_, _, let left, let right) = source else {
+            throw CanonicalReadError.unsupportedSelectQuery("Source kind does not match its set binding path")
+        }
+        let lhs = try bindCanonicalQuery(left, inherited: namedSubqueries, outerSchemas: outerSchemas, binding: binding.child(.setLeft))
+        let rhs = try bindCanonicalQuery(right, inherited: namedSubqueries, outerSchemas: outerSchemas, binding: binding.child(.setRight))
+        return try finishCanonicalSetSource(source, lhs: lhs, rhs: rhs, namedSubqueries: namedSubqueries,
+            outerSchemas: outerSchemas, binding: binding, reservation: claim)
+    }
+
+    private func finishCanonicalSetSource(_ source: DataSource,
+        lhs: CanonicalBoundSelect, rhs: CanonicalBoundSelect,
+        namedSubqueries: [NamedSubquery], outerSchemas: [CanonicalRelationSchema],
+        binding: CanonicalQueryBindingEnvironment, reservation claim: DatabaseIntermediateReservation
+    ) throws -> CanonicalSourceBindingPlan {
+        guard case .setOperation(let operation, let quantifier, let left, let right) = source else {
+            throw CanonicalReadError.unsupportedSelectQuery("Source kind does not match its set binding path")
+        }
+        let schema: CanonicalRelationSchema
+        var children: [CanonicalSourceBindingPlan] = []
+        guard lhs.columns.count == rhs.columns.count else { throw CanonicalReadError.unsupportedSelectQuery("Set operation input arity differs") }
+        children = [CanonicalSourceBindingPlan(source: .subquery(left), schema: try outputSchema(lhs.columns), queryPlan: lhs, binding: binding.child(.setLeft), namedSubqueries: namedSubqueries, reservation: claim),
+            CanonicalSourceBindingPlan(source: .subquery(right), schema: try outputSchema(rhs.columns), queryPlan: rhs, binding: binding.child(.setRight), namedSubqueries: namedSubqueries, reservation: claim)]
+        let binder = try typeBinder(schema: CanonicalRelationSchema(), namedSubqueries: namedSubqueries, queryBinding: binding)
+        let types = try lhs.columns.indices.map { index -> QueryColumnType in
+            var inputs: [QueryColumnType] = []
+            if !queryColumnIsContextualNull(left, ordinal: index, namedSubqueries: namedSubqueries) { inputs.append(lhs.columns[index].type) }
+            if !queryColumnIsContextualNull(right, ordinal: index, namedSubqueries: namedSubqueries) { inputs.append(rhs.columns[index].type) }
+            let type = try binder.commonSourceType(inputs)
+            if quantifier == .distinct || operation != .union { try binder.requireSQLComparison(type, operation: "set operation") }
+            return type
+        }
+        // Construct optional elements explicitly; Embedded cannot perform the implicit array runtime cast.
+        schema = try CanonicalRelationSchema(unscopedColumns: lhs.columns.map { $0.name }, types: types.map { .some($0) },
+            nullability: lhs.columns.indices.map { lhs.columns[$0].isNullable || rhs.columns[$0].isNullable })
+        return try admittedCanonicalSource(source, schema: schema, children: children, namedSubqueries: namedSubqueries,
+            outerSchemas: outerSchemas, binding: binding, reservation: claim)
+    }
+
+    private func bindCanonicalGraphTableSource(_ source: DataSource,
+        namedSubqueries: [NamedSubquery], outerSchemas: [CanonicalRelationSchema],
+        binding: CanonicalQueryBindingEnvironment, reservation claim: DatabaseIntermediateReservation
+    ) throws -> CanonicalSourceBindingPlan {
+        guard case .graphTable(let graph) = source else {
+            throw CanonicalReadError.unsupportedSelectQuery("Source kind does not match its graphtable binding path")
+        }
+        let schema: CanonicalRelationSchema
+        var queryPlan: CanonicalBoundSelect? = nil
+        let rawSchema = try graphTableRawRelationSchema(graph)
+        if let columns = graph.columns, !columns.isEmpty {
+            let binder = try typeBinder(schema: rawSchema, namedSubqueries: namedSubqueries, queryBinding: binding, outerSchemas: outerSchemas)
+            let selected = try binder.bindSelect(SelectQuery(projection: columns.map { ProjectionItem($0.expression, alias: $0.alias) }, source: source))
+            queryPlan = selected
+            schema = try outputSchema(selected.columns)
+        } else { schema = rawSchema }
+        return try admittedCanonicalSource(source, schema: schema, queryPlan: queryPlan, namedSubqueries: namedSubqueries,
+            outerSchemas: outerSchemas, binding: binding, reservation: claim)
+    }
+
+    private func aliasedColumnNames(_ names: [String], overrides: [String]?) throws -> [String] {
+        guard let overrides else { return names }
+        guard overrides.count <= names.count else { throw CanonicalReadError.unsupportedSelectQuery("Source column alias count exceeds its output arity") }
+        return overrides + names.dropFirst(overrides.count)
+    }
+
+    private func outputSchema(_ columns: [QueryColumn]) throws -> CanonicalRelationSchema {
+        try CanonicalRelationSchema(unscopedColumns: columns.map { $0.name }, types: columns.map { $0.type }, nullability: columns.map { $0.isNullable })
     }
 
     /// Resolves complete output metadata from the admitted schema before any
@@ -8280,7 +9154,7 @@ extension DatabaseContext {
         _ query: SelectQuery,
         parameters: [QueryParameter] = [],
         workMeter: DatabaseWorkMeter? = nil
-    ) throws -> [QueryColumn] {
+    ) throws -> DatabaseRetainedQueryColumns {
         let execution = ReadExecutionContext(options: .default, monotonicClock: container.monotonicClock,
             workMeter: workMeter, temporalEnvironment: inheritedSQLTemporalEnvironment)
         try QueryStructuralValidator.validate(query, limits: execution.queryStructuralLimits)
@@ -8289,43 +9163,65 @@ extension DatabaseContext {
             workMeter: execution.workMeter, occurrences: nil, occurrence: nil, allowingSPARQLFunctions: false)
         let plan = try bindCanonicalQuery(query, inherited: [], outerSchemas: [], binding: binding)
         try binding.parameters.finalize()
-        return plan.columns
+        return DatabaseRetainedQueryColumns(columns: plan.columns,
+            payloadLeases: try retainedBindingClaims(plan, workMeter: execution.workMeter))
     }
 
-    private func boundQueryColumns(
-        _ query: SelectQuery,
-        inheritedNamedSubqueries: [NamedSubquery],
-        queryBinding: CanonicalQueryBindingEnvironment? = nil,
-        outerSchemas: [CanonicalRelationSchema] = []
-    ) throws -> [QueryColumn] {
-        do {
-            let named = try mergeNamedSubqueries(local: query.subqueries ?? [], inherited: inheritedNamedSubqueries)
-            let local = query.subqueries ?? []
-            var visible = inheritedNamedSubqueries
-            for definition in local {
-                let columns = try boundQueryColumns(definition.query,
-                    inheritedNamedSubqueries: visible, queryBinding: queryBinding, outerSchemas: outerSchemas)
-                guard definition.columns == nil || definition.columns?.count == columns.count else {
-                    throw CanonicalReadError.unsupportedSelectQuery("CTE column count differs from its query")
-                }
-                visible.insert(definition, at: 0)
+    private func retainedBindingClaims(_ plan: CanonicalBoundSelect,
+        workMeter: DatabaseWorkMeter) throws -> [DatabaseQueryPayloadLease] {
+        let storage = try workMeter.reserveIntermediate(bytes: 256, at: .bindingCandidate)
+        var leases: [DatabaseQueryPayloadLease] = [DatabaseQueryPayloadLease(retaining: storage)]
+        var visitedPlans = Set<ObjectIdentifier>()
+        var visitedSources = Set<ObjectIdentifier>()
+        func keep(_ lease: DatabaseQueryPayloadLease?) throws {
+            if let lease {
+                try storage.reserveAdditional(bytes: 64, at: .bindingCandidate)
+                leases.append(lease)
             }
-            let schema = try canonicalRelationSchema(for: query.source, namedSubqueries: named, queryBinding: queryBinding, outerSchemas: outerSchemas)
-            let query = try resolvedQueryReferences(query, sourceSchema: schema, queryBinding: queryBinding)
-            switch query.source {
-            case .graphPattern, .namedGraph:
-                let names = try canonicalProjectionColumns(query.projection, sourceSchema: schema)
-                return try names.enumerated().map { index, name in
-                    try QueryColumn(number: UInt32(index + 1), name: name,
-                                    type: .primitive(.rdfTerm), isNullable: true)
-                }
-            default: break
-            }
-            let binder = try typeBinder(schema: schema, namedSubqueries: named, queryBinding: queryBinding, outerSchemas: outerSchemas)
-            return try binder.bind(query)
-        } catch let error as DatabaseExpressionEvaluationError {
-            throw CanonicalReadError.expressionEvaluation(error)
         }
+        func expression(_ value: CanonicalBoundExpression) throws {
+            try workMeter.consume(at: .bindingCandidate)
+            try keep(value.metadataLease); try keep(value.constructionLease)
+            try keep(value.bindingMetadata?.payloadLease); try keep(value.wholeRow?.metadataLease)
+            if let nested = value.subqueryBinding { try selected(nested) }
+            for child in value.children { try expression(child) }
+        }
+        func source(_ value: CanonicalSourceBindingPlan) throws {
+            guard visitedSources.insert(ObjectIdentifier(value)).inserted else { return }
+            try storage.reserveAdditional(bytes: 64, at: .bindingCandidate)
+            try keep(DatabaseQueryPayloadLease(retaining: value.reservation))
+            for lease in value.schema.layout.payloadLeases { try keep(lease) }
+            if let owner = value.schema.layout.reservation { try keep(DatabaseQueryPayloadLease(retaining: owner)) }
+            if let nested = value.queryPlan { try selected(nested) }
+            if let condition = value.condition { try expression(condition) }
+            for row in value.valueBindings { for cell in row { try expression(cell) } }
+            for child in value.children { try source(child) }
+        }
+        func selected(_ value: CanonicalBoundSelect) throws {
+            guard visitedPlans.insert(ObjectIdentifier(value)).inserted else { return }
+            try storage.reserveAdditional(bytes: 64, at: .bindingCandidate)
+            try keep(value.metadataLease); try keep(value.bindingMetadata?.payloadLease)
+            for cell in value.projection + value.groupBy { try expression(cell) }
+            if let filter = value.filter { try expression(filter) }
+            if let having = value.having { try expression(having) }
+            for key in value.orderBy + value.distinctOn { try expression(key.expression) }
+            for count in [value.pagination.offset, value.pagination.limit] {
+                if case .expression(let cell) = count { try expression(cell) }
+            }
+            if let root = value.sourcePlan { try source(root) }
+            for definition in value.ctes { try selected(definition.plan) }
+        }
+        try selected(plan)
+        return leases
+    }
+
+    private func boundQueryColumns(_ query: SelectQuery, inheritedNamedSubqueries: [NamedSubquery],
+        queryBinding: CanonicalQueryBindingEnvironment? = nil, outerSchemas: [CanonicalRelationSchema] = []
+    ) throws -> [QueryColumn] {
+        let meter = queryBinding?.workMeter ?? ReadExecutionContext(options: .default, monotonicClock: container.monotonicClock).workMeter
+        let binding = try queryBinding ?? CanonicalQueryBindingEnvironment(parameters: CanonicalParameterBindingState(parameters: [], workMeter: meter),
+            workMeter: meter, occurrences: nil, occurrence: nil, allowingSPARQLFunctions: false)
+        return try bindCanonicalQuery(query, inherited: inheritedNamedSubqueries, outerSchemas: outerSchemas, binding: binding).columns
     }
 
     private func typeBinder(
@@ -8358,21 +9254,46 @@ extension DatabaseContext {
                 throw DatabaseExpressionEvaluationError.missingColumn(reference.displayName)
             },
             wildcardSlots: { try schema.wildcardSlots(scope: $0) },
+            resolveWholeRow: { name in
+                var slotOffset = 0
+                var presenceOffset = 0
+                for frame in frames {
+                    if let presence = frame.layout.sourcePresenceIndex(named: name) {
+                        let slots = try frame.wildcardSlots(scope: name)
+                        let columns = try slots.enumerated().map { index, slot -> QueryColumn in
+                            guard let type = frame.slotTypes[slot] else { throw DatabaseExpressionEvaluationError.typeMismatch(operation: "whole-row descriptor") }
+                            return try QueryColumn(number: UInt32(index + 1), name: frame.layout.slots[slot].name,
+                                type: type, isNullable: frame.slotNullability[slot])
+                        }
+                        let descriptor = try CanonicalBindingStorage.composite(columns: columns, workMeter: queryBinding?.workMeter)
+                        return CanonicalBoundWholeRow(type: descriptor.type, fieldSlots: slots.map { slotOffset + $0 },
+                            presenceIndex: presenceOffset + presence, metadataLease: descriptor.lease)
+                    }
+                    slotOffset += frame.layout.slots.count
+                    presenceOffset += frame.layout.frameScopes.reduce(0) { $0 + $1.count }
+                }
+                throw DatabaseExpressionEvaluationError.missingColumn(name)
+            },
             bindSubquery: { try self.boundQueryColumns($0, inheritedNamedSubqueries: namedSubqueries,
                 queryBinding: queryBinding, outerSchemas: [schema] + outerSchemas) },
             bindLocatedSubquery: queryBinding.map { binding in
                 { query, occurrence in
-                    var child = binding
-                    child = CanonicalQueryBindingEnvironment(parameters: binding.parameters,
-                        workMeter: binding.workMeter, occurrences: binding.occurrences, occurrence: occurrence,
-                        allowingSPARQLFunctions: binding.allowingSPARQLFunctions, namedPlans: binding.namedPlans,
-                        root: binding.root ?? binding.occurrence, planReservation: binding.planReservation)
-                    return try self.bindCanonicalQuery(query, inherited: namedSubqueries,
-                        outerSchemas: [schema] + outerSchemas, binding: child)
+                    try self.bindCanonicalQuery(query, inherited: namedSubqueries,
+                        outerSchemas: [schema] + outerSchemas,
+                        binding: self.canonicalSubqueryBinding(binding, occurrence: occurrence))
                 }
             },
             workMeter: queryBinding?.workMeter
         )
+    }
+
+    private func canonicalSubqueryBinding(_ binding: CanonicalQueryBindingEnvironment,
+        occurrence: QueryOccurrenceID?
+    ) -> CanonicalQueryBindingEnvironment {
+        CanonicalQueryBindingEnvironment(parameters: binding.parameters,
+            workMeter: binding.workMeter, occurrences: binding.occurrences, occurrence: occurrence,
+            allowingSPARQLFunctions: binding.allowingSPARQLFunctions, namedPlans: binding.namedPlans,
+            root: binding.root ?? binding.occurrence, planReservation: binding.planReservation)
     }
 
     private func relationSchema(for layout: CanonicalSourceLayout) throws -> CanonicalRelationSchema {
@@ -8391,6 +9312,8 @@ extension DatabaseContext {
     private func tableRelationSchema(
         _ tableRef: TableRef
     ) throws -> CanonicalRelationSchema {
+        // FIXME(INCOMPLETE_IMPLEMENTATION): S11 namespace resolution is not implemented.
+        // Source metadata binding rejects qualified names; completion requires the same catalog namespace proof as execution.
         guard tableRef.schema == nil else {
             throw CanonicalReadError.unsupportedSource("SQL schema-qualified relation lookup is not available")
         }
@@ -8431,30 +9354,16 @@ extension DatabaseContext {
             columns: names, types: types, nullability: nullability)])
     }
 
-    private func graphTableRelationSchema(
-        _ source: GraphTableSource,
-        rows: CanonicalRetainedRows?
+    private func graphTableRawRelationSchema(
+        _ source: GraphTableSource
     ) throws -> CanonicalRelationSchema {
         let policy = try readPolicy()
         guard let executor = policy.graphTableSourceExecutor else {
             throw CanonicalReadError.unsupportedSource("GRAPH_TABLE executor is not registered")
         }
         let raw = try executor.columns(graphTableSource: source, schema: policy.schema)
-        let rawSchema = try CanonicalRelationSchema(unscopedColumns: raw.map { $0.name },
+        return try CanonicalRelationSchema(unscopedColumns: raw.map { $0.name },
             types: raw.map { $0.type }, nullability: raw.map { $0.isNullable })
-        let columns: [QueryColumn]
-        if let projection = source.columns, !projection.isEmpty {
-            let binder = try typeBinder(schema: rawSchema, namedSubqueries: [])
-            columns = try projection.enumerated().map { index, item in
-                let bound = try binder.bind(item.expression)
-                return try QueryColumn(number: UInt32(index + 1), name: item.alias,
-                                       type: bound.type, isNullable: bound.isNullable)
-            }
-        } else { columns = raw }
-        let schema = try CanonicalRelationSchema(unscopedColumns: columns.map { $0.name },
-            types: columns.map { $0.type }, nullability: columns.map { $0.isNullable })
-        if let alias = source.alias { return try schema.applyingAlias(alias) }
-        return schema
     }
 
     private func materializeQueryRelation(
@@ -8503,359 +9412,38 @@ extension DatabaseContext {
         return CanonicalRelation(schema: schema.retaining(layout: layout), rows: try retained.finish().moveToSharedOwnership(at: .bindingCandidate))
     }
 
-    private func canonicalRelationSchema(
-        for source: DataSource,
-        namedSubqueries: [NamedSubquery],
-        queryBinding: CanonicalQueryBindingEnvironment? = nil,
-        outerSchemas: [CanonicalRelationSchema] = []
+    private func canonicalRelationSchema(for source: DataSource, namedSubqueries: [NamedSubquery],
+        queryBinding: CanonicalQueryBindingEnvironment? = nil, outerSchemas: [CanonicalRelationSchema] = []
     ) throws -> CanonicalRelationSchema {
-        switch source {
-        case .table(let table):
-            guard table.schema == nil else {
-                throw CanonicalReadError.unsupportedSource("SQL schema-qualified relation lookup is not available")
-            }
-            guard let named = namedSubqueries.first(where: { $0.name == table.table }) else {
-                return try tableRelationSchema(table)
-            }
-            let projected = try boundQueryColumns(named.query, inheritedNamedSubqueries: namedSubqueries, queryBinding: queryBinding, outerSchemas: outerSchemas)
-            let names = named.columns ?? projected.map { $0.name }
-            guard names.count == projected.count else {
-                throw CanonicalReadError.unsupportedSelectQuery("CTE column count differs from its query")
-            }
-            return try CanonicalRelationSchema(scopes: [CanonicalRelationScope(
-                name: table.alias ?? named.name, columns: names,
-                types: projected.map { $0.type }, nullability: projected.map { $0.isNullable }
-            )])
-        case .logical(let source):
-            guard source.kindIdentifier == LogicalSourceKind.polymorphic else {
-                throw CanonicalReadError.unsupportedSource("Logical source has no declared relation schema")
-            }
-            return try polymorphicRelationSchema(
-                container.polymorphicGroup(identifier: source.identifier), sourceName: source.effectiveName)
-        case .subquery(let query, let alias):
-            let columns = try boundQueryColumns(query, inheritedNamedSubqueries: namedSubqueries, queryBinding: queryBinding, outerSchemas: outerSchemas)
-            return try CanonicalRelationSchema(scopes: [CanonicalRelationScope(
-                name: alias, columns: columns.map { $0.name }, types: columns.map { $0.type },
-                nullability: columns.map { $0.isNullable }
-            )])
-        case .join(let join):
-            try validateJoinDeclaration(join)
-            var left = try canonicalRelationSchema(for: join.left, namedSubqueries: namedSubqueries, queryBinding: queryBinding, outerSchemas: outerSchemas)
-            let rightOuter: [CanonicalRelationSchema]
-            switch join.type {
-            case .lateral, .leftLateral: rightOuter = [left] + outerSchemas
-            default: rightOuter = outerSchemas
-            }
-            var right = try canonicalRelationSchema(for: join.right, namedSubqueries: namedSubqueries, queryBinding: queryBinding, outerSchemas: rightOuter)
-            let condition: JoinCondition?
-            switch join.type {
-            case .natural, .naturalLeft, .naturalRight, .naturalFull:
-                condition = .using(inferNaturalJoinColumns(leftSchema: left, rightSchema: right))
-            default: condition = join.condition
-            }
-            try validateJoinCondition(condition, leftSchema: left, rightSchema: right, type: join.type)
-            if case .on(let expression) = condition {
-                let schema = try left.merged(with: right)
-                do {
-                    _ = try typeBinder(schema: schema, namedSubqueries: namedSubqueries, queryBinding: queryBinding, outerSchemas: outerSchemas)
-                        .bind(expression, contextualType: .sql(.boolean))
-                } catch let error as DatabaseExpressionEvaluationError {
-                    throw CanonicalReadError.expressionEvaluation(error)
-                }
-            }
-            switch join.type {
-            case .left, .naturalLeft, .leftLateral: right = try right.nullExtended()
-            case .right, .naturalRight: left = try left.nullExtended()
-            case .full, .naturalFull:
-                left = try left.nullExtended(); right = try right.nullExtended()
-            default: break
-            }
-            return try joinOutputSchema(left, right, condition: condition)
-        case .values(let rows, let explicitNames):
-            let names = explicitNames ?? rows.first?.indices.map { "column\($0)" } ?? []
-            let binder = CanonicalQueryTypeBinder(columns: [], resolveColumn: { reference in
-                throw DatabaseExpressionEvaluationError.missingColumn(reference.displayName)
-            }, wildcardSlots: { _ in [] }, workMeter: queryBinding?.workMeter)
-            guard rows.allSatisfy({ $0.count == names.count }) else {
-                throw CanonicalReadError.unsupportedSelectQuery("VALUES row arity differs")
-            }
-            let types = try names.indices.map { index -> QueryColumnType? in
-                guard !rows.isEmpty else {
-                    throw CanonicalReadError.unsupportedSelectQuery("An empty VALUES input needs declared column types")
-                }
-                let declarations = try rows.compactMap { row -> QueryColumnType? in
-                    let expression = DatabaseKit.Expression.literal(row[index])
-                    guard !expressionIsContextualNull(expression) else { return nil }
-                    return try binder.bind(expression).type
-                }
-                return try binder.commonSourceType(declarations)
-            }
-            return try CanonicalRelationSchema(unscopedColumns: names, types: types)
-        case .union(let sources), .unionAll(let sources), .intersect(let sources):
-            return try setOperationSchema(sources: sources, namedSubqueries: namedSubqueries, queryBinding: queryBinding,
-                requiresEquality: { if case .unionAll = source { return false }; return true }(), outerSchemas: outerSchemas)
-        case .except(let first, let second):
-            return try setOperationSchema(sources: [first, second], namedSubqueries: namedSubqueries, queryBinding: queryBinding,
-                                          outerSchemas: outerSchemas)
-        case .graphTable(let graph): return try graphTableRelationSchema(graph, rows: nil)
-        case .graphPattern(let pattern), .namedGraph(_, let pattern):
-            let names = sparqlVariables(in: pattern)
-            return try CanonicalRelationSchema(unscopedColumns: names,
-                types: names.map { _ in .primitive(.rdfTerm) })
-        case .service(let endpoint, _, _):
-            throw CanonicalReadError.unsupportedSource("SERVICE source '\(endpoint)' requires its graph executor")
-        #if DATABASE_MULTI_BASE
-        case .base(_, let nested):
-            // Metadata binding performs no storage access and confers no Base authority.
-            return try canonicalRelationSchema(for: nested, namedSubqueries: namedSubqueries)
-        #endif
+        let meter = queryBinding?.workMeter ?? ReadExecutionContext(options: .default,
+            monotonicClock: container.monotonicClock).workMeter
+        var binding = try queryBinding ?? CanonicalQueryBindingEnvironment(
+            parameters: CanonicalParameterBindingState(parameters: [], workMeter: meter), workMeter: meter,
+            occurrences: nil, occurrence: nil, allowingSPARQLFunctions: false)
+        if binding.planReservation == nil {
+            binding.planReservation = try meter.reserveIntermediate(bytes: 1024, at: .bindingCandidate)
         }
+        return try bindCanonicalSource(source, namedSubqueries: namedSubqueries, outerSchemas: outerSchemas, binding: binding).schema
     }
 
-    private func sourceRequiresRuntimeInferredSchema(
-        _ source: DataSource,
-        namedSubqueries: [NamedSubquery],
-        queryBinding: CanonicalQueryBindingEnvironment? = nil
-    ) -> Bool {
-        switch source {
-        case .table(let table):
-            guard table.schema == nil else { return false }
-            guard let named = namedSubqueries.first(
-                where: { $0.name == table.table }
-            ) else {
-                return false
-            }
-            let nestedNames = (named.query.subqueries ?? []).map { $0.name }
-            let inherited = namedSubqueries.filter {
-                !nestedNames.contains($0.name)
-            }
-            switch named.query.projection {
-            case .items, .distinctItems:
-                return false
-            case .all, .allFrom:
-                return sourceRequiresRuntimeInferredSchema(
-                    named.query.source,
-                    namedSubqueries: (named.query.subqueries ?? []) + inherited
-                )
-            }
-        case .subquery(let query, _):
-            let nestedNames = (query.subqueries ?? []).map { $0.name }
-            let inherited = namedSubqueries.filter {
-                !nestedNames.contains($0.name)
-            }
-            switch query.projection {
-            case .items, .distinctItems:
-                return false
-            case .all, .allFrom:
-                return sourceRequiresRuntimeInferredSchema(
-                    query.source,
-                    namedSubqueries: (query.subqueries ?? []) + inherited
-                )
-            }
-        case .join(let join):
-            return sourceRequiresRuntimeInferredSchema(
-                join.left,
-                namedSubqueries: namedSubqueries, queryBinding: queryBinding
-            ) || sourceRequiresRuntimeInferredSchema(
-                join.right,
-                namedSubqueries: namedSubqueries, queryBinding: queryBinding
-            )
-        case .union(let sources), .unionAll(let sources),
-                .intersect(let sources):
-            guard let first = sources.first else { return false }
-            return sourceRequiresRuntimeInferredSchema(
-                first,
-                namedSubqueries: namedSubqueries, queryBinding: queryBinding
-            )
-        case .except(let lhs, _):
-            return sourceRequiresRuntimeInferredSchema(
-                lhs,
-                namedSubqueries: namedSubqueries, queryBinding: queryBinding
-            )
-        case .graphTable(let graphTable):
-            return graphTable.columns?.isEmpty ?? true
-        #if DATABASE_MULTI_BASE
-        case .base(_, let nested):
-            return sourceRequiresRuntimeInferredSchema(
-                nested,
-                namedSubqueries: namedSubqueries, queryBinding: queryBinding
-            )
-        #endif
-        case .logical, .values, .graphPattern, .namedGraph, .service:
-            return false
-        }
-    }
+    private func sourceRequiresRuntimeInferredSchema(_ source: DataSource,
+        namedSubqueries: [NamedSubquery], queryBinding: CanonicalQueryBindingEnvironment? = nil
+    ) -> Bool { false }
 
-    private func validateStaticJoinBindings(
-        _ source: DataSource,
-        namedSubqueries: [NamedSubquery],
-        queryBinding: CanonicalQueryBindingEnvironment? = nil,
-        outerRow: CanonicalSourceRow?
-    ) throws {
-        switch source {
-        case .join(let join):
-            let leftSchema = try canonicalRelationSchema(
-                for: join.left,
-                namedSubqueries: namedSubqueries, queryBinding: queryBinding,
-                outerSchemas: try outerRow.map { [try relationSchema(for: $0.layout)] } ?? []
-            )
-            let rightOuterRow: CanonicalSourceRow?
-            switch join.type {
-            case .lateral, .leftLateral:
-                rightOuterRow = leftSchema.nullRow().overlaying(
-                    outer: outerRow
-                )
-            default:
-                rightOuterRow = outerRow
-            }
-            let rightSchema = try canonicalRelationSchema(
-                for: join.right, namedSubqueries: namedSubqueries, queryBinding: queryBinding,
-                outerSchemas: try rightOuterRow.map { [try relationSchema(for: $0.layout)] } ?? []
-            )
-            try validateStaticJoinBindings(
-                join.left,
-                namedSubqueries: namedSubqueries, queryBinding: queryBinding,
-                outerRow: outerRow
-            )
-            try validateStaticJoinBindings(
-                join.right,
-                namedSubqueries: namedSubqueries, queryBinding: queryBinding,
-                outerRow: rightOuterRow
-            )
-            if case .on(let expression) = join.condition {
-                let outputSchema = try joinOutputSchema(
-                    leftSchema,
-                    rightSchema,
-                    condition: join.condition
-                )
-                try validateExpressionBindings(
-                    expression,
-                    sourceSchema: outputSchema,
-                    outerRow: outerRow,
-                    namedSubqueries: namedSubqueries, queryBinding: queryBinding
-                )
-            }
-        case .subquery(let query, _):
-            let visibleNamedSubqueries = try mergeNamedSubqueries(
-                local: query.subqueries ?? [],
-                inherited: namedSubqueries
-            )
-            guard !sourceRequiresRuntimeInferredSchema(
-                query.source,
-                namedSubqueries: visibleNamedSubqueries, queryBinding: queryBinding
-            ) else {
-                return
-            }
-            let sourceSchema = try canonicalRelationSchema(
-                for: query.source,
-                namedSubqueries: visibleNamedSubqueries, queryBinding: queryBinding,
-                outerSchemas: try outerRow.map { [try relationSchema(for: $0.layout)] } ?? []
-            )
-            try validateRelationalQueryBindings(
-                query,
-                sourceSchema: sourceSchema,
-                outerRow: outerRow,
-                namedSubqueries: visibleNamedSubqueries, queryBinding: queryBinding
-            )
-            try validateStaticJoinBindings(
-                query.source,
-                namedSubqueries: visibleNamedSubqueries, queryBinding: queryBinding,
-                outerRow: outerRow
-            )
-        case .table(let table):
-            guard table.schema == nil else {
-                throw CanonicalReadError.unsupportedSource("SQL schema-qualified relation lookup is not available")
-            }
-            guard let named = namedSubqueries.first(
-                where: { $0.name == table.table }
-            ) else {
-                return
-            }
-            let visibleNamedSubqueries = try mergeNamedSubqueries(
-                local: named.query.subqueries ?? [],
-                inherited: namedSubqueries
-            )
-            guard !sourceRequiresRuntimeInferredSchema(
-                named.query.source,
-                namedSubqueries: visibleNamedSubqueries, queryBinding: queryBinding
-            ) else {
-                return
-            }
-            let sourceSchema = try canonicalRelationSchema(
-                for: named.query.source,
-                namedSubqueries: visibleNamedSubqueries, queryBinding: queryBinding
-            )
-            try validateRelationalQueryBindings(
-                named.query,
-                sourceSchema: sourceSchema,
-                outerRow: outerRow,
-                namedSubqueries: visibleNamedSubqueries, queryBinding: queryBinding
-            )
-            try validateStaticJoinBindings(
-                named.query.source,
-                namedSubqueries: visibleNamedSubqueries, queryBinding: queryBinding,
-                outerRow: outerRow
-            )
-        case .union(let sources), .unionAll(let sources),
-                .intersect(let sources):
-            for source in sources {
-                try validateStaticJoinBindings(
-                    source,
-                    namedSubqueries: namedSubqueries, queryBinding: queryBinding,
-                    outerRow: outerRow
-                )
-            }
-        case .except(let lhs, let rhs):
-            try validateStaticJoinBindings(
-                lhs,
-                namedSubqueries: namedSubqueries, queryBinding: queryBinding,
-                outerRow: outerRow
-            )
-            try validateStaticJoinBindings(
-                rhs,
-                namedSubqueries: namedSubqueries, queryBinding: queryBinding,
-                outerRow: outerRow
-            )
-        #if DATABASE_MULTI_BASE
-        case .base(_, let nested):
-            try validateStaticJoinBindings(
-                nested,
-                namedSubqueries: namedSubqueries, queryBinding: queryBinding,
-                outerRow: outerRow
-            )
-        #endif
-        case .logical, .values, .graphTable, .graphPattern, .namedGraph,
-                .service:
-            break
-        }
-    }
 
     private func canonicalProjectionColumns(
-        _ projection: Projection,
-        sourceSchema: CanonicalRelationSchema
+        _ projection: [ProjectionItem], sourceSchema: CanonicalRelationSchema
     ) throws -> [String] {
-        let columns: [String]
-        switch projection {
-        case .all:
-            columns = sourceSchema.visibleColumns
-        case .allFrom(let sourceName):
-            guard let scope = sourceSchema.scopes.first(
-                where: { $0.name == sourceName }
-            ) else {
-                throw CanonicalReadError.unsupportedSelectQuery(
-                    "Projection source '\(sourceName)' not found"
-                )
-            }
-            columns = scope.columns
-        case .items(let items), .distinctItems(let items):
-            columns = items.enumerated().map { index, item in
-                item.alias ?? canonicalProjectionName(
-                    for: item.expression,
-                    index: index
-                )
+        var names: [String] = []
+        for item in projection {
+            switch item {
+            case .wildcard(let scope):
+                names.append(contentsOf: try sourceSchema.wildcardSlots(scope: scope).map { sourceSchema.layout.slots[$0].name })
+            case .expression(let expression, let alias):
+                names.append(alias ?? canonicalProjectionName(for: expression, index: names.count))
             }
         }
-        return columns
+        return names
     }
 
     private func sparqlVariables(in pattern: GraphPattern) -> [String] {
@@ -8913,27 +9501,16 @@ extension DatabaseContext {
             case .values(let variables, _):
                 variables.forEach(append)
             case .subquery(let query):
-                switch query.projection {
-                case .items(let items), .distinctItems(let items):
-                    for (index, item) in items.enumerated() {
-                        append(
-                            item.alias ?? canonicalProjectionName(
-                                for: item.expression,
-                                index: index
-                            )
-                        )
+                for (index, item) in query.projection.enumerated() {
+                    switch item {
+                    case .expression(let expression, let alias): append(alias ?? canonicalProjectionName(for: expression, index: index))
+                    case .wildcard(nil):
+                        switch query.source {
+                        case .graphPattern(let nested), .namedGraph(_, let nested), .service(_, let nested, _): visit(nested)
+                        default: break
+                        }
+                    case .wildcard: break
                     }
-                case .all:
-                    switch query.source {
-                    case .graphPattern(let nested),
-                            .namedGraph(_, let nested),
-                            .service(_, let nested, _):
-                        visit(nested)
-                    default:
-                        break
-                    }
-                case .allFrom:
-                    break
                 }
             case .groupBy(let nested, _, let aggregates):
                 visit(nested)
@@ -8987,54 +9564,27 @@ extension DatabaseContext {
         )
     }
 
-    private func sourceColumnIsContextualNull(
-        _ source: DataSource,
-        ordinal: Int,
-        namedSubqueries: [NamedSubquery],
-        queryBinding: CanonicalQueryBindingEnvironment? = nil
+    private func sourceColumnIsContextualNull(_ source: DataSource, ordinal: Int,
+        namedSubqueries: [NamedSubquery], queryBinding: CanonicalQueryBindingEnvironment? = nil
     ) -> Bool {
         switch source {
-        case .values(let rows, _):
-            return !rows.isEmpty && rows.allSatisfy { row in
-                row.indices.contains(ordinal) && expressionIsContextualNull(.literal(row[ordinal]))
-            }
-        case .subquery(let query, _):
-            return queryColumnIsContextualNull(query, ordinal: ordinal, namedSubqueries: namedSubqueries)
+        case .values(let rows): return !rows.isEmpty && rows.allSatisfy { $0.indices.contains(ordinal) && expressionIsContextualNull($0[ordinal]) }
+        case .subquery(let query): return queryColumnIsContextualNull(query, ordinal: ordinal, namedSubqueries: namedSubqueries)
+        case .aliased(let nested, _, _): return sourceColumnIsContextualNull(nested, ordinal: ordinal, namedSubqueries: namedSubqueries)
+        case .setOperation(_, _, let left, let right): return queryColumnIsContextualNull(left, ordinal: ordinal, namedSubqueries: namedSubqueries) && queryColumnIsContextualNull(right, ordinal: ordinal, namedSubqueries: namedSubqueries)
         case .table(let table):
-            guard table.schema == nil else { return false }
-            guard let named = namedSubqueries.first(where: { $0.name == table.table }) else { return false }
-            return queryColumnIsContextualNull(named.query, ordinal: ordinal, namedSubqueries: namedSubqueries)
-        case .union(let sources), .unionAll(let sources), .intersect(let sources):
-            return !sources.isEmpty && sources.allSatisfy {
-                sourceColumnIsContextualNull($0, ordinal: ordinal, namedSubqueries: namedSubqueries)
-            }
-        case .except(let first, let second):
-            return sourceColumnIsContextualNull(first, ordinal: ordinal, namedSubqueries: namedSubqueries)
-                && sourceColumnIsContextualNull(second, ordinal: ordinal, namedSubqueries: namedSubqueries)
-        #if DATABASE_MULTI_BASE
-        case .base(_, let nested):
-            return sourceColumnIsContextualNull(nested, ordinal: ordinal, namedSubqueries: namedSubqueries)
-        #endif
+            guard let cte = namedSubqueries.first(where: { $0.name == table.table }) else { return false }
+            return queryColumnIsContextualNull(cte.query, ordinal: ordinal, namedSubqueries: namedSubqueries)
         default: return false
         }
     }
 
-    private func queryColumnIsContextualNull(
-        _ query: SelectQuery,
-        ordinal: Int,
-        namedSubqueries: [NamedSubquery],
-        queryBinding: CanonicalQueryBindingEnvironment? = nil
+    private func queryColumnIsContextualNull(_ query: SelectQuery, ordinal: Int,
+        namedSubqueries: [NamedSubquery], queryBinding: CanonicalQueryBindingEnvironment? = nil
     ) -> Bool {
-        switch query.projection {
-        case .items(let items), .distinctItems(let items):
-            return items.indices.contains(ordinal) && expressionIsContextualNull(items[ordinal].expression)
-        case .all:
-            let local = query.subqueries ?? []
-            let inherited = namedSubqueries.filter { inherited in !local.contains { $0.name == inherited.name } }
-            return sourceColumnIsContextualNull(query.source, ordinal: ordinal,
-                                                namedSubqueries: local + inherited)
-        case .allFrom: return false
-        }
+        if query.projection == [.wildcard()] { return sourceColumnIsContextualNull(query.source, ordinal: ordinal, namedSubqueries: namedSubqueries) }
+        guard query.projection.indices.contains(ordinal), case .expression(let expression, _) = query.projection[ordinal] else { return false }
+        return expressionIsContextualNull(expression)
     }
 
     private func expressionIsContextualNull(_ expression: DatabaseKit.Expression) -> Bool {
@@ -9081,7 +9631,8 @@ extension DatabaseContext {
         to outputSchema: CanonicalRelationSchema,
         layout outputLayout: CanonicalSourceLayout,
         into aligned: inout DatabaseRetainedArrayBuilder<CanonicalSourceRow>,
-        workMeter: DatabaseWorkMeter
+        workMeter: DatabaseWorkMeter,
+        temporalEnvironment: SQLTemporalEnvironment? = nil
     ) throws {
         let sourceSlots = relation.schema.layout.visibleSlots
         let outputSlots = outputLayout.visibleSlots
@@ -9106,30 +9657,29 @@ extension DatabaseContext {
             guard row.layout.visibleSlots.count == sourceSlots.count else {
                 throw CanonicalReadError.unsupportedSelectQuery("Set operation row differs from its admitted schema")
             }
-            let (leaseCount, leaseOverflow) = row.payloadLeases.count.addingReportingOverflow(1)
-            guard !leaseOverflow else { throw DatabaseExpressionEvaluationError.numericOverflow }
-            func value(at ordinal: Int) throws -> QueryValue {
+            let claim = try workMeter.reserveIntermediate(bytes: 256, at: .bindingCandidate)
+            var values: [QueryValue] = []
+            var leases: [DatabaseQueryPayloadLease] = []
+            for lease in row.payloadLeases { try CanonicalBindingStorage.append(lease, to: &leases, reservation: claim) }
+            try CanonicalBindingStorage.append(relation.rows.payloadLease, to: &leases, reservation: claim)
+            for ordinal in sourceSlots.indices {
                 let sourceSlot = sourceSlots[ordinal]
                 guard row.values.indices.contains(sourceSlot),
-                      let type = outputLayout.types[outputSlots[ordinal]] else {
+                      let sourceType = relation.schema.layout.types[sourceSlot],
+                      let targetType = outputLayout.types[outputSlots[ordinal]] else {
                     throw CanonicalReadError.unsupportedSelectQuery("Set operation source slot is missing")
                 }
-                return try CanonicalQueryTypeBinder.normalize(row.values[sourceSlot], to: type)
+                let converted = try CanonicalSQLScalarCast.alignSource(row.values[sourceSlot], from: sourceType, to: targetType,
+                    temporalEnvironment: temporalEnvironment ?? inheritedSQLTemporalEnvironment,
+                    workMeter: workMeter, limits: Self.selectedValueLimits(context: nil, meter: workMeter))
+                try CanonicalBindingStorage.append(converted.value, to: &values, reservation: claim)
+                if let lease = converted.lease { try CanonicalBindingStorage.append(lease, to: &leases, reservation: claim) }
             }
-            let footprint = try CanonicalRelationalFootprintMeter.positionalValueArrayFootprint(
-                count: sourceSlots.count, valueAt: value,
-                annotations: row.annotations, version: row.version,
-                workMeter: workMeter, stage: .bindingCandidate)
-                .adding(DatabaseIntermediateCollectionMeter.arrayFootprint(
-                    count: leaseCount, element: DatabaseQueryPayloadLease.self))
-            try aligned.append(footprint: footprint) {
-                var values: [QueryValue] = []
-                values.reserveCapacity(sourceSlots.count)
-                for ordinal in sourceSlots.indices { values.append(try value(at: ordinal)) }
-                return CanonicalSourceRow(values: values, layout: outputLayout,
-                    annotations: row.annotations, version: row.version,
-                    payloadLeases: row.payloadLeases + [relation.rows.payloadLease])
-            }
+            try CanonicalBindingStorage.append(DatabaseQueryPayloadLease(retaining: claim), to: &leases, reservation: claim)
+            let selected = CanonicalSourceRow(values: values, layout: outputLayout,
+                annotations: row.annotations, version: row.version, payloadLeases: leases)
+            try aligned.append(footprint: CanonicalRelationalFootprintMeter.sourceAliasFootprint(of: selected,
+                workMeter: workMeter, stage: .bindingCandidate), make: { selected })
         }
     }
 
@@ -9137,7 +9687,8 @@ extension DatabaseContext {
         _ relation: CanonicalRelation,
         to outputSchema: CanonicalRelationSchema,
         layout outputLayout: CanonicalSourceLayout,
-        workMeter: DatabaseWorkMeter
+        workMeter: DatabaseWorkMeter,
+        temporalEnvironment: SQLTemporalEnvironment? = nil
     ) throws -> CanonicalRetainedRows {
         var aligned = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(
             workMeter: workMeter,
@@ -9152,7 +9703,8 @@ extension DatabaseContext {
             to: outputSchema,
             layout: outputLayout,
             into: &aligned,
-            workMeter: workMeter
+            workMeter: workMeter,
+            temporalEnvironment: temporalEnvironment
         )
         return try aligned.finish().moveToSharedOwnership(at: .bindingCandidate)
     }

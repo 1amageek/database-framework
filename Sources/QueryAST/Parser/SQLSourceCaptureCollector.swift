@@ -7,7 +7,7 @@ struct SQLSourceCaptureCollector {
         case identifierOverflow
     }
 
-    private enum Kind { case expression, query, source, dataType, statement }
+    private enum Kind { case expression, query, source, dataType, statement, valuesRow }
     private struct Child {
         let field: QueryOccurrenceField
         let index: UInt32?
@@ -20,7 +20,7 @@ struct SQLSourceCaptureCollector {
     }
     private struct Node {
         let kind: Kind
-        let annotation: SQLSourceAnnotation
+        let annotation: SQLSourceAnnotation?
         let edges: Range<Int>
     }
 
@@ -40,6 +40,47 @@ struct SQLSourceCaptureCollector {
 
     var pendingCheckpoint: Int { pending.count }
 
+    mutating func unwrapLastQuery() throws {
+        guard let node = pending.popLast(), nodes[node].kind == .query else { throw CaptureError.inconsistentConstruction }
+        for edge in nodes[node].edges { pending.append(edges[edge].child) }
+    }
+
+    mutating func movePendingToEnd(from start: Int, count: Int) throws {
+        guard start >= 0, count >= 0, start <= pending.count, count <= pending.count - start else {
+            throw CaptureError.inconsistentConstruction
+        }
+        let middle = start + count
+        for range in [start..<middle, middle..<pending.count, start..<pending.count] {
+            var lower = range.lowerBound
+            var upper = range.upperBound
+            while lower < upper {
+                upper -= 1
+                if lower < upper { pending.swapAt(lower, upper) }
+                lower += 1
+            }
+        }
+    }
+
+    mutating func swapLastPending() throws {
+        guard pending.count >= 2 else { throw CaptureError.inconsistentConstruction }
+        pending.swapAt(pending.count - 1, pending.count - 2)
+    }
+
+    mutating func recordSyntheticProjection(ledger: inout QueryStructuralResourceLedger) throws {
+        try ledger.consume(.totalNodes)
+        try ledger.consume(.retainedBytes, amount: UInt64(MemoryLayout<Node>.stride + MemoryLayout<Int>.stride))
+        let index = nodes.count
+        nodes.append(Node(kind: .expression, annotation: nil, edges: edges.count..<edges.count))
+        pending.append(index)
+    }
+
+    mutating func recordValuesRow(count: Int, start: Int?, end: Int,
+                                  ledger: inout QueryStructuralResourceLedger) throws {
+        var children: [Child] = []
+        for index in 0..<count { try child(.valuesCell, index: index, into: &children, ledger: &ledger) }
+        try recordNode(kind: .valuesRow, children: children, start: start, end: end, identifierEnd: nil, ledger: &ledger)
+    }
+
     mutating func discardPending(after checkpoint: Int) throws {
         guard checkpoint >= 0, checkpoint <= pending.count else { throw CaptureError.inconsistentConstruction }
         pending.removeLast(pending.count - checkpoint)
@@ -48,7 +89,7 @@ struct SQLSourceCaptureCollector {
     mutating func discardLastExpression() -> SQLSourceRange? {
         guard let index = pending.lastIndex(where: { nodes[$0].kind == .expression }) else { return nil }
         let node = pending.remove(at: index)
-        return nodes[node].annotation.range
+        return nodes[node].annotation?.range
     }
 
     /// Reorders normalized function arguments without changing their source ranges.
@@ -84,7 +125,7 @@ struct SQLSourceCaptureCollector {
     }
 
     mutating func recordProjectionQualifier(
-        start: Int, end: Int, identifierEnd: Int,
+        start: Int, end: Int, identifierEnd: Int?,
         ledger: inout QueryStructuralResourceLedger
     ) throws {
         try recordNode(kind: .expression, children: [], start: start, end: end, identifierEnd: identifierEnd, ledger: &ledger)
@@ -96,7 +137,9 @@ struct SQLSourceCaptureCollector {
     ) throws {
         var children: [Child] = []
         switch expression {
-        case .literal, .currentValue, .column, .variable, .parameter, .bound: break
+        case .literal, .currentValue, .column, .variable, .parameter, .bound, .wholeRow: break
+        case .collate, .field, .fieldExpansion:
+            try child(.operand, index: 0, into: &children, ledger: &ledger)
         case .add, .subtract, .multiply, .divide, .modulo, .equal, .notEqual,
              .lessThan, .lessThanOrEqual, .greaterThan, .greaterThanOrEqual, .and, .or, .nullIf, .isDistinctFrom, .concatenate:
             try child(.operand, index: 0, into: &children, ledger: &ledger)
@@ -137,7 +180,7 @@ struct SQLSourceCaptureCollector {
         case .inSubquery:
             try child(.operand, index: 0, into: &children, ledger: &ledger)
             try child(.subquery, kind: .query, into: &children, ledger: &ledger)
-        case .subquery, .exists:
+        case .subquery, .exists, .arraySubquery:
             try child(.subquery, kind: .query, into: &children, ledger: &ledger)
         case .function(let function):
             for index in function.arguments.indices { try child(.argument, index: index, into: &children, ledger: &ledger) }
@@ -178,18 +221,19 @@ struct SQLSourceCaptureCollector {
     ) throws {
         var children: [Child] = []
         for index in (query.subqueries ?? []).indices { try child(.cte, index: index, kind: .query, into: &children, ledger: &ledger) }
-        switch query.projection {
-        case .items(let items), .distinctItems(let items):
-            for index in items.indices { try child(.projection, index: index, into: &children, ledger: &ledger) }
-        case .allFrom:
-            try child(.projection, index: 0, into: &children, ledger: &ledger)
-        case .all: break
+        for index in query.projection.indices {
+            try child(.projection, index: index, into: &children, ledger: &ledger)
         }
         try child(.source, kind: .source, into: &children, ledger: &ledger)
         if query.filter != nil { try child(.filter, into: &children, ledger: &ledger) }
         for index in (query.groupBy ?? []).indices { try child(.groupBy, index: index, into: &children, ledger: &ledger) }
         if query.having != nil { try child(.having, into: &children, ledger: &ledger) }
+        if case .distinctOn(let keys) = query.quantifier {
+            for index in keys.indices { try child(.distinctOn, index: index, into: &children, ledger: &ledger) }
+        }
         for index in (query.orderBy ?? []).indices { try child(.orderBy, index: index, into: &children, ledger: &ledger) }
+        if case .expression = query.pagination.offset { try child(.offset, into: &children, ledger: &ledger) }
+        if case .count(.expression, _) = query.pagination.limit { try child(.limit, into: &children, ledger: &ledger) }
         try recordNode(kind: .query, children: children, start: start, end: end, identifierEnd: identifierEnd, ledger: &ledger)
     }
 
@@ -201,6 +245,13 @@ struct SQLSourceCaptureCollector {
         switch source {
         case .subquery:
             try child(.subquery, kind: .query, into: &children, ledger: &ledger)
+        case .aliased:
+            try child(.source, kind: .source, into: &children, ledger: &ledger)
+        case .setOperation:
+            try child(.setLeft, kind: .query, into: &children, ledger: &ledger)
+            try child(.setRight, kind: .query, into: &children, ledger: &ledger)
+        case .values(let rows):
+            for index in rows.indices { try child(.valuesRow, index: index, kind: .valuesRow, into: &children, ledger: &ledger) }
         case .join(let join):
             try child(.joinLeft, kind: .source, into: &children, ledger: &ledger)
             try child(.joinRight, kind: .source, into: &children, ledger: &ledger)
@@ -229,7 +280,7 @@ struct SQLSourceCaptureCollector {
         for (offset, child) in children.enumerated() {
             let node = nodes[pending[base + offset]]
             guard node.kind == child.kind else { throw CaptureError.inconsistentConstruction }
-            rangeStart = min(rangeStart, node.annotation.range.start)
+            if let range = node.annotation?.range { rangeStart = min(rangeStart, range.start) }
         }
         try ledger.consume(.totalNodes)
         try ledger.consume(.retainedBytes, amount: UInt64(MemoryLayout<Node>.stride + MemoryLayout<Int>.stride))
@@ -243,7 +294,9 @@ struct SQLSourceCaptureCollector {
         if let start, let identifierEnd { identifierRange = SQLSourceRange(start: start, end: identifierEnd) }
         else { identifierRange = nil }
         let index = nodes.count
-        nodes.append(Node(kind: kind, annotation: SQLSourceAnnotation(range: range, identifierRange: identifierRange), edges: edgeStart..<edges.count))
+        let synthetic = start == nil && edges[edgeStart...].allSatisfy { nodes[$0.child].annotation == nil }
+        let annotation = synthetic ? nil : SQLSourceAnnotation(range: range, identifierRange: identifierRange)
+        nodes.append(Node(kind: kind, annotation: annotation, edges: edgeStart..<edges.count))
         pending.append(index)
     }
 
@@ -268,19 +321,33 @@ struct SQLSourceCaptureCollector {
     private mutating func appendDescendants(
         node: Int, parent: QueryOccurrenceID, ledger: inout QueryStructuralResourceLedger
     ) throws {
+        struct Frame { let node: Int; let parent: QueryOccurrenceID; var next: Int }
         guard !nodes[node].edges.isEmpty else { return }
-        try ledger.enterNesting()
+        var frames: [Frame] = []
         do {
-            for edgeIndex in nodes[node].edges {
-                let edge = edges[edgeIndex]
-                let occurrence = try appendOccurrence(node: edge.child, parent: parent, field: edge.field, index: edge.index, ledger: &ledger)
-                try appendDescendants(node: edge.child, parent: occurrence, ledger: &ledger)
+            try ledger.consume(.retainedBytes, amount: UInt64(MemoryLayout<Frame>.stride))
+            try ledger.enterNesting()
+            frames.append(Frame(node: node, parent: parent, next: nodes[node].edges.lowerBound))
+            while let frame = frames.last {
+                if frame.next == nodes[frame.node].edges.upperBound {
+                    frames.removeLast()
+                    try ledger.leaveNesting()
+                    continue
+                }
+                let edge = edges[frame.next]
+                frames[frames.count - 1].next += 1
+                let occurrence = try appendOccurrence(node: edge.child, parent: frame.parent,
+                    field: edge.field, index: edge.index, ledger: &ledger)
+                if !nodes[edge.child].edges.isEmpty {
+                    try ledger.consume(.retainedBytes, amount: UInt64(MemoryLayout<Frame>.stride))
+                    try ledger.enterNesting()
+                    frames.append(Frame(node: edge.child, parent: occurrence, next: nodes[edge.child].edges.lowerBound))
+                }
             }
         } catch {
-            try ledger.leaveNesting()
+            for _ in frames { try ledger.leaveNesting() }
             throw error
         }
-        try ledger.leaveNesting()
     }
 
     private mutating func appendOccurrence(
@@ -295,7 +362,7 @@ struct SQLSourceCaptureCollector {
             + MemoryLayout<SQLSourceAnnotation>.stride
         try ledger.consume(.retainedBytes, amount: UInt64(bytes))
         let occurrence = try occurrences.append(parent: parent, field: field, index: index)
-        annotations[occurrence] = nodes[node].annotation
+        if let annotation = nodes[node].annotation { annotations[occurrence] = annotation }
         return occurrence
     }
 }

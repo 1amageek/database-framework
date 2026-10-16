@@ -10,10 +10,11 @@ struct SQLCollectionSyntaxTests {
 
     private func expression(_ source: String) throws -> Expression {
         let query = try SQLParser().parseSelect("SELECT " + source)
-        guard case .items(let items) = query.projection, let first = items.first else {
+        let items = query.projection
+        guard items.allSatisfy({ if case .expression = $0 { return true }; return false }), let first = items.first else {
             throw SQLParser.ParseError.invalidSyntax(message: "Expected one projection", position: 0)
         }
-        return first.expression
+        return try projectionExpression(first)
     }
 
     private func roundtrip(_ value: Expression) throws {
@@ -115,7 +116,7 @@ struct SQLCollectionSyntaxTests {
         #expect(throws: SQLParser.ParseError.self) { try expression("? ? $1") }
         let parser = SQLParser()
         #expect(throws: SQLParser.ParseError.self) { try parser.parseSelect("SELECT a[lo: :p]") }
-        #expect(try parser.parseSelect("SELECT :p").projection == .items([ProjectionItem(.parameter(.name("p")))]))
+        #expect(try parser.parseSelect("SELECT :p").projection == [ProjectionItem(.parameter(.name("p")))])
     }
 
     @Test("Collection source occurrences use canonical sparse edges and UTF-8 ranges")
@@ -167,7 +168,13 @@ struct SQLCollectionSyntaxTests {
                        "json_build_array(a, VARIADIC b, VARIADIC c)", "COALESCE(VARIADIC a)"] {
             #expect(throws: SQLParser.ParseError.self) { try expression(source) }
         }
-        #expect(throws: SQLParser.ParseError.self) { try expression("ARRAY(SELECT a FROM t)") }
+        guard case .arraySubquery(let query) = try expression("ARRAY(SELECT a FROM t)") else {
+            Issue.record("Expected a complete ARRAY subquery operand"); return
+        }
+        #expect(query.projection == [ProjectionItem(.column(ColumnRef("a")))])
+        #expect(query.source == .table(TableRef("t")))
+        #expect(query.quantifier == .all && query.pagination == QueryPagination())
+        try roundtrip(.arraySubquery(query))
         #expect(throws: SQLSerializationError.self) {
             try SQLSerializer().serialize(Expression.function(FunctionCall(name: "json_build_array", arguments: [], finalArrayIsVariadic: true)))
         }
@@ -187,7 +194,7 @@ struct SQLCollectionSyntaxTests {
             Issue.record("Expected pure integer array"); return
         }
         #expect(array.dimensions.map(\.lowerBound) == [-2])
-        #expect(array.elements == [.primitive(.int32(1)), .primitive(.null)])
+        #expect(array.elements.elementsEqual([QueryValue.primitive(.int32(1)), .primitive(.null)]))
         try roundtrip(intrinsic)
         let temporal = try expression("'{2026-10-16,infinity}'::date[]")
         #expect(temporal == .cast(.literal(.sqlUnknownString("{2026-10-16,infinity}")), targetType: .array(.date)))

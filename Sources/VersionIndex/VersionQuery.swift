@@ -217,7 +217,7 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
             parameters[VersionReadParameter.limit] = .uint64(queryLimit)
         }
         return SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(TableRef(table: T.persistableType)),
             accessPath: .index(
                 IndexScanSource(
@@ -226,7 +226,7 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
                     parameters: parameters
                 )
             ),
-            limit: queryLimit
+            pagination: QueryPagination(limit: queryLimit.map { .count(.fixed($0), withTies: false) })
         )
     }
 

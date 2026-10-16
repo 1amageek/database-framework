@@ -431,3 +431,135 @@ composition S10, following the single SQL authority. ARRAY(subquery) requires
 S08 relational carriage; ARRAY[...] does not satisfy it. Function-call argument
 mode follows the explicit carriage above; ordinary FunctionCall syntax alone
 cannot prove that distinction.
+
+### S08 relational emission and lossless construction
+
+**PLANNED; not implementation or verification evidence.** Consume
+[Query's frozen public declarations](../../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md#s08-frozen-relational-query-carriage),
+[SQL's composite descriptor/value contract](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s08-frozen-composite-values-and-ownership)
+and [Wire carriage](../../../../database-kit/Sources/DatabaseWire/DESIGN.md#s08-relational-query-carriage).
+[Parser's S08 contract](../Parser/DESIGN.md#s08-relational-grammar-and-construction-provenance)
+owns accepted syntax, source normalization and S08-SYN01...06. This component
+constructs those same Kit values and emits executable text without another AST,
+query layout or semantic evaluator.
+
+```text
+fluent input -> canonical Query fields -> structural validation
+    -> bounded SQL writer -> shared Parser grammar -> represented meaning
+unsupported exact metadata -----------------------> typed serialization failure
+```
+
+#### Canonical query and source output
+
+Projection emission walks the ordered ProjectionItem sequence, emitting each
+expression/optional AS alias or bare/qualified wildcard in place. Preserve
+duplicate names and exact quoted components. SelectQuantifier is the sole
+DISTINCT owner: emit ALL/default, DISTINCT or DISTINCT ON with its ordered
+nonempty keys. Emit collate operands with sufficient parentheses and exact
+quoted C/POSIX identity; no locale lookup or alternate collation field enters
+the writer. Direction and NULL ordering remain SortKey metadata. Existing
+output-ordinal versus explicitly cast integer constant emission remains in
+force, including query-boundary resets.
+
+DataSource.aliased emits one AS name and optional column list around the source
+it owns. Parenthesize joined groups/derived queries where required to preserve
+scope and hide constituent names exactly as represented. A bare subquery stays
+without an invented alias. TableRef.alias in DataSource.table is an intrinsic
+shape failure; direct mutation-target serialization retains its legitimate
+alias. Logical/graph-table aliases migrate through the same source wrapper.
+JOIN output preserves the tree, LATERAL position and condition legality; comma
+input may canonicalize to explicit CROSS JOIN with grouping that retains its
+lower precedence and correlation scope.
+
+VALUES emits general expression rows in order, retaining parameters, nested
+queries and column alias wrappers. SQL rows must be nonempty. Require equal raw
+arity only when no direct cell is fieldExpansion; binding owns final arity
+after parent-context expansion. Preserve those raw cells without normalizing
+their AST or provenance. A pure wildcard/all VALUES query envelope emits bare
+VALUES with its CTEs and query tails. A direct VALUES source emits (VALUES ...); a deliberate
+subquery source over the same envelope emits (SELECT * FROM (VALUES ...)) so
+round trips retain that query boundary instead of adding a wrapper each time.
+Omit FROM only for Query's one-zero-column-row identity. The distinct
+programmatic empty zero-column relation has no ordinary SQL VALUES spelling;
+return typed unsupportedSource if its complete meaning cannot be represented,
+never substitute a singleton, fabricate columns or silently omit FROM.
+
+Emit a direct setOperation envelope as a binary complete-query expression,
+preserving each operand's projection, CTEs, quantifier, local ORDER/pagination
+and its own ALL/DISTINCT mode. Parentheses retain INTERSECT precedence and
+UNION/EXCEPT association even for non-default constructed trees. Emit envelope
+CTEs before the whole expression and outer ORDER/pagination after it. A set
+used as an ordinary relation remains a complete DataSource.subquery; do not
+serialize it as source operands or synthesize aliases. Reject invalid set
+envelopes before output. This replaces the current unconditional setSource
+and nonsingleton VALUES failures only after S08-SYN01/03/06 pass.
+
+QueryPagination has one emission path. Preserve absent limit, explicit ALL,
+fixed versus expression counts, offset and withTies. Use a legal canonical
+LIMIT/OFFSET form for ordinary limits and FETCH WITH TIES for the tied mode;
+omitted FETCH count was already normalized to fixed(1). Expression operands
+retain parameter identity, NULL and CAST edges, with parentheses where grammar
+requires them. Bare NULL WITH TIES must not become typed NULL or ALL, and a
+typed NULL must not lose its cast. SQL fixed counts above Int64.max fail typed
+instead of wrapping; this SQL text boundary does not narrow SPARQL's full
+UInt64 fixed-count carriage. Preserve CTE columns and materialization hints
+through every query expression. The writer does not select a DISTINCT row,
+evaluate pagination, compute peers or decide CTE demand/volatility.
+
+#### Composite expressions and text representability
+
+Emit ROW constructors, field access, fieldExpansion and ARRAY(subquery) through
+Parser's shared grammar, preserving the complete nested query and operand
+parent context. List expansion and function-argument composite semantics must
+agree for direct QueryIR and emitted SQL. A wholeRow reference is relation
+identity; ordinary unqualified-column syntax retains column-name priority.
+Do not use a spelling that changes that binding or turns one composite into
+several list items. Keep fieldExpansion's child provenance honest rather than
+manufacturing function arguments or dropping an explicit composite operand.
+If a represented node has no scope-preserving SQL spelling, return typed
+unsupported serialization instead of inventing aliases or object conversions.
+The serializer never performs ROW comparison, composite JSON conversion or
+ARRAY accumulation. The accepted PostgreSQL18.6 inner bounds plus outer-one
+ARRAY policy belongs to execution; emitted syntax retains the query producing
+those arrays without rebasing their values.
+
+Composite literal emission succeeds only when reparsing/execution can retain
+the exact DataType.composite descriptor and QueryValue.composite value,
+including ordinal/name/type/nullability and nested array descriptors/bounds.
+Do not flatten a descriptor into primitive objects, guess named-type lookup,
+invent output aliases, or silently treat an empty composite array as unknown.
+Use existing SQLSerializationError.unsupportedLiteral/unsupportedType for
+unrepresentable named, nested or empty-array metadata; return no partial SQL.
+Representable cases require successful semantic round trips. Typed Wire
+parameters/results remain lossless for every valid descriptor independently
+of SQL text representability. No serialize/parse bridge is introduced into
+execution or the Kit value owner.
+
+#### Rebuilds, limits and completion boundary
+
+All builder query rewrites use Query's canonical immutable replacements and
+preserve the complete envelope: projection/source/accessPath/filter/groupBy/
+having/orderBy/quantifier/pagination/subqueries/reduced/dataset. Optional nil
+replacement clears the field. Migrate old distinct/limit/offset and Projection
+consumers together; retaining a nil-coalescing copy path or duplicate DISTINCT
+state is not an admitted shortcut. Preserve finalArrayIsVariadic and all new
+children in parameter and expression rewrites. SPARQL retains separate graph
+union/minus and fixed unsigned pagination, and rejects SQL-only forms through
+typed language errors.
+
+Use the existing structural and retained-output budgets across the whole
+query, including alias lists, VALUES cells, DISTINCT keys, set operands,
+pagination, descriptors and expanding literal text. Admit growth before
+writing and retain one output owner; nested queries share the ledger. Preserve
+the original typed cause for malformed shape, unsupported text and exhaustion.
+Public table functions/SRFs and recursive CTE execution remain S10;
+schema-qualified table execution remains S11. Successful serialization does
+not confer these runtime capabilities.
+
+S08-SYN01...06 require builder-versus-text public execution for supported
+relational/composite forms, repeated semantic round trips, exact query rebuild
+fields, typed unsupported literal/type cases and exact/one-past output limits.
+The Parser case table owns their identifiers and reference-observation links;
+do not duplicate the oracle as another contract. S07 ROW/ARRAY gates are
+replaced only by those implemented paths and their runtime evidence, while
+unrelated S07 intrinsic constant capability and S10 public SRF gates remain.

@@ -42,10 +42,10 @@ struct SQLRowExecutionTests {
         #expect(response.columns[0].type == .sql(.integer))
         #expect(response.rows[0].values[0] == .primitive(.int32(3)))
         let cast = try await container.testBaseContext().query(SelectQuery(
-            projection: .items([
+            projection: [
                 ProjectionItem(.cast(.literal(.double(0.1)), targetType: .real), alias: "rounded"),
                 ProjectionItem(.cast(.literal(.int(7)), targetType: .smallint), alias: "narrow")
-            ]), source: .values([[]], columnNames: [])))
+            ], source: .values(([[]] as [[DatabaseKit.Literal]]).map { $0.map { DatabaseKit.Expression.literal($0) } })))
         #expect(cast.columns.map(\.type) == [.sql(.real), .sql(.smallint)])
         #expect(cast.rows[0].values == [.primitive(.float32(0.1)), .primitive(.int16(7))])
     }
@@ -112,17 +112,12 @@ struct SQLRowExecutionTests {
         await #expect(throws: CanonicalReadError.self) {
             _ = try await context.query(
                 SelectQuery(
-                    projection: .all,
+                    projection: [.wildcard()],
                     source: .join(
                         JoinClause(
                             type: .cross,
                             left: .table(TableRef("SQLRowItem")),
-                            right: .table(
-                                TableRef(
-                                    table: "SQLRowItem",
-                                    alias: "other"
-                                )
-                            ),
+                            right: .aliased(.table(TableRef(table: "SQLRowItem")), name: "other"),
                             condition: .on(.bool(true))
                         )
                     )
@@ -425,35 +420,31 @@ struct SQLRowExecutionTests {
     func relationalNumericIdentity() async throws {
         let container = try await makeContainer()
         let context = container.testBaseContext()
-        let source = DataSource.values(
-            [
+        let source = DataSource.aliased(.values(([
                 [.int(1)],
                 [.uint(1)],
                 [.decimal(ExactDecimal(coefficient: 10, scale: 1))],
                 [.int(2)],
-            ],
-            columnNames: ["value"]
-        )
+            ] as [[DatabaseKit.Literal]]).map { $0.map { DatabaseKit.Expression.literal($0) } }), name: "input_3", columns: ["value"])
 
         let distinct = try await context.query(
-            SelectQuery(
-                projection: .distinctItems([
+            SelectQuery(projection: [
                     ProjectionItem(.col("value")),
-                ]),
-                source: source
-            )
+                ],
+            source: source,
+            quantifier: .distinct)
         )
         #expect(distinct.rows.count == 2)
 
         let grouped = try await context.query(
             SelectQuery(
-                projection: .items([
+                projection: [
                     ProjectionItem(.col("value")),
                     ProjectionItem(
                         .aggregate(.count(nil, distinct: false)),
                         alias: "item_count"
                     ),
-                ]),
+                ],
                 source: source,
                 groupBy: [.col("value")]
             )
@@ -465,33 +456,25 @@ struct SQLRowExecutionTests {
         )
 
         let mixedNumeric = try await context.query(
-            SelectQuery(
-                projection: .distinctItems([
+            SelectQuery(projection: [
                     ProjectionItem(.col("value")),
-                ]),
-                source: .values(
-                    [[.int(1)], [.double(1)]],
-                    columnNames: ["value"]
-                )
-            )
+                ],
+            source: .aliased(.values(([[.int(1)], [.double(1)]] as [[DatabaseKit.Literal]]).map { $0.map { DatabaseKit.Expression.literal($0) } }), name: "input_10", columns: ["value"]),
+            quantifier: .distinct)
         )
         #expect(mixedNumeric.rows.count == 1)
 
-        let fractionalSource = DataSource.values(
-            [
+        let fractionalSource = DataSource.aliased(.values(([
                 [.decimal(ExactDecimal(coefficient: 15, scale: 1))],
                 [.double(1.5)],
                 [.decimal(ExactDecimal(coefficient: 16, scale: 1))],
-            ],
-            columnNames: ["value"]
-        )
+            ] as [[DatabaseKit.Literal]]).map { $0.map { DatabaseKit.Expression.literal($0) } }), name: "input_2", columns: ["value"])
         let fractionalDistinct = try await context.query(
-            SelectQuery(
-                projection: .distinctItems([
+            SelectQuery(projection: [
                     ProjectionItem(.col("value")),
-                ]),
-                source: fractionalSource
-            )
+                ],
+            source: fractionalSource,
+            quantifier: .distinct)
         )
         #expect(fractionalDistinct.rows.count == 2)
 
@@ -501,30 +484,26 @@ struct SQLRowExecutionTests {
             scale: -20
         )
         let normalizedLargeDistinct = try await context.query(
-            SelectQuery(
-                projection: .distinctItems([
+            SelectQuery(projection: [
                     ProjectionItem(.col("value")),
-                ]),
-                source: .values(
-                    [
+                ],
+            source: .aliased(.values(([
                         [.decimal(normalizedLargeDecimal)],
                         [.double(normalizedLargeFloat)],
-                    ],
-                    columnNames: ["value"]
-                )
-            )
+                    ] as [[DatabaseKit.Literal]]).map { $0.map { DatabaseKit.Expression.literal($0) } }), name: "input_9", columns: ["value"]),
+            quantifier: .distinct)
         )
         #expect(normalizedLargeDistinct.rows.count == 1)
 
         let fractionalGroups = try await context.query(
             SelectQuery(
-                projection: .items([
+                projection: [
                     ProjectionItem(.col("value")),
                     ProjectionItem(
                         .aggregate(.count(nil, distinct: false)),
                         alias: "item_count"
                     ),
-                ]),
+                ],
                 source: fractionalSource,
                 groupBy: [.col("value")]
             )
@@ -536,27 +515,21 @@ struct SQLRowExecutionTests {
         )
 
         let decimalJoinInput = SelectQuery(
-            projection: .all,
-            source: .values(
-                [[.decimal(ExactDecimal(coefficient: 15, scale: 1))]],
-                columnNames: ["identifier"]
-            )
+            projection: [.wildcard()],
+            source: .aliased(.values(([[.decimal(ExactDecimal(coefficient: 15, scale: 1))]] as [[DatabaseKit.Literal]]).map { $0.map { DatabaseKit.Expression.literal($0) } }), name: "input_8", columns: ["identifier"])
         )
         let floatingJoinInput = SelectQuery(
-            projection: .all,
-            source: .values(
-                [[.double(1.5)]],
-                columnNames: ["identifier"]
-            )
+            projection: [.wildcard()],
+            source: .aliased(.values(([[.double(1.5)]] as [[DatabaseKit.Literal]]).map { $0.map { DatabaseKit.Expression.literal($0) } }), name: "input_7", columns: ["identifier"])
         )
         let joined = try await context.query(
             SelectQuery(
-                projection: .all,
+                projection: [.wildcard()],
                 source: .join(
                     JoinClause(
                         type: .inner,
-                        left: .subquery(decimalJoinInput, alias: "decimal_values"),
-                        right: .subquery(floatingJoinInput, alias: "float_values"),
+                        left: .aliased(.subquery(decimalJoinInput), name: "decimal_values"),
+                        right: .aliased(.subquery(floatingJoinInput), name: "float_values"),
                         condition: .using(["identifier"])
                     )
                 )
@@ -600,17 +573,15 @@ struct SQLRowExecutionTests {
         await #expect(throws: SQLBindingSourceFailure.self) {
             _ = try await context.executeSQL("SELECT nested.same FROM (SELECT 1 AS same, 2 AS same) nested")
         }
-        let left = SelectQuery(projection: .items([
+        let left = SelectQuery(projection: [
             ProjectionItem(.literal(.int(1)), alias: "same"),
             ProjectionItem(.literal(.int(2)), alias: "same")
-        ]), source: .values([[]], columnNames: []))
-        let right = SelectQuery(projection: .items([
+        ], source: .values(([[]] as [[DatabaseKit.Literal]]).map { $0.map { DatabaseKit.Expression.literal($0) } }))
+        let right = SelectQuery(projection: [
             ProjectionItem(.literal(.int(3)), alias: "other"),
             ProjectionItem(.literal(.int(4)), alias: "other")
-        ]), source: .values([[]], columnNames: []))
-        let set = try await context.query(SelectQuery(projection: .all, source: .unionAll([
-            .subquery(left, alias: "left_set"), .subquery(right, alias: "right_set")
-        ])))
+        ], source: .values(([[]] as [[DatabaseKit.Literal]]).map { $0.map { DatabaseKit.Expression.literal($0) } }))
+        let set = try await context.query(SelectQuery(projection: [.wildcard()], source: .subquery(SelectQuery(projection: [.wildcard()], source: .setOperation(operator: .union, quantifier: .all, left: SelectQuery(projection: [.wildcard()], source: .aliased(.subquery(left), name: "left_set")), right: SelectQuery(projection: [.wildcard()], source: .aliased(.subquery(right), name: "right_set")))))))
         #expect(set.columns.map(\.name) == ["same", "same"])
         #expect(set.rows.count == 2)
         #expect(set.columns.map(\.type) == [.sql(.bigint), .sql(.bigint)])
@@ -621,50 +592,92 @@ struct SQLRowExecutionTests {
     func contextualNullSetColumns() async throws {
         let container = try await makeContainer()
         let context = container.testBaseContext()
-        let values = try await context.query(SelectQuery(projection: .all,
-            source: .values([[.null], [.int(1)]], columnNames: ["value"])))
+        let values = try await context.query(SelectQuery(projection: [.wildcard()],
+            source: .aliased(.values(([[.null], [.int(1)]] as [[DatabaseKit.Literal]]).map { $0.map { DatabaseKit.Expression.literal($0) } }), name: "input_6", columns: ["value"])))
         #expect(values.columns[0].type == .sql(.bigint))
         #expect(values.rows.map { $0.values[0] } == [.primitive(.null), .primitive(.int64(1))])
 
-        let set = try await context.query(SelectQuery(projection: .all, source: .unionAll([
-            .values([[.null]], columnNames: ["value"]),
-            .values([[.int(1)]], columnNames: ["other"])
-        ])))
+        let set = try await context.query(SelectQuery(projection: [.wildcard()], source: .subquery(SelectQuery(projection: [.wildcard()], source: .setOperation(operator: .union, quantifier: .all, left: SelectQuery(projection: [.wildcard()], source: .aliased(.values(([[.null]] as [[DatabaseKit.Literal]]).map { $0.map { DatabaseKit.Expression.literal($0) } }), name: "input_5", columns: ["value"])), right: SelectQuery(projection: [.wildcard()], source: .aliased(.values(([[.int(1)]] as [[DatabaseKit.Literal]]).map { $0.map { DatabaseKit.Expression.literal($0) } }), name: "input_4", columns: ["other"])))))))
         #expect(set.columns[0].type == .sql(.bigint))
         #expect(set.columns[0].isNullable)
         #expect(set.rows.map { $0.values[0] } == [.primitive(.null), .primitive(.int64(1))])
 
         func singleton(_ expression: DatabaseKit.Expression) -> SelectQuery {
-            SelectQuery(projection: .items([ProjectionItem(expression, alias: "value")]),
-                        source: .values([[]], columnNames: []))
+            SelectQuery(projection: [ProjectionItem(expression, alias: "value")],
+                        source: .values(([[]] as [[DatabaseKit.Literal]]).map { $0.map { DatabaseKit.Expression.literal($0) } }))
         }
         let nullQuery = singleton(.literal(.null))
-        let strong = DataSource.values([[.int(1)]], columnNames: ["other"])
+        let strong = DataSource.aliased(.values(([[.int(1)]] as [[DatabaseKit.Literal]]).map { $0.map { DatabaseKit.Expression.literal($0) } }), name: "input_1", columns: ["other"])
         let weakQueries = [
             nullQuery,
             singleton(.coalesce([.literal(.null), .literal(.null)])),
             singleton(.caseWhen(cases: [
                 CaseWhenPair(condition: .literal(.bool(true)), result: .literal(.null))
             ], elseResult: .literal(.null))),
-            SelectQuery(projection: .all, source: .unionAll([
-                .subquery(nullQuery, alias: "first_null"),
-                .subquery(nullQuery, alias: "second_null")
-            ]))
+            SelectQuery(projection: [.wildcard()], source: .subquery(SelectQuery(projection: [.wildcard()], source: .setOperation(operator: .union, quantifier: .all, left: SelectQuery(projection: [.wildcard()], source: .aliased(.subquery(nullQuery), name: "first_null")), right: SelectQuery(projection: [.wildcard()], source: .aliased(.subquery(nullQuery), name: "second_null"))))))
         ]
         var queries = weakQueries.map { weak in
-            SelectQuery(projection: .all, source: .unionAll([
-                .subquery(weak, alias: "weak_values"), strong
-            ]))
+            SelectQuery(projection: [.wildcard()], source: .subquery(SelectQuery(projection: [.wildcard()], source: .setOperation(operator: .union, quantifier: .all, left: SelectQuery(projection: [.wildcard()], source: .aliased(.subquery(weak), name: "weak_values")), right: SelectQuery(projection: [.wildcard()], source: strong)))))
         }
-        queries.append(SelectQuery(projection: .all, source: .unionAll([
-            .table(TableRef("weak")), strong
-        ]), subqueries: [NamedSubquery(name: "weak", query: nullQuery)]))
+        queries.append(SelectQuery(projection: [.wildcard()], source: .subquery(SelectQuery(projection: [.wildcard()], source: .setOperation(operator: .union, quantifier: .all, left: SelectQuery(projection: [.wildcard()], source: .table(TableRef("weak"))), right: SelectQuery(projection: [.wildcard()], source: strong)))), subqueries: [NamedSubquery(name: "weak", query: nullQuery)]))
         for query in queries {
             let response = try await context.query(query)
             #expect(response.columns[0].type == .sql(.bigint))
             #expect(response.columns[0].isNullable)
             #expect(response.rows.first?.values[0] == .primitive(.null))
             #expect(response.rows.last?.values[0] == .primitive(.int64(1)))
+        }
+        var nested = singleton(.literal(.int(1)))
+        for _ in 0..<30 {
+            nested = SelectQuery(projection: [.wildcard()], source: .subquery(nested))
+        }
+        let nearLimit = try await context.query(nested)
+        #expect(nearLimit.columns.map(\.type) == [.sql(.bigint)])
+        #expect(nearLimit.rows.map(\.values) == [[.primitive(.int64(1))]])
+        var nestedSet = singleton(.literal(.int(1)))
+        for _ in 0..<30 {
+            nestedSet = SelectQuery(projection: [.wildcard()], source: .setOperation(operator: .union,
+                quantifier: .all, left: nestedSet, right: singleton(.literal(.int(1)))))
+        }
+        let setDepth = try await context.query(nestedSet)
+        #expect(setDepth.columns.map(\.type) == [.sql(.bigint)])
+        #expect(setDepth.rows.map(\.values) == Array(repeating: [.primitive(.int64(1))], count: 31))
+        var nestedJoin = DataSource.values([[]])
+        for _ in 0..<60 {
+            nestedJoin = .join(JoinClause(type: .cross, left: nestedJoin, right: .values([[]])))
+        }
+        let joinDepth = try await context.query(SelectQuery(projection: [.wildcard()], source: nestedJoin))
+        #expect(joinDepth.columns.isEmpty)
+        #expect(joinDepth.rows.map(\.values) == [[]])
+        var nestedScalar = singleton(.literal(.int(1)))
+        for _ in 0..<20 { nestedScalar = singleton(.subquery(nestedScalar)) }
+        let scalarDepth = try await context.query(nestedScalar)
+        #expect(scalarDepth.columns.map(\.type) == [.sql(.bigint)])
+        #expect(scalarDepth.rows.map(\.values) == [[.primitive(.int64(1))]])
+        let scalarBeyondLimit = singleton(.subquery(nestedScalar))
+        await #expect {
+            _ = try await context.query(scalarBeyondLimit)
+        } throws: { error in
+            guard case QueryStructuralValidationError.resourceLimitExceeded(
+                resource: .nestingDepth, actual: let actual, maximum: let maximum) = error else { return false }
+            return maximum == QueryStructuralLimits.default.maximumNestingDepth && actual > maximum
+        }
+        var nestedCTE = singleton(.literal(.int(1)))
+        for index in 0..<30 {
+            let name = "depth_\(index)"
+            nestedCTE = SelectQuery(projection: [.wildcard()], source: .table(TableRef(name)),
+                subqueries: [NamedSubquery(name: name, query: nestedCTE)])
+        }
+        let cteDepth = try await context.query(nestedCTE)
+        #expect(cteDepth.columns.map(\.type) == [.sql(.bigint)])
+        #expect(cteDepth.rows.map(\.values) == [[.primitive(.int64(1))]])
+        let beyondLimit = SelectQuery(projection: [.wildcard()], source: .subquery(nested))
+        await #expect {
+            _ = try await context.query(beyondLimit)
+        } throws: { error in
+            guard case QueryStructuralValidationError.resourceLimitExceeded(
+                resource: .nestingDepth, actual: let actual, maximum: let maximum) = error else { return false }
+            return maximum == QueryStructuralLimits.default.maximumNestingDepth && actual > maximum
         }
     }
 
@@ -705,9 +718,9 @@ struct SQLRowExecutionTests {
                 elements: [.primitive(.int32(1)), .primitive(.int32(2))], limits: limits), limits: limits))
         try context.insert(item)
         try await context.save()
-        let projection = Projection.items(["numeric", "json", "jsonb", "interval", "array"].map {
+        let projection = ["numeric", "json", "jsonb", "interval", "array"].map {
             ProjectionItem(.column(ColumnRef(column: $0)))
-        })
+        }
         let source = DataSource.table(TableRef("SQLRichItem"))
         let result = try await context.query(SelectQuery(projection: projection, source: source))
         #expect(result.rows.count == 1)

@@ -940,7 +940,7 @@ struct FusionExecutionContractTests {
         defer { await container.shutdown() }
         let baselineTransactions = engine.transactionCount
         let nestedFusion = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(
                 TableRef(FusionExecutionContractItem.persistableType)
             ),
@@ -964,27 +964,24 @@ struct FusionExecutionContractTests {
         )
         let queries = [
             SelectQuery(
-                projection: .all,
-                source: .subquery(nestedFusion, alias: "nested")
+                projection: [.wildcard()],
+                source: .aliased(.subquery(nestedFusion), name: "nested")
             ),
             SelectQuery(
-                projection: .all,
+                projection: [.wildcard()],
                 source: .table(TableRef("nested_cte")),
                 subqueries: [
                     NamedSubquery(name: "nested_cte", query: nestedFusion),
                 ]
             ),
             SelectQuery(
-                projection: .items([
+                projection: [
                     ProjectionItem(
                         .exists(nestedFusion),
                         alias: "has_match"
                     ),
-                ]),
-                source: .values(
-                    [[.int(1)]],
-                    columnNames: ["seed"]
-                )
+                ],
+                source: .aliased(.values([[.literal(.int(1))]]), name: "input_3", columns: ["seed"])
             ),
         ]
 
@@ -1029,13 +1026,13 @@ struct FusionExecutionContractTests {
         defer { await container.shutdown() }
         let baselineTransactions = engine.transactionCount
         let nested = SelectQuery(
-            projection: .items([
+            projection: [
                 ProjectionItem(.literal(.int(1)), alias: "value"),
-            ]),
-            source: .values([[.int(1)]], columnNames: ["seed"])
+            ],
+            source: .aliased(.values([[.literal(.int(1))]]), name: "input_2", columns: ["seed"])
         )
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(
                 TableRef(FusionExecutionContractItem.persistableType)
             ),
@@ -1362,7 +1359,7 @@ struct FusionExecutionContractTests {
             monotonicClock: container.monotonicClock
         )
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(
                 TableRef(FusionExecutionContractItem.persistableType)
             ),
@@ -1437,7 +1434,7 @@ struct FusionExecutionContractTests {
         await #expect {
             _ = try await context.query(
                 SelectQuery(
-                    projection: .all,
+                    projection: [.wildcard()],
                     source: .table(
                         TableRef(FusionExecutionContractItem.persistableType)
                     ),
@@ -1513,7 +1510,7 @@ struct FusionExecutionContractTests {
         await #expect {
             _ = try await context.query(
                 SelectQuery(
-                    projection: .all,
+                    projection: [.wildcard()],
                     source: .table(
                         TableRef(
                             FusionAuthorizationCountingItem.persistableType
@@ -1590,11 +1587,11 @@ struct FusionExecutionContractTests {
         try await context.save()
 
         let query = SelectQuery(
-            projection: .items([
+            projection: [
                 ProjectionItem(
                     .column(ColumnRef(column: "value"))
                 )
-            ]),
+            ],
             source: .table(
                 TableRef(FusionProjectedAuthorizationItem.persistableType)
             ),
@@ -1624,9 +1621,9 @@ struct FusionExecutionContractTests {
         #expect(response.columns.map(\.name) == ["value"])
 
         do {
-            _ = try await context.query(query.replacing(projection: .items([
+            _ = try await context.query(query.replacing(projection: [
                 ProjectionItem(.column(ColumnRef(column: "id"))),
-            ])))
+            ]))
             Issue.record("Expected the restricted identifier projection to fail")
         } catch let error as FieldSecurityError {
             #expect(error == .readNotAllowed(
@@ -1662,7 +1659,7 @@ struct FusionExecutionContractTests {
             ]
         )
         let query = SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(TableRef("fusion_missing_entity")),
             accessPath: .fusion(
                 FusionSource(stages: [
@@ -1763,7 +1760,7 @@ struct FusionExecutionContractTests {
         FusionAuthorizationCountingItem.readDecisionCount.withLock { $0 = 0 }
 
         let query = SelectQuery(
-                projection: .all,
+                projection: [.wildcard()],
                 source: .table(
                     TableRef(FusionAuthorizationCountingItem.persistableType)
                 ),
@@ -1811,6 +1808,8 @@ struct FusionExecutionContractTests {
         let response = try await context.query(query)
 
         #expect(response.rows.map { $0.values[0] } == [.primitive(.string("one"))])
+        #expect(response.columns.map(\.type) == [.primitive(.string), .primitive(.int64)])
+        #expect(response.columns.allSatisfy { !$0.isNullable })
         #expect(
             FusionAuthorizationCountingItem.queryDecisionCount.withLock { $0 }
                 == 1
@@ -1834,7 +1833,7 @@ struct FusionExecutionContractTests {
             try context.insert(FusionExecutionContractItem(id: "item-\(value)", value: value))
         }
         try await context.save()
-        let query = SelectQuery(projection: .all,
+        let query = SelectQuery(projection: [.wildcard()],
             source: .table(TableRef(FusionExecutionContractItem.persistableType)),
             accessPath: .fusion(FusionSource(stages: [
                 FusionStageSource(inputs: [FusionInput(operation: .filter(
@@ -1875,7 +1874,7 @@ struct FusionExecutionContractTests {
         let context = container.testBaseContext()
         try context.insert(FusionExecutionContractItem(id: "one", value: 1))
         try await context.save()
-        let query = SelectQuery(projection: .all,
+        let query = SelectQuery(projection: [.wildcard()],
             source: .table(TableRef(FusionExecutionContractItem.persistableType)),
             accessPath: .fusion(FusionSource(stages: [
                 FusionStageSource(inputs: [FusionInput(operation: .index(FusionIndexSource(
@@ -1962,18 +1961,16 @@ struct FusionExecutionContractTests {
             ]),
         ])
         func nestedQuery(limit: UInt64) -> SelectQuery {
-            SelectQuery(
-                projection: .all,
-                source: .table(
+            SelectQuery(projection: [.wildcard()],
+            source: .table(
                     TableRef(FusionExecutionContractItem.persistableType)
                 ),
-                accessPath: .fusion(source),
-                limit: limit
-            )
+            accessPath: .fusion(source),
+            pagination: QueryPagination(limit: .count(.fixed(limit), withTies: false)))
         }
         let response = try await context.query(
             SelectQuery(
-                projection: .items([
+                projection: [
                     ProjectionItem(
                         .exists(nestedQuery(limit: 1)),
                         alias: "first"
@@ -1982,11 +1979,8 @@ struct FusionExecutionContractTests {
                         .exists(nestedQuery(limit: 2)),
                         alias: "second"
                     ),
-                ]),
-                source: .values(
-                    [[.int(1)]],
-                    columnNames: ["seed"]
-                )
+                ],
+                source: .aliased(.values([[.literal(.int(1))]]), name: "input_1", columns: ["seed"])
             )
         )
 

@@ -3,6 +3,11 @@ import DatabaseKit
 enum SPARQLExpressionSemanticName {
     static func describe(_ expression: DatabaseKit.Expression) -> String {
         switch expression {
+        case .collate: return "SQL collation"
+        case .arraySubquery: return "SQL ARRAY subquery"
+        case .wholeRow: return "SQL whole row"
+        case .field: return "SQL composite field"
+        case .fieldExpansion: return "SQL composite expansion"
         case .arrayAccess: return "SQL array access"
         case .collectionOperation: return "SQL collection operation"
         case .array: return "SQL ARRAY constructor"

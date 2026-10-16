@@ -17,11 +17,11 @@ struct SQLScalarTraversalContractTests {
                 FieldSchema(name: "escape", fieldNumber: 4, type: .string),
             ])
         let query = SelectQuery(
-            projection: .items([ProjectionItem(.patternMatch(
+            projection: [ProjectionItem(.patternMatch(
                 subject: .concatenate(.col("p", "subject"), .string("suffix")),
                 pattern: .col("p", "pattern"), escape: .col("p", "escape"),
-                kind: .like))]),
-            source: .table(TableRef(table: "PatternScope", alias: "p")))
+                kind: .like))],
+            source: .aliased(.table(TableRef(table: "PatternScope")), name: "p"))
         let plan = DatabaseFieldReadAuthorizationPlan.make(
             query: query, schema: try Schema(entities: [entity]))
         #expect(plan.fieldsByEntity["PatternScope"] == ["subject", "pattern", "escape"])
@@ -32,14 +32,14 @@ struct SQLScalarTraversalContractTests {
     @Test("Fusion admits physical sources nested in every SQL pattern operand")
     func patternSubqueriesRequireSourcePreflight() throws {
         func nested(_ name: String) -> Expression {
-            .subquery(SelectQuery(projection: .items([ProjectionItem(.string("value"))]),
+            .subquery(SelectQuery(projection: [ProjectionItem(.string("value"))],
                                  source: .table(TableRef(name))))
         }
         let expression = Expression.patternMatch(
             subject: .concatenate(nested("SubjectSource"), .string("suffix")),
             pattern: nested("PatternSource"), escape: nested("EscapeSource"), kind: .like)
-        let query = SelectQuery(projection: .items([ProjectionItem(expression)]),
-                                source: .values([[]], columnNames: []))
+        let query = SelectQuery(projection: [ProjectionItem(expression)],
+                                source: .values([[]]))
         let meter = DatabaseWorkMeter(budget: ExecutionBudget(), monotonicClock: SystemStorageClock())
         #expect(try FusionSelectQueryGraphWalker.containsNestedQuery(in: expression, workMeter: meter))
         var sources = Set<String>()
@@ -58,7 +58,7 @@ struct SQLScalarTraversalContractTests {
         #expect(try FusionSelectQueryGraphWalker.containsNestedQuery(in: collection, workMeter: meter))
         var collectionSources = Set<String>()
         try FusionSelectQueryGraphWalker.forEachQuery(
-            in: SelectQuery(projection: .items([ProjectionItem(collection)]), source: .values([[]], columnNames: [])),
+            in: SelectQuery(projection: [ProjectionItem(collection)], source: .values([[]])),
             workMeter: meter, { _ in },
             visitTable: { table, _ in _ = collectionSources.insert(table.table) },
             visitPolymorphic: { _, _ in Issue.record("Unexpected polymorphic source") })

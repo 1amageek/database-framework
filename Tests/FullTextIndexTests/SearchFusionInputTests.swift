@@ -229,10 +229,9 @@ struct SearchFusionInputTests {
                 referencedFields: source.referencedFields,
                 parameters: parameters
             )
-            let query = SelectQuery(
-                projection: .all,
-                source: .table(TableRef(SearchFusionInputItem.persistableType)),
-                accessPath: .fusion(
+            let query = SelectQuery(projection: [.wildcard()],
+            source: .table(TableRef(SearchFusionInputItem.persistableType)),
+            accessPath: .fusion(
                     FusionSource(stages: [
                         FusionStageSource(inputs: [
                             FusionInput(
@@ -241,8 +240,7 @@ struct SearchFusionInputTests {
                             ),
                         ]),
                     ])
-                )
-            )
+                ))
             await #expect {
                 _ = try await container.testBaseContext().query(query)
             } throws: { error in

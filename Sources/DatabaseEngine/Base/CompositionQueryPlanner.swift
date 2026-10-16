@@ -17,7 +17,7 @@ public struct CompositionQueryPlanner: Sendable {
             try CompositionQueryPlanner.validateRelationalSource(query)
         }
 
-        func columns(session: DatabaseReadSession, query: SelectQuery) throws -> [QueryColumn] {
+        func columns(session: DatabaseReadSession, query: SelectQuery) throws -> DatabaseRetainedQueryColumns {
             try session.boundQueryColumns(query, parameters: parameters)
         }
 
@@ -273,6 +273,20 @@ public struct CompositionQueryPlanner: Sendable {
         let crossBaseJoin = try Self.crossBaseJoinPlan(query)
         try Self.validateCommon(query)
         try memberExecutor.validate(query)
+        if crossBaseJoin != nil {
+            var visitedRoot = false
+            // FIXME(INCOMPLETE_IMPLEMENTATION): Cross-Base joined rows have
+            // two origins; the production planner rejects nested query effects
+            // until their source evaluation authority is defined and verified.
+            try FusionSelectQueryGraphWalker.forEachQuery(in: query,
+                workMeter: operationOptions.readContext.workMeter, { _ in
+                    guard !visitedRoot else {
+                        throw CompositionQueryError.unsupportedPlan(
+                            "cross-Base JOIN nested queries require an explicit evaluation scope")
+                    }
+                    visitedRoot = true
+                }, visitTable: { _, _ in }, visitPolymorphic: { _, _ in })
+        }
         try await executeValidated(
             query,
             source: source,
@@ -311,6 +325,7 @@ public struct CompositionQueryPlanner: Sendable {
             )
         }
         try Self.validateCommon(query)
+        try Self.validateFeatureOrdering(query)
         try memberExecutor.validate(query)
         try await executeValidated(
             query,
@@ -378,10 +393,19 @@ public struct CompositionQueryPlanner: Sendable {
                 try await ready.append(event)
                 return true
             }
-            let columns = try await boundMemberColumns(
+            if memberExecutor is RelationalMemberQueryExecutor {
+                guard let member = snapshot.members.first else { throw CompositionQueryError.workspaceCorrupted }
+                try await source.withMemberReadSession(member, in: snapshot, workMeter: workMeter) { session in
+                    try session.validateCompositionPagination(query, parameters: options.parameters,
+                        execution: options.readContext)
+                }
+            }
+            let columnOwner = try await boundMemberColumns(
                 query, source: source, snapshot: snapshot,
                 workMeter: workMeter, memberExecutor: memberExecutor
             )
+            let columns = columnOwner.columns
+            defer { withExtendedLifetime(columnOwner) {} }
             let metadata = CompositionQueryMetadata(
                 composition: snapshot.metadata.resolution,
                 basePlacementGenerations: snapshot.metadata
@@ -391,6 +415,14 @@ public struct CompositionQueryPlanner: Sendable {
                 columns: columns
             )
             guard try await emit(.began(metadata)) else { return }
+
+            if memberExecutor is RelationalMemberQueryExecutor,
+               crossBaseJoin == nil, query.accessPath == nil,
+               try Self.aggregateProjection(query.projection) == nil {
+                try await executeSelectedRows(query, options: options, source: source,
+                    snapshot: snapshot, workMeter: workMeter, emit: emit)
+                return
+            }
 
             if let crossBaseJoin {
                 try await executeCrossBaseJoin(
@@ -406,7 +438,21 @@ public struct CompositionQueryPlanner: Sendable {
                 return
             }
 
-            var window = try Self.emissionWindow(query)
+            let windowPagination: SQLResolvedPagination?
+            if memberExecutor is RelationalMemberQueryExecutor,
+               try Self.aggregateProjection(query.projection) != nil {
+                guard let first = snapshot.members.first else { throw CompositionQueryError.workspaceCorrupted }
+                windowPagination = try await source.withMemberReadSession(first, in: snapshot, workMeter: workMeter) { session in
+                    try await session.resolveCompositionPagination(query, parameters: options.parameters,
+                        execution: options.readContext)
+                }
+            } else { windowPagination = nil }
+            var window: EmissionWindow
+            if let pagination = windowPagination {
+                // An admitted aggregate produces at most one global row.
+                window = EmissionWindow(remainingOffset: pagination.offset == 0 ? 0 : 1,
+                    remainingLimit: pagination.limit == 0 ? 0 : nil)
+            } else { window = try Self.emissionWindow(query) }
             if !window.isExhausted,
                let aggregates = try Self.aggregateProjection(query.projection) {
                 let row = try await executeAggregates(
@@ -433,8 +479,7 @@ public struct CompositionQueryPlanner: Sendable {
                     }
                 }
             } else if !window.isExhausted,
-                      query.distinct
-                        || Self.isDistinctProjection(query.projection) {
+                      query.quantifier == .distinct {
                 let workspace = CompositionDistinctWorkspace.create(
                     maximumIntermediateBytes: options.readContext.options
                         .budget.maximumIntermediateBytes,
@@ -523,15 +568,15 @@ public struct CompositionQueryPlanner: Sendable {
         snapshot: DatabaseCompositionReadSnapshot,
         workMeter: DatabaseWorkMeter,
         memberExecutor: any CompositionMemberQueryExecutor
-    ) async throws -> [QueryColumn] {
-        var expected: [QueryColumn]?
+    ) async throws -> DatabaseRetainedQueryColumns {
+        var expected: DatabaseRetainedQueryColumns?
         for member in snapshot.members {
             let columns = try await source.withMemberReadSession(
                 member, in: snapshot, workMeter: workMeter
             ) { session in try memberExecutor.columns(session: session, query: query) }
-            try QueryColumn.validate(columns)
+            try QueryColumn.validate(columns.columns)
             if let expected {
-                guard expected == columns else {
+                guard expected.columns == columns.columns else {
                     throw CompositionQueryError.unsupportedPlan("Composition members have incompatible output schemas")
                 }
             } else {
@@ -542,15 +587,83 @@ public struct CompositionQueryPlanner: Sendable {
         return expected
     }
 
+    /// Runs the global SQL pipeline over admitted member sources without losing scopes or presence.
+    private func executeSelectedRows(
+        _ query: SelectQuery,
+        options: CompositionQueryExecutionOptions,
+        source: CompositionDataSource,
+        snapshot: DatabaseCompositionReadSnapshot,
+        workMeter: DatabaseWorkMeter,
+        emit: (CompositionQueryEvent) async throws -> Bool
+    ) async throws {
+        guard let first = snapshot.members.first else { throw CompositionQueryError.workspaceCorrupted }
+        let execution = ReadExecutionContext(options: options.readContext.options.withoutExternalPageWindow(),
+            monotonicClock: source.container.monotonicClock, workMeter: workMeter,
+            queryStructuralLimits: structuralLimits, temporalEnvironment: options.readContext.temporalEnvironment)
+        let pagination = try await source.withMemberReadSession(first, in: snapshot, workMeter: workMeter) { session in
+            try await session.resolveCompositionPagination(query, parameters: options.parameters, execution: execution)
+        }
+        guard pagination.limit != 0 else { return }
+        let lineage = try CompositionRowLineage(members: snapshot.members, workMeter: workMeter)
+        var schema: CanonicalRelationSchema?
+        var collected = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(workMeter: workMeter,
+            stage: .resultMaterialization, layout: DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self))
+        for (memberIndex, member) in snapshot.members.enumerated() {
+            let relation = try await source.withMemberReadSession(member, in: snapshot, workMeter: workMeter) { session in
+                try await session.materializeCompositionSource(query, execution: execution, parameters: options.parameters)
+            }
+            if let expected = schema {
+                guard expected == relation.schema else {
+                    throw CompositionQueryError.unsupportedPlan("Composition members have incompatible source schemas")
+                }
+            } else { schema = relation.schema }
+            for row in relation.rows {
+                let footprint = try lineage.annotatedFootprint(of: row)
+                try collected.append(footprint: footprint) {
+                    try lineage.annotate(row, memberIndex: memberIndex, retaining: relation.rows.payloadLease)
+                }
+            }
+        }
+        guard let schema else { throw CompositionQueryError.workspaceCorrupted }
+        let relation = CanonicalRelation(schema: schema,
+            rows: try collected.finish().moveToSharedOwnership(at: .resultMaterialization))
+        let result = try await source.withMemberReadSession(first, in: snapshot, workMeter: workMeter) { session in
+            try await session.finalizeCompositionRelation(query, relation: relation, execution: execution,
+                parameters: options.parameters, mergeDuplicateAnnotations: { try lineage.merge($0, $1) },
+                sourceEvaluation: sourceEvaluation(lineage: lineage, source: source,
+                    snapshot: snapshot, workMeter: workMeter), resolvedPagination: pagination)
+        }
+        for index in 0..<result.count {
+            var shouldContinue = true
+            try await result.withElement(at: index) { row in
+                shouldContinue = try await emit(.row(lineage.result(row, retaining: result.originPayloadLeases)))
+            }
+            if !shouldContinue { return }
+        }
+    }
+
+    private func sourceEvaluation(lineage: CompositionRowLineage, source: CompositionDataSource,
+        snapshot: DatabaseCompositionReadSnapshot, workMeter: DatabaseWorkMeter
+    ) -> CanonicalSourceEvaluationDispatcher {
+        { annotations, body in
+            let member = try lineage.member(for: annotations)
+            return try await DatabaseReadSession.withIndependentCompositionSourceEvaluation {
+                try await source.withMemberReadSession(member, in: snapshot, workMeter: workMeter) { session in
+                    try await session.withCompositionSourceEvaluation(body)
+                }
+            }
+        }
+    }
+
     private static func comparablePrimitive(_ value: QueryValue) throws -> FieldValue {
         switch value {
         case .primitive(let primitive): return primitive
         case .numeric(let numeric): return .decimal(numeric.value)
-        // FIXME(INCOMPLETE_IMPLEMENTATION): Global Composition ORDER BY and
-        // MIN/MAX still consume this primitive-only merger. Rich temporal
-        // values must fail explicitly until S08 sorting and S09 aggregate
-        // owners preserve their typed comparison and retained value contracts.
-        case .json, .jsonb, .array, .interval, .time, .timeWithTimeZone,
+        // FIXME(INCOMPLETE_IMPLEMENTATION): Global Composition MIN/MAX still
+        // consume primitive extrema. Rich values fail until S09 retains the
+        // selected typed extrema. Feature-owned raw ordering also rejects them;
+        // selected SQL sorting uses CanonicalSQLValueSemantics instead.
+        case .json, .jsonb, .array, .composite, .interval, .time, .timeWithTimeZone,
              .dateInfinity, .timestampInfinity, .intervalInfinity:
             throw CompositionQueryError.unsupportedPlan("this operation does not support rich query values")
         }
@@ -602,10 +715,9 @@ public struct CompositionQueryPlanner: Sendable {
         )
         if vectorScan != nil {
             guard aggregateProjection == nil,
-                  !query.distinct,
-                  !Self.isDistinctProjection(query.projection),
+                  query.quantifier == .all,
                   query.orderBy == nil || query.orderBy?.isEmpty == true,
-                  query.offset == nil || query.offset == 0 else {
+                  query.pagination.offset == nil || query.pagination.offset == .fixed(0) else {
                 throw CompositionQueryError.unsupportedPlan(
                     "vector Composition search does not accept aggregate, DISTINCT, ORDER BY, or OFFSET"
                 )
@@ -614,6 +726,9 @@ public struct CompositionQueryPlanner: Sendable {
     }
 
     private static func validateCommon(_ query: SelectQuery) throws {
+        // FIXME(INCOMPLETE_IMPLEMENTATION): Composition's current production
+        // planner admits Base-local table/JOIN inputs, not general CTE sources.
+        // Global CTE demand, scope and lineage must be proven before admission.
         guard query.subqueries == nil else {
             throw CompositionQueryError.unsupportedPlan(
                 "subqueries cannot be proven Base-local"
@@ -624,16 +739,16 @@ public struct CompositionQueryPlanner: Sendable {
                 "grouped aggregation is not yet a decomposable Composition plan"
             )
         }
-        if let orderBy = query.orderBy {
-            for sortKey in orderBy {
-                switch sortKey.expression {
-                case .column, .variable:
-                    break
-                default:
-                    throw CompositionQueryError.unsupportedPlan(
-                            "global ordering requires an output column or variable"
-                        )
-                }
+    }
+
+    private static func validateFeatureOrdering(_ query: SelectQuery) throws {
+        if case .distinctOn = query.quantifier {
+            throw CompositionQueryError.unsupportedPlan("feature execution does not support DISTINCT ON")
+        }
+        for key in query.orderBy ?? [] {
+            switch key.expression {
+            case .column, .variable: break
+            default: throw CompositionQueryError.unsupportedPlan("feature ordering requires an output column or variable")
             }
         }
     }
@@ -697,6 +812,17 @@ public struct CompositionQueryPlanner: Sendable {
             authorizationPlan: authorizationPlan,
             schema: source.container.schema
         )
+        let joinExecution = ReadExecutionContext(
+            options: options.readContext.options.withoutExternalPageWindow(),
+            monotonicClock: source.container.monotonicClock,
+            workMeter: workMeter,
+            queryStructuralLimits: structuralLimits,
+            temporalEnvironment: options.readContext.temporalEnvironment
+        )
+        let pagination = try await source.withMemberReadSession(leftMember, in: snapshot, workMeter: workMeter) { session in
+            try await session.resolveCompositionPagination(query, parameters: options.parameters, execution: joinExecution)
+        }
+        guard pagination.limit != 0 else { return }
         let leftRows = try await collectCrossBaseInput(
             query: leftQuery,
             member: leftMember,
@@ -715,28 +841,18 @@ public struct CompositionQueryPlanner: Sendable {
             workMeter: workMeter,
             memberExecutor: memberExecutor
         )
-        let joinContext = source.container.session(
-            authorization: source.authorization
-        ).base(plan.leftBaseID).newContext()
-        let joinExecution = ReadExecutionContext(
-            options: options.readContext.options.withoutExternalPageWindow(),
-            monotonicClock: source.container.monotonicClock,
-            workMeter: workMeter,
-            queryStructuralLimits: structuralLimits,
-            temporalEnvironment: options.readContext.temporalEnvironment
-        )
+        let left = DatabaseReadResultBox(consume leftRows)
+        let right = DatabaseReadResultBox(consume rightRows)
         let rows: DatabaseSharedRetainedQueryRows
         do {
-            rows = try await joinContext.executeCompositionCrossBaseJoin(
-                query,
-                join: plan.join,
-                leftRows: consume leftRows,
-                leftTable: plan.leftTable,
-                rightRows: consume rightRows,
-                rightTable: plan.rightTable,
-                options: joinExecution,
-                parameters: options.parameters
-            )
+            rows = try await source.withMemberReadSession(leftMember, in: snapshot, workMeter: workMeter) { session in
+                try await session.executeCompositionCrossBaseJoin(
+                    query, join: plan.join, leftRows: left.take(), leftTable: plan.leftTable,
+                    rightRows: right.take(), rightTable: plan.rightTable,
+                    execution: joinExecution, parameters: options.parameters,
+                    resolvedPagination: pagination
+                )
+            }
         } catch let error as CanonicalReadError {
             switch error {
             case .unsupportedExpression,
@@ -815,11 +931,14 @@ public struct CompositionQueryPlanner: Sendable {
             1,
             min(options.pageSize, max(1, maximumIntermediateRows / 4))
         )
-        let columns = try await source.withMemberReadSession(
+        let columnOwner = try await source.withMemberReadSession(
             member, in: snapshot, workMeter: workMeter
         ) { session in try memberExecutor.columns(session: session, query: query) }
+        let columns = columnOwner.columns
+        defer { withExtendedLifetime(columnOwner) {} }
         var rows = try DatabaseRetainedQueryRowsBuilder(
-            columns: columns, workMeter: workMeter, stage: .joinCandidate
+            columns: columns, workMeter: workMeter, stage: .joinCandidate,
+            payloadLeases: columnOwner.payloadLeases, schemaLeases: []
         )
         var cursor = MemberCursor(member: member, columns: columns)
         while let row = try await nextRow(
@@ -857,26 +976,25 @@ public struct CompositionQueryPlanner: Sendable {
         else {
             throw CompositionQueryError.workspaceCorrupted
         }
-        let projection: Projection
+        let projection: [ProjectionItem]
         if fieldNames.isEmpty {
-            projection = .items([
+            projection = [
                 ProjectionItem(
                     .literal(.bool(true)),
                     alias: "__composition_row_presence"
                 )
-            ])
+            ]
         } else {
-            projection = .items(fieldNames.sorted().map { fieldName in
+            projection = fieldNames.sorted().map { fieldName in
                 ProjectionItem(
                     .column(ColumnRef(column: fieldName)),
                     alias: fieldName
                 )
-            })
+            }
         }
-        return SelectQuery(
-            projection: projection,
-            source: .table(table)
-        )
+        let reference = TableRef(schema: table.schema, table: table.table, partitions: table.partitions)
+        let source: DataSource = table.alias.map { .aliased(.table(reference), name: $0) } ?? .table(reference)
+        return SelectQuery(projection: projection, source: source)
     }
 
     private static func crossBaseJoinPlan(
@@ -886,13 +1004,15 @@ public struct CompositionQueryPlanner: Sendable {
         guard case .join(let join) = query.source,
               join.type == .inner,
               join.condition != nil,
-              case .base(let leftBaseID, .table(let leftTable)) = join.left,
-              case .base(let rightBaseID, .table(let rightTable)) = join.right
+              let left = qualifiedTable(join.left),
+              let right = qualifiedTable(join.right)
         else {
             throw CompositionQueryError.unsupportedPlan(
                 "cross-Base execution requires two explicitly Base-qualified tables joined by INNER JOIN"
             )
         }
+        let (leftBaseID, leftTable) = left
+        let (rightBaseID, rightTable) = right
         guard leftTable.effectiveName != rightTable.effectiveName else {
             throw CompositionQueryError.unsupportedPlan(
                 "cross-Base JOIN inputs require distinct table names or aliases"
@@ -910,6 +1030,17 @@ public struct CompositionQueryPlanner: Sendable {
             rightBaseID: rightBaseID,
             rightTable: rightTable
         )
+    }
+
+    private static func qualifiedTable(_ source: DataSource) -> (Base.ID, TableRef)? {
+        switch source {
+        case .base(let base, .table(let table)): return (base, table)
+        case .base(let base, .aliased(.table(let table), let name, nil)),
+             .aliased(.base(let base, .table(let table)), let name, nil):
+            return (base, TableRef(schema: table.schema, table: table.table,
+                alias: name, partitions: table.partitions))
+        default: return nil
+        }
     }
 
     private static func validateCrossBaseColumns(
@@ -954,7 +1085,7 @@ public struct CompositionQueryPlanner: Sendable {
             }
         }
 
-        if case .allFrom(let qualifier) = query.projection {
+        for case .wildcard(qualifier: .some(let qualifier)) in query.projection {
             let matchesLeft = leftQualifiers.contains(qualifier)
             let matchesRight = rightQualifiers.contains(qualifier)
             guard matchesLeft != matchesRight else {
@@ -989,14 +1120,12 @@ public struct CompositionQueryPlanner: Sendable {
         case .join(let join):
             return containsBaseQualifier(join.left)
                 || containsBaseQualifier(join.right)
-        case .subquery(let query, _):
+        case .subquery(let query):
             return containsBaseQualifier(query.source)
-        case .union(let sources), .unionAll(let sources),
-             .intersect(let sources):
-            return sources.contains(where: containsBaseQualifier)
-        case .except(let left, let right):
-            return containsBaseQualifier(left)
-                || containsBaseQualifier(right)
+        case .aliased(let source, _, _):
+            return containsBaseQualifier(source)
+        case .setOperation(_, _, let left, let right):
+            return containsBaseQualifier(left.source) || containsBaseQualifier(right.source)
         case .table, .logical, .values, .graphTable, .graphPattern,
              .namedGraph, .service:
             return false
@@ -1014,16 +1143,15 @@ public struct CompositionQueryPlanner: Sendable {
         emit: (RetainedOriginRow) async throws -> Bool
     ) async throws {
         let localQuery = SelectQuery(
-            projection: Self.nonDistinctProjection(query.projection),
+            projection: query.projection,
             source: query.source,
             accessPath: query.accessPath,
             filter: query.filter,
             groupBy: nil,
             having: nil,
             orderBy: query.orderBy,
-            limit: nil,
-            offset: nil,
-            distinct: false,
+            quantifier: .all,
+            pagination: QueryPagination(),
             subqueries: nil,
             reduced: false,
             dataset: query.dataset
@@ -1322,7 +1450,7 @@ public struct CompositionQueryPlanner: Sendable {
         _ query: SelectQuery,
         aggregates: (
             descriptors: [AggregateDescriptor],
-            localProjection: Projection
+            localProjection: [ProjectionItem]
         ),
         columns: [QueryColumn],
         options: CompositionQueryExecutionOptions,
@@ -1339,17 +1467,18 @@ public struct CompositionQueryPlanner: Sendable {
             groupBy: nil,
             having: nil,
             orderBy: nil,
-            limit: nil,
-            offset: nil,
-            distinct: false,
+            quantifier: .all,
+            pagination: QueryPagination(),
             subqueries: nil,
             reduced: false,
             dataset: query.dataset
         )
-        let localColumns = try await boundMemberColumns(
+        let localColumnOwner = try await boundMemberColumns(
             localQuery, source: source, snapshot: snapshot,
             workMeter: workMeter, memberExecutor: memberExecutor
         )
+        let localColumns = localColumnOwner.columns
+        defer { withExtendedLifetime(localColumnOwner) {} }
         let stateLayout = try DatabaseRetainedArrayLayout.forElement(
             AggregateState.self
         )
@@ -1724,16 +1853,9 @@ public struct CompositionQueryPlanner: Sendable {
             let left = try Self.comparablePrimitive(lhs.row.values[slot])
             let right = try Self.comparablePrimitive(rhs.row.values[slot])
             let comparison: QueryComparison
-            do {
-                comparison = try FieldValueComparator.compare(
-                    left,
-                    right,
-                    using: key
-                )
-            } catch {
-                throw CompositionQueryError.unsupportedPlan(
-                    "ORDER BY values are not mutually comparable"
-                )
+            do { comparison = try FieldValueComparator.compare(left, right, using: key) }
+            catch {
+                throw CompositionQueryError.unsupportedPlan("ORDER BY values are not mutually comparable")
             }
             guard comparison != .equal else { continue }
             return comparison == .lessThan
@@ -1777,25 +1899,19 @@ public struct CompositionQueryPlanner: Sendable {
     }
 
     private static func aggregateProjection(
-        _ projection: Projection
+        _ projection: [ProjectionItem]
     ) throws -> (
         descriptors: [AggregateDescriptor],
-        localProjection: Projection
+        localProjection: [ProjectionItem]
     )? {
-        let items: [ProjectionItem]
-        switch projection {
-        case .items(let value), .distinctItems(let value):
-            items = value
-        case .all, .allFrom:
-            return nil
-        }
+        let items = projection
         let containsAggregate = items.contains {
-            if case .aggregate = $0.expression { return true }
+            if case .expression(.aggregate, _) = $0 { return true }
             return false
         }
         guard containsAggregate else { return nil }
         guard items.allSatisfy({ item in
-            if case .aggregate = item.expression { return true }
+            if case .expression(.aggregate, _) = item { return true }
             return false
         }) else {
             throw CompositionQueryError.unsupportedPlan(
@@ -1807,7 +1923,7 @@ public struct CompositionQueryPlanner: Sendable {
         var operands: [ProjectionItem] = []
         operands.reserveCapacity(items.count)
         for (index, item) in items.enumerated() {
-            guard case .aggregate(let aggregate) = item.expression else {
+            guard case .expression(.aggregate(let aggregate), _) = item else {
                 throw CompositionQueryError.unsupportedPlan(
                     "aggregate projection is malformed"
                 )
@@ -1858,7 +1974,7 @@ public struct CompositionQueryPlanner: Sendable {
                 )
             )
         }
-        return (descriptors, .items(operands))
+        return (descriptors, operands)
     }
 
     private static func isBaseLocalRelationalSource(
@@ -1872,10 +1988,15 @@ public struct CompositionQueryPlanner: Sendable {
         case .join(let join):
             return isBaseLocalRelationalSource(join.left)
                 && isBaseLocalRelationalSource(join.right)
+        case .aliased(let nested, _, _):
+            return isBaseLocalRelationalSource(nested)
         case .base:
             return false
+        // FIXME(INCOMPLETE_IMPLEMENTATION): Composition's relational entry
+        // rejects these source families before member reads. Global operand
+        // placement, CTE scope and lineage need behavioral proof before support.
         case .subquery, .values, .graphTable, .graphPattern, .namedGraph,
-             .service, .union, .unionAll, .intersect, .except:
+             .service, .setOperation:
             return false
         }
     }
@@ -1886,8 +2007,10 @@ public struct CompositionQueryPlanner: Sendable {
             return true
         case .logical(let source):
             return source.kindIdentifier == LogicalSourceKind.polymorphic
+        case .aliased(let nested, _, _):
+            return isVectorSource(nested)
         case .join, .base, .subquery, .values, .graphTable, .graphPattern,
-             .namedGraph, .service, .union, .unionAll, .intersect, .except:
+             .namedGraph, .service, .setOperation:
             return false
         }
     }
@@ -1918,26 +2041,12 @@ public struct CompositionQueryPlanner: Sendable {
               case .int64(let k)? = scan.parameters["k"],
               k > 0,
               let resultLimit = UInt64(exactly: k),
-              query.limit == resultLimit else {
+              query.pagination.limit == .count(.fixed(resultLimit), withTies: false) else {
             throw CompositionQueryError.unsupportedPlan(
                 "vector Composition search requires one valid vector index contract and LIMIT equal to k"
             )
         }
         return scan
-    }
-
-    private static func nonDistinctProjection(
-        _ projection: Projection
-    ) -> Projection {
-        if case .distinctItems(let items) = projection {
-            return .items(items)
-        }
-        return projection
-    }
-
-    private static func isDistinctProjection(_ projection: Projection) -> Bool {
-        if case .distinctItems = projection { return true }
-        return false
     }
 
     private static func outputName(for expression: Expression) throws -> String {
@@ -1965,11 +2074,14 @@ public struct CompositionQueryPlanner: Sendable {
     }
 
     private static func runtimeCount(
-        _ value: UInt64?,
+        _ value: QueryCount?,
         name: String
     ) throws -> Int? {
         guard let value else { return nil }
-        guard let count = Int(exactly: value) else {
+        guard case .fixed(let fixed) = value else {
+            throw CompositionQueryError.unsupportedPlan("\(name) expressions require selected SQL execution")
+        }
+        guard let count = Int(exactly: fixed) else {
             throw CompositionQueryError.unsupportedPlan(
                 "\(name) exceeds the current runtime range"
             )
@@ -1977,16 +2089,25 @@ public struct CompositionQueryPlanner: Sendable {
         return count
     }
 
+    private static func fixedLimit(_ limit: QueryLimit?) throws -> QueryCount? {
+        switch limit {
+        case nil, .all?: return nil
+        case .count(let count, false)?: return count
+        case .count(_, true)?:
+            throw CompositionQueryError.unsupportedPlan("WITH TIES requires selected SQL execution")
+        }
+    }
+
     private static func emissionWindow(
         _ query: SelectQuery
     ) throws -> EmissionWindow {
         EmissionWindow(
             remainingOffset: try runtimeCount(
-                query.offset,
+                query.pagination.offset,
                 name: "OFFSET"
             ) ?? 0,
             remainingLimit: try runtimeCount(
-                query.limit,
+                try fixedLimit(query.pagination.limit),
                 name: "LIMIT"
             )
         )

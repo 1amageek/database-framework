@@ -171,30 +171,32 @@ struct SQLCollectionExecutionTests {
             (.jsonb, [firstJSON, equalJSON, secondJSON], [[firstJSON, equalJSON], [secondJSON]], [2, 1]),
         ]
         for (type, values, ordered, counts) in fixtures {
-            let source = DataSource.values(values.map { [.queryValue($0, type: .sql(type))] }, columnNames: ["value"])
-            let distinct = try await context.query(SelectQuery(projection: .distinctItems([ProjectionItem(.col("value"))]),
-                source: source, orderBy: [SortKey(.col("value"))]))
+            let source = DataSource.aliased(.values((values.map { [.queryValue($0, type: .sql(type))] } as [[DatabaseKit.Literal]]).map { $0.map { DatabaseKit.Expression.literal($0) } }), name: "input_2", columns: ["value"])
+            let distinct = try await context.query(SelectQuery(projection: [ProjectionItem(.col("value"))],
+            source: source,
+            orderBy: [SortKey(.col("value"))],
+            quantifier: .distinct))
             #expect(distinct.columns[0].type == .sql(type))
             #expect(distinct.rows.count == ordered.count)
             for (row, representatives) in zip(distinct.rows, ordered) {
                 #expect(representatives.contains { row.values == [$0] })
             }
-            let grouped = try await context.query(SelectQuery(projection: .items([ProjectionItem(.col("value")),
-                ProjectionItem(.aggregate(.count(nil, distinct: false)))]), source: source,
+            let grouped = try await context.query(SelectQuery(projection: [ProjectionItem(.col("value")),
+                ProjectionItem(.aggregate(.count(nil, distinct: false)))], source: source,
                 groupBy: [.col("value")], orderBy: [SortKey(.col("value"))]))
             #expect(grouped.rows.map { $0.values[1] } == counts.map { .primitive(.int64($0)) })
-            let counted = try await context.query(SelectQuery(projection: .items([
-                ProjectionItem(.aggregate(.count(.col("value"), distinct: true)))]), source: source))
+            let counted = try await context.query(SelectQuery(projection: [
+                ProjectionItem(.aggregate(.count(.col("value"), distinct: true)))], source: source))
             #expect(counted.rows[0].values == [.primitive(.int64(2))])
-            let one = DataSource.values([[.queryValue(values[0], type: .sql(type))]], columnNames: ["value"])
-            let union = try await context.query(SelectQuery(projection: .all, source: .union([source, one])))
-            let intersect = try await context.query(SelectQuery(projection: .all, source: .intersect([source, one])))
-            let except = try await context.query(SelectQuery(projection: .all, source: .except(source, one)))
+            let one = DataSource.aliased(.values(([[.queryValue(values[0], type: .sql(type))]] as [[DatabaseKit.Literal]]).map { $0.map { DatabaseKit.Expression.literal($0) } }), name: "input_1", columns: ["value"])
+            let union = try await context.query(SelectQuery(projection: [.wildcard()], source: .subquery(SelectQuery(projection: [.wildcard()], source: .setOperation(operator: .union, quantifier: .distinct, left: SelectQuery(projection: [.wildcard()], source: source), right: SelectQuery(projection: [.wildcard()], source: one))))))
+            let intersect = try await context.query(SelectQuery(projection: [.wildcard()], source: .subquery(SelectQuery(projection: [.wildcard()], source: .setOperation(operator: .intersect, quantifier: .distinct, left: SelectQuery(projection: [.wildcard()], source: source), right: SelectQuery(projection: [.wildcard()], source: one))))))
+            let except = try await context.query(SelectQuery(projection: [.wildcard()], source: .subquery(SelectQuery(projection: [.wildcard()], source: .setOperation(operator: .except, quantifier: .distinct, left: SelectQuery(projection: [.wildcard()], source: source), right: SelectQuery(projection: [.wildcard()], source: one))))))
             #expect(union.rows.count == 2 && intersect.rows.count == 1 && except.rows.count == 1)
-            let joined = try await context.query(SelectQuery(projection: .items([ProjectionItem(.col("a", "value"))]),
+            let joined = try await context.query(SelectQuery(projection: [ProjectionItem(.col("a", "value"))],
                 source: .join(JoinClause(type: .inner,
-                    left: .subquery(SelectQuery(projection: .all, source: source), alias: "a"),
-                    right: .subquery(SelectQuery(projection: .all, source: source), alias: "b"),
+                    left: .aliased(.subquery(SelectQuery(projection: [.wildcard()], source: source)), name: "a"),
+                    right: .aliased(.subquery(SelectQuery(projection: [.wildcard()], source: source)), name: "b"),
                     condition: .on(.equal(.col("a", "value"), .col("b", "value")))))))
             #expect(joined.rows.count == 5)
         }
@@ -249,9 +251,9 @@ struct SQLCollectionExecutionTests {
             ("lexical", .json, try json(" {\"x\":1, \"x\":2} ")),
             ("canonical", .jsonb, try jsonb("{\"n\":1.200}")),
         ]
-        let query = SelectQuery(projection: .items(fixtures.map { fixture in
+        let query = SelectQuery(projection: fixtures.map { fixture in
             ProjectionItem(.literal(.queryValue(fixture.value, type: .sql(fixture.type))), alias: fixture.name)
-        }), source: .values([[]], columnNames: []))
+        }, source: .values(([[]] as [[DatabaseKit.Literal]]).map { $0.map { DatabaseKit.Expression.literal($0) } }))
         let direct = try await context.query(query)
         let text = try SQLSerializer().serialize(query)
         let emitted = try await context.executeSQL(text)
@@ -261,27 +263,25 @@ struct SQLCollectionExecutionTests {
         #expect(direct.rows.map(\.values) == emitted.rows.map(\.values))
     }
 
-    @Test("S08 composite and S10 relation gates reject future public forms explicitly", .timeLimit(.minutes(2)))
+    @Test("Composite JSON and ARRAY subqueries compose while table functions remain S10", .timeLimit(.minutes(2)))
     func stageGates() async throws {
         let container = try await makeContainer()
         defer { await container.shutdown() }
         let context = container.testBaseContext()
         for sql in ["SELECT row_to_json(ROW(1,'x'))", "SELECT to_json(ROW(1,'x'))"] {
-            do { _ = try await context.executeSQL(sql); Issue.record("Expected S08 composite gate") }
-            catch let failure as SQLBindingSourceFailure {
-                guard case .expression(let cause) = failure.cause else { throw failure }
-                switch cause {
-                case .unsupportedExpression, .unsupportedFunction: break
-                default: throw failure
-                }
-                #expect(failure.occurrence != nil)
+            let response = try await context.executeSQL(sql)
+            guard case .json(let value) = response.rows[0].values[0] else {
+                Issue.record("Expected composite JSON output"); continue
             }
+            #expect(String(decoding: value.bytes, as: UTF8.self) == "{\"f1\":1,\"f2\":\"x\"}")
         }
-        for (sql, stage) in [("SELECT ARRAY(SELECT 1)", "S08"),
-                             ("SELECT * FROM unnest(ARRAY[1,2])", "S10")] {
-            do { _ = try await context.executeSQL(sql); Issue.record("Expected public composition gate") }
-            catch SQLParser.ParseError.unsupportedFeature(let reason) { #expect(reason.contains(stage)) }
+        let array = try await context.executeSQL("SELECT ARRAY(SELECT 1)")
+        guard case .array(let value) = array.rows[0].values[0] else {
+            Issue.record("Expected ARRAY subquery output"); return
         }
+        #expect(Array(value.elements) == [.primitive(.int32(1))])
+        do { _ = try await context.executeSQL("SELECT * FROM unnest(ARRAY[1,2])"); Issue.record("Expected table function gate") }
+        catch SQLParser.ParseError.unsupportedFeature(let reason) { #expect(reason.contains("S10")) }
     }
 
     @Test("Binding checks collection types and hidden branches before empty source execution", .timeLimit(.minutes(2)))

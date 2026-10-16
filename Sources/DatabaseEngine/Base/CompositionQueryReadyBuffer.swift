@@ -40,6 +40,11 @@ package actor CompositionQueryReadyBuffer {
                 footprint = try footprint.adding(DatabaseIntermediateFootprint(
                     bytes: UInt64(column.name.utf8.count)
                 ))
+                if let descriptor = Self.compositeDescriptor(column.type) {
+                    let retained = try descriptor.measure()
+                    try workMeter.consume(retained.nodeCount, at: .resultMaterialization)
+                    footprint = try footprint.adding(DatabaseIntermediateFootprint(bytes: retained.retainedByteCount))
+                }
             }
             for base in value.composition.bases {
                 footprint = try footprint.adding(DatabaseIntermediateFootprint(
@@ -114,6 +119,13 @@ package actor CompositionQueryReadyBuffer {
                 row: value.row, origin: value.origin,
                 payloadLeases: retainedLeases
             ))
+        }
+    }
+
+    private static func compositeDescriptor(_ type: QueryColumnType) -> QueryCompositeType? {
+        switch type {
+        case .sql(.composite(let descriptor)), .sql(.array(.composite(let descriptor))): return descriptor
+        default: return nil
         }
     }
 

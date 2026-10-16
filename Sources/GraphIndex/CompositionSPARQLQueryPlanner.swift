@@ -13,7 +13,7 @@ private struct CompositionSPARQLMemberQueryExecutor:
         try CompositionSPARQLPlanValidator.validate(query)
     }
 
-    func columns(session: DatabaseReadSession, query: SelectQuery) throws -> [QueryColumn] {
+    func columns(session: DatabaseReadSession, query: SelectQuery) throws -> DatabaseRetainedQueryColumns {
         try session.boundQueryColumns(query)
     }
 

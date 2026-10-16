@@ -41,9 +41,27 @@ struct SPARQLExpressionCompilationTests {
             == Literal.int(5).toSPARQLFieldValue())
     }
 
+    @Test("SQL-only quantifiers and pagination are rejected by SPARQL compilation")
+    func sqlRelationalModifiersFailCompilation() throws {
+        let query = SelectQuery(projection: [.wildcard()], source: .graphPattern(.basic([])))
+        for candidate in [
+            query.replacing(quantifier: .distinctOn([.int(1)])),
+            query.replacing(pagination: QueryPagination(limit: .count(.expression(.int(1)), withTies: false))),
+            query.replacing(pagination: QueryPagination(limit: .count(.fixed(1), withTies: true))),
+            query.replacing(pagination: QueryPagination(offset: .expression(.int(1)))),
+        ] {
+            #expect(throws: SPARQLSemanticValidationError.unsupportedSQLExpression) { try SPARQLSelectPlanCompiler.compile(candidate) }
+        }
+    }
+
     @Test("SQL constructors fail SPARQL compilation and cannot become false or unbound")
     func sqlConstructorsFailCompilation() {
         let collectionExpressions: [Expression] = [
+            .collate(.col("unread"), collation: .c),
+            .wholeRow("unread"),
+            .field(.wholeRow("unread"), name: "unreadField"),
+            .fieldExpansion(.wholeRow("unread")),
+            .arraySubquery(SelectQuery(projection: [.expression(.col("unread"))], source: .values([[]]))),
             .arrayAccess(.col("unread"), subscripts: [.index(.col("unreadIndex"))]),
             .collectionOperation(.contains, left: .col("unread"), right: .col("unreadRight")),
         ]
@@ -268,15 +286,13 @@ struct SPARQLExpressionCompilationTests {
 
     @Test("SELECT compilation preserves the explicit string limit")
     func selectCompilationUsesExplicitStringLimit() {
-        let query = SelectQuery(
-            projection: .items([
+        let query = SelectQuery(projection: [
                 ProjectionItem(
                     .literal(.string("four")),
                     alias: "value"
                 ),
-            ]),
-            source: .graphPattern(.basic([]))
-        )
+            ],
+            source: .graphPattern(.basic([])))
 
         #expect(
             throws: SPARQLExpressionCompilationError.resourceLimitExceeded(
@@ -300,12 +316,10 @@ struct SPARQLExpressionCompilationTests {
         for _ in 0..<62 {
             expression = .not(expression)
         }
-        let query = SelectQuery(
-            projection: .items([
+        let query = SelectQuery(projection: [
                 ProjectionItem(expression, alias: "value")
-            ]),
-            source: .graphPattern(.basic([]))
-        )
+            ],
+            source: .graphPattern(.basic([])))
 
         #expect(
             throws: SPARQLSemanticValidationError.structural(
@@ -336,17 +350,15 @@ struct SPARQLExpressionCompilationTests {
     func canonicalExplicitProjectionIncludesCoveringFieldsInIdentityCheck()
         throws
     {
-        let query = SelectQuery(
-            projection: .items([
+        let query = SelectQuery(projection: [
                 ProjectionItem(.variable(Variable("target"))),
-            ]),
+            ],
             source: .graphPattern(
                 .values(
                     variables: ["target"],
                     bindings: [[.int(1)]]
                 )
-            )
-        )
+            ))
 
         let plan = try SPARQLSelectPlanCompiler
             .compileForCanonicalPagination(
@@ -388,16 +400,14 @@ struct SPARQLExpressionCompilationTests {
     @Test("EXISTS recursively validates its graph pattern")
     func existsGraphPatternIsValidated() {
         let expression = Expression.exists(
-            SelectQuery(
-                projection: .all,
-                source: .graphPattern(
+            SelectQuery(projection: [.wildcard()],
+            source: .graphPattern(
                     .service(
                         endpoint: "https://example.com/sparql",
                         pattern: .basic([]),
                         silent: false
                     )
-                )
-            )
+                ))
         )
 
         #expect(throws: SPARQLExpressionCompilationError.self) {
@@ -408,15 +418,13 @@ struct SPARQLExpressionCompilationTests {
     @Test("EXISTS cannot hide a VALUES row beyond canonical limits")
     func existsUsesCanonicalSpecializedLimits() {
         let expression = Expression.exists(
-            SelectQuery(
-                projection: .all,
-                source: .graphPattern(
+            SelectQuery(projection: [.wildcard()],
+            source: .graphPattern(
                     .values(
                         variables: ["value"],
                         bindings: [[.int(1)]]
                     )
-                )
-            )
+                ))
         )
 
         #expect(
@@ -442,25 +450,19 @@ struct SPARQLExpressionCompilationTests {
     @Test("EXISTS rejects query modifiers that its algebra cannot preserve")
     func existsRejectsIgnoredQuerySemantics() {
         let sources = [
-            SelectQuery(
-                projection: .items([
+            SelectQuery(projection: [
                     ProjectionItem(.variable(Variable("value"))),
-                ]),
-                source: .graphPattern(.basic([]))
-            ),
-            SelectQuery(
-                projection: .all,
-                source: .graphPattern(.basic([])),
-                distinct: true
-            ),
-            SelectQuery(
-                projection: .all,
-                source: .graphPattern(.basic([])),
-                dataset: .explicit(
+                ],
+            source: .graphPattern(.basic([]))),
+            SelectQuery(projection: [.wildcard()],
+            source: .graphPattern(.basic([])),
+            quantifier: .distinct),
+            SelectQuery(projection: [.wildcard()],
+            source: .graphPattern(.basic([])),
+            dataset: .explicit(
                     defaultGraphs: ["urn:example:graph"],
                     namedGraphs: []
-                )
-            ),
+                )),
         ]
 
         for query in sources {

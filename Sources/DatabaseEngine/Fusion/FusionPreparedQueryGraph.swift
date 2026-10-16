@@ -278,13 +278,17 @@ enum FusionSelectQueryGraphWalker {
                 definitions: definitions, visibleCount: definitions.count, workMeter: stack.workMeter)
         }
         try stack.append(.source(query.source, owner: query))
-        switch query.projection {
-        case .all, .allFrom:
-            break
-        case .items(let items), .distinctItems(let items):
-            for item in items {
-                try stack.append(.expression(item.expression))
-            }
+        for item in query.projection {
+            if case .expression(let expression, _) = item { try stack.append(.expression(expression)) }
+        }
+        if case .distinctOn(let expressions) = query.quantifier {
+            for expression in expressions { try stack.append(.expression(expression)) }
+        }
+        if case .expression(let expression) = query.pagination.offset {
+            try stack.append(.expression(expression))
+        }
+        if case .count(.expression(let expression), _) = query.pagination.limit {
+            try stack.append(.expression(expression))
         }
         if let filter = query.filter {
             try stack.append(.expression(filter))
@@ -322,9 +326,13 @@ enum FusionSelectQueryGraphWalker {
         to stack: inout WorkStack
     ) throws {
         switch source {
-        case .table, .logical, .values:
+        case .table, .logical:
             break
-        case .subquery(let query, _):
+        case .values(let rows):
+            for row in rows { for expression in row { try stack.append(.expression(expression)) } }
+        case .aliased(let inner, _, _):
+            try stack.append(.source(inner, owner: query))
+        case .subquery(let query):
             try stack.append(.query(query))
         case .join(let join):
             try stack.append(.source(join.left, owner: query))
@@ -350,14 +358,9 @@ enum FusionSelectQueryGraphWalker {
              .namedGraph(_, let pattern),
              .service(_, let pattern, _):
             try stack.append(.pattern(pattern))
-        case .union(let sources), .unionAll(let sources),
-             .intersect(let sources):
-            for source in sources {
-                try stack.append(.source(source, owner: query))
-            }
-        case .except(let lhs, let rhs):
-            try stack.append(.source(lhs, owner: query))
-            try stack.append(.source(rhs, owner: query))
+        case .setOperation(_, _, let left, let right):
+            try stack.append(.query(left))
+            try stack.append(.query(right))
         }
     }
 
@@ -421,7 +424,7 @@ enum FusionSelectQueryGraphWalker {
         to stack: inout WorkStack
     ) throws {
         switch expression {
-        case .literal, .currentValue, .column, .variable, .parameter, .bound:
+        case .literal, .currentValue, .column, .variable, .parameter, .bound, .wholeRow:
             break
         case .collectionOperation(_, let lhs, let rhs),
              .add(let lhs, let rhs), .subtract(let lhs, let rhs),
@@ -434,7 +437,7 @@ enum FusionSelectQueryGraphWalker {
              .or(let lhs, let rhs), .nullIf(let lhs, let rhs), .isDistinctFrom(let lhs, let rhs, _):
             try stack.append(.expression(lhs))
             try stack.append(.expression(rhs))
-        case .negate(let nested), .not(let nested), .isNull(let nested), .truthTest(let nested, _, _),
+        case .collate(let nested, _), .field(let nested, _), .fieldExpansion(let nested), .negate(let nested), .not(let nested), .isNull(let nested), .truthTest(let nested, _, _),
              .isNotNull(let nested),
              .regex(let nested, _, _), .cast(let nested, _),
              .isTriple(let nested), .subject(let nested),
@@ -496,7 +499,7 @@ enum FusionSelectQueryGraphWalker {
             try stack.append(.expression(subject))
             try stack.append(.expression(predicate))
             try stack.append(.expression(object))
-        case .subquery(let query), .exists(let query):
+        case .subquery(let query), .exists(let query), .arraySubquery(let query):
             try stack.append(.query(query))
         }
     }

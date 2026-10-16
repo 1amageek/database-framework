@@ -430,7 +430,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         ]
 
         return SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(TableRef(table: T.persistableType)),
             accessPath: .index(
                 IndexScanSource(
@@ -439,7 +439,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
                     parameters: parameters
                 )
             ),
-            limit: UInt64(k)
+            pagination: QueryPagination(limit: .count(.fixed(UInt64(k)), withTies: false))
         )
     }
 

@@ -285,7 +285,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         }
 
         return SelectQuery(
-            projection: .all,
+            projection: [.wildcard()],
             source: .table(TableRef(table: T.persistableType)),
             accessPath: .index(
                 IndexScanSource(
@@ -294,12 +294,12 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
                     parameters: parameters
                 )
             ),
-            limit: try fetchLimit.map {
+            pagination: QueryPagination(limit: try fetchLimit.map {
                 guard let value = UInt64(exactly: $0) else {
                     throw FullTextQueryError.invalidLimit($0)
                 }
-                return value
-            }
+                return .count(.fixed(value), withTies: false)
+            })
         )
     }
 

@@ -112,7 +112,7 @@ struct SQLSourceAnnotationTests {
         #expect(annotation.range == SQLSourceRange(start: 7, end: 17))
         let secondOccurrence = try child(second.occurrences, second.root, .projection, 0)
         #expect(second.sourceMap[secondOccurrence]?.range == SQLSourceRange(start: 7, end: 8))
-        #expect(try parser.parseSelect("SELECT 1").projection != .all)
+        #expect(try parser.parseSelect("SELECT 1").projection != [.wildcard()])
     }
 
     @Test("Source nodes and map entries share the cumulative node admission ledger")
@@ -150,6 +150,6 @@ struct SQLSourceAnnotationTests {
         }
         #expect(text(sql, try #require(parsed.sourceMap[groupCast]).range) == "CAST(1 AS INTEGER)")
         #expect(text(sql, try #require(parsed.sourceMap[orderCast]).range) == "1::BIGINT")
-        #expect(parsed.occurrences.count == 11)
+        #expect(parsed.occurrences.count == 12)
     }
 }

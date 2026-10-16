@@ -11,6 +11,7 @@ struct CanonicalSQLCollectionIdentity: Sendable, Hashable {
 
     static func prepare(_ value: QueryValue, type: QueryColumnType,
         environment: SQLTemporalEnvironment?, workMeter: DatabaseWorkMeter, forcedDigest: UInt64? = nil) throws -> Self {
+        try CanonicalSQLValueSemantics.requireComparable(type, operation: "identity", workMeter: workMeter)
         let sourceFootprint = try CanonicalRelationalFootprintMeter.valueFootprint(of: value,
             workMeter: workMeter, stage: .expressionEvaluation)
         let reservation = try workMeter.reserveIntermediate(bytes: sourceFootprint.bytes,
@@ -49,33 +50,61 @@ struct CanonicalSQLCollectionIdentity: Sendable, Hashable {
         return true
     }
 
+    private struct Cell {
+        let value: QueryValue
+        let type: QueryColumnType
+    }
+
     private static func emit(_ value: QueryValue, type: QueryColumnType,
         environment: SQLTemporalEnvironment?, writer: inout Writer) throws {
-        switch (type, value) {
-        case (.sql(.array(let element)), .array(let array)):
-            try writer.byte(1)
-            try writer.integer(UInt64(array.dimensions.count))
-            for dimension in array.dimensions {
-                try writer.integer(dimension.length)
-                try writer.integer(dimension.lowerBound)
+        let layout = try DatabaseRetainedArrayLayout.forElement(Cell.self)
+        let reservation = try writer.workMeter.reserveIntermediate(bytes: layout.containerByteCount,
+            at: .expressionEvaluation)
+        defer { reservation.release() }
+        var pending: [Cell] = []
+        func append(_ value: QueryValue, _ type: QueryColumnType) throws {
+            let growth = try layout.growth(from: pending.capacity, toFit: pending.count + 1)
+            if growth.capacity > pending.capacity {
+                try reservation.reserveAdditional(bytes: growth.additionalByteCount, at: .expressionEvaluation)
+                pending.reserveCapacity(growth.capacity)
+                if pending.capacity > growth.capacity {
+                    try reservation.reserveAdditional(bytes: try DatabaseIntermediateFootprint(bytes: layout.elementCapacitySlotByteCount)
+                        .multiplied(by: UInt64(pending.capacity - growth.capacity)).bytes, at: .expressionEvaluation)
+                }
             }
-            try writer.integer(UInt64(array.elements.count))
-            for value in array.elements {
-                try scalar(value, type: .sql(element), environment: environment, writer: &writer)
+            pending.append(Cell(value: value, type: type))
+        }
+        try append(value, type)
+        while let cell = pending.popLast() {
+            try writer.workMeter.consume(at: .expressionEvaluation)
+            if cell.value.isNull { try writer.byte(0); continue }
+            switch (cell.type, cell.value) {
+            case (.sql(.array(let element)), .array(let array)):
+                try writer.byte(1)
+                try writer.integer(UInt64(array.dimensions.count))
+                for dimension in array.dimensions {
+                    try writer.integer(dimension.length); try writer.integer(dimension.lowerBound)
+                }
+                try writer.integer(UInt64(array.elements.count))
+                for index in array.elements.indices.reversed() { try append(array.elements[index], .sql(element)) }
+            case (.sql(.array(let element)), .primitive(.array(let array))):
+                try writer.byte(1); try writer.integer(UInt64(array.isEmpty ? 0 : 1))
+                if !array.isEmpty {
+                    guard let length = Int32(exactly: array.count) else { throw DatabaseExpressionEvaluationError.collection(.invalidArrayShape) }
+                    try writer.integer(length); try writer.integer(Int32(1))
+                }
+                try writer.integer(UInt64(array.count))
+                for index in array.indices.reversed() { try append(.primitive(array[index]), .sql(element)) }
+            case (.sql(.composite(let type)), .composite(let record)):
+                guard record.fields.count == type.columns.count else {
+                    throw DatabaseExpressionEvaluationError.typeMismatch(operation: "composite identity arity")
+                }
+                try writer.byte(10); try writer.integer(UInt64(record.fields.count))
+                for index in record.fields.indices.reversed() { try append(record.fields[index], type.columns[index].type) }
+            case (.sql(.jsonb), .jsonb(let json)):
+                try writer.byte(2); try jsonTokens(json.root, writer: &writer)
+            default: try scalar(cell.value, type: cell.type, environment: environment, writer: &writer)
             }
-        case (.sql(.array(let element)), .primitive(.array(let array))):
-            try writer.byte(1)
-            try writer.integer(UInt64(array.isEmpty ? 0 : 1))
-            if !array.isEmpty {
-                guard let length = Int32(exactly: array.count) else { throw DatabaseExpressionEvaluationError.collection(.invalidArrayShape) }
-                try writer.integer(length); try writer.integer(Int32(1))
-            }
-            try writer.integer(UInt64(array.count))
-            for value in array { try scalar(.primitive(value), type: .sql(element), environment: environment, writer: &writer) }
-        case (.sql(.jsonb), .jsonb(let json)):
-            try writer.byte(2)
-            try jsonTokens(json.root, writer: &writer)
-        default: throw DatabaseExpressionEvaluationError.typeMismatch(operation: "selected collection identity")
         }
     }
 
@@ -150,7 +179,11 @@ struct CanonicalSQLCollectionIdentity: Sendable, Hashable {
             if growth.capacity > capacity {
                 try reservation.reserveAdditional(bytes: growth.additionalByteCount, at: .expressionEvaluation)
                 stack.reserveCapacity(growth.capacity)
-                capacity = growth.capacity
+                if stack.capacity > growth.capacity {
+                    try reservation.reserveAdditional(bytes: try DatabaseIntermediateFootprint(bytes: layout.elementCapacitySlotByteCount)
+                        .multiplied(by: UInt64(stack.capacity - growth.capacity)).bytes, at: .expressionEvaluation)
+                }
+                capacity = stack.capacity
             }
             stack.append(visit)
         }

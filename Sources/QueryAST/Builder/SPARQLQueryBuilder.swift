@@ -10,28 +10,26 @@ import DatabaseKit
 
 /// SPARQL Query Builder for type-safe query construction
 public struct SPARQLQueryBuilder: Sendable {
-    private var projection: Projection
+    private var projection: [ProjectionItem]
     private var pattern: GraphPattern
     private var prefixes: [String: String]
     private var groupByExprs: [Expression]
     private var havingExpr: Expression?
     private var orderByKeys: [SortKey]?
-    private var limitCount: UInt64?
-    private var offsetCount: UInt64?
-    private var distinctFlag: Bool
+    private var pagination: QueryPagination
+    private var quantifier: SelectQuantifier
     private var reducedFlag: Bool
 
     /// Initialize an empty SPARQL query builder
     public init() {
-        self.projection = .all
+        self.projection = [.wildcard()]
         self.pattern = .basic([])
         self.prefixes = SPARQLTerm.commonPrefixes
         self.groupByExprs = []
         self.havingExpr = nil
         self.orderByKeys = nil
-        self.limitCount = nil
-        self.offsetCount = nil
-        self.distinctFlag = false
+        self.pagination = QueryPagination()
+        self.quantifier = .all
         self.reducedFlag = false
     }
 }
@@ -60,42 +58,42 @@ extension SPARQLQueryBuilder {
     /// Select all variables
     public func selectAll() -> SPARQLQueryBuilder {
         var builder = self
-        builder.projection = .all
+        builder.projection = [.wildcard()]
         return builder
     }
 
     /// Select specific variables
     public func select(_ variables: String...) -> SPARQLQueryBuilder {
         var builder = self
-        builder.projection = .items(variables.map { v in
+        builder.projection = variables.map { v in
             ProjectionItem(.variable(Variable(v)))
-        })
+        }
         return builder
     }
 
     /// Select with expressions
     public func select(_ items: ProjectionItem...) -> SPARQLQueryBuilder {
         var builder = self
-        builder.projection = .items(items)
+        builder.projection = items
         return builder
     }
 
     /// Select DISTINCT
     public func selectDistinct(_ variables: String...) -> SPARQLQueryBuilder {
         var builder = self
-        builder.projection = .items(variables.map { v in
+        builder.projection = variables.map { v in
             ProjectionItem(.variable(Variable(v)))
-        })
-        builder.distinctFlag = true
+        }
+        builder.quantifier = .distinct
         return builder
     }
 
     /// Select REDUCED
     public func selectReduced(_ variables: String...) -> SPARQLQueryBuilder {
         var builder = self
-        builder.projection = .items(variables.map { v in
+        builder.projection = variables.map { v in
             ProjectionItem(.variable(Variable(v)))
-        })
+        }
         builder.reducedFlag = true
         return builder
     }
@@ -103,12 +101,8 @@ extension SPARQLQueryBuilder {
     /// Select with alias: (expression AS ?var)
     public func select(_ expression: Expression, as variable: String) -> SPARQLQueryBuilder {
         var builder = self
-        if case .items(var items) = builder.projection {
-            items.append(ProjectionItem(expression, alias: variable))
-            builder.projection = .items(items)
-        } else {
-            builder.projection = .items([ProjectionItem(expression, alias: variable)])
-        }
+        if builder.projection == [.wildcard()] { builder.projection = [] }
+        builder.projection.append(ProjectionItem(expression, alias: variable))
         return builder
     }
 }
@@ -611,14 +605,14 @@ extension SPARQLQueryBuilder {
     /// Set LIMIT
     public func limit(_ count: UInt64) -> SPARQLQueryBuilder {
         var builder = self
-        builder.limitCount = count
+        builder.pagination = QueryPagination(limit: .count(.fixed(count), withTies: false), offset: builder.pagination.offset)
         return builder
     }
 
     /// Set OFFSET
     public func offset(_ count: UInt64) -> SPARQLQueryBuilder {
         var builder = self
-        builder.offsetCount = count
+        builder.pagination = QueryPagination(limit: builder.pagination.limit, offset: .fixed(count))
         return builder
     }
 }
@@ -642,9 +636,8 @@ extension SPARQLQueryBuilder {
             groupBy: groupByExprs.isEmpty ? nil : groupByExprs,
             having: havingExpr,
             orderBy: orderByKeys,
-            limit: limitCount,
-            offset: offsetCount,
-            distinct: distinctFlag,
+            quantifier: quantifier,
+            pagination: pagination,
             reduced: reducedFlag
         )
     }
@@ -665,57 +658,57 @@ extension SPARQLQueryBuilder {
         let countExpr: Expression = variable.map { v in
             .aggregate(.count(.variable(Variable(v)), distinct: distinct))
         } ?? .aggregate(.count(nil, distinct: distinct))
-        builder.projection = .items([ProjectionItem(countExpr, alias: alias)])
+        builder.projection = [ProjectionItem(countExpr, alias: alias)]
         return builder
     }
 
     /// Select SUM
     public func sum(_ variable: String, distinct: Bool = false, as alias: String = "sum") -> SPARQLQueryBuilder {
         var builder = self
-        builder.projection = .items([ProjectionItem(
+        builder.projection = [ProjectionItem(
             .aggregate(.sum(.variable(Variable(variable)), distinct: distinct)),
             alias: alias
-        )])
+        )]
         return builder
     }
 
     /// Select AVG
     public func avg(_ variable: String, distinct: Bool = false, as alias: String = "avg") -> SPARQLQueryBuilder {
         var builder = self
-        builder.projection = .items([ProjectionItem(
+        builder.projection = [ProjectionItem(
             .aggregate(.avg(.variable(Variable(variable)), distinct: distinct)),
             alias: alias
-        )])
+        )]
         return builder
     }
 
     /// Select MIN
     public func min(_ variable: String, as alias: String = "min") -> SPARQLQueryBuilder {
         var builder = self
-        builder.projection = .items([ProjectionItem(
+        builder.projection = [ProjectionItem(
             .aggregate(.min(.variable(Variable(variable)))),
             alias: alias
-        )])
+        )]
         return builder
     }
 
     /// Select MAX
     public func max(_ variable: String, as alias: String = "max") -> SPARQLQueryBuilder {
         var builder = self
-        builder.projection = .items([ProjectionItem(
+        builder.projection = [ProjectionItem(
             .aggregate(.max(.variable(Variable(variable)))),
             alias: alias
-        )])
+        )]
         return builder
     }
 
     /// Select SAMPLE (SPARQL)
     public func sample(_ variable: String, as alias: String = "sample") -> SPARQLQueryBuilder {
         var builder = self
-        builder.projection = .items([ProjectionItem(
+        builder.projection = [ProjectionItem(
             .aggregate(.sample(.variable(Variable(variable)))),
             alias: alias
-        )])
+        )]
         return builder
     }
 
@@ -727,10 +720,10 @@ extension SPARQLQueryBuilder {
         as alias: String = "concat"
     ) -> SPARQLQueryBuilder {
         var builder = self
-        builder.projection = .items([ProjectionItem(
+        builder.projection = [ProjectionItem(
             .aggregate(.groupConcat(.variable(Variable(variable)), separator: separator, distinct: distinct)),
             alias: alias
-        )])
+        )]
         return builder
     }
 }

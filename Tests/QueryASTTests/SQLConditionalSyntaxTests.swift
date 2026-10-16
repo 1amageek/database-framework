@@ -6,10 +6,11 @@ import Testing
 struct SQLConditionalSyntaxTests {
     private func expression(_ sql: String) throws -> Expression {
         let query = try SQLParser().parseSelect("SELECT " + sql)
-        guard case .items(let items) = query.projection, items.count == 1 else {
+        let items = query.projection
+        guard items.allSatisfy({ if case .expression = $0 { return true }; return false }), items.count == 1 else {
             throw SQLSerializationError.invalidStructure("Expected one projection")
         }
-        return items[0].expression
+        return try projectionExpression(items[0])
     }
 
     private func roundTrip(_ sql: String) throws -> Expression {
@@ -82,7 +83,7 @@ struct SQLConditionalSyntaxTests {
                     Issue.record("Expected quantified subquery"); continue
                 }
                 #expect(op == comparison && q == quantifier)
-                #expect(query.projection == .items([ProjectionItem(.col("y"))]))
+                #expect(query.projection == [ProjectionItem(.col("y"))])
             }
         }
         #expect(try roundTrip("x != SOME (:values)") == .quantifiedComparison(.col("x"), comparison: .notEqual, quantifier: .any, source: .array(.parameter(.name("values")))))

@@ -73,6 +73,7 @@ public final class SQLParser {
         "SIMPLE", "SHORTEST", "DEFAULT", "CONFLICT", "DO", "NOTHING", "RETURNING",
         "IF", "VERTEX", "TABLES", "EDGE", "KEY", "LABEL", "DESTINATION",
         "REFERENCES", "PROPERTIES", "NO", "LATERAL", "NATURAL",
+        "COLLATE", "FETCH", "NEXT", "ONLY", "TIES", "ROW",
     ]
 
     // PostgreSQL 18 lexical categories: src/include/parser/kwlist.h.
@@ -900,7 +901,7 @@ extension SQLParser {
 extension SQLParser {
     private func parseStatement() throws -> QueryStatement {
         switch currentToken {
-        case .keyword("SELECT"), .keyword("WITH"):
+        case .keyword("SELECT"), .keyword("WITH"), .keyword("VALUES"), .symbol("("):
             return .select(try parseSelectQuery())
         case .keyword("INSERT"):
             return .insert(try parseInsertQuery())
@@ -935,120 +936,204 @@ extension SQLParser {
         }
     }
 
-    private func parseSelectQuery() throws -> SelectQuery {
+    private var startsQuery: Bool {
+        withLookahead {
+            var depth: UInt64 = 0
+            while isSymbol("(") {
+                guard depth < structuralLedger.remainingLimits.maximumNestingDepth else { return false }
+                depth += 1
+                advance()
+            }
+            return isKeyword("SELECT") || isKeyword("WITH") || isKeyword("VALUES")
+        }
+    }
+
+    private func parseSelectQuery(startingWith initial: SelectQuery? = nil, at start: Int? = nil) throws -> SelectQuery {
         let enclosingOutputReferenceCasts = preservesOutputReferenceCasts
         preservesOutputReferenceCasts = false
         defer { preservesOutputReferenceCasts = enclosingOutputReferenceCasts }
-        let queryStart = tokenStart
+        let queryStart = start ?? tokenStart
         try enterStructuralNesting()
         defer { leaveStructuralNesting() }
-
-        // WITH clause (CTE) support
-        var subqueries: [NamedSubquery]?
-        if case .keyword("WITH") = currentToken {
-            subqueries = try parseWithClause()
+        let ctes = initial == nil && isKeyword("WITH") ? try parseWithClause() : nil
+        let parenthesized = initial == nil && isSymbol("(")
+        var query = try parseSetQuery(minimumPrecedence: 0, startingWith: initial)
+        let hasTail = isKeyword("ORDER") || isKeyword("LIMIT") || isKeyword("OFFSET") || isKeyword("FETCH")
+        let preservesInnerTail = parenthesized && hasTail && (query.orderBy != nil || query.pagination != QueryPagination())
+        if preservesInnerTail || ctes != nil && query.subqueries != nil {
+            let source = try makeStructuralNode(DataSource.subquery(query))
+            try sourceCapture?.recordSyntheticProjection(ledger: &structuralLedger)
+            try sourceCapture?.swapLastPending()
+            query = try makeStructuralNode(SelectQuery(projection: [.wildcard()], source: source))
         }
+        if ctes == nil, !hasTail { return query }
+        try sourceCapture?.unwrapLastQuery()
+        var order: [SortKey]?
+        if isKeyword("ORDER") {
+            advance()
+            try expect("BY")
+            order = try parseOrderBy(outputReferences: true)
+        }
+        var limit: QueryLimit?
+        var offset: QueryCount?
+        var limitCapture: Int?
+        while isKeyword("LIMIT") || isKeyword("OFFSET") || isKeyword("FETCH") {
+            if isKeyword("OFFSET") {
+                guard offset == nil else { throw ParseError.invalidSyntax(message: "Repeated OFFSET", position: tokenStart) }
+                advance()
+                offset = try parseQueryCount()
+                if isKeyword("ROW") || isKeyword("ROWS") { advance() }
+            } else if isKeyword("LIMIT") {
+                guard limit == nil else { throw ParseError.invalidSyntax(message: "Repeated query limit", position: tokenStart) }
+                advance()
+                if isKeyword("ALL") { advance(); limit = .all }
+                else {
+                    limitCapture = sourceCapture?.pendingCheckpoint
+                    limit = .count(try parseQueryCount(), withTies: false)
+                }
+            } else {
+                guard limit == nil else { throw ParseError.invalidSyntax(message: "Repeated query limit", position: tokenStart) }
+                advance()
+                guard isKeyword("FIRST") || isKeyword("NEXT") else {
+                    throw ParseError.unexpectedToken(expected: "FIRST or NEXT", found: tokenDescription(currentToken), position: tokenStart)
+                }
+                advance()
+                let count: QueryCount
+                if isKeyword("ROW") || isKeyword("ROWS") { count = .fixed(1) }
+                else {
+                    limitCapture = sourceCapture?.pendingCheckpoint
+                    count = try parseQueryCount()
+                }
+                guard isKeyword("ROW") || isKeyword("ROWS") else {
+                    throw ParseError.unexpectedToken(expected: "ROW or ROWS", found: tokenDescription(currentToken), position: tokenStart)
+                }
+                advance()
+                let ties: Bool
+                if isKeyword("ONLY") { advance(); ties = false }
+                else { try expect("WITH"); try expect("TIES"); ties = true }
+                limit = .count(count, withTies: ties)
+            }
+        }
+        if let limitCapture, case .count(.expression, _) = limit {
+            try sourceCapture?.movePendingToEnd(from: limitCapture, count: 1)
+        }
+        if let ctes { query = query.replacing(subqueries: ctes) }
+        if let order { query = query.replacing(orderBy: order) }
+        if limit != nil || offset != nil { query = query.replacing(pagination: QueryPagination(limit: limit, offset: offset)) }
+        return try makeStructuralNode(query, at: queryStart)
+    }
 
+    private func parseQueryCount() throws -> QueryCount {
+        if case .number(let text) = currentToken, let value = UInt64(text) {
+            let next = peekNextToken()
+            let boundary: Bool
+            switch next {
+            case .eof, .symbol(")"), .symbol(";"), .keyword("LIMIT"), .keyword("OFFSET"),
+                 .keyword("FETCH"), .keyword("ROW"), .keyword("ROWS"), .keyword("UNION"),
+                 .keyword("INTERSECT"), .keyword("EXCEPT"): boundary = true
+            default: boundary = false
+            }
+            if boundary { advance(); return try makeStructuralNode(QueryCount.fixed(value)) }
+        }
+        return .expression(try parseExpression())
+    }
+
+    private func parseSetQuery(minimumPrecedence: Int, startingWith initial: SelectQuery? = nil) throws -> SelectQuery {
+        var left: SelectQuery
+        if let initial { left = initial }
+        else { left = try parseQueryOperand() }
+        while isKeyword("UNION") || isKeyword("INTERSECT") || isKeyword("EXCEPT") {
+            let precedence = isKeyword("INTERSECT") ? 2 : 1
+            guard precedence >= minimumPrecedence else { break }
+            let operation: SetOperator = isKeyword("UNION") ? .union : isKeyword("INTERSECT") ? .intersect : .except
+            advance()
+            let quantifier: SetQuantifier
+            if isKeyword("ALL") { advance(); quantifier = .all }
+            else { if isKeyword("DISTINCT") { advance() }; quantifier = .distinct }
+            let right = try parseSetQuery(minimumPrecedence: precedence + 1)
+            let source = try makeStructuralNode(DataSource.setOperation(operator: operation, quantifier: quantifier, left: left, right: right))
+            try sourceCapture?.recordSyntheticProjection(ledger: &structuralLedger)
+            try sourceCapture?.swapLastPending()
+            left = try makeStructuralNode(SelectQuery(projection: [.wildcard()], source: source))
+        }
+        return left
+    }
+
+    private func parseQueryOperand() throws -> SelectQuery {
+        if isSymbol("(") {
+            try enterStructuralNesting()
+            defer { leaveStructuralNesting() }
+            advance()
+            let query = try parseSelectQuery()
+            try expect(")")
+            return query
+        }
+        if isKeyword("VALUES") {
+            try sourceCapture?.recordSyntheticProjection(ledger: &structuralLedger)
+            let source = try parseValuesSource()
+            return try makeStructuralNode(SelectQuery(projection: [.wildcard()], source: source))
+        }
+        let start = tokenStart
         try expect("SELECT")
-
-        // DISTINCT
-        var distinct = false
-        if case .keyword("DISTINCT") = currentToken {
-            distinct = true
+        let distinctCapture = sourceCapture?.pendingCheckpoint
+        var distinctKeyCount = 0
+        let quantifier: SelectQuantifier
+        if isKeyword("DISTINCT") {
             advance()
-        }
-
-        // Projection
-        let projection = try parseProjection()
-
-        // FROM
-        let source: DataSource
-        if case .keyword("FROM") = currentToken {
-            advance()
-            source = try parseDataSource()
+            if isKeyword("ON") {
+                advance(); try expect("(")
+                let keys = try parseExpressionList()
+                try expect(")")
+                distinctKeyCount = keys.count
+                quantifier = .distinctOn(keys)
+            } else { quantifier = .distinct }
         } else {
-            // A SELECT without FROM evaluates once against the SQL singleton
-            // relation. Represent it explicitly instead of routing an empty
-            // table name into entity resolution.
-            source = try makeStructuralNode(
-                .values([[]], columnNames: [])
-            )
+            if isKeyword("ALL") { advance() }
+            quantifier = .all
         }
-
-        // WHERE
+        let projection = try parseProjection()
+        let source: DataSource
+        if isKeyword("FROM") { advance(); source = try parseDataSource() }
+        else {
+            try sourceCapture?.recordValuesRow(count: 0, start: nil, end: previousTokenEnd, ledger: &structuralLedger)
+            source = try makeStructuralNode(.values([[]]))
+        }
         var filter: Expression?
-        if case .keyword("WHERE") = currentToken {
-            advance()
-            filter = try parseExpression()
-        }
-
-        // GROUP BY
-        var groupBy: [Expression]?
-        if case .keyword("GROUP") = currentToken {
-            advance()
-            try expect("BY")
-            groupBy = try parseExpressionList(outputReferences: true)
-        }
-
-        // HAVING
+        if isKeyword("WHERE") { advance(); filter = try parseExpression() }
+        var group: [Expression]?
+        if isKeyword("GROUP") { advance(); try expect("BY"); group = try parseExpressionList(outputReferences: true) }
         var having: Expression?
-        if case .keyword("HAVING") = currentToken {
-            advance()
-            having = try parseExpression()
+        if isKeyword("HAVING") { advance(); having = try parseExpression() }
+        if let distinctCapture, distinctKeyCount > 0 {
+            try sourceCapture?.movePendingToEnd(from: distinctCapture, count: distinctKeyCount)
         }
+        return try makeStructuralNode(SelectQuery(projection: projection, source: source, filter: filter,
+            groupBy: group, having: having, quantifier: quantifier), at: start)
+    }
 
-        // ORDER BY
-        var orderBy: [SortKey]?
-        if case .keyword("ORDER") = currentToken {
-            advance()
-            try expect("BY")
-            orderBy = try parseOrderBy(outputReferences: true)
-        }
-
-        // LIMIT
-        var limit: UInt64?
-        if case .keyword("LIMIT") = currentToken {
-            advance()
-            guard case .number(let lexicalForm) = currentToken,
-                  let value = UInt64(lexicalForm) else {
-                throw ParseError.invalidSyntax(
-                    message: "LIMIT requires a non-negative UInt64 integer",
-                    position: tokenStart
-                )
-            }
-            limit = value
-            advance()
-        }
-
-        // OFFSET
-        var offset: UInt64?
-        if case .keyword("OFFSET") = currentToken {
-            advance()
-            guard case .number(let lexicalForm) = currentToken,
-                  let value = UInt64(lexicalForm) else {
-                throw ParseError.invalidSyntax(
-                    message: "OFFSET requires a non-negative UInt64 integer",
-                    position: tokenStart
-                )
-            }
-            offset = value
-            advance()
-        }
-
-        return try makeStructuralNode(
-            SelectQuery(
-                projection: projection,
-                source: source,
-                filter: filter,
-                groupBy: groupBy,
-                having: having,
-                orderBy: orderBy,
-                limit: limit,
-                offset: offset,
-                distinct: distinct,
-                subqueries: subqueries
-            ), at: queryStart
-        )
+    private func parseValuesSource() throws -> DataSource {
+        let start = tokenStart
+        try expect("VALUES")
+        var rows: [[Expression]] = []
+        repeat {
+            if !rows.isEmpty { advance() }
+            try structuralLedger.consume(.valuesRows)
+            try admitCollectionElement()
+            let rowStart = tokenStart
+            try expect("(")
+            guard !isSymbol(")") else { throw ParseError.invalidSyntax(message: "SQL VALUES rows cannot be empty", position: tokenStart) }
+            var row: [Expression] = []
+            repeat {
+                if !row.isEmpty { advance() }
+                try structuralLedger.consume(.valuesCells)
+                try admitCollectionElement()
+                row.append(try parseExpression())
+            } while isSymbol(",")
+            try expect(")")
+            try sourceCapture?.recordValuesRow(count: row.count, start: rowStart, end: previousTokenEnd, ledger: &structuralLedger)
+            rows.append(row)
+        } while isSymbol(",") && peekNextToken() == .symbol("(")
+        return try makeStructuralNode(.values(rows), at: start)
     }
 
     private func parseWithClause() throws -> [NamedSubquery] {
@@ -1127,48 +1212,45 @@ extension SQLParser {
         return subqueries
     }
 
-    private func parseProjection() throws -> Projection {
-        if case .symbol("*") = currentToken {
-            advance()
-            return .all
-        }
-
-        if let qualifier = identifierText, peekNextToken() == .symbol("."), peekNextToken(2) == .symbol("*") {
-            let qualifierStart = tokenStart
-            let qualifierEnd = tokenEnd
-            advance()
-            try expect(".")
-            try expect("*")
-            try sourceCapture?.recordProjectionQualifier(start: qualifierStart, end: previousTokenEnd,
-                                                         identifierEnd: qualifierEnd, ledger: &structuralLedger)
-            return .allFrom(qualifier)
-        }
-
+    private func parseProjection() throws -> [ProjectionItem] {
         var items: [ProjectionItem] = []
-        var first = true
-        while first || isSymbol(",") {
-            if !first {
-                advance()
-            }
-            first = false
-            let expr = try parseExpression()
-            var alias: String?
-            if case .keyword("AS") = currentToken {
-                advance()
-                alias = try parseRequiredIdentifier("projection alias", allowsKeywordLabel: true)
-            }
+        repeat {
+            if !items.isEmpty { advance() }
             try admitCollectionElement()
-            items.append(
-                try makeStructuralNode(
-                    ProjectionItem(expr, alias: alias)
-                )
-            )
-        }
-
-        return .items(items)
+            if isSymbol("*") {
+                let start = tokenStart
+                advance()
+                try sourceCapture?.recordProjectionQualifier(start: start, end: previousTokenEnd, identifierEnd: nil, ledger: &structuralLedger)
+                items.append(.wildcard())
+            } else if let qualifier = identifierText, peekNextToken() == .symbol("."), peekNextToken(2) == .symbol("*") {
+                let start = tokenStart, identifierEnd = tokenEnd
+                advance(); try expect("."); try expect("*")
+                try sourceCapture?.recordProjectionQualifier(start: start, end: previousTokenEnd, identifierEnd: identifierEnd, ledger: &structuralLedger)
+                items.append(.wildcard(qualifier: qualifier))
+            } else {
+                let expression = try parseExpression()
+                var alias: String?
+                if isKeyword("AS") { advance(); alias = try parseRequiredIdentifier("projection alias", allowsKeywordLabel: true) }
+                else if let name = identifierText { alias = name; advance() }
+                items.append(try makeStructuralNode(ProjectionItem(expression, alias: alias)))
+            }
+        } while isSymbol(",")
+        return items
     }
 
     private func parseDataSource() throws -> DataSource {
+        var source = try parseJoinedSource()
+        while isSymbol(",") {
+            advance()
+            let lateral = isKeyword("LATERAL")
+            if lateral { advance() }
+            let right = try parseJoinedSource()
+            source = try makeStructuralNode(.join(JoinClause(type: lateral ? .lateral : .cross, left: source, right: right)))
+        }
+        return source
+    }
+
+    private func parseJoinedSource() throws -> DataSource {
         let source = try parseTableRef()
 
         // Check for JOINs
@@ -1263,77 +1345,73 @@ extension SQLParser {
     }
 
     private func parseTableRef() throws -> DataSource {
-        let sourceStart = tokenStart
-        let sourceIdentifierEnd = tokenEnd
-        // FIXME(INCOMPLETE_IMPLEMENTATION): SQL FROM reaches row-returning function syntax here.
-        // S10 must provide typed relation composition and real row execution before admission succeeds.
+        let start = tokenStart
+        let identifierEnd = tokenEnd
+        // FIXME(INCOMPLETE_IMPLEMENTATION): Public FROM table functions are not relation sources yet.
+        // SQL admission reaches this branch; S10 must prove typed row composition and execution.
         if let name = labelText, peekNextToken() == .symbol("("), asciiUppercase(name) != "GRAPH_TABLE" {
             throw ParseError.unsupportedFeature("SQL table functions require S10 relation composition")
         }
-        // Check for GRAPH_TABLE
-        if case .keyword("GRAPH_TABLE") = currentToken, peekNextToken() == .symbol("(") {
+        let source: DataSource
+        if isKeyword("GRAPH_TABLE"), peekNextToken() == .symbol("(") {
             let savedCapture = sourceCapture
             sourceCapture = nil
-            let source: DataSource
-            do {
-                source = try parseGraphTable()
-            } catch {
-                sourceCapture = savedCapture
-                throw error
-            }
+            do { source = try parseGraphTable() }
+            catch { sourceCapture = savedCapture; throw error }
             sourceCapture = savedCapture
-            try sourceCapture?.record(source, start: sourceStart, end: previousTokenEnd,
-                                      ledger: &structuralLedger)
-            return source
-        }
-
-        // Check for subquery: (SELECT ...) or (WITH ...)
-        if isSymbol("(") {
+            try sourceCapture?.record(source, start: start, end: previousTokenEnd, ledger: &structuralLedger)
+        } else if isSymbol("(") {
             try enterStructuralNesting()
-            defer { leaveStructuralNesting() }
             advance()
-            if !isKeyword("SELECT"), !isKeyword("WITH") {
-                let grouped = try parseDataSource()
-                try expect(")")
-                if isKeyword("AS") || identifierText != nil {
-                    throw ParseError.unsupportedFeature("Joined-table group alias")
+            do {
+                if isKeyword("VALUES") {
+                    let valuesStart = tokenStart
+                    let values = try parseValuesSource()
+                    if isSymbol(")") { source = values }
+                    else {
+                        try sourceCapture?.recordSyntheticProjection(ledger: &structuralLedger)
+                        try sourceCapture?.swapLastPending()
+                        let initial = try makeStructuralNode(SelectQuery(projection: [.wildcard()], source: values), at: valuesStart)
+                        let query = try parseSelectQuery(startingWith: initial, at: valuesStart)
+                        source = try makeStructuralNode(.subquery(query), at: start)
+                    }
+                    try expect(")")
+                } else if startsQuery {
+                    let query = try parseSelectQuery()
+                    try expect(")")
+                    source = try makeStructuralNode(.subquery(query), at: start)
+                } else {
+                    source = try parseDataSource()
+                    try expect(")")
                 }
-                return grouped
-            }
-
-            let subquery = try parseSelectQuery()
-            try expect(")")
-
-            // Alias is required for subqueries
-            var alias: String?
-            if case .keyword("AS") = currentToken {
-                advance()
-            }
-            if let a = identifierText {
-                alias = a
-                advance()
-            }
-
-            guard let subqueryAlias = alias else {
-                throw ParseError.invalidSyntax(
-                    message: "Subquery in FROM clause requires an alias",
-                    position: tokenStart
-                )
-            }
-
-            return try makeStructuralNode(
-                .subquery(subquery, alias: subqueryAlias)
-            )
+            } catch { leaveStructuralNesting(); throw error }
+            leaveStructuralNesting()
+        } else {
+            let table = try parseNamedTableReference(allowsImplicitAlias: false, allowsExplicitAlias: false)
+            source = try makeStructuralNode(.table(table), at: start, identifierEnd: identifierEnd)
         }
-
-        let table = try parseNamedTableReference()
-        return try makeStructuralNode(
-            .table(table), at: sourceStart, identifierEnd: sourceIdentifierEnd
-        )
+        let explicitAlias = isKeyword("AS")
+        if explicitAlias { advance() }
+        guard explicitAlias || identifierText != nil else { return source }
+        let name = try parseRequiredIdentifier("source alias")
+        var columns: [String]?
+        if isSymbol("(") {
+            advance()
+            var names: [String] = []
+            repeat {
+                if !names.isEmpty { advance() }
+                try admitCollectionElement()
+                names.append(try parseRequiredIdentifier("source column alias"))
+            } while isSymbol(",")
+            try expect(")")
+            columns = names
+        }
+        return try makeStructuralNode(.aliased(source, name: name, columns: columns), at: start)
     }
 
     private func parseNamedTableReference(
         allowsImplicitAlias: Bool = true,
+        allowsExplicitAlias: Bool = true,
         implicitAliasTerminators: Set<String> = []
     ) throws -> TableRef {
         guard let firstName = identifierText else {
@@ -1365,7 +1443,7 @@ extension SQLParser {
         }
 
         var alias: String?
-        if isKeyword("AS") {
+        if allowsExplicitAlias, isKeyword("AS") {
             advance()
             guard let name = identifierText else {
                 throw ParseError.unexpectedToken(
@@ -1445,8 +1523,8 @@ extension SQLParser {
         return try parseOrExpression()
     }
 
-    private func parseOrExpression() throws -> Expression {
-        var left = try parseAndExpression()
+    private func parseOrExpression(startingWith initial: Expression? = nil) throws -> Expression {
+        var left = try parseAndExpression(startingWith: initial)
         while case .keyword("OR") = currentToken {
             advance()
             let right = try parseAndExpression()
@@ -1455,8 +1533,8 @@ extension SQLParser {
         return left
     }
 
-    private func parseAndExpression() throws -> Expression {
-        var left = try parseNotExpression()
+    private func parseAndExpression(startingWith initial: Expression? = nil) throws -> Expression {
+        var left = try parseNotExpression(startingWith: initial)
         while case .keyword("AND") = currentToken {
             advance()
             let right = try parseNotExpression()
@@ -1465,9 +1543,9 @@ extension SQLParser {
         return left
     }
 
-    private func parseNotExpression() throws -> Expression {
+    private func parseNotExpression(startingWith initial: Expression? = nil) throws -> Expression {
         var operatorCount = 0
-        while case .keyword("NOT") = currentToken {
+        while initial == nil, case .keyword("NOT") = currentToken {
             try enterStructuralNesting()
             operatorCount += 1
             advance()
@@ -1477,21 +1555,21 @@ extension SQLParser {
                 leaveStructuralNesting()
             }
         }
-        var expression = try parseComparisonExpression()
+        var expression = try parseComparisonExpression(startingWith: initial)
         for _ in 0..<operatorCount {
             expression = try makeStructuralNode(.not(expression))
         }
         return expression
     }
 
-    private func parseComparisonExpression() throws -> Expression {
-        var expression = try parsePredicateExpression()
+    private func parseComparisonExpression(startingWith initial: Expression? = nil) throws -> Expression {
+        var expression = try parsePredicateExpression(startingWith: initial)
         while isKeyword("IS") { expression = try parseIsPredicate(expression) }
         return expression
     }
 
-    private func parsePredicateExpression() throws -> Expression {
-        let left = try parseConcatenateExpression()
+    private func parsePredicateExpression(startingWith initial: Expression? = nil) throws -> Expression {
+        let left = try parseConcatenateExpression(startingWith: initial)
 
         let comparison: DatabaseKit.ComparisonOperator?
         switch currentToken {
@@ -1511,7 +1589,7 @@ extension SQLParser {
                 advance()
                 try expect("(")
                 let source: QuantifiedComparisonSource
-                if isKeyword("SELECT") || isKeyword("WITH") {
+                if startsQuery {
                     source = .subquery(try parseSelectQuery())
                 } else {
                     source = .array(try parseExpression())
@@ -1542,16 +1620,7 @@ extension SQLParser {
             try expect("(")
 
             // Check if it's a subquery or value list
-            if case .keyword("SELECT") = currentToken {
-                let subquery = try parseSelectQuery()
-                try expect(")")
-                return try makeStructuralNode(
-                    .inSubquery(left, subquery: subquery)
-                )
-            }
-
-            // Handle WITH clause (CTE) that starts a subquery
-            if case .keyword("WITH") = currentToken {
+            if startsQuery {
                 let subquery = try parseSelectQuery()
                 try expect(")")
                 return try makeStructuralNode(
@@ -1576,15 +1645,7 @@ extension SQLParser {
             case .keyword("IN"):
                 advance()
                 try expect("(")
-                if case .keyword("SELECT") = currentToken {
-                    let subquery = try parseSelectQuery()
-                    try expect(")")
-                    let membership = try makeStructuralNode(
-                        Expression.inSubquery(left, subquery: subquery)
-                    )
-                    return try makeStructuralNode(.not(membership))
-                }
-                if case .keyword("WITH") = currentToken {
+                if startsQuery {
                     let subquery = try parseSelectQuery()
                     try expect(")")
                     let membership = try makeStructuralNode(
@@ -1661,8 +1722,8 @@ extension SQLParser {
         return try makeStructuralNode(.truthTest(value, value: truth, negated: negated))
     }
 
-    private func parseConcatenateExpression() throws -> Expression {
-        var left = try parseAddExpression()
+    private func parseConcatenateExpression(startingWith initial: Expression? = nil) throws -> Expression {
+        var left = try parseAddExpression(startingWith: initial)
         while case .symbol(let symbol) = currentToken {
             guard symbol == "||" || Self.collectionOperators[symbol] != nil || ["~", "~*", "!~", "!~*"].contains(symbol) else { break }
             advance()
@@ -1725,8 +1786,8 @@ extension SQLParser {
         return try negate ? makeStructuralNode(.not(match)) : match
     }
 
-    private func parseAddExpression() throws -> Expression {
-        var left = try parseMulExpression()
+    private func parseAddExpression(startingWith initial: Expression? = nil) throws -> Expression {
+        var left = try parseMulExpression(startingWith: initial)
         while case .symbol(let s) = currentToken, ["+", "-"].contains(s) {
             advance()
             let right = try parseMulExpression()
@@ -1739,8 +1800,8 @@ extension SQLParser {
         return left
     }
 
-    private func parseMulExpression() throws -> Expression {
-        var left = try parseAtTimeZoneExpression()
+    private func parseMulExpression(startingWith initial: Expression? = nil) throws -> Expression {
+        var left = try parseAtTimeZoneExpression(startingWith: initial)
         while case .symbol(let s) = currentToken, ["*", "/", "%"].contains(s) {
             advance()
             let right = try parseAtTimeZoneExpression()
@@ -1754,8 +1815,8 @@ extension SQLParser {
         return left
     }
 
-    private func parseAtTimeZoneExpression() throws -> Expression {
-        var value = try parseUnaryExpression()
+    private func parseAtTimeZoneExpression(startingWith initial: Expression? = nil) throws -> Expression {
+        var value = try parseUnaryExpression(startingWith: initial)
         while isContextualWord("AT") {
             let start = tokenStart
             advance()
@@ -1768,10 +1829,10 @@ extension SQLParser {
         return value
     }
 
-    private func parseUnaryExpression() throws -> Expression {
+    private func parseUnaryExpression(startingWith initial: Expression? = nil) throws -> Expression {
         let unaryStart = tokenStart
         var signs: [Bool] = []
-        while isSymbol("-") || isSymbol("+") {
+        while initial == nil && (isSymbol("-") || isSymbol("+")) {
             try enterStructuralNesting()
             try admitCollectionElement()
             signs.append(isSymbol("-"))
@@ -1780,19 +1841,36 @@ extension SQLParser {
         let signCount = signs.count
         defer { for _ in 0..<signCount { leaveStructuralNesting() } }
         var expression: Expression
-        if case .number(let text) = currentToken, let negative = signs.popLast() {
+        if let initial {
+            expression = initial
+        } else if case .number(let text) = currentToken, let negative = signs.popLast() {
             advance()
             expression = try numericExpression((negative ? "-" : "+") + text, at: unaryStart)
         } else {
             expression = try parsePrimaryExpression()
         }
-        while isSymbol("::") || isSymbol("[") {
+        while isSymbol("::") || isSymbol("[") || isSymbol(".") || isKeyword("COLLATE") {
             if isSymbol("::") {
                 let start = tokenStart
                 advance()
                 expression = try normalizedCast(expression, as: parseDataType(), at: start)
-            } else {
+            } else if isSymbol("[") {
                 expression = try parseArrayAccess(expression)
+            } else if isSymbol(".") {
+                advance()
+                if isSymbol("*") { advance(); expression = try makeStructuralNode(.fieldExpansion(expression)) }
+                else {
+                    let name = try parseRequiredIdentifier("composite field", allowsKeywordLabel: true)
+                    expression = try makeStructuralNode(.field(expression, name: name))
+                }
+            } else {
+                advance()
+                let position = tokenStart
+                let name = try parseRequiredIdentifier("collation")
+                let collation: SQLCollation
+                switch name { case "C": collation = .c; case "POSIX": collation = .posix
+                default: throw ParseError.invalidSyntax(message: "Unsupported collation", position: position) }
+                expression = try makeStructuralNode(.collate(expression, collation: collation))
             }
         }
         for negative in signs.reversed() {
@@ -1883,9 +1961,10 @@ extension SQLParser {
                 return try parseExtractExpression(at: primaryStart)
             }
             if upper == "ARRAY", next == .symbol("(") {
-                // FIXME(INCOMPLETE_IMPLEMENTATION): SQL ARRAY(subquery) reaches this gate;
-                // S08 must provide relation carriage and executed cardinality/shape evidence.
-                throw ParseError.unsupportedFeature("ARRAY(subquery) requires S08 relation composition")
+                advance(); try expect("(")
+                let query = try parseSelectQuery()
+                try expect(")")
+                return try makeStructuralNode(.arraySubquery(query), at: primaryStart)
             }
             if ["ARRAY", "ROW"].contains(upper), next == .symbol(upper == "ARRAY" ? "[" : "(") {
                 advance()
@@ -1921,18 +2000,19 @@ extension SQLParser {
             defer { colonStartsSlice = previousColonRole }
             advance()
             // Disambiguate: subquery vs parenthesized expression
-            if case .keyword("SELECT") = currentToken {
-                let subquery = try parseSelectQuery()
-                try expect(")")
-                return try makeStructuralNode(.subquery(subquery))
-            }
-            // Handle WITH clause (CTE) that starts a subquery
-            if case .keyword("WITH") = currentToken {
+            if startsQuery {
                 let subquery = try parseSelectQuery()
                 try expect(")")
                 return try makeStructuralNode(.subquery(subquery))
             }
             let expr = try parseExpression()
+            if isSymbol(",") {
+                try admitCollectionElement()
+                var fields = [expr]
+                while isSymbol(",") { advance(); try admitCollectionElement(); fields.append(try parseExpression()) }
+                try expect(")")
+                return try makeStructuralNode(.row(fields), at: primaryStart)
+            }
             try expect(")")
             return expr
 
@@ -1973,7 +2053,11 @@ extension SQLParser {
             guard !colonStartsSlice else {
                 throw ParseError.invalidSyntax(message: "Named subscript operands require parentheses", position: tokenStart)
             }
+            let nameStart = tokenEnd
             advance()
+            guard tokenStart == nameStart else {
+                throw ParseError.invalidSyntax(message: "Named parameter identifier must immediately follow ':'", position: primaryStart)
+            }
             let name: String
             switch currentToken {
             case .identifier(let value), .keyword(let value):
@@ -2167,13 +2251,15 @@ extension SQLParser {
         var quoted = firstQuoted
         if isSymbol(".") {
             advance()
+            if isSymbol("*") {
+                let row = try makeStructuralNode(Expression.wholeRow(firstName), at: start, identifierEnd: identifierEnd, end: identifierEnd)
+                advance()
+                return try makeStructuralNode(.fieldExpansion(row), at: start)
+            }
             quoted = tokenIsQuoted
             name = try parseRequiredIdentifier("name after qualifier", allowsKeywordLabel: true)
             schema = firstName
             identifierEnd = previousTokenEnd
-            guard !isSymbol(".") else {
-                throw ParseError.unsupportedFeature("Multi-part function or column names")
-            }
         }
         if isSymbol("(") {
             let previousColonRole = colonStartsSlice
@@ -2314,29 +2400,82 @@ extension SQLParser {
     ]
 
     private func parseConstructor(array: Bool, at start: Int? = nil) throws -> Expression {
+        struct Frame {
+            let array: Bool
+            let start: Int
+            let resumesExpression: Bool
+            var elements: [Expression] = []
+            var needsElement = true
+            var closing: String { array ? "]" : ")" }
+        }
         let previousColonRole = colonStartsSlice
         colonStartsSlice = false
         defer { colonStartsSlice = previousColonRole }
-        let constructorStart = start ?? tokenStart
-        try enterStructuralNesting()
-        defer { leaveStructuralNesting() }
-        try expect(array ? "[" : "(")
-        let end = array ? "]" : ")"
-        var elements: [Expression] = []
-        if !isSymbol(end) {
-            while true {
-                try admitCollectionElement()
-                if array && isSymbol("[") {
-                    elements.append(try parseConstructor(array: true))
-                } else {
-                    elements.append(try parseExpression())
-                }
-                guard isSymbol(",") else { break }
-                advance()
-            }
+        var frames: [Frame] = []
+        var enteredNesting = 0
+        defer { for _ in 0..<enteredNesting { leaveStructuralNesting() } }
+        func enter() throws {
+            try enterStructuralNesting()
+            enteredNesting += 1
         }
-        try expect(end)
-        return try makeStructuralNode(array ? .array(elements) : .row(elements), at: constructorStart)
+        func leave() {
+            leaveStructuralNesting()
+            enteredNesting -= 1
+        }
+        func push(array: Bool, start: Int, resumesExpression: Bool) throws {
+            if resumesExpression { try enter() }
+            try enter()
+            try structuralLedger.consume(.retainedBytes, amount: UInt64(MemoryLayout<Frame>.stride))
+            try expect(array ? "[" : "(")
+            frames.append(Frame(array: array, start: start, resumesExpression: resumesExpression))
+        }
+        try push(array: array, start: start ?? tokenStart, resumesExpression: false)
+        while !frames.isEmpty {
+            let index = frames.count - 1
+            let isArray = frames[index].array
+            let closing = frames[index].closing
+            let needsElement = frames[index].needsElement
+            if needsElement && !(frames[index].elements.isEmpty && isSymbol(closing)) {
+                try admitCollectionElement()
+                if isArray && isSymbol("[") {
+                    try push(array: true, start: tokenStart, resumesExpression: false)
+                    continue
+                }
+                if !tokenIsQuoted, let word = labelText {
+                    let upper = asciiUppercase(word)
+                    if (upper == "ROW" && peekNextToken() == .symbol("("))
+                        || (upper == "ARRAY" && peekNextToken() == .symbol("[")) {
+                        let childStart = tokenStart
+                        advance()
+                        try push(array: upper == "ARRAY", start: childStart, resumesExpression: true)
+                        continue
+                    }
+                }
+                let element = try parseExpression()
+                frames[index].elements.append(element)
+                frames[index].needsElement = false
+                continue
+            }
+            if !needsElement && isSymbol(",") {
+                advance()
+                frames[index].needsElement = true
+                continue
+            }
+            try expect(closing)
+            let frame = frames.removeLast()
+            var completed = try makeStructuralNode(frame.array ? .array(frame.elements) : .row(frame.elements), at: frame.start)
+            leave()
+            guard !frames.isEmpty else { return completed }
+            if frame.resumesExpression {
+                // Resume postfix and binary syntax without re-entering a full
+                // precedence ladder for every consecutive constructor child.
+                completed = try parseOrExpression(startingWith: completed)
+                leave()
+            }
+            frames[frames.count - 1].elements.append(completed)
+            frames[frames.count - 1].needsElement = false
+        }
+        throw ParseError.invalidSyntax(message: "Missing constructor", position: tokenStart)
     }
 
     private func parseCastExpression() throws -> Expression {
@@ -2830,7 +2969,7 @@ extension SQLParser {
             } while true
             let valuesSource = InsertSource.values(rows)
             source = try makeStructuralNode(valuesSource)
-        } else if isKeyword("SELECT") || isKeyword("WITH") {
+        } else if startsQuery {
             let query = try parseSelectQuery()
             source = try makeStructuralNode(.select(query))
         } else if isKeyword("DEFAULT") {
@@ -3214,6 +3353,32 @@ extension SQLParser {
         return try makeStructuralNode(.columns(columns))
     }
 
+    private func parseIdentifierList(
+        openingConsumed: Bool,
+        expected: String
+    ) throws -> [String] {
+        if !openingConsumed {
+            try expect("(")
+        }
+        var identifiers: [String] = []
+        while true {
+            guard let identifier = identifierText else {
+                throw ParseError.unexpectedToken(
+                    expected: expected,
+                    found: tokenDescription(currentToken),
+                    position: tokenStart
+                )
+            }
+            try admitCollectionElement()
+            identifiers.append(identifier)
+            advance()
+            guard isSymbol(",") else { break }
+            advance()
+        }
+        try expect(")")
+        return identifiers
+    }
+
     private func parseRequiredIdentifier(
         _ expected: String,
         allowsKeywordLabel: Bool = false
@@ -3257,62 +3422,9 @@ extension SQLParser {
     private func parseReturningClause() throws -> [ProjectionItem]? {
         guard isKeyword("RETURNING") else { return nil }
         advance()
-
-        var items: [ProjectionItem] = []
-        while true {
-            let expression = try parseExpression()
-            let alias: String?
-            if isKeyword("AS") {
-                advance()
-                guard let name = labelText else {
-                    throw ParseError.unexpectedToken(
-                        expected: "RETURNING alias",
-                        found: tokenDescription(currentToken),
-                        position: tokenStart
-                    )
-                }
-                alias = name
-                advance()
-            } else {
-                alias = nil
-            }
-            try admitCollectionElement()
-            items.append(
-                try makeStructuralNode(
-                    ProjectionItem(expression, alias: alias)
-                )
-            )
-            guard isSymbol(",") else { break }
-            advance()
-        }
-        return items
+        return try parseProjection()
     }
 
-    private func parseIdentifierList(
-        openingConsumed: Bool,
-        expected: String
-    ) throws -> [String] {
-        if !openingConsumed {
-            try expect("(")
-        }
-        var identifiers: [String] = []
-        while true {
-            guard let identifier = identifierText else {
-                throw ParseError.unexpectedToken(
-                    expected: expected,
-                    found: tokenDescription(currentToken),
-                    position: tokenStart
-                )
-            }
-            try admitCollectionElement()
-            identifiers.append(identifier)
-            advance()
-            guard isSymbol(",") else { break }
-            advance()
-        }
-        try expect(")")
-        return identifiers
-    }
 }
 
 // MARK: - GRAPH_TABLE Parsing (ISO/IEC 9075-16:2023 SQL/PGQ)
@@ -3350,31 +3462,11 @@ extension SQLParser {
 
         try expect(")")
 
-        let alias: String?
-        if case .keyword("AS") = currentToken {
-            advance()
-            guard let name = identifierText else {
-                throw ParseError.unexpectedToken(
-                    expected: "GRAPH_TABLE alias",
-                    found: tokenDescription(currentToken),
-                    position: tokenStart
-                )
-            }
-            alias = name
-            advance()
-        } else if let name = identifierText {
-            alias = name
-            advance()
-        } else {
-            alias = nil
-        }
-
         let source = try makeStructuralNode(
             GraphTableSource(
                 graphName: graphName,
                 matchPattern: matchPattern,
-                columns: columns,
-                alias: alias
+                columns: columns
             )
         )
 

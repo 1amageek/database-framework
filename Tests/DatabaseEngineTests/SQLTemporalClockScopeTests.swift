@@ -162,11 +162,11 @@ struct SQLTemporalClockScopeTests {
                     #expect(session.temporalEnvironment.statementInstant == environment.statementInstant)
                     #expect(try session.temporalEnvironment.configuration.fixedOffset(
                         forAbbreviation: "CUSTOM", workMeter: meter) == .min)
-                    let query = SelectQuery(projection: .items([
+                    let query = SelectQuery(projection: [
                         ProjectionItem(.function(FunctionCall(name: "now", arguments: []))),
                         ProjectionItem(.function(FunctionCall(name: "statement_timestamp", arguments: []))),
                         ProjectionItem(.currentValue(kind: .time, precision: nil)),
-                    ]), source: .values([[]], columnNames: []))
+                    ], source: .values([[]]))
                     let response = try await session.executeCanonical(query,
                         execution: ReadExecutionContext(monotonicClock: container.monotonicClock, workMeter: meter))
                     let row = try #require(response.rows.first)
@@ -189,9 +189,9 @@ struct SQLTemporalClockScopeTests {
     #endif
 
     private static func clockQuery(rows: Int = 1) -> SelectQuery {
-        SelectQuery(projection: .items(["now", "transaction_timestamp", "statement_timestamp", "clock_timestamp"].map {
+        SelectQuery(projection: ["now", "transaction_timestamp", "statement_timestamp", "clock_timestamp"].map {
             ProjectionItem(.function(FunctionCall(name: $0, arguments: [])))
-        } + [ProjectionItem(.currentValue(kind: .timestamp, precision: nil))]), source: .values(Array(repeating: [], count: rows), columnNames: []))
+        } + [ProjectionItem(.currentValue(kind: .timestamp, precision: nil))], source: .values((Array(repeating: [], count: rows) as [[DatabaseKit.Literal]]).map { $0.map { DatabaseKit.Expression.literal($0) } }))
     }
 
     private static func instant(_ value: QueryValue) throws -> Timestamp {

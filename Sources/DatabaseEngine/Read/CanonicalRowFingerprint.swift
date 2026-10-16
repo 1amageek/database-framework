@@ -16,7 +16,7 @@ public enum CanonicalRowFingerprint {
             try workMeter.consume(UInt64(column.name.utf8.count) + 1, at: .resultMaterialization)
             updateInteger(column.number, hasher: &hasher)
             updateString(column.name, hasher: &hasher)
-            updateColumnType(column.type, hasher: &hasher)
+            try updateColumnType(column.type, hasher: &hasher, workMeter: workMeter)
             updateByte(column.isNullable ? 1 : 0, hasher: &hasher)
             try updateValue(value, hasher: &hasher, workMeter: workMeter)
         }
@@ -51,6 +51,71 @@ public enum CanonicalRowFingerprint {
         hasher: inout SHA256Accumulator,
         workMeter: DatabaseWorkMeter
     ) throws {
+        switch value {
+        case .array, .composite: break
+        default:
+            try updateScalarValue(value, hasher: &hasher, workMeter: workMeter)
+            return
+        }
+        let layout = try DatabaseRetainedArrayLayout.forElement(ValueTraversalFrame.self)
+        let reservation = try workMeter.reserveIntermediate(at: .resultMaterialization)
+        defer { reservation.release() }
+        var capacity = 0
+        var stack: [ValueTraversalFrame] = []
+        func append(_ value: QueryValue, nextChild: Int? = nil) throws {
+            let (needed, overflow) = stack.count.addingReportingOverflow(1)
+            guard !overflow else { throw DatabaseExpressionEvaluationError.numericOverflow }
+            let growth = try layout.growth(from: capacity, toFit: needed)
+            if growth.additionalByteCount > 0 {
+                try reservation.reserveAdditional(bytes: growth.additionalByteCount, at: .resultMaterialization)
+                stack.reserveCapacity(growth.capacity)
+                capacity = growth.capacity
+            }
+            stack.append(ValueTraversalFrame(value: value, nextChild: nextChild))
+        }
+        try append(value)
+        while let frame = stack.popLast() {
+            if let index = frame.nextChild {
+                let elements: QueryValueElements
+                switch frame.value {
+                case .array(let array): elements = array.elements
+                case .composite(let composite): elements = composite.fields
+                default: preconditionFailure("Only SQL containers have value cursors")
+                }
+                if index + 1 < elements.count { try append(frame.value, nextChild: index + 1) }
+                try append(elements[index])
+                continue
+            }
+            switch frame.value {
+            case .array(let array):
+                try workMeter.consume(at: .resultMaterialization)
+                updateByte(4, hasher: &hasher)
+                try updateSQLType(array.elementType, hasher: &hasher, workMeter: workMeter)
+                updateInteger(UInt64(array.dimensions.count), hasher: &hasher)
+                for dimension in array.dimensions {
+                    try workMeter.consume(at: .resultMaterialization)
+                    updateInteger(dimension.lowerBound, hasher: &hasher)
+                    updateInteger(dimension.length, hasher: &hasher)
+                }
+                updateInteger(UInt64(array.elements.count), hasher: &hasher)
+                if !array.elements.isEmpty { try append(frame.value, nextChild: 0) }
+            case .composite(let composite):
+                try workMeter.consume(at: .resultMaterialization)
+                updateByte(11, hasher: &hasher)
+                try updateSQLType(.composite(composite.type), hasher: &hasher, workMeter: workMeter)
+                updateInteger(UInt64(composite.fields.count), hasher: &hasher)
+                if !composite.fields.isEmpty { try append(frame.value, nextChild: 0) }
+            default:
+                try updateScalarValue(frame.value, hasher: &hasher, workMeter: workMeter)
+            }
+        }
+    }
+
+    private static func updateScalarValue(
+        _ value: QueryValue,
+        hasher: inout SHA256Accumulator,
+        workMeter: DatabaseWorkMeter
+    ) throws {
         try workMeter.consume(at: .resultMaterialization)
         switch value {
         case .primitive(let primitive):
@@ -68,19 +133,8 @@ public enum CanonicalRowFingerprint {
         case .jsonb(let json):
             updateByte(3, hasher: &hasher)
             try updateJSONB(json.root, hasher: &hasher, workMeter: workMeter)
-        case .array(let array):
-            updateByte(4, hasher: &hasher)
-            updateSQLType(array.elementType, hasher: &hasher)
-            updateInteger(UInt64(array.dimensions.count), hasher: &hasher)
-            for dimension in array.dimensions {
-                try workMeter.consume(at: .resultMaterialization)
-                updateInteger(dimension.lowerBound, hasher: &hasher)
-                updateInteger(dimension.length, hasher: &hasher)
-            }
-            updateInteger(UInt64(array.elements.count), hasher: &hasher)
-            for element in array.elements {
-                try updateValue(element, hasher: &hasher, workMeter: workMeter)
-            }
+        case .array, .composite:
+            preconditionFailure("Only scalar query values enter scalar fingerprinting")
         case .time(let time):
             updateByte(6, hasher: &hasher)
             updateInteger(time.microsecondsSinceMidnight, hasher: &hasher)
@@ -105,6 +159,11 @@ public enum CanonicalRowFingerprint {
             updateInteger(interval.time.seconds, hasher: &hasher)
             updateInteger(interval.time.nanoseconds, hasher: &hasher)
         }
+    }
+
+    private struct ValueTraversalFrame {
+        let value: QueryValue
+        let nextChild: Int?
     }
 
     private struct JSONBTraversalFrame {
@@ -189,11 +248,11 @@ public enum CanonicalRowFingerprint {
         updateInteger(value.displayScale, hasher: &hasher)
     }
 
-    private static func updateColumnType(_ type: QueryColumnType, hasher: inout SHA256Accumulator) {
+    private static func updateColumnType(_ type: QueryColumnType, hasher: inout SHA256Accumulator, workMeter: DatabaseWorkMeter) throws {
         switch type {
         case .sql(let type):
             updateByte(0, hasher: &hasher)
-            updateSQLType(type, hasher: &hasher)
+            try updateSQLType(type, hasher: &hasher, workMeter: workMeter)
         case .primitive(let kind, let isArray):
             updateByte(1, hasher: &hasher)
             updateString(kind.rawValue, hasher: &hasher)
@@ -201,7 +260,73 @@ public enum CanonicalRowFingerprint {
         }
     }
 
-    private static func updateSQLType(_ type: DataType, hasher: inout SHA256Accumulator) {
+    private enum TypeTraversalTask {
+        case type(DataType)
+        case columns(QueryCompositeColumns, index: Int)
+    }
+
+    private static func updateSQLType(_ type: DataType, hasher: inout SHA256Accumulator, workMeter: DatabaseWorkMeter) throws {
+        switch type {
+        case .array, .composite: break
+        default:
+            updateScalarSQLType(type, hasher: &hasher)
+            return
+        }
+        let layout = try DatabaseRetainedArrayLayout.forElement(TypeTraversalTask.self)
+        let reservation = try workMeter.reserveIntermediate(at: .resultMaterialization)
+        defer { reservation.release() }
+        var capacity = 0
+        var stack: [TypeTraversalTask] = []
+        func append(_ task: TypeTraversalTask) throws {
+            let (needed, overflow) = stack.count.addingReportingOverflow(1)
+            guard !overflow else { throw DatabaseExpressionEvaluationError.numericOverflow }
+            let growth = try layout.growth(from: capacity, toFit: needed)
+            if growth.additionalByteCount > 0 {
+                try reservation.reserveAdditional(bytes: growth.additionalByteCount, at: .resultMaterialization)
+                stack.reserveCapacity(growth.capacity)
+                capacity = growth.capacity
+            }
+            stack.append(task)
+        }
+        try append(.type(type))
+        while let task = stack.popLast() {
+            try workMeter.consume(at: .resultMaterialization)
+            let type: DataType
+            switch task {
+            case .type(let selected): type = selected
+            case .columns(let columns, let index):
+                let column = columns[index]
+                updateInteger(column.number, hasher: &hasher)
+                try workMeter.consume(UInt64(column.name.utf8.count), at: .resultMaterialization)
+                updateString(column.name, hasher: &hasher)
+                updateByte(column.isNullable ? 1 : 0, hasher: &hasher)
+                if index + 1 < columns.count { try append(.columns(columns, index: index + 1)) }
+                switch column.type {
+                case .sql(let selected):
+                    updateByte(0, hasher: &hasher)
+                    try append(.type(selected))
+                case .primitive(let kind, let isArray):
+                    updateByte(1, hasher: &hasher)
+                    updateString(kind.rawValue, hasher: &hasher)
+                    updateByte(isArray ? 1 : 0, hasher: &hasher)
+                }
+                continue
+            }
+            switch type {
+            case .array(let element):
+                updateByte(20, hasher: &hasher)
+                try append(.type(element))
+            case .composite(let descriptor):
+                updateByte(26, hasher: &hasher)
+                updateInteger(UInt64(descriptor.columns.count), hasher: &hasher)
+                if !descriptor.columns.isEmpty { try append(.columns(descriptor.columns, index: 0)) }
+            default:
+                updateScalarSQLType(type, hasher: &hasher)
+            }
+        }
+    }
+
+    private static func updateScalarSQLType(_ type: DataType, hasher: inout SHA256Accumulator) {
         switch type {
         case .boolean: updateByte(0, hasher: &hasher)
         case .smallint: updateByte(1, hasher: &hasher)
@@ -249,9 +374,8 @@ public enum CanonicalRowFingerprint {
         case .json: updateByte(17, hasher: &hasher)
         case .jsonb: updateByte(18, hasher: &hasher)
         case .uuid: updateByte(19, hasher: &hasher)
-        case .array(let element):
-            updateByte(20, hasher: &hasher)
-            updateSQLType(element, hasher: &hasher)
+        case .array, .composite:
+            preconditionFailure("Only scalar SQL types enter scalar fingerprinting")
         case .custom(let name, let schema):
             updateByte(21, hasher: &hasher)
             updateString(name, hasher: &hasher)
