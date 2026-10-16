@@ -93,6 +93,18 @@ state. Broader temporal/interval input remains a lexical cast for its runtime
 owner. Invalid canonical constant input is a typed parse/value failure, not a
 fallback to an untyped string. General expression casts remain casts.
 
+NUMERIC, UUID and BYTEA lexical formation consumes the
+[Kit-owned bounded constructors](../../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md#sql-lexical-value-construction).
+SQLConstantSyntax retains literal classification, target declarations and
+canonical output generation, but does not duplicate those input parsers.
+Valid UUID braces/compact/four-digit hyphen forms and BYTEA hex/escape forms
+normalize to the existing typed primitive values. Malformed supported typed
+constants still throw SQLConstantError at the original parser source token;
+they are not deferred into a runtime CAST merely to bypass validation.
+The adapter maps Kit lexical/range/resource errors to its existing positioned
+constant failure categories. Runtime policy, typmod rounding and work metering
+remain with QueryExecution; no Builder-to-Engine dependency is introduced.
+
 The parser-facing internal contract is SQLConstantSyntax.numericLiteral(_:limits:)
 returning Literal and SQLConstantSyntax.normalize(_:as:limits:) accepting an
 Expression plus DataType and returning Literal?. Both accept
@@ -273,3 +285,14 @@ identity and operator precedence. Structural/parameter walks charge each new
 child once; unsupported forms return typed errors instead of placeholders.
 S04-C11 requires semantic parse/serialize/parse identity including operand
 count and quoted versus special-syntax distinctions.
+
+### S05 exact pattern emission
+
+Pattern serialization emits explicit ESCAPE for LIKE/ILIKE/SIMILAR: absent IR
+escape is ESCAPE empty string, while a present expression is emitted exactly.
+This preserves programmatic Graph no-escape meaning and explicit SQL default
+backslash across round trips. ERE uses ~ or ~* and rejects an escape child.
+Concatenation emits ||. The SQL whereLike builder supplies explicit backslash
+escape; a quoted generic function remains an ordinary exact function call.
+Special SQL grammar uses the canonical ordinary call representation chosen by
+Parser, so serialization need not reconstruct syntactic spelling.

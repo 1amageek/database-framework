@@ -31,6 +31,8 @@ package struct DatabaseExpressionEvaluator: Sendable {
         // S07 ARRAY and S08 ROW evaluation must be implemented before returning a value.
         case .array, .row:
             throw DatabaseExpressionEvaluationError.unsupportedExpression("SQL ARRAY/ROW constructor")
+        case .concatenate:
+            throw DatabaseExpressionEvaluationError.unsupportedExpression("SQL concatenation requires selected SQL execution")
         case .literal(let literal):
             return try value(literal)
         case .column(let column):
@@ -90,13 +92,33 @@ package struct DatabaseExpressionEvaluator: Sendable {
             return .bool(!((try evaluate(nested)).isNull))
         case .bound(let variable):
             return .bool(fields[variable.name]?.isNull == false)
-        case .like(let nested, let pattern):
-            let candidate = try evaluate(nested)
-            if candidate.isNull { return .null }
-            guard case .string(let value) = candidate else {
-                throw DatabaseExpressionEvaluationError.typeMismatch(operation: "LIKE")
+        case .patternMatch(let subject, let pattern, let escape, let kind):
+            let subjectValue = try evaluate(subject)
+            let patternValue = try evaluate(pattern)
+            let escapeValue: FieldValue?
+            if let escape { escapeValue = try evaluate(escape) }
+            else { escapeValue = nil }
+            if subjectValue.isNull || patternValue.isNull || escapeValue?.isNull == true {
+                return .null
             }
-            return .bool(try matchesLike(value, pattern: pattern))
+            guard case .string(let text) = subjectValue,
+                  case .string(let patternText) = patternValue else {
+                throw DatabaseExpressionEvaluationError.typeMismatch(operation: "pattern matching")
+            }
+            let escapeText: String?
+            if let escapeValue {
+                guard case .string(let value) = escapeValue else {
+                    throw DatabaseExpressionEvaluationError.typeMismatch(operation: "pattern escape")
+                }
+                escapeText = value
+            } else { escapeText = nil }
+            guard let workMeter else {
+                throw DatabaseExpressionEvaluationError.unsupportedExpression("Pattern matching requires an operation work meter")
+            }
+            return .bool(try CanonicalSQLPatternEvaluator.predicate(
+                subject: text, pattern: patternText, escape: escapeText,
+                kind: kind, workMeter: workMeter
+            ))
         case .regex:
             throw DatabaseExpressionEvaluationError.unsupportedExpression("REGEX")
         case .between(let nested, let low, let high):
@@ -702,49 +724,6 @@ package struct DatabaseExpressionEvaluator: Sendable {
         case .false: return .bool(false)
         case .unknown: return .null
         }
-    }
-
-    private func matchesLike(_ value: String, pattern: String) throws -> Bool {
-        var valueIndex = value.startIndex
-        var patternIndex = pattern.startIndex
-        var wildcardPatternResume: String.Index?
-        var wildcardValueResume: String.Index?
-
-        while valueIndex < value.endIndex {
-            try workMeter?.consume(at: .expressionEvaluation)
-
-            if patternIndex < pattern.endIndex {
-                let token = pattern[patternIndex]
-                if token == "_" || token == value[valueIndex] {
-                    value.formIndex(after: &valueIndex)
-                    pattern.formIndex(after: &patternIndex)
-                    continue
-                }
-                if token == "%" {
-                    pattern.formIndex(after: &patternIndex)
-                    wildcardPatternResume = patternIndex
-                    wildcardValueResume = valueIndex
-                    continue
-                }
-            }
-
-            guard let resumePattern = wildcardPatternResume,
-                  var resumeValue = wildcardValueResume,
-                  resumeValue < value.endIndex else {
-                return false
-            }
-            value.formIndex(after: &resumeValue)
-            wildcardValueResume = resumeValue
-            valueIndex = resumeValue
-            patternIndex = resumePattern
-        }
-
-        while patternIndex < pattern.endIndex {
-            try workMeter?.consume(at: .expressionEvaluation)
-            guard pattern[patternIndex] == "%" else { return false }
-            pattern.formIndex(after: &patternIndex)
-        }
-        return true
     }
 
     private func performExactDecimalOperation<T>(

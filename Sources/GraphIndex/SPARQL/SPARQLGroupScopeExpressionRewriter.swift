@@ -20,6 +20,8 @@ struct SPARQLGroupScopeExpressionRewriter {
 
         switch expression {
         // SQL conditionals and quantified predicates have no RDF interpretation.
+        case .concatenate:
+            throw SPARQLExpressionCompilationError.unsupportedExpression("SQL concatenation")
         case .greatest, .least, .truthTest, .isDistinctFrom, .quantifiedComparison:
             throw SPARQLExpressionCompilationError.unsupportedExpression("SQL conditional or quantified expression")
         // FIXME(INCOMPLETE_IMPLEMENTATION): SPARQL compilation must reject SQL-only constructors.
@@ -161,10 +163,16 @@ struct SPARQLGroupScopeExpressionRewriter {
                 targetType: targetType
             )
 
-        case .like(let value, let pattern):
-            return .like(
-                try rewrite(value, aggregateRewriter: &aggregateRewriter),
-                pattern: pattern
+        case .patternMatch(let value, let pattern, let escape, let kind):
+            let rewrittenValue = try rewrite(value, aggregateRewriter: &aggregateRewriter)
+            let rewrittenPattern = try rewrite(pattern, aggregateRewriter: &aggregateRewriter)
+            let rewrittenEscape: Expression?
+            if let escape {
+                rewrittenEscape = try rewrite(escape, aggregateRewriter: &aggregateRewriter)
+            } else { rewrittenEscape = nil }
+            return .patternMatch(
+                subject: rewrittenValue, pattern: rewrittenPattern,
+                escape: rewrittenEscape, kind: kind
             )
         case .regex(let value, let pattern, let flags):
             return .regex(

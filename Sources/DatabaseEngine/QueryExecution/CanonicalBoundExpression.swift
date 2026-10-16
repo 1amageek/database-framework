@@ -10,6 +10,7 @@ struct CanonicalBoundExpression: Sendable {
     let children: [CanonicalBoundExpression]
     let occurrence: QueryOccurrenceID?
     let subqueryBinding: CanonicalBoundSelect?
+    let castContext: CanonicalQueryTypeBinder.CastContext
 
     init(
         expression: DatabaseKit.Expression,
@@ -18,7 +19,8 @@ struct CanonicalBoundExpression: Sendable {
         columnSlot: Int? = nil,
         children: [CanonicalBoundExpression] = [],
         occurrence: QueryOccurrenceID? = nil,
-        subqueryBinding: CanonicalBoundSelect? = nil
+        subqueryBinding: CanonicalBoundSelect? = nil,
+        castContext: CanonicalQueryTypeBinder.CastContext = .explicit
     ) {
         self.expression = expression
         self.type = type
@@ -27,6 +29,7 @@ struct CanonicalBoundExpression: Sendable {
         self.children = children
         self.occurrence = occurrence
         self.subqueryBinding = subqueryBinding
+        self.castContext = castContext
     }
 
     /// Normalize value-dependent primitive evaluator representations to the
@@ -81,6 +84,7 @@ struct CanonicalBoundExpression: Sendable {
             case .subquery(let query): lowered = .subquery(query)
             }
             result = try .quantifiedComparison(child(0), comparison: comparison, quantifier: quantifier, source: lowered)
+        case .concatenate: result = try .concatenate(child(0), child(1))
         case .add: result = try .add(child(0), child(1))
         case .subtract: result = try .subtract(child(0), child(1))
         case .multiply: result = try .multiply(child(0), child(1))
@@ -98,7 +102,9 @@ struct CanonicalBoundExpression: Sendable {
         case .not: result = try .not(child(0))
         case .isNull: result = try .isNull(child(0))
         case .isNotNull: result = try .isNotNull(child(0))
-        case .like(_, let pattern): result = try .like(child(0), pattern: pattern)
+        case .patternMatch(_, _, let escape, let kind):
+            result = try .patternMatch(subject: child(0), pattern: child(1),
+                escape: escape == nil ? nil : child(2), kind: kind)
         case .between: result = try .between(child(0), low: child(1), high: child(2))
         case .inList: result = try .inList(child(0), values: children.indices.dropFirst().map(child))
         case .notInList: result = try .notInList(child(0), values: children.indices.dropFirst().map(child))

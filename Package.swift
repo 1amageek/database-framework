@@ -140,6 +140,7 @@ let package = Package(
                 "Core/DESIGN.md",
                 "Directory/DESIGN.md",
                 "QueryExecution/DESIGN.md",
+                "QueryExecution/SQLPatternMatching/DESIGN.md",
                 "Read/DESIGN.md",
                 "Mutation/DESIGN.md",
                 "Registry/DESIGN.md",

@@ -2,6 +2,25 @@ import DatabaseKit
 import DatabaseTypes
 
 package enum DatabaseEntityMutationFootprintMeter {
+    package static func encodedValueFootprint(
+        _ value: QueryValue,
+        type: QueryColumnType,
+        workMeter: DatabaseWorkMeter
+    ) throws -> DatabaseIntermediateFootprint {
+        let encoded = try QueryFieldStorageAdapter.measure(value, type: type)
+        let source = try QueryValueValidator.measure(value)
+        let entries = try DatabaseIntermediateFootprint(bytes: encoded.objectEntries)
+            .adding(DatabaseIntermediateFootprint(bytes: encoded.arrayElements)).bytes
+        let bytes = try DatabaseIntermediateFootprint(bytes: encoded.newUTF8Bytes)
+            .adding(DatabaseIntermediateFootprint(bytes: source.retainedByteCount)).bytes
+        try workMeter.consume(encoded.valueNodes, at: .mutationPlanning)
+        return try CanonicalRelationalFootprintMeter.prospectiveValueFootprint(
+            nodeCount: encoded.valueNodes,
+            collectionElementCount: entries,
+            retainedByteCount: bytes
+        )
+    }
+
     package static func footprint(
         of change: EntityMutationChange,
         workMeter: DatabaseWorkMeter

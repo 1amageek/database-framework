@@ -111,6 +111,8 @@ private extension SPARQLExpressionValidator {
             }
             switch consume expression {
         // SQL conditionals and quantified predicates have no RDF interpretation.
+        case .concatenate:
+            throw SPARQLExpressionCompilationError.unsupportedExpression("SQL concatenation")
         case .greatest, .least, .truthTest, .isDistinctFrom, .quantifiedComparison:
             throw SPARQLExpressionCompilationError.unsupportedExpression("SQL conditional or quantified expression")
         // FIXME(INCOMPLETE_IMPLEMENTATION): SPARQL compilation must reject SQL-only constructors.
@@ -199,8 +201,14 @@ private extension SPARQLExpressionValidator {
                 }
                 tasks.append(.expression(value, depth: childDepth))
 
-            case .like(let value, let pattern):
-                try state.checkString(pattern)
+            case .patternMatch(let value, let pattern, let escape, let kind):
+                guard kind == .like, escape == nil,
+                      case .literal(.string) = pattern else {
+                    throw SPARQLExpressionCompilationError.unsupportedExpression(
+                        "Graph LIKE requires a static text pattern and disabled escape"
+                    )
+                }
+                tasks.append(.expression(pattern, depth: childDepth))
                 tasks.append(.expression(value, depth: childDepth))
 
             case .inList(let value, let candidates),

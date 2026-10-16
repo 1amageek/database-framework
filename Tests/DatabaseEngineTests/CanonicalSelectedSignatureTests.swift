@@ -147,9 +147,10 @@ struct CanonicalSelectedSignatureTests {
             for value: QueryValue in [.primitive(.null), .primitive(.string("1.255"))] {
                 let parameter = QueryParameter(position: 1, value: value, type: source)
                 #expect(try binder(parameters: [parameter]).bind(.cast(.parameter(.position(1)), targetType: numeric)).type == .sql(numeric))
-                #expect(throws: DatabaseExpressionEvaluationError.unsupportedExpression("numeric lexical type modifier conversion")) {
-                    try binder(parameters: [parameter]).bind(.cast(.parameter(.position(1)), targetType: typmod))
-                }
+                let selected = try binder(parameters: [parameter]).bind(.cast(.parameter(.position(1)), targetType: typmod))
+                #expect(selected.type == .sql(typmod))
+                #expect(selected.castContext == .explicit)
+                #expect(selected.isNullable == value.isNull)
             }
         }
         let unknown = try binder().bind(.cast(.literal(.sqlUnknownString("1.255")), targetType: typmod))

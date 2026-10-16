@@ -185,10 +185,8 @@ extension SQLQueryBuilder {
     /// Add WHERE column LIKE pattern
     public func whereLike(_ column: String, pattern: String) -> SQLQueryBuilder {
         self.where(
-            .like(
-                .column(ColumnRef(column: column)),
-                pattern: pattern
-            )
+            .patternMatch(subject: .column(ColumnRef(column: column)), pattern: .string(pattern),
+                escape: .string("\\"), kind: .like)
         )
     }
 

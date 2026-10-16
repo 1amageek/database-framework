@@ -51,6 +51,19 @@ struct SQLSourceCaptureCollector {
         return nodes[node].annotation.range
     }
 
+    /// Reorders normalized function arguments without changing their source ranges.
+    mutating func reorderLastExpressions(_ order: [Int]) throws {
+        guard pending.count >= order.count, Set(order) == Set(order.indices) else {
+            throw CaptureError.inconsistentConstruction
+        }
+        let base = pending.count - order.count
+        let original = Array(pending[base...])
+        guard original.allSatisfy({ nodes[$0].kind == .expression }) else {
+            throw CaptureError.inconsistentConstruction
+        }
+        for index in order.indices { pending[base + index] = original[order[index]] }
+    }
+
     mutating func discardLastType() {
         guard let index = pending.lastIndex(where: { nodes[$0].kind == .dataType }) else { return }
         pending.remove(at: index)
@@ -85,11 +98,15 @@ struct SQLSourceCaptureCollector {
         switch expression {
         case .literal, .column, .variable, .parameter, .bound: break
         case .add, .subtract, .multiply, .divide, .modulo, .equal, .notEqual,
-             .lessThan, .lessThanOrEqual, .greaterThan, .greaterThanOrEqual, .and, .or, .nullIf, .isDistinctFrom:
+             .lessThan, .lessThanOrEqual, .greaterThan, .greaterThanOrEqual, .and, .or, .nullIf, .isDistinctFrom, .concatenate:
             try child(.operand, index: 0, into: &children, ledger: &ledger)
             try child(.operand, index: 1, into: &children, ledger: &ledger)
-        case .negate, .not, .isNull, .isNotNull, .truthTest, .like, .regex, .isTriple, .subject, .predicate, .object:
+        case .negate, .not, .isNull, .isNotNull, .truthTest, .regex, .isTriple, .subject, .predicate, .object:
             try child(.operand, index: 0, into: &children, ledger: &ledger)
+        case .patternMatch(_, _, let escape, _):
+            try child(.operand, index: 0, into: &children, ledger: &ledger)
+            try child(.argument, index: 0, into: &children, ledger: &ledger)
+            if escape != nil { try child(.argument, index: 1, into: &children, ledger: &ledger) }
         case .between, .triple:
             for index in 0..<3 { try child(.operand, index: index, into: &children, ledger: &ledger) }
         case .array(let values), .row(let values), .coalesce(let values), .greatest(let values), .least(let values):

@@ -56,10 +56,10 @@ struct ItemStorageResourceTests {
         #expect(exhaustedMeter.retainedIntermediateRows == 0)
         #expect(exhaustedMeter.retainedIntermediateBytes == 0)
 
-        // The retained point-read boundary detaches the envelope and three
-        // chunks. Three chunk assembly copies and one checksum pass bring the
-        // total to eight bounded 256-byte work quanta for this fixture.
-        let successMeter = makeMeter(maximumWorkUnits: 8)
+        // The exact, self-contained envelope retains its leased owner without
+        // copying. Three chunk detachments, three assembly copies and one
+        // checksum pass consume seven bounded 256-byte work quanta.
+        let successMeter = makeMeter(maximumWorkUnits: 7)
         do {
             let loaded = try await engine.withTransaction { transaction in
                 try await ItemStorage(
@@ -73,7 +73,7 @@ struct ItemStorageResourceTests {
                 )
             }
             #expect(loaded == payload)
-            #expect(successMeter.consumedWorkUnits == 8)
+            #expect(successMeter.consumedWorkUnits == 7)
             #expect(successMeter.retainedIntermediateBytes == 12)
             withExtendedLifetime(loaded) {}
         }

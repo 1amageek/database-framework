@@ -371,3 +371,24 @@ contract under MultiBase. Operation authority, transaction closure, retained
 Ready publication and raw RDF/primitive behavior retain their owners. Changes
 to dynamic workspace require both callers' lifetime evidence before this
 module accepts the lower contract.
+
+### S05 raw pattern and public failures
+
+The raw expression evaluator used by Mutation consumes the same metered
+[SQLPatternMatching](QueryExecution/SQLPatternMatching/DESIGN.md) program as
+selected SQL execution. Its production caller supplies the operation meter;
+pattern evaluation without that meter rejects explicitly. SQL pattern operands
+are strict on NULL and require text values. Raw evaluation does not substitute
+SPARQL XPath semantics or an unmetered matcher.
+
+```text
+Mutation -> raw expression evaluator -> SQL pattern program -> operation meter
+```
+
+The public expression failure contract distinguishes invalid pattern syntax,
+unsupported pattern constructs, and invalid function arguments. Pattern
+offsets are nonnegative pattern offsets, separate from SQL occurrence/source
+locations. Work limits and cancellation retain their original typed failures.
+Server adapts these three failures through its own operation error mapper.
+Focused raw-expression, bounded-pattern, and Server mapper tests verify this
+boundary; selected SQL integration remains QueryExecution-owned.

@@ -319,6 +319,7 @@ extension SQLTextWriter {
                 try append(":" + name)
             }
         case .add(let l, let r): try binary(l, "+", r)
+        case .concatenate(let l, let r): try binary(l, "||", r)
         case .subtract(let l, let r): try binary(l, "-", r)
         case .multiply(let l, let r): try binary(l, "*", r)
         case .divide(let l, let r): try binary(l, "/", r)
@@ -335,8 +336,23 @@ extension SQLTextWriter {
         case .not(let value): try append("NOT ("); try expression(value); try append(")")
         case .isNull(let value): try append("("); try expression(value); try append(" IS NULL)")
         case .isNotNull(let value): try append("("); try expression(value); try append(" IS NOT NULL)")
-        case .like(let value, let pattern):
-            try append("("); try expression(value); try append(" LIKE "); try string(pattern); try append(")")
+        case .patternMatch(let subject, let pattern, let escape, let kind):
+            guard kind.permitsEscape || escape == nil else { throw .invalidStructure("ERE operators do not accept ESCAPE") }
+            let operation: String
+            switch kind {
+            case .like: operation = "LIKE"
+            case .caseInsensitiveLike: operation = "ILIKE"
+            case .similarTo: operation = "SIMILAR TO"
+            case .regularExpression: operation = "~"
+            case .caseInsensitiveRegularExpression: operation = "~*"
+            }
+            try append("("); try expression(subject); try append(" "); try append(operation)
+            try append(" "); try expression(pattern)
+            if kind.permitsEscape {
+                try append(" ESCAPE ")
+                if let escape { try expression(escape) } else { try string("") }
+            }
+            try append(")")
         case .between(let value, let low, let high):
             try append("("); try expression(value); try append(" BETWEEN "); try expression(low); try append(" AND "); try expression(high); try append(")")
         case .inList(let value, let values): try inList(value, values, negated: false)

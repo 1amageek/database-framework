@@ -430,7 +430,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         workMeter: DatabaseWorkMeter,
         transform: @Sendable (
             borrowing PersistedModel
-        ) throws -> EntityMutationChange?
+        ) async throws -> DatabasePreparedStatementMutationChange?
     ) async throws -> sending DatabaseRetainedEntityMutationScan {
         try await performOperation { _ in
             try await scanPersistedModelChangesForMutationUnchecked(
@@ -1173,7 +1173,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         workMeter: DatabaseWorkMeter,
         transform: @Sendable (
             borrowing PersistedModel
-        ) throws -> EntityMutationChange?
+        ) async throws -> DatabasePreparedStatementMutationChange?
     ) async throws -> sending DatabaseRetainedEntityMutationScan {
         guard maximumRows >= 0, maximumRows < Int.max else {
             throw DatabaseTransactionError.invalidLimit(maximumRows)
@@ -1249,7 +1249,11 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
                 )
             }
             sourceRowCount += 1
-            guard let change = try transform(model) else { continue }
+            guard let prepared = try await transform(model) else { continue }
+            guard prepared.workMeter === workMeter else {
+                throw DatabaseIntermediateReservationError.workMeterMismatch
+            }
+            let change = prepared.change
             guard changes.count < maximumChanges else {
                 throw DatabaseEntityMutationError.changeLimitExceeded(
                     actual: maximumChanges == Int.max
@@ -1258,13 +1262,15 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
                     maximum: maximumChanges
                 )
             }
-            try changes.append(
-                footprint: try DatabaseEntityMutationFootprintMeter.footprint(
-                    of: change,
-                    workMeter: workMeter
-                ),
-                make: { change }
-            )
+            try withExtendedLifetime(prepared) {
+                try changes.append(
+                    footprint: try DatabaseEntityMutationFootprintMeter.footprint(
+                        of: change,
+                        workMeter: workMeter
+                    ),
+                    make: { change }
+                )
+            }
         }
         return DatabaseRetainedEntityMutationScan(
             changes: changes.finish(),

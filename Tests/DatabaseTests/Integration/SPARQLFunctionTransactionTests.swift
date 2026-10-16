@@ -134,6 +134,18 @@ struct SPARQLFunctionTransactionTests {
                 in: graphPatternQuery
             )
         )
+        let embedded = DatabaseKit.Expression.function(FunctionCall(name: "sparql", arguments: []))
+        let scalarOperands: [DatabaseKit.Expression] = [
+            .concatenate(.string("prefix"), embedded),
+            .patternMatch(subject: embedded, pattern: .string("%"), escape: nil, kind: .like),
+            .patternMatch(subject: .string("value"), pattern: embedded, escape: nil, kind: .like),
+            .patternMatch(subject: .string("value"), pattern: .string("%"), escape: embedded, kind: .like),
+        ]
+        for expression in scalarOperands {
+            let query = SelectQuery(projection: .items([ProjectionItem(expression)]),
+                                    source: .values([[]], columnNames: []))
+            #expect(SPARQLFunctionRewriter.containsSPARQLFunction(in: query))
+        }
     }
 
     @Test("SPARQL rewrite and parent SQL read share one transaction")

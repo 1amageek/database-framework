@@ -69,6 +69,35 @@ struct SQLConstantSyntaxTests {
             #expect(throws: SQLConstantError.self) { try SQLConstantSyntax.normalize(.literal(.string("{bad}")), as: type, limits: limits) }
         }
         #expect(throws: SQLConstantError.self) { try SQLConstantSyntax.normalize(.literal(.string("1 mons 2 days bad microseconds")), as: .interval, limits: limits) }
+        for (text, type): (String, DataType) in [("1.2.3", .decimal(precision: nil, scale: nil)), ("bad", .uuid), (#"\xzz"#, .blob)] {
+            #expect(throws: SQLConstantError.self) { try SQLConstantSyntax.normalize(.literal(.string(text)), as: type, limits: limits) }
+        }
+    }
+
+    @Test("Shared lexical constructors normalize valid typed constants and retain failure positions")
+    func sharedScalarLexicalConstants() throws {
+        let uuid = QueryValue.primitive(.uuid(UUID(canonicalString: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11")!))
+        let cases: [(String, Literal)] = [
+            ("SELECT UUID '{a0eebc999c0b4ef8bb6d6bb9bd380a11}'", .queryValue(uuid, type: .sql(.uuid))),
+            ("SELECT CAST('a0ee-bc99-9c0b-4ef8-bb6d-6bb9-bd38-0a11' AS UUID)", .queryValue(uuid, type: .sql(.uuid))),
+            (#"SELECT BYTEA '\001\377\\A'"#, .queryValue(.primitive(.bytes([1, 255, 92, 65])), type: .sql(.blob))),
+            (#"SELECT '\x00 FF 80'::BYTEA"#, .queryValue(.primitive(.bytes([0, 255, 128])), type: .sql(.blob))),
+            ("SELECT NUMERIC ' 1.2300e2 '", .queryValue(.numeric(try QueryNumericValue(value: .init(coefficient: 123, scale: 0), displayScale: 2)), type: .sql(.decimal(precision: nil, scale: nil)))),
+        ]
+        for (sql, literal) in cases {
+            #expect(try SQLParser().parseSelect(sql).projection == .items([ProjectionItem(.literal(literal))]))
+            #expect(try SQLConstantSyntax.normalize(.literal(literal), as: literalType(literal), limits: limits) == literal)
+        }
+        for sql in ["SELECT NUMERIC '1.2.3'", "SELECT UUID 'bad'", #"SELECT BYTEA '\xzz'"#] {
+            do { _ = try SQLParser().parseSelect(sql); Issue.record("Malformed typed constant succeeded") }
+            catch SQLParser.ParseError.literalError(_, let position) { #expect(position == 7) }
+            catch { Issue.record("Expected a positioned intrinsic literal failure: \(error)") }
+        }
+    }
+
+    private func literalType(_ literal: Literal) -> DataType {
+        if case .queryValue(_, .sql(let type)) = literal { return type }
+        preconditionFailure("Fixture literals must carry SQL declarations")
     }
 
     @Test("Int64 minimum interval uses signed components without absolute-value overflow")

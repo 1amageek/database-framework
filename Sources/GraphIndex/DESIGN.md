@@ -203,3 +203,23 @@ with authenticated DatabaseEngine session execution.
 Changes to the DatabaseEngine session or retained-row contract require a
 focused GraphIndex caller review. Changes to RDF term serialization require
 the Serialization/RDF evidence and the affected physical codec evidence.
+
+### S05 pattern boundary
+
+Graph SPARQL compilation admits only static literal `patternMatch` with kind
+`like` and disabled escape. This preserves the existing case-sensitive LIKE
+translation through the bounded XPath regular-expression program. Dynamic
+patterns, explicit escape, and other SQL pattern kinds reject with the typed
+SPARQL compilation error; SPARQL `regex` retains its separate XPath contract.
+Rewriters preserve subject, pattern, optional escape, and kind. Validation
+accounts for the pattern expression and retained UTF-8 pattern before execution.
+The Kit SPARQL exporter emits the same case-sensitive literal translation.
+
+```text
+Kit patternMatch -> Graph admission -> bounded XPath LIKE program
+Kit regex        -> existing SPARQL regex program
+```
+
+[SPARQLBoundedRegularExpressionTests](../../Tests/GraphIndexTests/SPARQLBoundedRegularExpressionTests.swift)
+checks matching, rejection, and pattern resource limits. This migration adds no
+shared mutable state or transaction authority.

@@ -1374,20 +1374,20 @@ public struct CompositionQueryPlanner: Sendable {
                 "maximumIntermediateRows exceeds the current runtime range"
             )
         }
-        // The projected page retains known source payload owners. Source and
-        // projected lookahead rows therefore overlap the prepared row:
-        // 2 * (pageSize + 1) + 1, with a minimum of five admitted rows.
-        guard maximumIntermediateRows >= 5 else {
+        // Canonical member pages may retain source, bound-addressing and
+        // projected lookahead frames while Composition admits one prepared row:
+        // 3 * (pageSize + 1) + 1, with a minimum of seven admitted rows.
+        guard maximumIntermediateRows >= 7 else {
             throw DatabaseWorkLimitError.maximumIntermediateRows(
                 stage: .aggregateInput,
                 consumed: 0,
-                requested: 5,
+                requested: 7,
                 maximum: UInt64(
                     options.readContext.options.budget.maximumIntermediateRows
                 )
             )
         }
-        let pageSize = (maximumIntermediateRows - 1) / 2 - 1
+        let pageSize = (maximumIntermediateRows - 1) / 3 - 1
         for member in snapshot.members {
             var cursor = MemberCursor(member: member, columns: localColumns)
             while let row = try await nextRow(

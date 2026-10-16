@@ -316,13 +316,13 @@ struct SPARQLBoundedRegularExpressionTests {
 
     @Test("LIKE escapes metacharacters through the bounded regex engine")
     func likeExpressionPath() throws {
-        let wildcard = Expression.like(
-            .literal(.string("雪だるま")),
-            pattern: "雪%"
+        let wildcard = Expression.patternMatch(
+            subject: .literal(.string("雪だるま")),
+            pattern: .literal(.string("雪%")), escape: nil, kind: .like
         )
-        let literalMetacharacters = Expression.like(
-            .literal(.string("a.[b]")),
-            pattern: "a.[b]"
+        let literalMetacharacters = Expression.patternMatch(
+            subject: .literal(.string("a.[b]")),
+            pattern: .literal(.string("a.[b]")), escape: nil, kind: .like
         )
 
         #expect(
@@ -337,6 +337,31 @@ struct SPARQLBoundedRegularExpressionTests {
                 binding: VariableBinding()
             ) == rdfBoolean(true)
         )
+    }
+
+    @Test("Graph LIKE preserves case and disabled escape and rejects SQL extensions")
+    func likePatternAdmission() throws {
+        for (subject, pattern, expected) in [("A", "a", false), ("a\\b", "a\\b", true)] {
+            let expression = Expression.patternMatch(
+                subject: .string(subject), pattern: .string(pattern), escape: nil, kind: .like
+            )
+            #expect(try ExpressionEvaluator.evaluate(expression, binding: VariableBinding()) == rdfBoolean(expected))
+        }
+        let unsupported: [Expression] = [
+            .patternMatch(subject: .string("a"), pattern: .col("pattern"), escape: nil, kind: .like),
+            .patternMatch(subject: .string("a"), pattern: .string("a"), escape: .string(""), kind: .like),
+            .patternMatch(subject: .string("a"), pattern: .string("a"), escape: nil, kind: .caseInsensitiveLike),
+            .patternMatch(subject: .string("a"), pattern: .string("a"), escape: nil, kind: .similarTo),
+            .patternMatch(subject: .string("a"), pattern: .string("a"), escape: nil, kind: .regularExpression),
+            .patternMatch(subject: .string("a"), pattern: .string("a"), escape: nil, kind: .caseInsensitiveRegularExpression),
+        ]
+        for expression in unsupported {
+            #expect(throws: SPARQLExpressionCompilationError.unsupportedExpression(
+                "Graph LIKE requires a static text pattern and disabled escape"
+            )) {
+                try SPARQLExpressionValidator.validate(expression)
+            }
+        }
     }
 
     @Test("LIKE rejects input and escaped output before materialization")
@@ -449,7 +474,8 @@ struct SPARQLBoundedRegularExpressionTests {
     ) {
         do {
             _ = try ExpressionEvaluator.evaluate(
-                .like(.literal(.string("value")), pattern: pattern),
+                .patternMatch(subject: .literal(.string("value")),
+                              pattern: .literal(.string(pattern)), escape: nil, kind: .like),
                 binding: VariableBinding()
             )
             Issue.record("An oversized LIKE pattern was accepted")

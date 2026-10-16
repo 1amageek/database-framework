@@ -137,3 +137,12 @@ forms are supported.
 compose the [S04 Kit semantics](../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s04-semantic-additions-and-scope).
 Syntax/source/serialization proof precedes execution integration; parsing
 array-valued ANY/ALL does not claim S07 constructors or S08 ROW semantics.
+
+### S05 string and pattern adaptation
+
+[Parser](Parser/DESIGN.md#s05-string-and-pattern-syntax) and
+[Builder](Builder/DESIGN.md#s05-exact-pattern-emission) consume the Kit-owned
+pattern/concatenation declarations and canonical string-function calls. They
+preserve exact generic names, explicit escape meaning and semantic child source
+positions. Row-function execution remains S10-owned and fails explicitly at the
+unsupported FROM entry rather than producing a scalar substitute.

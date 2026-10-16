@@ -57,9 +57,9 @@ struct DatabaseExpressionEvaluatorTests {
         )
         let evaluator = DatabaseExpressionEvaluator(fields: [
             "title": .string("Calendar Runtime"),
-        ])
+        ], workMeter: patternMeter())
 
-        #expect(try evaluator.predicate(.like(.col("title"), pattern: "Calendar%")))
+        #expect(try evaluator.predicate(.patternMatch(subject: .col("title"), pattern: .string("Calendar%"), escape: nil, kind: .like)))
         #expect(
             try evaluator.evaluate(
                 .cast(.string(uuid.description), targetType: .uuid)
@@ -81,17 +81,23 @@ struct DatabaseExpressionEvaluatorTests {
             ("abefcdgiescdfimde", "ab%cd_i%de", true),
             ("abc", "%%", true),
             ("abc", "a_d", false),
+            ("e\u{301}", "__", true),
+            ("A", "a", false),
+            ("a\\b", "a\\b", true),
         ]
 
         for (value, pattern, expected) in cases {
+            let meter = patternMeter()
             let evaluator = DatabaseExpressionEvaluator(fields: [
                 "value": .string(value),
-            ])
+            ], workMeter: meter)
             #expect(
                 try evaluator.predicate(
-                    .like(.col("value"), pattern: pattern)
+                    .patternMatch(subject: .col("value"), pattern: .string(pattern), escape: nil, kind: .like)
                 ) == expected
             )
+            #expect(meter.retainedIntermediateBytes == 0)
+            #expect(meter.retainedIntermediateRows == 0)
         }
     }
 
@@ -119,9 +125,82 @@ struct DatabaseExpressionEvaluatorTests {
             )
         ) {
             _ = try evaluator.predicate(
-                .like(.col("value"), pattern: "abc")
+                .patternMatch(subject: .col("value"), pattern: .string("abc"), escape: nil, kind: .like)
             )
         }
+        #expect(workMeter.retainedIntermediateBytes == 0)
+        #expect(workMeter.retainedIntermediateRows == 0)
+    }
+
+    @Test("Raw patterns preserve NULL, explicit escape, typed failure, and owner release")
+    func patternFailureAndNullSemantics() throws {
+        let meter = patternMeter()
+        let evaluator = DatabaseExpressionEvaluator(fields: [:], workMeter: meter)
+        #expect(try evaluator.evaluate(.patternMatch(subject: .null, pattern: .string("["),
+                                                    escape: nil, kind: .regularExpression)) == .null)
+        #expect(try evaluator.evaluate(.patternMatch(subject: .string("a"), pattern: .null,
+                                                    escape: nil, kind: .like)) == .null)
+        #expect(try evaluator.evaluate(.patternMatch(subject: .string("a"), pattern: .string("a"),
+                                                    escape: .null, kind: .like)) == .null)
+        #expect(try evaluator.evaluate(.patternMatch(subject: .string("a_b"), pattern: .string("a!_b"),
+                                                    escape: .string("!"), kind: .like)) == .bool(true))
+        #expect(try evaluator.evaluate(.patternMatch(subject: .string("A"), pattern: .string("a"),
+                                                    escape: nil, kind: .caseInsensitiveLike)) == .bool(true))
+        do {
+            _ = try evaluator.evaluate(.patternMatch(subject: .string("a"), pattern: .string("["),
+                                                     escape: nil, kind: .regularExpression))
+            Issue.record("An invalid pattern was accepted")
+        } catch let error as DatabaseExpressionEvaluationError {
+            guard case .invalidPattern(let offset, let reason) = error else {
+                Issue.record("Unexpected pattern error: \(error)"); return
+            }
+            #expect(offset <= 1)
+            #expect(!reason.isEmpty)
+        }
+        do {
+            _ = try evaluator.evaluate(.patternMatch(subject: .string("a"), pattern: .string("(?=a)"),
+                                                     escape: nil, kind: .regularExpression))
+            Issue.record("An unsupported pattern construct was accepted")
+        } catch let error as DatabaseExpressionEvaluationError {
+            guard case .unsupportedPattern(let offset, let reason) = error else {
+                Issue.record("Unexpected unsupported-pattern error: \(error)"); return
+            }
+            #expect(offset <= 5)
+            #expect(!reason.isEmpty)
+        }
+        do {
+            _ = try evaluator.evaluate(.patternMatch(subject: .string("a"), pattern: .string("a"),
+                                                     escape: .string("!!"), kind: .like))
+            Issue.record("A multiple-codepoint escape was accepted")
+        } catch let error as DatabaseExpressionEvaluationError {
+            guard case .invalidFunctionArgument(let function, let reason) = error else {
+                Issue.record("Unexpected invalid-escape error: \(error)"); return
+            }
+            #expect(!function.isEmpty)
+            #expect(!reason.isEmpty)
+        }
+        do {
+            _ = try evaluator.evaluate(.patternMatch(subject: .string("a"), pattern: .string("a"),
+                                                     escape: .string("!"), kind: .regularExpression))
+            Issue.record("An ERE operator accepted ESCAPE")
+        } catch let error as DatabaseExpressionEvaluationError {
+            guard case .invalidFunctionArgument = error else {
+                Issue.record("Unexpected ERE-escape error: \(error)"); return
+            }
+        }
+        #expect(meter.retainedIntermediateBytes == 0)
+        #expect(meter.retainedIntermediateRows == 0)
+        let noMeter = DatabaseExpressionEvaluator(fields: [:])
+        #expect(throws: DatabaseExpressionEvaluationError.unsupportedExpression("Pattern matching requires an operation work meter")) {
+            try noMeter.evaluate(.patternMatch(subject: .string("a"), pattern: .string("a"),
+                                               escape: nil, kind: .like))
+        }
+    }
+
+    private func patternMeter() -> DatabaseWorkMeter {
+        DatabaseWorkMeter(budget: ExecutionBudget(maximumRows: 1, maximumWorkUnits: 100_000,
+                                                  timeoutMilliseconds: 30_000),
+                          monotonicClock: SystemStorageClock())
     }
 
     @Test("decimal arithmetic remains exact and normalized")

@@ -763,12 +763,13 @@ struct SQLRowExecutionTests {
             QueryParameter(position: 1, name: "text", value: .primitive(.string("1.2300")), type: .sql(.text)),
             QueryParameter(position: 2, name: "absent", value: .primitive(.null), type: .sql(.text))])
         let lexicalValue = lexical.rows[0].values[0]
-        guard case .primitive(.decimal(let lexicalDecimal)) = lexicalValue else {
-            Issue.record("The existing S03 lexical kernel must preserve its primitive decimal carrier: \(String(reflecting: lexicalValue))")
+        guard case .numeric(let lexicalNumeric) = lexicalValue else {
+            Issue.record("Selected SQL lexical conversion must retain its numeric value and display scale: \(String(reflecting: lexicalValue))")
             return
         }
-        #expect(lexicalDecimal.coefficient == 123)
-        #expect(lexicalDecimal.scale == 2)
+        #expect(lexicalNumeric.value.coefficient == 123)
+        #expect(lexicalNumeric.value.scale == 2)
+        #expect(lexicalNumeric.displayScale == 4)
         #expect(lexical.rows[0].values[1] == .primitive(.null))
     }
 

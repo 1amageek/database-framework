@@ -237,3 +237,26 @@ operand edge and the exact child edges fixed by Query; normalized aliases
 preserve provenance. Binding checks type/cardinality, not the parser.
 S04-C07/C08/C11 prove round trips, repeated-expression source positions,
 strict malformed input and selected runtime behavior through Database.
+
+### S05 string and pattern syntax
+
+SQL pattern operators lower to the single Kit pattern predicate. Omitted
+LIKE/ILIKE/SIMILAR escape becomes an explicit backslash expression; an explicit
+dynamic ESCAPE expression retains its own source occurrence. An empty constant
+ESCAPE canonicalizes to the disabled nil form. ERE operators never add
+an escape. NOT forms use the existing negation expression. Concatenation lowers
+to the strict Kit operator, separate from CONCAT calls.
+
+Unquoted, unqualified SUBSTRING, POSITION and TRIM special grammar lowers to
+ordinary canonical function calls: substring(source,start[,length]) or its
+text-pattern overloads; strpos(source,needle); btrim/ltrim/rtrim(source[,chars]).
+FOR-only substring inserts start 1. Quoted/schema-qualified calls retain their
+exact generic identity. Source capture reorders child edges into semantic
+argument order while retaining the original token ranges; synthetic defaults
+are marked at the source clause that introduces them. Scalar array and later
+row-returning functions retain generic call syntax without claiming execution.
+
+General SELECT/FROM VALUES expression grammar remains S08-owned. Existing
+canonical IR VALUES cells are Literal values; S05 CHAR/VARCHAR CAST padding and
+truncation stay runtime policy rather than a duplicated constant-folding
+algorithm in Parser or a new lower-layer constructor.

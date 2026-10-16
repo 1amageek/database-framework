@@ -24,129 +24,14 @@ enum SQLConstantSyntax {
     }
 
     static func numeric(_ text: String, limits: QueryStructuralLimits) throws(SQLConstantError) -> QueryNumericValue {
-        guard UInt64(text.utf8.count) <= limits.maximumRetainedBytes else { throw .resourceLimit("Numeric input byte budget exceeded") }
-        let bytes = Array(text.utf8)
-        guard !bytes.isEmpty else { throw .invalidNumeric("Empty numeric constant") }
-        var i = 0
-        let negative = bytes[i] == 45
-        if bytes[i] == 45 || bytes[i] == 43 { i += 1 }
-        guard i < bytes.count else { throw .invalidNumeric("Missing numeric digits") }
-        if i + 1 < bytes.count, bytes[i] == 48 {
-            let radix: Int128
-            switch bytes[i + 1] {
-            case 120, 88: radix = 16
-            case 111, 79: radix = 8
-            case 98, 66: radix = 2
-            default: radix = 0
+        do { return try QueryNumericValue(sqlLexicalForm: text[...], maximumUTF8Count: limits.maximumRetainedBytes) }
+        catch {
+            switch error {
+            case .invalidNumeric(_, let reason): throw .invalidNumeric(reason)
+            case .numericOutOfRange: throw .numericOutOfRange
+            case .resourceLimit: throw .resourceLimit("Numeric input byte budget exceeded")
+            default: throw .value(error)
             }
-            if radix != 0 {
-                i += 2
-                if i < bytes.count, bytes[i] == 95 {
-                    i += 1
-                    guard i < bytes.count, digit(bytes[i]) >= 0, digit(bytes[i]) < radix else {
-                        throw .invalidNumeric("Invalid radix prefix separator")
-                    }
-                }
-                var value: Int128 = 0
-                var seen = false
-                var previousDigit = false
-                while i < bytes.count {
-                    let byte = bytes[i]
-                    i += 1
-                    if byte == 95 {
-                        guard previousDigit, i < bytes.count, digit(bytes[i]) < radix else { throw .invalidNumeric("Invalid numeric digit separator") }
-                        previousDigit = false
-                        continue
-                    }
-                    let number = digit(byte)
-                    guard number >= 0, number < radix else { throw .invalidNumeric("Invalid radix digit") }
-                    let product = value.multipliedReportingOverflow(by: radix)
-                    let sum = product.partialValue.addingReportingOverflow(negative ? -number : number)
-                    guard !product.overflow, !sum.overflow else { throw .numericOutOfRange }
-                    value = sum.partialValue
-                    previousDigit = true
-                    seen = true
-                }
-                guard seen, previousDigit else { throw .invalidNumeric("Missing radix digits") }
-                return try makeNumeric(ExactDecimal(coefficient: value, scale: 0), scale: 0)
-            }
-        }
-        var coefficient: Int128 = 0
-        var significant = 0
-        var pendingZeros: Int64 = 0
-        var fractional: Int64 = 0
-        var point = false
-        var seenDigit = false
-        var previousDigit = false
-        while i < bytes.count, bytes[i] != 101, bytes[i] != 69 {
-            let byte = bytes[i]
-            i += 1
-            if byte == 46 {
-                guard !point else { throw .invalidNumeric("Repeated numeric decimal point") }
-                point = true
-                previousDigit = false
-                continue
-            }
-            if byte == 95 {
-                guard previousDigit, i < bytes.count, (48...57).contains(bytes[i]) else { throw .invalidNumeric("Invalid numeric digit separator") }
-                previousDigit = false
-                continue
-            }
-            guard (48...57).contains(byte) else { throw .invalidNumeric("Invalid decimal digit") }
-            previousDigit = true
-            seenDigit = true
-            if point { fractional += 1 }
-            let number = Int128(byte - 48)
-            if number == 0 { if coefficient != 0 { pendingZeros += 1 }; continue }
-            guard Int64(significant) + pendingZeros + 1 <= 38 else { throw .numericOutOfRange }
-            while pendingZeros > 0 { coefficient *= 10; significant += 1; pendingZeros -= 1 }
-            coefficient = coefficient * 10 + number
-            significant += 1
-        }
-        guard seenDigit else { throw .invalidNumeric("Missing decimal digits") }
-        var exponent: Int64 = 0
-        if i < bytes.count {
-            i += 1
-            guard i < bytes.count else { throw .invalidNumeric("Missing exponent digits") }
-            let negativeExponent = bytes[i] == 45
-            if bytes[i] == 45 || bytes[i] == 43 { i += 1 }
-            var seenExponent = false
-            previousDigit = false
-            while i < bytes.count {
-                let byte = bytes[i]
-                i += 1
-                if byte == 95 {
-                    guard previousDigit, i < bytes.count, (48...57).contains(bytes[i]) else { throw .invalidNumeric("Invalid exponent separator") }
-                    previousDigit = false
-                    continue
-                }
-                guard (48...57).contains(byte) else { throw .invalidNumeric("Invalid exponent digit") }
-                let product = exponent.multipliedReportingOverflow(by: 10)
-                let sum = product.partialValue.addingReportingOverflow(Int64(byte - 48))
-                guard !product.overflow, !sum.overflow else { throw .numericOutOfRange }
-                exponent = sum.partialValue
-                seenExponent = true
-                previousDigit = true
-            }
-            guard seenExponent, previousDigit else { throw .invalidNumeric("Missing exponent digits") }
-            if negativeExponent { exponent = -exponent }
-        }
-        let rawScale = fractional.subtractingReportingOverflow(exponent)
-        guard !rawScale.overflow, max(0, rawScale.partialValue) <= 16383 else { throw .numericOutOfRange }
-        let scale = rawScale.partialValue.subtractingReportingOverflow(pendingZeros)
-        guard !scale.overflow, let canonicalScale = Int32(exactly: scale.partialValue),
-              coefficient == 0 || Int64(significant) - scale.partialValue <= 131072 else { throw .numericOutOfRange }
-        return try makeNumeric(ExactDecimal(coefficient: negative ? -coefficient : coefficient,
-                                           scale: coefficient == 0 ? 0 : canonicalScale),
-                               scale: Int32(max(0, rawScale.partialValue)))
-    }
-
-    private static func digit(_ byte: UInt8) -> Int128 {
-        switch byte {
-        case 48...57: return Int128(byte - 48)
-        case 65...70: return Int128(byte - 65 + 10)
-        case 97...102: return Int128(byte - 97 + 10)
-        default: return -1
         }
     }
 
@@ -255,17 +140,7 @@ enum SQLConstantSyntax {
                 value = .primitive(.bool(text == "true"))
             case .text: value = .primitive(.string(text))
             case .blob, .binary, .varbinary:
-                guard text.hasPrefix("\\x"), (text.utf8.count - 2).isMultiple(of: 2) else {
-                    throw SQLConstantError.invalidConstant("Invalid hexadecimal BYTEA constant")
-                }
-                var bytes: [UInt8] = []
-                let input = Array(text.utf8.dropFirst(2))
-                for offset in stride(from: 0, to: input.count, by: 2) {
-                    let high = digit(input[offset]), low = digit(input[offset + 1])
-                    guard high >= 0, low >= 0 else { throw SQLConstantError.invalidConstant("Invalid BYTEA hexadecimal digit") }
-                    bytes.append(UInt8(high * 16 + low))
-                }
-                value = .primitive(.bytes(ByteString(bytes)))
+                value = try QueryValue.binary(sqlLexicalForm: text[...], maximumUTF8Count: limits.maximumRetainedBytes)
             case .char(let length):
                 if text.unicodeScalars.count != (length ?? 1) { return nil }
                 value = .primitive(.string(text))
@@ -273,8 +148,7 @@ enum SQLConstantSyntax {
                 if let length, text.unicodeScalars.count > length { return nil }
                 value = .primitive(.string(text))
             case .uuid:
-                guard let uuid = DatabaseTypes.UUID(canonicalString: text) else { throw SQLConstantError.invalidConstant("Invalid canonical UUID constant") }
-                value = .primitive(.uuid(uuid))
+                value = try QueryValue.uuid(sqlLexicalForm: text[...], maximumUTF8Count: limits.maximumRetainedBytes)
             case .json:
                 value = .json(try QueryJSONValue(bytes: ByteString(utf8: text), limits: valueLimits(limits)))
             case .jsonb:

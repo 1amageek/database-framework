@@ -494,6 +494,16 @@ struct SPARQLFunctionIntegrationTests {
         #expect(response.columns[nameSlot].type == .primitive(.string))
         #expect(!response.columns[nameSlot].isNullable)
         #expect(response.rows[0].values[nameSlot] == .primitive(.string("Alice")))
+
+        let scalarQuery = SelectQuery(
+            projection: .items([ProjectionItem(.patternMatch(
+                subject: .concatenate(.string("a"), .string("%")),
+                pattern: .concatenate(.string("a"), .string("!%")),
+                escape: .string("!"), kind: .like))]),
+            source: .values([[]], columnNames: []))
+        let scalarResponse = try await executeRewritten(scalarQuery)
+        #expect(scalarResponse.rows.count == 1)
+        #expect(scalarResponse.rows[0].values == [.primitive(.bool(true))])
     }
 
     // MARK: - Test 11: Integration with ORDER BY and LIMIT

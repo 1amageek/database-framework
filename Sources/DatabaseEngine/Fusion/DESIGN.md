@@ -32,6 +32,10 @@ prepared stages + frozen invocation parameters + admitted session
 
 ## Contracts and Invariants
 
+- S05 preflight visits every concatenation and dynamic pattern child under
+  [QueryExecution's traversal contract](../QueryExecution/DESIGN.md#s05-selected-string-pattern-binary-and-cast-execution),
+  preserving physical source admission even when a child contains a subquery.
+
 - Bind every relational filter/order input before the first source executor read.
 - Stage/input ordinals identify exact bound operators without expression equality
   lookup or per-row rebinding. Parameter references share the batch's state.

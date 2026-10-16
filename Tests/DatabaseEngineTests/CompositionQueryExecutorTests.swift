@@ -440,7 +440,7 @@ struct CompositionQueryExecutorTests {
                 budget: ExecutionBudget(
                     maximumRows: 100,
                     maximumWorkUnits: 100_000,
-                    maximumIntermediateRows: 5,
+                    maximumIntermediateRows: 7,
                     maximumIntermediateBytes: 4 * 1_024 * 1_024,
                     timeoutMilliseconds: 30_000
                 )
@@ -483,6 +483,7 @@ struct CompositionQueryExecutorTests {
         #expect((aggregateEmission.bytes ?? 0) > 0)
         let aggregatePeak = calibrationContext.workMeter.peakIntermediateBytes
         #expect(aggregatePeak > 0)
+        #expect(calibrationContext.workMeter.peakIntermediateRows == 7)
         #expect(calibrationContext.workMeter.retainedIntermediateRows == 1)
         #expect(calibrationContext.workMeter.retainedIntermediateBytes > 0)
         extrema.removeAll()
@@ -497,7 +498,7 @@ struct CompositionQueryExecutorTests {
                 budget: ExecutionBudget(
                     maximumRows: 100,
                     maximumWorkUnits: 100_000,
-                    maximumIntermediateRows: 4,
+                    maximumIntermediateRows: 6,
                     maximumIntermediateBytes: 4 * 1_024 * 1_024,
                     timeoutMilliseconds: 30_000
                 )
@@ -516,7 +517,7 @@ struct CompositionQueryExecutorTests {
                     readContext: insufficientRowContext
                 )
             ) { _ in true }
-            Issue.record("Expected aggregate row admission to reject a maximum of four")
+            Issue.record("Expected aggregate row admission to reject a maximum of six")
         } catch {
             insufficientRowFailure = error
         }
@@ -535,8 +536,8 @@ struct CompositionQueryExecutorTests {
         }
         #expect(insufficientRowStage == .aggregateInput)
         #expect(insufficientRowConsumed == 0)
-        #expect(insufficientRowRequested == 5)
-        #expect(insufficientRowMaximum == 4)
+        #expect(insufficientRowRequested == 7)
+        #expect(insufficientRowMaximum == 6)
         #expect(insufficientRowContext.workMeter.retainedIntermediateRows == 0)
         #expect(insufficientRowContext.workMeter.retainedIntermediateBytes == 0)
 

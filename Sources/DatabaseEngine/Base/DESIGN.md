@@ -21,7 +21,7 @@ to discover a member schema.
 |---|---|---|---|---|
 | [DatabaseEngine](../DESIGN.md) | parent | MultiBase execution and lifetime | Provides schema and Base leases. | Default builds do not enable MultiBase. |
 | [Read](../Read/DESIGN.md) | depends on | Admitted session and retained page | Binds and reads within the captured member transaction. | A page must retain the bound columns on zero rows. |
-| [QueryExecution](../QueryExecution/DESIGN.md) | depends on | Bound output columns and checked value normalization | Supplies static output signatures. | Schema cannot depend on a member's first row. |
+| [QueryExecution](../QueryExecution/DESIGN.md) | depends on | Bound output columns, checked value normalization and canonical direct table page retention | Supplies static output signatures and the lower page-retention guarantee. | Schema cannot depend on a member's first row; preserve all admitted source and binding-frame owners. |
 | [GraphIndex](../../GraphIndex/DESIGN.md) | used by | Feature-owned member execution and identity qualification | Uses the shared merger for SPARQL. | RDF columns retain primitive term semantics. |
 
 ## Architecture
@@ -85,10 +85,15 @@ have request claims; row payloads retain their existing producer claims once.
 Consumer page size bounds delivery batches, not the complete Ready result.
 Every pending output keeps its prepared-row and producer-page claims until
 publication finishes; an insufficient request budget fails before any callback.
-An aggregate member page can retain its source and projected lookahead owners
-while one prepared row is admitted. The row overlap is
-`2 * (pageSize + 1) + 1`; its minimum is five rows. Page sizing preserves
-that overlap rather than releasing known source claims early.
+Aggregate page sizing consumes QueryExecution's canonical direct table page
+retention guarantee: source, bound-addressing and projected lookahead frames
+may coexist. The member page needs up to `3 * (pageSize + 1)` retained rows;
+Composition adds one prepared row, so the admitted overlap is
+`3 * (pageSize + 1) + 1`. Its minimum is seven rows, and the local page size is
+`(maximumIntermediateRows - 1) / 3 - 1`. A maximum below seven fails with
+`maximumIntermediateRows` at `aggregateInput` before any member page executes.
+The planner preserves producer claims through prepared-row admission. Additional
+operator-specific claims remain subject to the same request budget.
 DISTINCT result aliases retain row and workspace provenance claims after
 workspace removal until the last returned result owner is released. An opaque
 workspace payload lease follows every derived DISTINCT origin into Ready

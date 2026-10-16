@@ -11,6 +11,9 @@ public enum DatabaseExpressionEvaluationError: Error, Sendable, Equatable, Custo
     case numericDomain(operation: String)
     case unsupportedExpression(String)
     case unsupportedFunction(String)
+    case invalidFunctionArgument(function: String, reason: String)
+    case invalidPattern(offset: UInt64, reason: String)
+    case unsupportedPattern(offset: UInt64, reason: String)
     case invalidCast(String)
     case invalidRDFLiteral(datatype: String)
 
@@ -40,6 +43,12 @@ public enum DatabaseExpressionEvaluationError: Error, Sendable, Equatable, Custo
             return "Expression is not supported by the database evaluator: \(expression)"
         case .unsupportedFunction(let function):
             return "Scalar function '\(function)' is not supported by the database evaluator"
+        case .invalidFunctionArgument(let function, let reason):
+            return "Invalid argument for scalar function '\(function)': \(reason)"
+        case .invalidPattern(let offset, let reason):
+            return "Invalid pattern at offset \(offset): \(reason)"
+        case .unsupportedPattern(let offset, let reason):
+            return "Unsupported pattern at offset \(offset): \(reason)"
         case .invalidCast(let type):
             return "Expression cannot be cast to \(type)"
         case .invalidRDFLiteral(let datatype):

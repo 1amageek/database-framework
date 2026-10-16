@@ -377,7 +377,7 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                 )
             case .add(let lhs, let rhs), .subtract(let lhs, let rhs),
                     .multiply(let lhs, let rhs), .divide(let lhs, let rhs),
-                    .modulo(let lhs, let rhs), .equal(let lhs, let rhs),
+                    .modulo(let lhs, let rhs), .concatenate(let lhs, let rhs), .equal(let lhs, let rhs),
                     .notEqual(let lhs, let rhs), .lessThan(let lhs, let rhs),
                     .lessThanOrEqual(let lhs, let rhs),
                     .greaterThan(let lhs, let rhs),
@@ -396,7 +396,7 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                 )
             case .negate(let operand), .not(let operand),
                     .isNull(let operand), .isNotNull(let operand), .truthTest(let operand, _, _),
-                    .like(let operand, _), .regex(let operand, _, _),
+                    .regex(let operand, _, _),
                     .cast(let operand, _), .isTriple(let operand),
                     .subject(let operand), .predicate(let operand),
                     .object(let operand):
@@ -405,6 +405,12 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                     localBindings: localBindings,
                     outerScopes: outerScopes
                 )
+            case .patternMatch(let subject, let pattern, let escape, _):
+                collect(subject, localBindings: localBindings, outerScopes: outerScopes)
+                collect(pattern, localBindings: localBindings, outerScopes: outerScopes)
+                if let escape {
+                    collect(escape, localBindings: localBindings, outerScopes: outerScopes)
+                }
             case .between(let operand, let lower, let upper):
                 for child in [operand, lower, upper] {
                     collect(

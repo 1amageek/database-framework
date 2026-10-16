@@ -425,7 +425,7 @@ enum FusionSelectQueryGraphWalker {
             break
         case .add(let lhs, let rhs), .subtract(let lhs, let rhs),
              .multiply(let lhs, let rhs), .divide(let lhs, let rhs),
-             .modulo(let lhs, let rhs), .equal(let lhs, let rhs),
+             .modulo(let lhs, let rhs), .concatenate(let lhs, let rhs), .equal(let lhs, let rhs),
              .notEqual(let lhs, let rhs), .lessThan(let lhs, let rhs),
              .lessThanOrEqual(let lhs, let rhs),
              .greaterThan(let lhs, let rhs),
@@ -434,11 +434,15 @@ enum FusionSelectQueryGraphWalker {
             try stack.append(.expression(lhs))
             try stack.append(.expression(rhs))
         case .negate(let nested), .not(let nested), .isNull(let nested), .truthTest(let nested, _, _),
-             .isNotNull(let nested), .like(let nested, _),
+             .isNotNull(let nested),
              .regex(let nested, _, _), .cast(let nested, _),
              .isTriple(let nested), .subject(let nested),
              .predicate(let nested), .object(let nested):
             try stack.append(.expression(nested))
+        case .patternMatch(let subject, let pattern, let escape, _):
+            try stack.append(.expression(subject))
+            try stack.append(.expression(pattern))
+            if let escape { try stack.append(.expression(escape)) }
         case .between(let value, let lower, let upper):
             try stack.append(.expression(value))
             try stack.append(.expression(lower))

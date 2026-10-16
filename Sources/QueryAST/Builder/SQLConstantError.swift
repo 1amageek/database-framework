@@ -26,6 +26,7 @@ enum SQLConstantError: Error, Sendable, Equatable, CustomStringConvertible {
         case .numericOutOfRange: return "SQL numeric value is out of range"
         case .value(let error):
             switch error {
+            case .invalidNumeric(_, let reason), .invalidUUID(_, let reason), .invalidBinary(_, let reason): return reason
             case .invalidNumericDisplayScale(let scale): return "Invalid numeric display scale: \(scale)"
             case .numericOutOfRange: return "Query numeric value is out of range"
             case .invalidJSON(let offset, let reason): return "Invalid JSON at byte \(offset): " + reason

@@ -112,14 +112,38 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
             )
         }
 
+        let insertBinder = try assignmentBinder(entity: entity, table: query.target, includingColumns: false, workMeter: workMeter)
+        let preparedRows = try rows.map { row -> [PreparedAssignment] in
+            if row.isEmpty, case .defaultValues = query.source { return [] }
+            guard row.count == columns.count else {
+                throw DatabaseEntityStatementMutationError.unsupportedStatement(
+                    "INSERT row has \(row.count) values for \(columns.count) columns"
+                )
+            }
+            return try zip(columns, row).map { schema, expression in
+                try prepareAssignment(schema: schema, expression: expression, entity: entity, binder: insertBinder)
+            }
+        }
+        let emptyAssignmentRow = CanonicalSourceRow(values: [], layout: CanonicalSourceLayout(slots: []))
+        let conflictAssignments: [PreparedAssignment]
+        let conflictFilter: CanonicalBoundExpression?
+        if case .some(.doUpdate(let assignments, let filter)) = query.onConflict {
+            conflictAssignments = try prepareAssignments(assignments, entity: entity, table: query.target, workMeter: workMeter)
+            conflictFilter = try prepareFilter(filter, entity: entity, table: query.target, workMeter: workMeter)
+        } else {
+            conflictAssignments = []
+            conflictFilter = nil
+        }
+
         var changes = try DatabaseRetainedArrayBuilder<EntityMutationChange>(
             workMeter: workMeter,
             stage: .mutationPlanning,
             layout: try DatabaseRetainedArrayLayout.forElement(EntityMutationChange.self),
             expectedCount: rows.count
         )
-        for row in rows {
+        for (rowIndex, row) in rows.enumerated() {
             try workMeter.consume(at: .mutationPlanning)
+            var payloads = try payloadBuilder(workMeter: workMeter)
             let suppliedFields: FieldObject
             if row.isEmpty, case .defaultValues = query.source {
                 suppliedFields = FieldObject()
@@ -133,14 +157,12 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
                     fields: [:],
                     workMeter: workMeter
                 )
-                let suppliedEntries = try zip(columns, row).map {
-                    schema,
-                    expression in
-                    _ = try fieldNumber(schema, entity: entity.name)
-                    return (
-                        key: schema.name,
-                        value: try evaluator.evaluate(expression)
-                    )
+                var suppliedEntries: [(key: String, value: FieldValue)] = []
+                for assignment in preparedRows[rowIndex] {
+                    suppliedEntries.append((
+                        key: assignment.schema.name,
+                        value: try await evaluateAssignment(assignment, evaluator: evaluator, row: emptyAssignmentRow, payloads: &payloads, workMeter: workMeter)
+                    ))
                 }
                 suppliedFields = try FieldObject(consume suppliedEntries)
             }
@@ -176,14 +198,15 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
                     identity: targetIdentity,
                     fields: candidateFields
                 )
-                try changes.append(
+                let payloadOwner = try payloads.finish().moveToSharedOwnership(at: .mutationPlanning)
+                try withExtendedLifetime(payloadOwner) { try changes.append(
                     footprint: try DatabaseEntityMutationFootprintMeter
                         .footprint(of: change, workMeter: workMeter),
                     make: { change }
-                )
+                ) }
             case (.some(.doNothing), .some):
                 continue
-            case (.some(.doUpdate(let assignments, let filter)), .some(let model)):
+            case (.some(.doUpdate), .some(let model)):
                 let originalFields = try DatabaseEntityProjection.fieldObject(
                     for: model
                 )
@@ -191,19 +214,18 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
                     originalFields,
                     table: query.target
                 )
-                if let filter,
-                   try !DatabaseExpressionEvaluator(
-                       fields: evaluation,
-                       workMeter: workMeter
-                   )
-                    .predicate(filter) {
+                if let conflictFilter,
+                   try await !matches(conflictFilter, fields: originalFields, entity: entity,
+                                      table: query.target, workMeter: workMeter) {
                     continue
                 }
-                let updatedFields = try applying(
-                    assignments,
+                let updatedFields = try await applying(
+                    conflictAssignments,
                     to: originalFields,
                     evaluationFields: evaluation,
+                    table: query.target,
                     entity: entity,
+                    payloads: &payloads,
                     workMeter: workMeter
                 )
                 let updated = try entity.runtime.persistedModel(
@@ -216,11 +238,12 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
                         for: updated
                     )
                 )
-                try changes.append(
+                let payloadOwner = try payloads.finish().moveToSharedOwnership(at: .mutationPlanning)
+                try withExtendedLifetime(payloadOwner) { try changes.append(
                     footprint: try DatabaseEntityMutationFootprintMeter
                         .footprint(of: change, workMeter: workMeter),
                     make: { change }
-                )
+                ) }
             }
         }
         return try await executeRetainedChanges(
@@ -255,6 +278,8 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
             )
         }
         let entity = try resolve(query.target)
+        let assignments = try prepareAssignments(query.assignments, entity: entity, table: query.target, workMeter: workMeter)
+        let filter = try prepareFilter(query.filter, entity: entity, table: query.target, workMeter: workMeter)
         let scan = try await scanChanges(
             entity,
             transaction: transaction,
@@ -268,29 +293,34 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
                 originalFields,
                 table: query.target
             )
-            if let filter = query.filter,
-               try !DatabaseExpressionEvaluator(
-                   fields: evaluation,
-                   workMeter: workMeter
-               ).predicate(filter) {
+            if let filter,
+               try await !matches(filter, fields: originalFields, entity: entity,
+                                  table: query.target, workMeter: workMeter) {
                 return nil
             }
-            let updatedFields = try applying(
-                query.assignments,
+            var payloads = try payloadBuilder(workMeter: workMeter)
+            let updatedFields = try await applying(
+                assignments,
                 to: originalFields,
                 evaluationFields: evaluation,
+                table: query.target,
                 entity: entity,
+                payloads: &payloads,
                 workMeter: workMeter
             )
             let updated = try entity.runtime.persistedModel(
                 from: updatedFields
             )
-            return EntityMutationChange(
-                kind: .update,
-                identity: try entity.runtime.identity(for: model),
-                fields: try DatabaseEntityProjection.fieldObject(
-                    for: updated
-                )
+            return try DatabasePreparedStatementMutationChange(
+                change: EntityMutationChange(
+                    kind: .update,
+                    identity: try entity.runtime.identity(for: model),
+                    fields: try DatabaseEntityProjection.fieldObject(
+                        for: updated
+                    )
+                ),
+                payloads: try payloads.finish().moveToSharedOwnership(at: .mutationPlanning),
+                workMeter: workMeter
             )
         }
         return try await executeRetainedChanges(
@@ -320,6 +350,7 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
             )
         }
         let entity = try resolve(query.target)
+        let filter = try prepareFilter(query.filter, entity: entity, table: query.target, workMeter: workMeter)
         let scan = try await scanChanges(
             entity,
             transaction: transaction,
@@ -329,19 +360,17 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
             let fields = try DatabaseEntityProjection.fieldObject(
                 for: model
             )
-            if let filter = query.filter,
-               try !DatabaseExpressionEvaluator(
-                   fields: evaluationFields(
-                       fields,
-                       table: query.target
-                   ),
-                   workMeter: workMeter
-               ).predicate(filter) {
+            if let filter,
+               try await !matches(filter, fields: fields, entity: entity,
+                                  table: query.target, workMeter: workMeter) {
                 return nil
             }
-            return EntityMutationChange(
-                kind: .delete,
-                identity: try entity.runtime.identity(for: model)
+            return try DatabasePreparedStatementMutationChange(
+                change: EntityMutationChange(
+                    kind: .delete,
+                    identity: try entity.runtime.identity(for: model)
+                ),
+                workMeter: workMeter
             )
         }
         return try await executeRetainedChanges(
@@ -359,7 +388,7 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
         workMeter: DatabaseWorkMeter,
         transform: @Sendable (
             borrowing PersistedModel
-        ) throws -> EntityMutationChange?
+        ) async throws -> DatabasePreparedStatementMutationChange?
     ) async throws -> sending DatabaseRetainedEntityMutationScan {
         let configuredMaximum = workMeter.budget.maximumRows
         guard let maximumRows = Int(exactly: configuredMaximum),
@@ -489,36 +518,30 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
     }
 
     private func applying(
-        _ assignments: [Assignment],
+        _ assignments: [PreparedAssignment],
         to fields: FieldObject,
         evaluationFields: [String: FieldValue],
+        table: TableRef,
         entity: ResolvedEntity,
+        payloads: inout DatabaseRetainedArrayBuilder<DatabaseQueryPayloadLease>,
         workMeter: DatabaseWorkMeter
-    ) throws -> FieldObject {
+    ) async throws -> FieldObject {
         var byName = Dictionary(
             uniqueKeysWithValues: fields.fields.map { ($0.key, $0.value) }
         )
-        var seen = Set<String>()
         let evaluator = DatabaseExpressionEvaluator(
             fields: evaluationFields,
             workMeter: workMeter
         )
+        let row = try assignmentRow(fields: fields, entity: entity, table: table, workMeter: workMeter)
+        // A selected column may borrow its source claim; keep that owner through destination admission.
+        for lease in row.payloadLeases {
+            try payloads.append(footprint: DatabaseIntermediateFootprint(), make: { lease })
+        }
         for assignment in assignments {
-            guard seen.insert(assignment.column).inserted else {
-                throw DatabaseEntityStatementMutationError.unsupportedStatement(
-                    "column '\(assignment.column)' is assigned more than once"
-                )
-            }
-            guard let schema = entity.fields.first(where: {
-                $0.name == assignment.column
-            }) else {
-                throw DatabaseEntityMutationError.invalidCompiledSchema(
-                    entity: entity.name,
-                    reason: "assignment column '\(assignment.column)' is not compiled"
-                )
-            }
-            _ = try fieldNumber(schema, entity: entity.name)
-            byName[assignment.column] = try evaluator.evaluate(assignment.value)
+            byName[assignment.schema.name] = try await evaluateAssignment(
+                assignment, evaluator: evaluator, row: row, payloads: &payloads, workMeter: workMeter
+            )
         }
         return try FieldObject(
             byName.map { (key: $0.key, value: $0.value) }
@@ -538,6 +561,164 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
             }
         }
         return values
+    }
+
+    private struct PreparedAssignment: Sendable {
+        let schema: FieldSchema
+        let expression: Expression
+        let bound: CanonicalBoundExpression?
+    }
+
+    private func assignmentBinder(
+        entity: ResolvedEntity, table: TableRef, includingColumns: Bool,
+        workMeter: DatabaseWorkMeter
+    ) throws -> CanonicalQueryTypeBinder {
+        let fields = includingColumns ? entity.fields : []
+        let columns = try fields.map { field in
+            try QueryColumn(number: fieldNumber(field, entity: entity.name), name: field.name,
+                type: field.queryType ?? .primitive(field.type, isArray: field.isArray), isNullable: field.isOptional)
+        }
+        return CanonicalQueryTypeBinder(columns: columns, resolveColumn: { reference in
+            guard reference.table == nil || reference.table == table.table || reference.table == table.alias,
+                  let slot = fields.firstIndex(where: { $0.name == reference.column }) else {
+                throw DatabaseExpressionEvaluationError.typeMismatch(operation: "mutation source column")
+            }
+            return slot
+        }, wildcardSlots: { _ in Array(fields.indices) }, workMeter: workMeter)
+    }
+
+    private func prepareAssignment(
+        schema: FieldSchema, expression: Expression, entity: ResolvedEntity,
+        binder: CanonicalQueryTypeBinder
+    ) throws -> PreparedAssignment {
+        _ = try fieldNumber(schema, entity: entity.name)
+        let type = schema.queryType ?? .primitive(schema.type, isArray: schema.isArray)
+        let selected: Bool
+        switch type {
+        case .sql(.text), .sql(.char), .sql(.varchar), .sql(.blob), .sql(.binary), .sql(.varbinary),
+             .sql(.uuid), .sql(.boolean), .sql(.smallint), .sql(.integer), .sql(.bigint),
+             .sql(.real), .sql(.doublePrecision), .sql(.decimal): selected = true
+        case .primitive(let kind, false):
+            switch kind {
+            case .string, .bytes, .uuid, .bool, .int8, .int16, .int32, .int64, .uint8, .uint16,
+                 .uint32, .uint64, .float32, .float64, .decimal: selected = true
+            default: selected = false
+            }
+        default: selected = false
+        }
+        return PreparedAssignment(schema: schema, expression: expression,
+            bound: selected ? try binder.bindAssignment(expression, to: type) : nil)
+    }
+
+    private func prepareAssignments(
+        _ assignments: [Assignment], entity: ResolvedEntity, table: TableRef,
+        workMeter: DatabaseWorkMeter
+    ) throws -> [PreparedAssignment] {
+        let binder = try assignmentBinder(entity: entity, table: table, includingColumns: true, workMeter: workMeter)
+        var seen = Set<String>()
+        return try assignments.map { assignment in
+            guard seen.insert(assignment.column).inserted else {
+                throw DatabaseEntityStatementMutationError.unsupportedStatement(
+                    "column '\(assignment.column)' is assigned more than once")
+            }
+            guard let schema = entity.fields.first(where: { $0.name == assignment.column }) else {
+                throw DatabaseEntityMutationError.invalidCompiledSchema(entity: entity.name,
+                    reason: "assignment column '\(assignment.column)' is not compiled")
+            }
+            return try prepareAssignment(schema: schema, expression: assignment.value, entity: entity, binder: binder)
+        }
+    }
+
+    private func prepareFilter(
+        _ expression: Expression?, entity: ResolvedEntity, table: TableRef, workMeter: DatabaseWorkMeter
+    ) throws -> CanonicalBoundExpression? {
+        guard let expression else { return nil }
+        return try assignmentBinder(entity: entity, table: table, includingColumns: true, workMeter: workMeter)
+            .bindPredicate(expression)
+    }
+
+    private func matches(
+        _ filter: CanonicalBoundExpression, fields: FieldObject, entity: ResolvedEntity,
+        table: TableRef, workMeter: DatabaseWorkMeter
+    ) async throws -> Bool {
+        let row = try assignmentRow(fields: fields, entity: entity, table: table, workMeter: workMeter)
+        let result = try await DatabaseContext.evaluateCanonicalScalar(filter, on: row, workMeter: workMeter)
+        return try withExtendedLifetime(result.leases) {
+            switch result.value {
+            case .primitive(.bool(let value)): return value
+            case .primitive(.null): return false
+            default: throw CanonicalReadError.expressionEvaluation(.typeMismatch(operation: "mutation predicate"))
+            }
+        }
+    }
+
+    private func payloadBuilder(workMeter: DatabaseWorkMeter) throws -> DatabaseRetainedArrayBuilder<DatabaseQueryPayloadLease> {
+        try DatabaseRetainedArrayBuilder(workMeter: workMeter, stage: .mutationPlanning,
+            layout: DatabaseRetainedArrayLayout.forElement(DatabaseQueryPayloadLease.self))
+    }
+
+    private func assignmentRow(
+        fields: FieldObject, entity: ResolvedEntity, table: TableRef, workMeter: DatabaseWorkMeter
+    ) throws -> CanonicalSourceRow {
+        let layoutFootprint = try CanonicalRelationalFootprintMeter.sourceLayoutFootprint(
+            fieldNames: entity.fields.lazy.map { $0.name }, sourceName: table.table,
+            workMeter: workMeter, stage: .mutationPlanning)
+        let layoutReservation = try workMeter.reserveIntermediate(bytes: layoutFootprint.bytes, at: .mutationPlanning)
+        let layout = CanonicalSourceLayout(slots: entity.fields.map { .init(name: $0.name, scope: table.table) },
+            scopes: [table.table], reservation: layoutReservation,
+            types: entity.fields.map { $0.queryType ?? .primitive($0.type, isArray: $0.isArray) },
+            nullability: entity.fields.map { $0.isOptional })
+        let limits = assignmentValueLimits(workMeter)
+        func value(at slot: Int) throws -> QueryValue {
+            let schema = entity.fields[slot]
+            let payload = fields[schema.name] ?? .null
+            if let type = schema.queryType {
+                return try QueryFieldStorageAdapter.decode(payload, type: type, limits: limits)
+            }
+            return .primitive(payload)
+        }
+        let footprint = try CanonicalRelationalFootprintMeter.positionalValueArrayFootprint(
+            count: entity.fields.count, valueAt: value, annotations: [:], version: nil,
+            workMeter: workMeter, stage: .mutationPlanning)
+        let reservation = try workMeter.reserveIntermediate(rows: footprint.rows, bytes: footprint.bytes, at: .mutationPlanning)
+        return try CanonicalSourceRow(values: entity.fields.indices.map(value), layout: layout,
+            payloadLeases: [DatabaseQueryPayloadLease(retaining: reservation)])
+    }
+
+    private func assignmentValueLimits(_ workMeter: DatabaseWorkMeter) -> QueryValueLimits {
+        QueryValueLimits(maximumRetainedBytes: workMeter.budget.maximumIntermediateBytes,
+            maximumTotalNodes: workMeter.budget.maximumWorkUnits, maximumNestingDepth: workMeter.budget.maximumWorkUnits,
+            maximumCollectionElements: workMeter.budget.maximumWorkUnits)
+    }
+
+    private func evaluateAssignment(
+        _ assignment: PreparedAssignment, evaluator: DatabaseExpressionEvaluator, row: CanonicalSourceRow,
+        payloads: inout DatabaseRetainedArrayBuilder<DatabaseQueryPayloadLease>, workMeter: DatabaseWorkMeter
+    ) async throws -> FieldValue {
+        guard let bound = assignment.bound else { return try evaluator.evaluate(assignment.expression) }
+        let result = try await DatabaseContext.evaluateCanonicalScalar(bound, on: row, workMeter: workMeter)
+        for lease in result.leases {
+            guard lease.workMeter === workMeter else { throw DatabaseIntermediateReservationError.workMeterMismatch }
+            try payloads.append(footprint: DatabaseIntermediateFootprint(), make: { lease })
+        }
+        guard let descriptor = assignment.schema.queryType else {
+            guard case .primitive(let value) = result.value else { throw QueryValueError.incompatibleType }
+            return value
+        }
+        let limits = assignmentValueLimits(workMeter)
+        if case .primitive = result.value {
+            return try QueryFieldStorageAdapter.encode(result.value, type: descriptor, limits: limits)
+        }
+        let maximum = try DatabaseEntityMutationFootprintMeter.encodedValueFootprint(
+            result.value, type: descriptor, workMeter: workMeter)
+        let encoded = try DatabaseQueryScopedFieldValue.producing(maximumFootprint: maximum,
+            workMeter: workMeter, stage: .mutationPlanning) {
+                try QueryFieldStorageAdapter.encode(result.value, type: descriptor, limits: limits)
+            }
+        if let reservation = encoded.retainedReservation {
+            try payloads.append(footprint: DatabaseIntermediateFootprint(), make: { DatabaseQueryPayloadLease(retaining: reservation) })
+        }
+        return encoded.withValue { copy $0 }
     }
 
     private func fieldNumber(

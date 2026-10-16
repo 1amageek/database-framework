@@ -314,6 +314,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
                  .multiply(let left, let right),
                  .divide(let left, let right),
                  .modulo(let left, let right),
+                 .concatenate(let left, let right),
                  .equal(let left, let right),
                  .notEqual(let left, let right),
                  .lessThan(let left, let right),
@@ -331,7 +332,6 @@ internal struct SPARQLFunctionRewriter: Sendable {
                  .truthTest(let inner, _, _),
                  .isNull(let inner),
                  .isNotNull(let inner),
-                 .like(let inner, _),
                  .regex(let inner, _, _),
                  .cast(let inner, _),
                  .isTriple(let inner),
@@ -339,6 +339,11 @@ internal struct SPARQLFunctionRewriter: Sendable {
                  .predicate(let inner),
                  .object(let inner):
                 pendingExpressions.append(inner)
+
+            case .patternMatch(let subject, let pattern, let escape, _):
+                pendingExpressions.append(subject)
+                pendingExpressions.append(pattern)
+                if let escape { pendingExpressions.append(escape) }
 
             case .between(let value, let low, let high):
                 pendingExpressions.append(value)
@@ -845,8 +850,17 @@ internal struct SPARQLFunctionRewriter: Sendable {
         case .isNotNull(let inner):
             return .isNotNull(try await rewriteExpression(inner, provenance: try provenance?.child(.operand, 0)))
 
-        case .like(let inner, let pattern):
-            return .like(try await rewriteExpression(inner, provenance: try provenance?.child(.operand, 0)), pattern: pattern)
+        case .patternMatch(let subject, let pattern, let escape, let kind):
+            let rewrittenSubject = try await rewriteExpression(subject, provenance: try provenance?.child(.operand, 0))
+            let rewrittenPattern = try await rewriteExpression(pattern, provenance: try provenance?.child(.operand, 1))
+            let rewrittenEscape = try await rewriteOptionalExpression(escape, provenance: try provenance?.child(.operand, 2))
+            return .patternMatch(subject: rewrittenSubject, pattern: rewrittenPattern,
+                                 escape: rewrittenEscape, kind: kind)
+
+        case .concatenate(let left, let right):
+            return .concatenate(
+                try await rewriteExpression(left, provenance: try provenance?.child(.operand, 0)),
+                try await rewriteExpression(right, provenance: try provenance?.child(.operand, 1)))
 
         case .regex(let inner, let pattern, let flags):
             return .regex(try await rewriteExpression(inner, provenance: try provenance?.child(.operand, 0)), pattern: pattern, flags: flags)

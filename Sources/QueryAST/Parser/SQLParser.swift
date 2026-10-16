@@ -303,11 +303,12 @@ public final class SQLParser {
     private func makeStructuralNode(
         _ value: @autoclosure () -> Expression,
         at start: Int? = nil,
-        identifierEnd: Int? = nil
+        identifierEnd: Int? = nil,
+        end: Int? = nil
     ) throws -> Expression {
         try structuralLedger.consume(.totalNodes)
         let result = value()
-        try sourceCapture?.record(result, start: start, end: previousTokenEnd,
+        try sourceCapture?.record(result, start: start, end: end ?? previousTokenEnd,
                                   identifierEnd: identifierEnd, ledger: &structuralLedger)
         return result
     }
@@ -588,9 +589,12 @@ extension SQLParser {
                 }
                 admitToken(.number(try decoded(start..<position))); return
             }
+            if value == 33, byte(1) == 126, byte(2) == 42 {
+                position += 3; admitToken(.symbol("!~*")); return
+            }
             if let next = byte(1) {
                 let pair = String(decoding: [value, next], as: UTF8.self)
-                if ["<=", ">=", "<>", "!=", "||", "&&", "->", "<-", "::"].contains(pair) {
+                if ["<=", ">=", "<>", "!=", "||", "&&", "->", "<-", "::", "~*", "!~"].contains(pair) {
                     position += 2; admitToken(.symbol(pair)); return
                 }
             }
@@ -1253,6 +1257,11 @@ extension SQLParser {
     private func parseTableRef() throws -> DataSource {
         let sourceStart = tokenStart
         let sourceIdentifierEnd = tokenEnd
+        // FIXME(INCOMPLETE_IMPLEMENTATION): SQL FROM reaches row-returning function syntax here.
+        // S10 must provide typed relation composition and real row execution before admission succeeds.
+        if let name = labelText, peekNextToken() == .symbol("("), asciiUppercase(name) != "GRAPH_TABLE" {
+            throw ParseError.unsupportedFeature("SQL table functions require S10 relation composition")
+        }
         // Check for GRAPH_TABLE
         if case .keyword("GRAPH_TABLE") = currentToken, peekNextToken() == .symbol("(") {
             let savedCapture = sourceCapture
@@ -1474,7 +1483,7 @@ extension SQLParser {
     }
 
     private func parsePredicateExpression() throws -> Expression {
-        let left = try parseAddExpression()
+        let left = try parseConcatenateExpression()
 
         let comparison: DatabaseKit.ComparisonOperator?
         switch currentToken {
@@ -1502,7 +1511,7 @@ extension SQLParser {
                 try expect(")")
                 expression = try makeStructuralNode(.quantifiedComparison(left, comparison: comparison, quantifier: quantifier, source: source))
             } else {
-                let right = try parseAddExpression()
+                let right = try parseConcatenateExpression()
                 switch comparison {
                 case .equal: expression = try makeStructuralNode(.equal(left, right))
                 case .notEqual: expression = try makeStructuralNode(.notEqual(left, right))
@@ -1518,13 +1527,10 @@ extension SQLParser {
         switch currentToken {
         case .keyword("IS"):
             return try parseIsPredicate(left)
-        case .keyword("LIKE"):
-            advance()
-            if case .string(let pattern) = currentToken {
-                advance()
-                return try makeStructuralNode(.like(left, pattern: pattern))
-            }
-            throw ParseError.invalidSyntax(message: "Expected string pattern after LIKE", position: tokenStart)
+        case .keyword("LIKE"), .keyword("ILIKE"), .keyword("SIMILAR"):
+            return try parsePatternPredicate(left, negated: false)
+        case .symbol("~"), .symbol("~*"), .symbol("!~"), .symbol("!~*"):
+            return try parsePatternPredicate(left, negated: false)
         case .keyword("IN"):
             advance()
             try expect("(")
@@ -1594,38 +1600,27 @@ extension SQLParser {
                 )
             case .keyword("BETWEEN"):
                 advance()
-                let low = try parseAddExpression()
+                let low = try parseConcatenateExpression()
                 try expect("AND")
-                let high = try parseAddExpression()
+                let high = try parseConcatenateExpression()
                 let range = try makeStructuralNode(
                     Expression.between(left, low: low, high: high)
                 )
                 return try makeStructuralNode(.not(range))
-            case .keyword("LIKE"):
-                advance()
-                guard case .string(let pattern) = currentToken else {
-                    throw ParseError.invalidSyntax(
-                        message: "Expected string pattern after NOT LIKE",
-                        position: tokenStart
-                    )
-                }
-                advance()
-                let match = try makeStructuralNode(
-                    Expression.like(left, pattern: pattern)
-                )
-                return try makeStructuralNode(.not(match))
+            case .keyword("LIKE"), .keyword("ILIKE"), .keyword("SIMILAR"):
+                return try parsePatternPredicate(left, negated: true)
             default:
                 throw ParseError.unexpectedToken(
-                    expected: "IN, BETWEEN, or LIKE after NOT",
+                    expected: "IN, BETWEEN, LIKE, ILIKE, or SIMILAR after NOT",
                     found: tokenDescription(currentToken),
                     position: tokenStart
                 )
             }
         case .keyword("BETWEEN"):
             advance()
-            let low = try parseAddExpression()
+            let low = try parseConcatenateExpression()
             try expect("AND")
-            let high = try parseAddExpression()
+            let high = try parseConcatenateExpression()
             return try makeStructuralNode(
                 .between(left, low: low, high: high)
             )
@@ -1658,6 +1653,61 @@ extension SQLParser {
         }
         advance()
         return try makeStructuralNode(.truthTest(value, value: truth, negated: negated))
+    }
+
+    private func parseConcatenateExpression() throws -> Expression {
+        var left = try parseAddExpression()
+        while isSymbol("||") {
+            advance()
+            let right = try parseAddExpression()
+            left = try makeStructuralNode(.concatenate(left, right))
+        }
+        return left
+    }
+
+    private func parsePatternPredicate(_ subject: Expression, negated: Bool) throws -> Expression {
+        let operatorStart = tokenStart
+        let operatorEnd = tokenEnd
+        let kind: PatternMatchKind
+        var negate = negated
+        switch currentToken {
+        case .keyword("LIKE"): kind = .like
+        case .keyword("ILIKE"): kind = .caseInsensitiveLike
+        case .keyword("SIMILAR"): kind = .similarTo
+        case .symbol("~"), .symbol("!~"):
+            kind = .regularExpression
+            if isSymbol("!~") { negate.toggle() }
+        case .symbol("~*"), .symbol("!~*"):
+            kind = .caseInsensitiveRegularExpression
+            if isSymbol("!~*") { negate.toggle() }
+        default: throw ParseError.invalidSyntax(message: "Expected SQL pattern operator", position: tokenStart)
+        }
+        advance()
+        if kind == .similarTo { try expectContextualWord("TO") }
+        let pattern = try parseConcatenateExpression()
+        let escape: Expression?
+        if kind.permitsEscape {
+            if consumeContextualWord("ESCAPE") {
+                let supplied = try parseConcatenateExpression()
+                switch supplied {
+                case .literal(.sqlUnknownString("")), .literal(.string("")),
+                     .literal(.queryValue(.primitive(.string("")), _)):
+                    _ = sourceCapture?.discardLastExpression()
+                    escape = nil
+                default: escape = supplied
+                }
+            } else {
+                escape = try makeStructuralNode(.literal(.queryValue(.primitive(.string("\\")), type: .sql(.text))),
+                    at: operatorStart, end: operatorEnd)
+            }
+        } else {
+            if consumeContextualWord("ESCAPE") {
+                throw ParseError.invalidSyntax(message: "ERE operators do not accept ESCAPE", position: operatorStart)
+            }
+            escape = nil
+        }
+        let match = try makeStructuralNode(.patternMatch(subject: subject, pattern: pattern, escape: escape, kind: kind))
+        return try negate ? makeStructuralNode(.not(match)) : match
     }
 
     private func parseAddExpression() throws -> Expression {
@@ -1905,9 +1955,12 @@ extension SQLParser {
         }
         if isSymbol("(") {
             let spelling = asciiUppercase(name)
-            let expressionFunctions: Set<String> = ["COALESCE", "NULLIF", "GREATEST", "LEAST", "GROUPING", "JSON_ARRAY", "JSON_OBJECT", "JSON_QUERY", "JSON_SCALAR", "JSON_SERIALIZE", "JSON_VALUE", "JSON_EXISTS", "NORMALIZE", "SUBSTRING", "TRIM", "XMLCONCAT", "XMLFOREST"]
+            let expressionFunctions: Set<String> = ["COALESCE", "NULLIF", "GREATEST", "LEAST", "GROUPING", "JSON_ARRAY", "JSON_OBJECT", "JSON_QUERY", "JSON_SCALAR", "JSON_SERIALIZE", "JSON_VALUE", "JSON_EXISTS", "NORMALIZE", "SUBSTRING", "POSITION", "TRIM", "XMLCONCAT", "XMLFOREST"]
             guard schema != nil || quoted || !Self.columnNameWords.contains(spelling) || expressionFunctions.contains(spelling) else {
                 throw ParseError.invalidSyntax(message: "Keyword is not a function name", position: start)
+            }
+            if schema == nil, !quoted, ["SUBSTRING", "POSITION", "TRIM"].contains(spelling) {
+                return try parseStringFunction(spelling, start: start, identifierEnd: identifierEnd)
             }
             advance()
             let distinct = isKeyword("DISTINCT")
@@ -1946,6 +1999,71 @@ extension SQLParser {
             return try makeStructuralNode(.function(FunctionCall(name: name, arguments: args, distinct: distinct, schema: schema)), at: start, identifierEnd: identifierEnd)
         }
         return try makeStructuralNode(.column(ColumnRef(table: schema, column: name)), at: start, identifierEnd: identifierEnd)
+    }
+
+    private func parseStringFunction(_ spelling: String, start: Int, identifierEnd: Int) throws -> Expression {
+        try expect("(")
+        var name = spelling.lowercased()
+        var arguments: [Expression] = []
+        if spelling == "POSITION" {
+            let needle = try parseConcatenateExpression()
+            try expect("IN")
+            let source = try parseExpression()
+            arguments = [source, needle]
+            name = "strpos"
+            try sourceCapture?.reorderLastExpressions([1, 0])
+        } else if spelling == "TRIM" {
+            name = "btrim"
+            if consumeContextualWord("LEADING") { name = "ltrim" }
+            else if consumeContextualWord("TRAILING") { name = "rtrim" }
+            else { _ = consumeContextualWord("BOTH") }
+            if consumeContextualWord("FROM") {
+                arguments = [try parseExpression()]
+            } else {
+                let first = try parseExpression()
+                if consumeContextualWord("FROM") {
+                    let source = try parseExpression()
+                    arguments = [source, first]
+                    try sourceCapture?.reorderLastExpressions([1, 0])
+                } else {
+                    arguments = [first]
+                    if isSymbol(",") { advance(); arguments.append(try parseExpression()) }
+                }
+            }
+        } else {
+            let source = try parseExpression()
+            arguments = [source]
+            if consumeContextualWord("FROM") {
+                arguments.append(try parseExpression())
+                if consumeContextualWord("FOR") { arguments.append(try parseExpression()) }
+            } else if isContextualWord("FOR") {
+                let clauseStart = tokenStart
+                let clauseEnd = tokenEnd
+                advance()
+                let length = try parseExpression()
+                let offset: Expression
+                if consumeContextualWord("FROM") { offset = try parseExpression() }
+                else {
+                    offset = try makeStructuralNode(.literal(.queryValue(.primitive(.int32(1)), type: .sql(.integer))),
+                        at: clauseStart, end: clauseEnd)
+                }
+                arguments = [source, offset, length]
+                try sourceCapture?.reorderLastExpressions([0, 2, 1])
+            } else {
+                while isSymbol(",") { advance(); arguments.append(try parseExpression()) }
+            }
+        }
+        for _ in arguments { try admitCollectionElement() }
+        try expect(")")
+        return try makeStructuralNode(.function(FunctionCall(name: name, arguments: arguments)), at: start, identifierEnd: identifierEnd)
+    }
+
+    private func isContextualWord(_ word: String) -> Bool {
+        switch currentToken {
+        case .keyword(let value): return value == word
+        case .identifier(let value): return !tokenIsQuoted && asciiUppercase(value) == word
+        default: return false
+        }
     }
 
     private static let literalTypeWords: Set<String> = [

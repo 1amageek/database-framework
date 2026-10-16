@@ -111,6 +111,34 @@ struct CanonicalQueryTypeBinder {
         }
     }
 
+    func bindPredicate(_ expression: DatabaseKit.Expression) throws -> CanonicalBoundExpression {
+        try boolean(expression)
+    }
+
+    func bindAssignment(_ expression: DatabaseKit.Expression, to type: QueryColumnType) throws -> CanonicalBoundExpression {
+        try validate(type)
+        let context: QueryColumnType
+        if case .sql(.decimal) = type { context = .sql(.decimal(precision: nil, scale: nil)) }
+        else { context = Self.isText(type) ? .sql(.text) : type }
+        let child = try bind(expression, contextualType: context)
+        try validateCast(from: child.type, to: type, context: .assignment)
+        let target: DataType
+        switch type {
+        case .sql(let scalar): target = scalar
+        case .primitive(.string, false): target = .text
+        case .primitive(.bytes, false): target = .blob
+        case .primitive(.uuid, false): target = .uuid
+        default:
+            guard let scalar = Self.sqlScalar(type) else {
+                guard child.type == type else { throw mismatch("assignment target") }
+                return child
+            }
+            target = scalar
+        }
+        return CanonicalBoundExpression(expression: .cast(child.expression, targetType: target), type: type,
+            isNullable: child.isNullable, children: [child], occurrence: child.occurrence, castContext: .assignment)
+    }
+
     private func bindExpression(
         _ expression: DatabaseKit.Expression,
         contextualType: QueryColumnType?,
@@ -189,10 +217,27 @@ struct CanonicalQueryTypeBinder {
             return node(expression, .sql(.boolean), child.isNullable, [child])
         case .isNull(let operand), .isNotNull(let operand):
             return node(expression, .sql(.boolean), false, [try childBinder(.operand, 0).bind(operand)])
-        case .like(let operand, _):
-            let child = try childBinder(.operand, 0).bind(operand, contextualType: .sql(.text))
-            guard Self.isText(child.type) else { throw mismatch("LIKE") }
-            return node(expression, .sql(.boolean), child.isNullable, [child])
+        case .patternMatch(let subject, let pattern, let escape, let kind):
+            if escape != nil, kind == .regularExpression || kind == .caseInsensitiveRegularExpression {
+                throw mismatch("regular expression ESCAPE")
+            }
+            let subjectInput = try childBinder(.operand, 0).bind(subject, contextualType: .sql(.text))
+            guard Self.isText(subjectInput.type) else { throw mismatch("pattern subject") }
+            let selectedSubject: CanonicalBoundExpression
+            if case .sql(.char) = subjectInput.type { selectedSubject = subjectInput }
+            else { selectedSubject = try coerce(subjectInput, to: .sql(.text)) }
+            var children = [selectedSubject, try selectedText(pattern, binder: childBinder(.argument, 0))]
+            if let escape { children.append(try selectedText(escape, binder: childBinder(.argument, 1))) }
+            return node(expression, .sql(.boolean), children.contains { $0.isNullable }, children)
+        case .concatenate(let lhs, let rhs):
+            let inputs = try bindInputs([lhs, rhs])
+            if inputs.allSatisfy({ Self.isBytes($0.type) }) {
+                return node(expression, .sql(.blob), inputs.contains { $0.isNullable },
+                    try inputs.map { try coerce($0, to: .sql(.blob)) })
+            }
+            guard inputs.allSatisfy({ Self.isText($0.type) }) else { throw mismatch("concatenation") }
+            return node(expression, .sql(.text), inputs.contains { $0.isNullable },
+                try inputs.map { try coerce($0, to: .sql(.text)) })
         case .between(let operand, let low, let high):
             let children = try bindComparison([operand, low, high])
             return node(expression, .sql(.boolean), children.contains { $0.isNullable }, children)
@@ -267,32 +312,15 @@ struct CanonicalQueryTypeBinder {
             catch let cause as DatabaseExpressionEvaluationError { throw located(cause, at: childBinder(.castType).currentOccurrence) }
             let inputType: QueryColumnType
             if case .decimal = target { inputType = .sql(.decimal(precision: nil, scale: nil)) }
+            else if Self.isText(type) { inputType = .sql(.text) }
             else { inputType = type }
             let child = try childBinder(.operand, 0).bind(operand, contextualType: inputType)
             do { try validateCast(from: child.type, to: type) }
             catch let cause as DatabaseExpressionEvaluationError { throw located(cause, at: childBinder(.castType).currentOccurrence) }
-            // FIXME(INCOMPLETE_IMPLEMENTATION): Typed text sources reach the existing lexical CAST kernel.
-            // S05 must apply numeric typmod rounding and preserve lexical display scale before
-            // this source/target signature, including declared NULL, can be admitted.
-            if Self.isText(child.type) {
-                switch target {
-                case .decimal(.some, _), .decimal(_, .some):
-                    throw DatabaseExpressionEvaluationError.unsupportedExpression("numeric lexical type modifier conversion")
-                default: break
-                }
-            }
             if Self.isStaticallyNull(child.expression) {
                 return node(.literal(.queryValue(.primitive(.null), type: type)), type, true)
             }
-            if child.type == type { return child }
-            // FIXME(INCOMPLETE_IMPLEMENTATION): Length-modified CAST reaches this binding gate.
-            // S05 length conversion must execute before these signatures can be admitted.
-            switch target {
-            case .char(.some), .varchar(.some),
-                 .binary(.some), .varbinary(.some):
-                throw DatabaseExpressionEvaluationError.unsupportedExpression("CAST type modifier conversion")
-            default: break
-            }
+            if child.type == type, type != .sql(.char(length: nil)) { return child }
             var scalarType = target
             while case .array(let element) = scalarType { scalarType = element }
             // FIXME(INCOMPLETE_IMPLEMENTATION): SQL CAST binding reaches nonliteral/non-NULL temporal typmods here.
@@ -342,13 +370,7 @@ struct CanonicalQueryTypeBinder {
         guard function.schema == nil || function.schema == "pg_catalog", !function.distinct else {
             throw DatabaseExpressionEvaluationError.unsupportedFunction(name)
         }
-        if ["lower", "upper", "length"].contains(name) {
-            guard function.arguments.count == 1 else { throw mismatch(name) }
-            let child = try childBinder(.argument, 0).bind(function.arguments[0], contextualType: .sql(.text))
-            try requirePrimitiveOperation([child], operation: name)
-            guard Self.isText(child.type) || (name == "length" && Self.isBytes(child.type)) else { throw mismatch(name) }
-            return node(expression, name == "length" ? .sql(.integer) : .sql(.text), child.isNullable, [child])
-        }
+        if let selected = try bindScalarFunction(function, expression: expression) { return selected }
         if name == "width_bucket", function.arguments.count == 2 {
             let children = try bindArrayComparison(function.arguments[0], array: function.arguments[1], field: .argument, commonSelection: true)
             return node(expression, .sql(.integer), children.contains { $0.isNullable }, children)
@@ -395,6 +417,101 @@ struct CanonicalQueryTypeBinder {
         return node(expression, result, children.contains { $0.isNullable }, children)
     }
 
+    private func selectedText(_ expression: DatabaseKit.Expression, binder: Self) throws -> CanonicalBoundExpression {
+        let input = try binder.bind(expression, contextualType: .sql(.text))
+        guard Self.isText(input.type) else { throw mismatch("text expression") }
+        return try coerce(input, to: .sql(.text))
+    }
+
+    private static func permitsScalarText(_ type: QueryColumnType) -> Bool {
+        if numericKind(type) != nil || isText(type) || isBytes(type) { return true }
+        return type == .sql(.boolean) || type == .primitive(.bool)
+            || type == .sql(.uuid) || type == .primitive(.uuid)
+    }
+
+    /// Catalog selection is completed using declarations, including typed NULL.
+    /// The selected children remain authoritative when no source rows exist.
+    private func bindScalarFunction(
+        _ function: FunctionCall, expression: DatabaseKit.Expression
+    ) throws -> CanonicalBoundExpression? {
+        let name = function.name
+        if ["regexp_matches", "regexp_split_to_table"].contains(name) {
+            // FIXME(INCOMPLETE_IMPLEMENTATION): SQL scalar and relation callers reach row functions here.
+            // S10 must compose the bounded pattern iterators into declared relations before admission.
+            throw DatabaseExpressionEvaluationError.unsupportedExpression("pattern row function requires relation composition")
+        }
+        if name == "concat" || name == "concat_ws" {
+            guard !function.arguments.isEmpty else { throw mismatch(name) }
+            var children: [CanonicalBoundExpression] = []
+            for (index, argument) in function.arguments.enumerated() {
+                let input = try childBinder(.argument, index).bind(argument, contextualType: .sql(.text))
+                guard Self.permitsScalarText(input.type) else {
+                    throw DatabaseExpressionEvaluationError.unsupportedExpression("scalar text output for CONCAT")
+                }
+                if name == "concat_ws", index == 0 {
+                    guard Self.isText(input.type) else { throw mismatch(name) }
+                    children.append(try coerce(input, to: .sql(.text)))
+                } else { children.append(input) }
+            }
+            return node(expression, .sql(.text), name == "concat_ws" && children[0].isNullable, children)
+        }
+        let text = DataType.text, integer = DataType.integer, bytes = DataType.blob
+        let signatures: [[DataType]]
+        let result: QueryColumnType
+        switch name {
+        case "lower", "upper", "reverse": signatures = [[text]]; result = .sql(.text)
+        case "ascii": signatures = [[text]]; result = .sql(.integer)
+        case "chr": signatures = [[integer]]; result = .sql(.text)
+        case "char_length", "character_length": signatures = [[text]]; result = .sql(.integer)
+        case "length", "octet_length", "bit_length": signatures = [[text], [bytes]]; result = .sql(.integer)
+        case "substr", "substring":
+            signatures = [[text, integer], [text, integer, integer], [bytes, integer], [bytes, integer, integer]]
+                + (name == "substring" ? [[text, text], [text, text, text]] : [])
+            result = .sql(.text)
+        case "strpos", "position": signatures = [[text, text]]; result = .sql(.integer)
+        case "btrim", "ltrim", "rtrim": signatures = [[text], [text, text]]; result = .sql(.text)
+        case "replace", "translate": signatures = [[text, text, text]]; result = .sql(.text)
+        case "split_part": signatures = [[text, text, integer]]; result = .sql(.text)
+        case "left", "right", "repeat": signatures = [[text, integer]]; result = .sql(.text)
+        case "lpad", "rpad": signatures = [[text, integer], [text, integer, text]]; result = .sql(.text)
+        case "encode": signatures = [[bytes, text]]; result = .sql(.text)
+        case "decode": signatures = [[text, text]]; result = .sql(.blob)
+        case "get_byte": signatures = [[bytes, integer]]; result = .sql(.integer)
+        case "get_bit": signatures = [[bytes, .bigint]]; result = .sql(.integer)
+        case "set_byte": signatures = [[bytes, integer, integer]]; result = .sql(.blob)
+        case "set_bit": signatures = [[bytes, .bigint, integer]]; result = .sql(.blob)
+        case "regexp_like": signatures = [[text, text], [text, text, text]]; result = .sql(.boolean)
+        case "regexp_match", "regexp_split_to_array":
+            signatures = [[text, text], [text, text, text]]; result = .sql(.array(.text))
+        case "regexp_replace":
+            signatures = [[text, text, text], [text, text, text, text],
+                          [text, text, text, integer], [text, text, text, integer, integer],
+                          [text, text, text, integer, integer, text]]
+            result = .sql(.text)
+        default: return nil
+        }
+        let candidates = signatures.filter { $0.count == function.arguments.count }
+        guard !candidates.isEmpty else { throw mismatch(name) }
+        let inputs: [CanonicalBoundExpression?] = try function.arguments.enumerated().map { index, argument in
+            if try isContextualUnknown(argument) { return nil }
+            return try childBinder(.argument, index).bind(argument)
+        }
+        let selected = try selectFunction(candidates, inputs: inputs, name: name)
+        let preservesCharacterType = ["length", "char_length", "character_length", "octet_length", "bit_length"].contains(name)
+        let children = try function.arguments.indices.map { index in
+            let target = QueryColumnType.sql(selected[index])
+            let input = try inputs[index] ?? childBinder(.argument, index).bind(function.arguments[index], contextualType: target)
+            if preservesCharacterType, selected[index] == .text, case .sql(.char) = input.type { return input }
+            return try coerce(input, to: target)
+        }
+        let type: QueryColumnType
+        if (name == "substr" || name == "substring"), selected.first == bytes { type = .sql(.blob) }
+        else { type = result }
+        let nullable = name == "regexp_match" || (name == "substring" && selected.count > 1 && selected[1] == text)
+            || children.contains { $0.isNullable }
+        return node(expression, type, nullable, children)
+    }
+
     private func selectFunction(_ signatures: [[DataType]], inputs: [CanonicalBoundExpression?], name: String) throws -> [DataType] {
         let admitted = signatures.filter { signature in
             zip(inputs, signature).allSatisfy { input, target in
@@ -409,7 +526,7 @@ struct CanonicalQueryTypeBinder {
         let exactCandidates = admitted.filter { exact($0) == maximumExact }
         func preferred(_ signature: [DataType]) -> Int {
             zip(inputs, signature).filter { input, target in
-                target == .doublePrecision && (input.map { Self.sqlScalar($0.type) != target } ?? true)
+                (target == .doublePrecision || target == .text) && (input.map { Self.sqlScalar($0.type) != target } ?? true)
             }.count
         }
         let maximumPreferred = exactCandidates.map(preferred).max() ?? 0
@@ -484,7 +601,12 @@ struct CanonicalQueryTypeBinder {
             do { context = try context.map { try commonType([$0, child.type]) } ?? child.type }
             catch let cause as DatabaseExpressionEvaluationError { throw located(cause, at: child.occurrence) }
         }
-        let selectedContext = context ?? defaultType
+        let selectedContext: QueryColumnType
+        switch context ?? defaultType {
+        case .sql(.decimal): selectedContext = .sql(.decimal(precision: nil, scale: nil))
+        case .sql(.char): selectedContext = .sql(.char(length: nil))
+        default: selectedContext = context ?? defaultType
+        }
         return try expressions.enumerated().map { index, expression in
             var scoped = childBinder(field, index)
             if let addresses { scoped.currentOccurrence = addresses[index] }
@@ -511,6 +633,8 @@ struct CanonicalQueryTypeBinder {
         let children: [CanonicalBoundExpression]
         if let first = inputs.first, case .primitive = first.type,
            inputs.allSatisfy({ $0.type == first.type }) {
+            children = inputs
+        } else if inputs.allSatisfy({ if case .sql(.char) = $0.type { return true }; return false }) {
             children = inputs
         } else if inputs.allSatisfy({ Self.numericKind($0.type) == .signed }) {
             // Integer comparison operators have exact cross-width signatures.
@@ -606,6 +730,7 @@ struct CanonicalQueryTypeBinder {
     func commonType(_ types: [QueryColumnType]) throws -> QueryColumnType {
         guard let first = types.first else { return .sql(.text) }
         if types.allSatisfy({ $0 == first }) { return first }
+        if types.allSatisfy({ if case .sql(.char) = $0 { return true }; return false }) { return .sql(.char(length: nil)) }
         if types.allSatisfy(Self.isText) { return .sql(.text) }
         if types.allSatisfy(Self.isBytes) { return .sql(.blob) }
         if types.allSatisfy({ Self.numericKind($0) != nil }) {
@@ -799,7 +924,7 @@ struct CanonicalQueryTypeBinder {
         }
     }
 
-    enum CastContext { case implicit, assignment, explicit }
+    enum CastContext: Sendable { case implicit, assignment, explicit }
 
     func validateCast(from source: QueryColumnType, to target: QueryColumnType, context: CastContext = .explicit) throws {
         if source == target { return }
@@ -819,6 +944,14 @@ struct CanonicalQueryTypeBinder {
         }
         if (Self.sqlScalar(source) == .integer && Self.sqlScalar(target) == .boolean)
             || (Self.sqlScalar(source) == .boolean && Self.sqlScalar(target) == .integer) { return }
+        if context == .explicit, Self.isText(source) {
+            switch target {
+            case .sql(.boolean), .sql(.smallint), .sql(.integer), .sql(.bigint),
+                 .sql(.real), .sql(.doublePrecision), .sql(.decimal), .sql(.uuid), .sql(.blob): return
+            default: break
+            }
+        }
+        if context == .explicit, Self.isText(target), Self.permitsScalarText(source) { return }
         if Self.isText(source), case .sql(.decimal) = target { return }
         if Self.isText(source), target == .sql(.uuid) { return }
         if Self.isText(source) {
@@ -858,7 +991,7 @@ struct CanonicalQueryTypeBinder {
         try validateCast(from: child.type, to: type, context: .implicit)
         return CanonicalBoundExpression(expression: .cast(child.expression, targetType: target), type: type,
             isNullable: child.isNullable, children: [child], occurrence: child.occurrence,
-            subqueryBinding: child.subqueryBinding)
+            subqueryBinding: child.subqueryBinding, castContext: .implicit)
     }
 
     private static func isSPARQLProducer(_ expression: DatabaseKit.Expression) -> Bool {
@@ -900,13 +1033,16 @@ struct CanonicalQueryTypeBinder {
 
     private func unknownString(_ text: String, to type: QueryColumnType) throws -> QueryValue {
         let scratch: DatabaseIntermediateReservation?
-        if let workMeter, Self.numericKind(type) != nil || type == .sql(.boolean) || type == .primitive(.bool) {
+        if let workMeter, Self.numericKind(type) != nil || type == .sql(.boolean) || type == .primitive(.bool) || type == .sql(.uuid) || Self.isBytes(type) {
             scratch = try workMeter.reserveIntermediate(
                 bytes: Self.inputScratchFootprint(utf8Count: text.utf8.count, type: type), at: .bindingCandidate)
         } else {
             scratch = nil
         }
         defer { scratch?.release() }
+        if let workMeter {
+            try DatabaseByteProcessingMeter.consume(byteCount: UInt64(text.utf8.count), workMeter: workMeter, stage: .bindingCandidate)
+        }
         let value: QueryValue
         switch type {
         case .sql(.text), .sql(.char), .sql(.varchar), .primitive(.string, false):
@@ -951,16 +1087,21 @@ struct CanonicalQueryTypeBinder {
                 throw DatabaseExpressionEvaluationError.invalidCast("floating-point input")
             }
             value = try Self.normalize(.primitive(.float64(number)), to: type, permitsFloatingRounding: true)
-        case .sql(.decimal), .primitive(.decimal, false):
+        case .sql(.decimal):
+            do { value = .numeric(try QueryNumericValue(sqlLexicalForm: text[...], maximumUTF8Count: UInt64(text.utf8.count))) }
+            catch QueryValueError.numericOutOfRange { throw DatabaseExpressionEvaluationError.numericOverflow }
+            catch { throw DatabaseExpressionEvaluationError.invalidCast("numeric input") }
+        case .primitive(.decimal, false):
             guard case .decimal(let number) = Literal.parseDecimal(try numericInput(text)) else {
                 throw DatabaseExpressionEvaluationError.invalidCast("numeric input")
             }
             value = .primitive(.decimal(number))
         case .sql(.uuid):
-            guard let uuid = DatabaseTypes.UUID(canonicalString: text) else {
-                throw DatabaseExpressionEvaluationError.invalidCast("uuid")
-            }
-            value = .primitive(.uuid(uuid))
+            do { value = try QueryValue.uuid(sqlLexicalForm: text[...], maximumUTF8Count: UInt64(text.utf8.count)) }
+            catch { throw DatabaseExpressionEvaluationError.invalidCast("uuid") }
+        case .sql(.blob), .sql(.binary), .sql(.varbinary):
+            do { value = try QueryValue.binary(sqlLexicalForm: text[...], maximumUTF8Count: UInt64(text.utf8.count)) }
+            catch { throw DatabaseExpressionEvaluationError.invalidCast("bytea") }
         default: throw DatabaseExpressionEvaluationError.unsupportedExpression("SQL unknown string input for unsupported target type")
         }
         guard QueryValueValidator.accepts(value, type: type) else { throw mismatch("SQL unknown string input") }
@@ -1173,13 +1314,18 @@ struct CanonicalQueryTypeBinder {
         permitsFloatingRounding: Bool = false
     ) throws -> QueryValue {
         if QueryValueValidator.accepts(value, type: type) { return value }
+        if case .primitive(_, false) = type, case .numeric(let numeric) = value {
+            return try normalize(.primitive(.decimal(numeric.value)), to: type,
+                permitsFloatingRounding: permitsFloatingRounding)
+        }
         guard case .primitive(let primitive) = value, !isPrimitiveArray(type), let kind = primitiveKind(type) else {
             throw DatabaseExpressionEvaluationError.typeMismatch(operation: "bound result normalization")
         }
         let normalized: QueryValue
         if kind == .decimal, let decimal = exactDecimal(primitive) {
             normalized = .numeric(try QueryNumericValue(value: decimal, displayScale: max(0, decimal.scale)))
-        } else if let integer = integer(primitive) {
+        } else if let integer = try normalizationInteger(primitive, permitsDecimal:
+            numericKind(type) == .signed || numericKind(type) == .unsigned) {
             let scalar: FieldValue
             switch kind {
             case .int8: guard let value = Int8(exactly: integer) else { throw DatabaseExpressionEvaluationError.numericOverflow }; scalar = .int8(value)
@@ -1214,6 +1360,25 @@ struct CanonicalQueryTypeBinder {
             throw DatabaseExpressionEvaluationError.typeMismatch(operation: "bound result does not satisfy declared type")
         }
         return normalized
+    }
+
+    private static func normalizationInteger(_ value: FieldValue, permitsDecimal: Bool) throws -> Int128? {
+        if let integer = integer(value) { return integer }
+        guard permitsDecimal, case .decimal(let decimal) = value else { return nil }
+        guard decimal.scale <= 0 else {
+            throw DatabaseExpressionEvaluationError.typeMismatch(operation: "bound integer normalization")
+        }
+        // ExactDecimal canonicalizes trailing zeroes, so positive scale is fractional.
+        // At most 38 decimal shifts can fit an Int128; reject larger exponents first.
+        let shifts = -Int64(decimal.scale)
+        guard shifts <= 38 else { throw DatabaseExpressionEvaluationError.numericOverflow }
+        var integer = decimal.coefficient
+        for _ in 0..<shifts {
+            let product = integer.multipliedReportingOverflow(by: 10)
+            guard !product.overflow else { throw DatabaseExpressionEvaluationError.numericOverflow }
+            integer = product.partialValue
+        }
+        return integer
     }
 
     private static func integer(_ value: FieldValue) -> Int128? {

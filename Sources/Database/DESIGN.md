@@ -69,6 +69,11 @@ transaction.
 
 ## Contracts and Invariants
 
+- S05 concatenation and dynamic SQL pattern operands participate in SPARQL
+  detection and rewriting under the [QueryExecution traversal contract](../DatabaseEngine/QueryExecution/DESIGN.md#s05-selected-string-pattern-binary-and-cast-execution).
+  Rewriting retains every child occurrence and the same parent transaction,
+  meter and Mutex-owned ledger; pattern language execution stays below this module.
+
 - SQL parsing, parameter binding, unsupported-statement rejection, and
   execution failures remain typed failures; malformed input is not converted
   to an empty response.

@@ -8,7 +8,7 @@ transform retained values into canonical rows, index rows, or an explicit
 final public output.
 
 - Parent: [DatabaseEngine](../DESIGN.md).
-- Children: none in the current retained-fetch design.
+- Child: [SQLPatternMatching](SQLPatternMatching/DESIGN.md), the bounded SQL pattern language implementation.
 - Planned S01–S10 SQL execution obligations are recorded below; implementation
   completeness remains tracked by the workspace progress record.
 
@@ -32,10 +32,12 @@ copyable and could escape without their reservation.
 | [DatabaseEngine](../DESIGN.md) | parent | Aggregate role in the retained flow | Defines cross-component assumptions and outputs. | Any new output must be an explicit destination boundary. |
 | [DatabaseKit Query](../../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md) | depends on | `DataSource.usesSPARQLSemantics` | Supplies SELECT source language applicability for execution dispatch. | Classifies the top-level source; it does not prove executor availability or recursively classify descendants. |
 | [DatabaseKit SQL](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md) | depends on | SQL profile and typed semantic model | Supplies statements, values and ordered column contracts. | Type/equality changes invalidate every relational consumer. |
+| [DatabaseTypes Bytes](../../../../database-types/Sources/DatabaseTypes/Bytes/DESIGN.md) | depends on | Immutable bounded bytes and exact retained capacity for `ByteString.copying` | Supplies the byte owner used by SQL BYTEA producers and Kit lexical conversion. | Exact output admission relies on the copying contract; Array-backed construction may retain excess capacity and must still use measured capacity. |
 | [DatabaseMath](../../DatabaseMath/DESIGN.md) | depends on | Platform scalar math and bounded decimal formatting | Supplies selected float kernels and significant-digit cast formatting. | SQL domains, widths and typed numeric failures remain here. |
 | [QueryAST](../../QueryAST/DESIGN.md) | depends on | Text-to-semantic syntax contract | Canonical execution receives semantic input from the entry layer. | This is a contract relationship, not permission for an engine-to-parser import. |
 | [Core](../Core/DESIGN.md) | used by | Pre-admitted builder append | Produces present and missing entries. | Runtime metadata is validated before append. |
 | [Read](../Read/DESIGN.md) | coordinates with | Exact session work meter | Supplies the meter to builder and destination. | Budget equality is not identity. |
+| [SQLPatternMatching](SQLPatternMatching/DESIGN.md) | child | Immutable pattern programs and retained match/split results | Supplies SQL pattern algorithms without inheriting Graph XPath regex semantics. | Parent owns selected SQL types, NULL and public result adaptation. |
 
 ## Architecture
 
@@ -638,6 +640,25 @@ Retaining the complete source owner truthfully retains and charges its full
 capacity, including portions outside a visible byte slice. Partial projection
 cannot release that claim while any surviving alias retains the owner.
 
+#### Canonical direct table page retention
+
+For a direct table page with visible size `p`, canonical execution admits up to
+`p + 1` rows, including its lookahead. With no residual filter/reordering or
+additional relation stage, three row containers may coexist: the canonical
+source frame, an optional bound-addressing frame, and the projected result
+frame. The direct page boundary therefore guarantees at most `3 * (p + 1)`
+retained rows for these containers. Existing operator-specific claims remain
+independently admitted.
+
+`addressingBoundSource` builds a positional runtime frame when declared binding
+addresses differ from the fetched layout. Its new row container retains the
+original source reservation through producer payload leases. This is distinct
+from applying a SQL relation alias, which remains a schema view without per-row
+copies. Shared payload bytes are retained once; separately allocated row
+containers keep their own row claims. The page consumer must preserve all live
+frame owners and admit any additional prepared destination before retaining it.
+[Base](../Base/DESIGN.md) consumes this guarantee for aggregate page sizing.
+
 Independent raw parameter/value roots use a documented conservative bound:
 each reference contributes its known retained capacity. Equal bytes and equal
 capacity do not establish shared ownership. This sum is never labeled unique
@@ -845,3 +866,130 @@ last-owner release for scalar, ordinary aggregate and Base paths. Existing
 raw exact-division, RDF, source alignment, index/scan equivalence, persistence
 and retained-owner suites remain regressions. Two heavy build lanes maximum;
 focused behavioral tests precede one converged affected/full package run.
+
+### S05 selected string, pattern, binary and cast execution
+
+Consume the [S05 SQL semantic authority](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s05-frozen-string-pattern-binary-and-lexical-conversion-semantics).
+This contract supersedes the preceding S04 deferral of typed-text numeric
+displayScale/typmods and the old primitive LIKE-only selected path.
+
+```text
+semantic expression + schema/parameter declarations
+  -> binder: exact children/result/nullability/cast context/occurrences
+      -> CanonicalRows: evaluated QueryValues and retained source owners
+          +-> CanonicalSQLStringEvaluator: F04
+          +-> CanonicalSQLBinaryEvaluator: F06 and BYTEA overloads
+          +-> CanonicalSQLScalarCast / ScalarText: conversion and type output
+          +-> SQLPatternMatching: immutable program + task-local iterator
+              -> declared QueryValue validation + retained destination
+
+compiled field queryType + INSERT/UPDATE expression
+  -> assignment binding before source scan / any mutation
+      -> same selected conversion contract, CastContext.assignment
+          -> existing model adaptation and atomic mutation owner
+```
+
+| Internal owner/entry | Contract |
+|---|---|
+| CanonicalQueryTypeBinder / CanonicalBoundExpression | Static catalog selects overload, exact input/result types, nullability and CastContext. Binding validates all declarations including typed NULL before reading. Runtime does not reselect from payload values. |
+| CanonicalSQLStringEvaluator.evaluate(bound, operands, workMeter) | F04 selected scalar inputs to DatabaseQueryScopedFieldValue. Strict functions propagate NULL; CONCAT variants use their explicit non-strict rules. |
+| CanonicalSQLBinaryEvaluator.evaluate(bound, operands, workMeter) | F06 and selected BYTEA length/subsequence/concat to the same scoped primitive result. No duplicate binary algorithms in the string evaluator. |
+| CanonicalSQLScalarCast.evaluateValue(value, from, to, context, workMeter) | Fixed/rich results as QueryValue, preserving NUMERIC displayScale and using shared Kit lexical constructors. |
+| CanonicalSQLScalarCast.evaluatePayload(value, from, to, context, workMeter) | Text/CHAR/VARCHAR/BYTEA results as DatabaseQueryScopedFieldValue, preserving a reservation through parent publication. |
+| CanonicalSQLScalarText.withText(of, type, preservingCharacterPadding, workMeter, body) | Synchronously lends a scoped Substring for admitted type-output. Formatted temporary owners are pre-admitted and live through body. No borrowed view escapes. |
+| SQLPatternMatching | Child owns grammar, flags, search/capture priorities, replacement/split algorithms and operation-local scratch. Parent passes explicit escape/flags/operation and retains inputs/results under the same work meter. |
+| CanonicalSQLPatternEvaluator | Child-local selected adapter for the frozen F05 scalar names, patternMatch and regex SUBSTRING; consumes bound metadata/operands/meter/value limits and returns QueryValue with an optional retained payload lease. It does not admit additional REGEXP names or public row composition. |
+| SQL comparison/identity | A selected QueryColumnType accompanies SQL values at comparison and hash boundaries. CHAR ignores trailing U+0020 consistently in order/equality/group/DISTINCT/join/aggregate and conditional/quantified comparisons. Primitive/RDF byte identity is unchanged. |
+| Index planning | Pushdown is permitted only if persisted key identity/order is equivalent to the selected SQL comparison. Otherwise use the canonical path; an index name is not evidence of semantic equivalence. |
+
+Each variable payload output is measured with checked arithmetic before
+allocation and constructed under DatabaseQueryScopedFieldValue.producing or an
+equivalent existing retained destination builder. Text kernels use codepoint,
+UTF-8 and byte views rather than grapheme arrays or intermediate String arrays.
+BYTEA producers use the existing `ByteString.copying` exact-capacity contract
+owned by DatabaseTypes Bytes. Their pre-admitted byte count therefore equals
+the copied owner's retained capacity. This assumption does not apply to the
+Array/COW constructors, slices or owners with unknown capacity. The observed
+nested `encode(decode(...), ...)` three-byte output retaining sixteen bytes is
+the regression that must reject an Array-backed copying implementation.
+Measurement and writing passes both charge work/checkpoints. Immutable input
+owners and claims survive every capture/slice; scratch ends with its operation.
+Lease composition requires identical DatabaseWorkMeter objects. No global
+mutable regex cache or target-specific synchronization weakening is introduced.
+No new operational quota is guessed: existing work/memory/deadline and Kit
+bounded value limits own admission. SQL descriptor maxima are intrinsic type
+validation, not allocation permission.
+Same-base CHAR common-type selection drops the typmod through a distinct
+implicit CAST node retaining the original child's signature. Its typmod-free
+char(nil) result borrows the physical input without length conversion. Explicit
+and assignment bare CHAR still apply length one; retyping the original CAST
+would incorrectly change that operation and truncate its result.
+
+The selected comparison boundary includes extrema, CASE/NULLIF, quantified
+comparisons, ordering and all relational hash keys; trimming one filter branch
+alone does not satisfy T05. The Mutation component owns the real INSERT/UPDATE
+assignment and existing UPDATE/DELETE predicate caller connection using
+FieldSchema.queryType, including empty source binding and no mutation on failure.
+Existing statement predicates consume this same selected scalar path, so
+codepoint and C/POSIX behavior does not depend on whether a statement reads or
+mutates. New DML forms, dynamic catalogs and RETURNING remain their planned sprints.
+
+Semantic traversal includes both concatenate operands and subject/pattern/escape
+pattern operands, with occurrence roles operand 0/1/2 respectively. Source
+qualification and field authorization may not omit dynamic pattern/escape
+columns. Fusion preflight visits these children through its existing admitted
+stack; SQL/SPARQL rewriting preserves their positions through the existing
+Mutex-owned occurrence ledger. This adds no shared state or isolation branch.
+
+Raw DatabaseExpressionEvaluator pattern callers retain existing string/NULL
+failures and consume the same SQL pattern child. Graph programmatic LIKE
+migrates to case-sensitive LIKE with escape disabled; Graph export must carry
+that case sensitivity. SPARQL regex keeps its separate XPath language. Graph
+forms whose semantics cannot be guaranteed fail explicitly rather than being
+silently translated.
+Binding retains a CHAR declaration for the subject of a pattern operator,
+and the child adapter requests padding-preserving type output for that operand.
+Pattern/escape operands and text-declared regex function inputs retain ordinary
+text coercion. CHAR comparison trimming is not a pattern-matching rule.
+
+CAST lexical/length failures use the existing invalidCast contract. Function
+domain failures use invalidFunctionArgument(function:reason:); invalid and
+unsupported SQL patterns retain distinct typed failure categories and source
+offsets through the expression/read error owner. Resource/deadline/cancellation
+errors propagate unchanged. Server maps newly admitted failure categories;
+SQLSTATE remains S16. Original input is charged before shared lexical parsing,
+and output formatting never uses description or a default value fallback.
+
+S05-C01–C10 assign constructor/model/Wire evidence to Kit, grammar/source and
+serializer evidence to QueryAST, kernel/iterator/resource/identity evidence to
+this component and child, assignment state evidence to Mutation, and public
+SQL/persistence/transport failure evidence to their actual callers. Scalar
+regex arrays use existing QueryArrayValue without an S07 prerequisite. Public
+REGEXP_MATCHES/SPLIT_TO_TABLE composition is deliberately still a required S10
+gate; S05 does not claim their end-to-end completion. One final comprehensive
+review and concrete finding-limited recheck follow coherent implementation;
+focused then affected/full lanes run against the frozen local task graph, with
+the user-deferred URL/FDB/Graph Database portable matrix in S18.
+
+#### S05 context-free selected scalar entry
+
+Internal `DatabaseContext.evaluateCanonicalScalar(bound, on: CanonicalSourceRow,
+workMeter)` consumes the Mutation owner's admitted positional frame and returns
+`(value: QueryValue, leases: [DatabaseQueryPayloadLease])`. It invokes the same
+selected recursive evaluator as SELECT, with no DatabaseContext or relation
+execution context. The entry rejects any bound aggregate, subquery or relation
+operation before evaluation, including unexamined conditional branches. It
+never creates a context, target session or authority. SELECT's existing instance
+wrapper supplies its existing context only to the relation/aggregate branches.
+The Mutation owner retains returned leases through storage encoding and final
+prepared-change admission. Nested casts, strict NULL, lazy conditionals,
+selected signatures, innermost failures and the work meter therefore have one
+implementation across both callers.
+
+The selected CAST adapter dispatches only S05 scalar destinations. Primitive
+destinations retain their declared width and identity; NUMERIC conversion back
+to a primitive integer requires an integral, exactly representable value and
+reports range overflow. SQL NUMERIC results retain their rich representation.
+Explicit bare CHAR still executes its default length-one conversion when its
+input has the same typmod-free CHAR declaration. Existing temporal CASTs remain
+on the primitive evaluator path; this does not admit S06 precision conversion.

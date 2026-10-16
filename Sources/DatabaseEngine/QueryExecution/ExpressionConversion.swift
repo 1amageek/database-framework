@@ -278,7 +278,7 @@ extension Expression {
             return column.table == nil || column.table == sourceQualifier
         case .add(let lhs, let rhs), .subtract(let lhs, let rhs),
                 .multiply(let lhs, let rhs), .divide(let lhs, let rhs),
-                .modulo(let lhs, let rhs), .equal(let lhs, let rhs),
+                .modulo(let lhs, let rhs), .concatenate(let lhs, let rhs), .equal(let lhs, let rhs),
                 .notEqual(let lhs, let rhs), .lessThan(let lhs, let rhs),
                 .lessThanOrEqual(let lhs, let rhs),
                 .greaterThan(let lhs, let rhs),
@@ -289,11 +289,15 @@ extension Expression {
                 && rhs.referencesOnlySourceQualifier(sourceQualifier)
         case .negate(let operand), .not(let operand),
                 .isNull(let operand), .isNotNull(let operand), .truthTest(let operand, _, _),
-                .like(let operand, _), .regex(let operand, _, _),
+                .regex(let operand, _, _),
                 .cast(let operand, _), .isTriple(let operand),
                 .subject(let operand), .predicate(let operand),
                 .object(let operand):
             return operand.referencesOnlySourceQualifier(sourceQualifier)
+        case .patternMatch(let subject, let pattern, let escape, _):
+            return subject.referencesOnlySourceQualifier(sourceQualifier)
+                && pattern.referencesOnlySourceQualifier(sourceQualifier)
+                && (escape?.referencesOnlySourceQualifier(sourceQualifier) ?? true)
         case .between(let operand, let lower, let upper):
             return operand.referencesOnlySourceQualifier(sourceQualifier)
                 && lower.referencesOnlySourceQualifier(sourceQualifier)
