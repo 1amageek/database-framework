@@ -154,7 +154,8 @@ enum SQLConstantSyntax {
             case .jsonb:
                 let json = try QueryJSONValue(bytes: ByteString(utf8: text), limits: valueLimits(limits))
                 value = .jsonb(try QueryJSONBValue(json: json, limits: valueLimits(limits)))
-            case .interval:
+            case .interval(let fields, let precision):
+                guard fields == nil, precision == nil else { return nil }
                 guard let interval = try interval(text) else { return nil }
                 value = .interval(interval)
             case .array(let element):

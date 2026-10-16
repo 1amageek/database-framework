@@ -260,3 +260,62 @@ General SELECT/FROM VALUES expression grammar remains S08-owned. Existing
 canonical IR VALUES cells are Literal values; S05 CHAR/VARCHAR CAST padding and
 truncation stay runtime policy rather than a duplicated constant-folding
 algorithm in Parser or a new lower-layer constructor.
+
+
+### S06 temporal syntax and provenance
+
+Consume the Kit temporal declaration contract in
+[Query](../../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md) and its
+[SQL profile](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md).
+Parser owns syntax and source capture, not date/time interpretation, clock
+sampling, zone resolution, interval adjustment or precision rounding.
+
+| SQL grammar | Canonical semantic result |
+|---|---|
+| CURRENT_DATE | currentValue(kind: .date, precision: nil) |
+| CURRENT_TIME[(p)], CURRENT_TIMESTAMP[(p)] | currentValue with .time or .timestamp and optional constant precision |
+| LOCALTIME[(p)], LOCALTIMESTAMP[(p)] | currentValue with .localTime or .localTimestamp and optional constant precision |
+| EXTRACT(field FROM source) | ordinary extract(typed SQL text field, source) |
+| source AT TIME ZONE zone | ordinary timezone(zone, source) |
+| DATE/TIME/TIMESTAMP typed input | existing lexical CAST with exact target descriptor |
+| INTERVAL[(p)] string, INTERVAL string fields[(p)] | existing lexical CAST with interval fields/precision metadata |
+
+CURRENT_DATE forbids parentheses/precision; the other current-value forms accept
+only a literal integer precision in the intrinsic Kit range. These expressions
+have no expression children. Quoted ordinary calls retain FunctionCall identity
+and are never converted into currentValue. EXTRACT preserves its actual numeric
+catalog identity rather than lowering to double-returning date_part.
+
+AT TIME ZONE is left-associative, above multiplicative arithmetic and below unary
+signs/postfix casts, following REL_18_6 gram.y precedence. Its two argument
+occurrences are reordered into semantic zone/source order while retaining both
+original token ranges. No exponentiation or unrelated operator grammar is added.
+The interval grammar follows REL_18_6 SimpleTypename and AexprConst: full-range
+precision appears immediately after INTERVAL; restricted-field precision follows
+its terminal SECOND. Duplicate precision, illegal field ranges and modifiers
+outside intrinsic admission are positioned ParseError failures. Field qualifiers
+after a literal extend the type annotation through the qualifier; the literal
+keeps its separate original child range. Modified non-NULL interval constants
+remain CAST expressions so runtime adjustment is not duplicated by constant
+normalization. Bare typed NULL may normalize only after target admission.
+
+MAKE_INTERVAL named syntax is admitted for the exact lowercase builtin name,
+unqualified or pg_catalog-qualified, including equivalent quoted lowercase
+identifiers under the existing exact resolver. Its seven canonical slots are
+years, months, weeks, days, hours, mins, secs. Supplied expressions retain their
+original ranges and are reordered into those slots; omitted slots become typed
+SQL integer zero, except secs which becomes typed SQL double zero. Synthetic
+default ranges identify the function token that introduces them. Duplicate or
+unknown names, positional arguments after named arguments and excessive slots
+fail before construction. The => and := spellings normalize identically. Ordinary
+positional calls remain ordinary calls; binding owns their trailing defaults.
+Unrelated named function syntax is explicitly unsupported, without a new generic
+named-argument semantic algebra.
+
+S06-SYN01 covers current-value kind/precision identity and quoted-name separation;
+S06-SYN02 covers EXTRACT/DATE_PART type-preserving lowering;
+S06-SYN03 covers timezone precedence, chaining and reordered source positions;
+S06-SYN04 covers all interval qualifiers, precision, malformed syntax and NULL;
+S06-SYN05 covers MAKE_INTERVAL named/default argument order and source positions;
+S06-SYN06 covers lexical temporal casts and canonical repeated round trips.
+These are completion obligations, not runtime evidence.

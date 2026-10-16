@@ -202,6 +202,14 @@ struct DirectoryLayerTagMapTests {
             )
         ) { try DirectoryLayerTagMap(entities: [shadowing], polymorphicGroups: []) }
 
+        for component in ["qdi-n", "qdi-p", "qdti-n", "qtsi-p", "qtime-0", "qtime-86400000000"] {
+            let temporal = try Self.entity("TemporalShadow", components: [.staticPath(component)])
+            #expect(throws: DirectoryLayerTagError.staticComponentInCanonicalImage(
+                declaration: .entity("TemporalShadow"), component: component)) {
+                try DirectoryLayerTagMap(entities: [temporal], polymorphicGroups: [])
+            }
+        }
+
         // A literal that merely contains a hyphen is not a canonical component,
         // because its leading token is not a canonical tag.
         let ordinary = try Self.entity(

@@ -374,10 +374,7 @@ public struct MigrationContext: Sendable {
             transaction: transaction
         )
         try container.clearSchemaIndexBuildPending(
-            scope: .entity(
-                name: targetEntity.name,
-                directoryComponents: targetEntity.directoryComponents
-            ),
+            scope: .entity(targetEntity),
             index: indexName,
             selection: .allGenerations,
             transaction: transaction
@@ -396,7 +393,7 @@ public struct MigrationContext: Sendable {
             layoutFingerprint: target.identity.layoutFingerprint
         )
         switch target.scope {
-        case .entity(let name, _):
+        case .entity(let name, _, _):
             guard let info = sourceStoreRegistry[name] else {
                 throw DatabaseRuntimeError.internalError(
                     "Store info for entity '\(name)' not found in source registry"

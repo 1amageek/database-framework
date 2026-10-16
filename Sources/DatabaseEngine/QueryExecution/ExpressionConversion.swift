@@ -355,7 +355,7 @@ extension Expression {
             return subject.referencesOnlySourceQualifier(sourceQualifier)
                 && predicate.referencesOnlySourceQualifier(sourceQualifier)
                 && object.referencesOnlySourceQualifier(sourceQualifier)
-        case .literal, .variable, .parameter, .bound:
+        case .literal, .currentValue, .variable, .parameter, .bound:
             return true
         }
     }

@@ -42,6 +42,7 @@ enum SQLConstantError: Error, Sendable, Equatable, CustomStringConvertible {
             case .invalidPersistenceDescriptor: return "Invalid query persistence descriptor"
             case .invalidPersistencePayload(let reason): return "Invalid query persistence payload: " + reason
             case .intervalOutOfRange: return "Query interval is out of range"
+            case .timeOutOfRange: return "Query time is out of range"
             case .unknownRetainedByteCount: return "Query value retained byte count is unknown"
             case .resourceLimit(let resource, let actual, let maximum): return "Query " + resource + " limit exceeded: \(actual) > \(maximum)"
             case .arithmeticOverflow: return "Query value resource arithmetic overflow"

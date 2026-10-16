@@ -20,6 +20,7 @@ extension DatabaseContext {
         options: ReadExecutionOptions = .default,
         structuralLimits: QueryStructuralLimits = .default
     ) async throws -> QueryResponse {
+        let temporalEnvironment = makeSQLTemporalEnvironment()
         let workMeter = DatabaseWorkMeter(
             budget: options.budget,
             monotonicClock: container.monotonicClock
@@ -41,18 +42,21 @@ extension DatabaseContext {
             options: options,
             monotonicClock: container.monotonicClock,
             workMeter: workMeter,
-            queryStructuralLimits: structuralLimits
+            queryStructuralLimits: structuralLimits,
+            temporalEnvironment: temporalEnvironment
         )
         let response: QueryResponse
         do {
-            response = try await executeSQLSelect(
-                selectQuery,
-                parameters: parameters,
-                execution: execution,
-                workMeter: workMeter,
-                occurrences: parsed.occurrences,
-                occurrence: parsed.root
-            )
+            response = try await withSQLTemporalStatement(environment: temporalEnvironment) {
+                try await executeSQLSelect(
+                    selectQuery,
+                    parameters: parameters,
+                    execution: execution,
+                    workMeter: workMeter,
+                    occurrences: parsed.occurrences,
+                    occurrence: parsed.root
+                )
+            }
         } catch let failure as CanonicalSQLBindingFailure {
             throw SQLBindingSourceFailure(failure, sourceMap: parsed.sourceMap)
         } catch CanonicalReadError.expressionEvaluation(let cause, let occurrence) {

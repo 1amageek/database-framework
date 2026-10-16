@@ -6,6 +6,7 @@ enum CanonicalSQLStringEvaluator {
     static func evaluate(
         _ bound: CanonicalBoundExpression,
         operands: [QueryValue],
+        temporalEnvironment: SQLTemporalEnvironment? = nil,
         workMeter: DatabaseWorkMeter
     ) throws -> DatabaseQueryScopedFieldValue {
         guard operands.count == bound.children.count else { throw mismatch("selected text signature") }
@@ -25,7 +26,8 @@ enum CanonicalSQLStringEvaluator {
         func text<Result>(_ index: Int, padding: Bool = false,
                           _ body: (borrowing Substring) throws -> Result) throws -> Result {
             try CanonicalSQLScalarText.withText(of: operands[index], type: bound.children[index].type,
-                preservingCharacterPadding: padding, workMeter: workMeter, body)
+                preservingCharacterPadding: padding, temporalEnvironment: temporalEnvironment,
+                workMeter: workMeter, body)
         }
         func integer(_ index: Int) throws -> Int64 {
             guard case .primitive(.int32(let value)) = operands[index] else { throw mismatch(name) }
@@ -298,19 +300,7 @@ enum CanonicalSQLStringEvaluator {
         guard valid, bound.type == .sql(integerResult ? .integer : .text) else { throw mismatch(name) }
         if name == "concat" || name == "concat_ws" {
             for index in (name == "concat_ws" ? 1 : 0)..<types.count {
-                let admitted: Bool
-                switch types[index].type {
-                case .sql(.boolean), .sql(.smallint), .sql(.integer), .sql(.bigint), .sql(.real),
-                     .sql(.doublePrecision), .sql(.decimal), .sql(.text), .sql(.char), .sql(.varchar),
-                     .sql(.uuid), .sql(.binary), .sql(.varbinary), .sql(.blob): admitted = true
-                case .primitive(let kind, false):
-                    switch kind {
-                    case .bool, .int8, .int16, .int32, .int64, .uint8, .uint16, .uint32, .uint64,
-                         .float32, .float64, .decimal, .string, .uuid, .bytes: admitted = true
-                    default: admitted = false
-                    }
-                default: admitted = false
-                }
+                let admitted = CanonicalSQLScalarCast.supportsTextOutput(types[index].type)
                 guard admitted else {
                     throw DatabaseExpressionEvaluationError.unsupportedExpression("CONCAT argument output type")
                 }

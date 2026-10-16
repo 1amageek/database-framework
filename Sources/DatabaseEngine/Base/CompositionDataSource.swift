@@ -1,5 +1,6 @@
 #if DATABASE_MULTI_BASE
 import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 private actor CompositionRowResultCollector {
@@ -69,7 +70,8 @@ public struct CompositionDataSource: Sendable {
     ) async throws -> CompositionQueryResponse {
         let execution = ReadExecutionContext(
             options: options,
-            monotonicClock: container.monotonicClock
+            monotonicClock: container.monotonicClock,
+            temporalEnvironment: makeSQLTemporalEnvironment()
         )
         let collector = CompositionRowResultCollector()
         try await CompositionQueryPlanner(
@@ -89,6 +91,23 @@ public struct CompositionDataSource: Sendable {
             return true
         }
         return try await collector.result()
+    }
+
+    package func makeSQLTemporalEnvironment() -> SQLTemporalEnvironment {
+        let statementInstant = container.wallClock.now
+        let transactionInstant: DatabaseTypes.Timestamp
+        if let binding = ActiveDatabaseTransactionContext.binding,
+           binding.container === container {
+            transactionInstant = binding.transactionInstant
+        } else {
+            transactionInstant = statementInstant
+        }
+        return SQLTemporalEnvironment(
+            transactionInstant: transactionInstant,
+            statementInstant: statementInstant,
+            wallClock: container.wallClock,
+            configuration: container.configuration.sqlTemporal
+        )
     }
 
     /// Acquires the immutable Composition definition and every member Base
@@ -192,16 +211,19 @@ public struct CompositionDataSource: Sendable {
     /// alive until the federated operation finishes. Every member Grant is
     /// checked before `operation` can observe data.
     package func withReadSnapshot<Result: Sendable>(
+        temporalEnvironment: SQLTemporalEnvironment? = nil,
         _ operation: @escaping @Sendable (
             DatabaseCompositionReadSnapshot
         ) async throws -> Result
     ) async throws -> Result {
-        try await container.withOperationSchemaLease { _ in
-            try await withBoundSchemaReadSnapshot(operation)
+        let environment = temporalEnvironment ?? makeSQLTemporalEnvironment()
+        return try await container.withOperationSchemaLease { _ in
+            try await withBoundSchemaReadSnapshot(temporalEnvironment: environment, operation)
         }
     }
 
     private func withBoundSchemaReadSnapshot<Result: Sendable>(
+        temporalEnvironment: SQLTemporalEnvironment,
         _ operation: @escaping @Sendable (
             DatabaseCompositionReadSnapshot
         ) async throws -> Result
@@ -292,7 +314,8 @@ public struct CompositionDataSource: Sendable {
                             .admittedReadAccess($0)
                     )
                 },
-                readPoints: readPoints
+                readPoints: readPoints,
+                temporalEnvironment: temporalEnvironment
             )
             let result: Result
             do {
@@ -373,6 +396,7 @@ public struct CompositionDataSource: Sendable {
             let executionBinding = try DatabaseTransactionExecutionBinding(
                 context: context,
                 transaction: access.transaction.storageAccess,
+                transactionInstant: snapshot.temporalEnvironment.transactionInstant,
                 grantedAccess: .read,
                 databaseTransaction: nil
             )
@@ -382,11 +406,15 @@ public struct CompositionDataSource: Sendable {
                 try await ActiveDatabaseTransactionContext.$binding.withValue(
                     executionBinding
                 ) {
-                    let result = try await DatabaseReadSession.withSession(
-                        context: context,
-                        workMeter: workMeter,
-                        operation
-                    )
+                    let result = try await context.withSQLTemporalStatement(
+                        environment: snapshot.temporalEnvironment
+                    ) {
+                        try await DatabaseReadSession.withSession(
+                            context: context,
+                            workMeter: workMeter,
+                            operation
+                        )
+                    }
                     return DatabaseReadResultBox(consume result)
                 }
             }

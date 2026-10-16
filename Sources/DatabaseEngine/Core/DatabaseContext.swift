@@ -1753,12 +1753,14 @@ extension DatabaseContext {
                 let databaseTransaction = DatabaseTransaction(
                     storageAccess: admittedStorageAccess,
                     container: self.container,
-                    readPolicy: try self.readPolicy()
+                    readPolicy: try self.readPolicy(),
+                    transactionInstant: binding.transactionInstant
                 )
                 #if DATABASE_MULTI_BASE
                 let nestedBinding = try DatabaseTransactionExecutionBinding(
                     context: self,
                     transaction: admittedStorageAccess,
+                    transactionInstant: binding.transactionInstant,
                     grantedAccess: requiredAccess,
                     databaseTransaction: databaseTransaction
                 )
@@ -1766,6 +1768,7 @@ extension DatabaseContext {
                 let nestedBinding = try DatabaseTransactionExecutionBinding(
                     context: self,
                     transaction: admittedStorageAccess,
+                    transactionInstant: binding.transactionInstant,
                     databaseTransaction: databaseTransaction
                 )
                 #endif
@@ -1791,6 +1794,8 @@ extension DatabaseContext {
             let selectedTransactionExecutor = self.container.transactionExecutor
             let partitionAuthority = self.container.defaultPartitionAuthority
             #endif
+            let transactionInstant = self.inheritedSQLTemporalEnvironment?.transactionInstant
+                ?? self.container.wallClock.now
             let runner = TransactionRunner(
                 transactionExecutor: selectedTransactionExecutor,
                 clock: self.container.monotonicClock,
@@ -1820,12 +1825,14 @@ extension DatabaseContext {
                 let transaction = DatabaseTransaction(
                     storageAccess: admittedStorageAccess,
                     container: self.container,
-                    readPolicy: try self.readPolicy()
+                    readPolicy: try self.readPolicy(),
+                    transactionInstant: transactionInstant
                 )
                 #if DATABASE_MULTI_BASE
                 let executionBinding = try DatabaseTransactionExecutionBinding(
                     context: self,
                     transaction: admittedStorageAccess,
+                    transactionInstant: transactionInstant,
                     grantedAccess: grantedAccess,
                     databaseTransaction: transaction
                 )
@@ -1833,6 +1840,7 @@ extension DatabaseContext {
                 let executionBinding = try DatabaseTransactionExecutionBinding(
                     context: self,
                     transaction: admittedStorageAccess,
+                    transactionInstant: transactionInstant,
                     databaseTransaction: transaction
                 )
                 #endif
@@ -1974,6 +1982,8 @@ extension DatabaseContext {
             #else
             let partitionAuthority = self.container.defaultPartitionAuthority
             #endif
+            let transactionInstant = self.inheritedSQLTemporalEnvironment?.transactionInstant
+                ?? self.container.wallClock.now
             let runner = TransactionRunner(
                 transactionExecutor: selectedTransactionExecutor,
                 clock: self.container.monotonicClock,
@@ -2012,6 +2022,7 @@ extension DatabaseContext {
                 let executionBinding = try DatabaseTransactionExecutionBinding(
                     context: self,
                     transaction: admittedTransaction,
+                    transactionInstant: transactionInstant,
                     grantedAccess: grantedAccess,
                     databaseTransaction: nil
                 )
@@ -2019,6 +2030,7 @@ extension DatabaseContext {
                 let executionBinding = try DatabaseTransactionExecutionBinding(
                     context: self,
                     transaction: admittedTransaction,
+                    transactionInstant: transactionInstant,
                     databaseTransaction: nil
                 )
                 #endif

@@ -146,3 +146,14 @@ pattern/concatenation declarations and canonical string-function calls. They
 preserve exact generic names, explicit escape meaning and semantic child source
 positions. Row-function execution remains S10-owned and fails explicitly at the
 unsupported FROM entry rather than producing a scalar substitute.
+
+
+### S06 temporal adaptation
+
+[Parser](Parser/DESIGN.md#s06-temporal-syntax-and-provenance) owns temporal special
+grammar and its normalized source occurrences;
+[Builder](Builder/DESIGN.md#s06-temporal-emission) owns bounded exact emission.
+They compose the Kit-owned current-value, temporal value and interval descriptor
+contracts without interpreting clocks, zones, calendar arithmetic or typmods.
+S06-SYN01...06 are the local syntax/identity obligations; Database public SQL and
+QueryExecution own executable temporal acceptance.

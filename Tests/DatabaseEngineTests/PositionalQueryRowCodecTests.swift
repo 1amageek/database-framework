@@ -203,6 +203,49 @@ struct PositionalQueryRowCodecTests {
         ]
         #expect(try fingerprint != CanonicalRowFingerprint.compute(row, columns: renamed, workMeter: meter))
         #expect(try fingerprint == CanonicalRowFingerprint.compute(row, columns: columns, workMeter: meter))
+
+        // Physical fingerprints preserve carrier identity independently of SQL equality.
+        let zero = try QueryTimeValue(microsecondsSinceMidnight: 0)
+        let one = try QueryTimeValue(microsecondsSinceMidnight: 1)
+        let endpoint = try QueryTimeValue(microsecondsSinceMidnight: 86_400_000_000)
+        let temporal: [(DataType, [QueryValue])] = [
+            (.time(withTimeZone: false), [.primitive(.time(try CivilTime(hour: 0, minute: 0, second: 0))), .time(zero), .time(one), .time(endpoint)]),
+            (.time(withTimeZone: true), [.timeWithTimeZone(.init(time: zero, utcOffsetSeconds: .min)),
+                .timeWithTimeZone(.init(time: zero, utcOffsetSeconds: .max)), .timeWithTimeZone(.init(time: one, utcOffsetSeconds: .min))]),
+            (.date, [.dateInfinity(.negative), .dateInfinity(.positive)]),
+            (.timestamp(withTimeZone: false), [.timestampInfinity(.negative, withTimeZone: false), .timestampInfinity(.positive, withTimeZone: false)]),
+            (.timestamp(withTimeZone: true), [.timestampInfinity(.negative, withTimeZone: true), .timestampInfinity(.positive, withTimeZone: true)]),
+            (.interval(), [.intervalInfinity(.negative), .intervalInfinity(.positive)]),
+        ]
+        func digest(_ value: QueryValue, _ type: DataType) throws -> ByteString {
+            let column = try QueryColumn(number: 1, name: "temporal", type: .sql(type), isNullable: true)
+            return try CanonicalRowFingerprint.compute(QueryRow(values: [value], columns: [column]), columns: [column], workMeter: meter)
+        }
+        for (type, values) in temporal {
+            var scalars: Set<ByteString> = [], arrays: Set<ByteString> = []
+            for value in values {
+                let scalar = try digest(value, type)
+                #expect(try scalar == digest(value, type))
+                scalars.insert(scalar)
+                let array = try QueryArrayValue(elementType: type, dimensions: [QueryArrayDimension(lowerBound: -1, length: 2)],
+                    elements: [value, .primitive(.null)], limits: QueryValueLimits(maximumRetainedBytes: 4096,
+                        maximumTotalNodes: 16, maximumNestingDepth: 8, maximumCollectionElements: 8))
+                arrays.insert(try digest(.array(array), .array(type)))
+            }
+            #expect(scalars.count == values.count)
+            #expect(arrays.count == values.count)
+        }
+        var descriptorFingerprints: Set<ByteString> = []
+        let types = [DataType.interval()] + SQLIntervalFields.allCases.map { .interval(fields: $0) }
+            + [.interval(precision: 0), .interval(precision: 6), .interval(fields: .dayToSecond, precision: 0), .interval(fields: .dayToSecond, precision: 6)]
+        for type in types {
+            descriptorFingerprints.insert(try digest(.primitive(.null), type))
+            let empty = try QueryArrayValue(elementType: type, dimensions: [], elements: [],
+                limits: QueryValueLimits(maximumRetainedBytes: 4096, maximumTotalNodes: 16,
+                    maximumNestingDepth: 8, maximumCollectionElements: 8))
+            descriptorFingerprints.insert(try digest(.array(empty), .array(type)))
+        }
+        #expect(descriptorFingerprints.count == types.count * 2)
     }
 
     @Test("Named RDF binding fingerprint retains its previous canonical bytes")

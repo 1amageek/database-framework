@@ -1046,7 +1046,7 @@ private func preadmitExpressionPayload(
     }
 
     switch expression {
-    case .literal, .column, .variable, .parameter, .bound,
+    case .currentValue, .literal, .column, .variable, .parameter, .bound,
             .aggregate, .subquery, .exists:
         break
     case .concatenate(let lhs, let rhs), .add(let lhs, let rhs),
@@ -1309,8 +1309,8 @@ private struct CanonicalRelation: Sendable {
 }
 
 private struct CanonicalGroupKey: Sendable {
-    let values: [FieldValue]
-    let identity: [FieldValue]
+    let values: [QueryValue]
+    let identity: [CanonicalSQLValueIdentity]
 }
 
 private struct CanonicalGroupedRow: Sendable {
@@ -1320,7 +1320,7 @@ private struct CanonicalGroupedRow: Sendable {
 }
 
 private struct CanonicalRowValueIdentity: Sendable, Hashable {
-    let values: [QueryValue]
+    let values: [CanonicalSQLValueIdentity]
     let reservation: DatabaseIntermediateReservation
 
     static func == (lhs: Self, rhs: Self) -> Bool { lhs.values == rhs.values }
@@ -1404,7 +1404,7 @@ private func canonicalExpressionContainsAggregate(
         return canonicalExpressionContainsAggregate(subject)
             || canonicalExpressionContainsAggregate(predicate)
             || canonicalExpressionContainsAggregate(object)
-    case .literal, .column, .variable, .parameter, .bound, .subquery,
+    case .currentValue, .literal, .column, .variable, .parameter, .bound, .subquery,
             .exists:
         return false
     }
@@ -1528,7 +1528,8 @@ extension DatabaseContext {
     ) async throws -> QueryResponse {
         let execution = ReadExecutionContext(
             options: options,
-            monotonicClock: container.monotonicClock
+            monotonicClock: container.monotonicClock,
+            temporalEnvironment: inheritedSQLTemporalEnvironment ?? makeSQLTemporalEnvironment()
         )
         let response = try await query(
             selectQuery,
@@ -1571,6 +1572,9 @@ extension DatabaseContext {
         occurrences: QueryOccurrenceArena? = nil,
         occurrence: QueryOccurrenceID? = nil
     ) async throws -> CanonicalReadyQueryResponse {
+        let temporalEnvironment = execution.temporalEnvironment ?? inheritedSQLTemporalEnvironment ?? makeSQLTemporalEnvironment()
+        let execution = execution.withTemporalEnvironment(temporalEnvironment)
+        return try await withSQLTemporalStatement(environment: temporalEnvironment) {
         do {
             return try await queryRetainedUnmapped(
                 selectQuery,
@@ -1579,6 +1583,7 @@ extension DatabaseContext {
             )
         } catch {
             throw sanitizedFusionExecutionError(error)
+        }
         }
     }
 
@@ -1867,6 +1872,9 @@ extension DatabaseContext {
         occurrences: QueryOccurrenceArena? = nil,
         occurrence: QueryOccurrenceID? = nil
     ) async throws -> QueryResponse {
+        let temporalEnvironment = execution.temporalEnvironment ?? session.temporalEnvironment
+        let execution = execution.withTemporalEnvironment(temporalEnvironment)
+        return try await withSQLTemporalStatement(environment: temporalEnvironment) {
         do {
             let collecting = try await querySessionBoundRetainedUnmapped(
                 selectQuery,
@@ -1884,6 +1892,7 @@ extension DatabaseContext {
         } catch {
             throw sanitizedFusionExecutionError(error)
         }
+        }
     }
 
     package func retainedSessionBoundPage(
@@ -1895,6 +1904,9 @@ extension DatabaseContext {
         occurrences: QueryOccurrenceArena? = nil,
         occurrence: QueryOccurrenceID? = nil
     ) async throws -> DatabaseRetainedQueryPage {
+        let temporalEnvironment = execution.temporalEnvironment ?? session.temporalEnvironment
+        let execution = execution.withTemporalEnvironment(temporalEnvironment)
+        return try await withSQLTemporalStatement(environment: temporalEnvironment) {
         do {
             let collecting = try await querySessionBoundRetainedUnmapped(
                 selectQuery,
@@ -1916,6 +1928,7 @@ extension DatabaseContext {
             )
         } catch {
             throw sanitizedFusionExecutionError(error)
+        }
         }
     }
 
@@ -2114,7 +2127,7 @@ extension DatabaseContext {
                         among: visibleCandidates
                     )
                 )
-            case .literal, .column, .variable, .parameter, .bound:
+            case .currentValue, .literal, .column, .variable, .parameter, .bound:
                 break
             }
         }
@@ -2458,7 +2471,7 @@ extension DatabaseContext {
             // Aggregate arguments are evaluated against each source row, not
             // against the grouped representative.
             return
-        case .literal, .column, .variable, .parameter, .bound:
+        case .currentValue, .literal, .column, .variable, .parameter, .bound:
             return
         }
     }
@@ -2611,7 +2624,7 @@ extension DatabaseContext {
                 outerRow: outerRow,
                 namedSubqueries: namedSubqueries, queryBinding: queryBinding
             )
-        case .literal, .variable, .parameter, .bound:
+        case .currentValue, .literal, .variable, .parameter, .bound:
             break
         }
     }
@@ -3803,7 +3816,8 @@ extension DatabaseContext {
             options: options.options.withoutExternalPageWindow(),
             monotonicClock: container.monotonicClock,
             workMeter: options.workMeter,
-            queryStructuralLimits: options.queryStructuralLimits
+            queryStructuralLimits: options.queryStructuralLimits,
+            temporalEnvironment: options.temporalEnvironment
         )
     }
 
@@ -4743,7 +4757,7 @@ extension DatabaseContext {
     }
 
     private struct CanonicalJoinKey: Hashable {
-        let values: [FieldValue]
+        let values: [CanonicalSQLValueIdentity]
         let reservation: DatabaseIntermediateReservation
         static func == (left: Self, right: Self) -> Bool { left.values == right.values }
         func hash(into hasher: inout Hasher) { hasher.combine(values) }
@@ -4772,8 +4786,25 @@ extension DatabaseContext {
             return nil
         }
 
+        if let left = leftRows.first, let right = rightRows.first {
+            func declaration(_ source: CanonicalJoinKeySource, row: CanonicalSourceRow) -> QueryColumnType? {
+                let column: ColumnRef
+                switch source {
+                case .column(let reference): column = reference
+                case .unqualified(let name): column = ColumnRef(name)
+                }
+                return row.layout.matching(column).first.flatMap { row.layout.types[$0] }
+            }
+            for (leftSource, rightSource) in zip(plan.left, plan.right) {
+                let leftType = declaration(leftSource, row: left), rightType = declaration(rightSource, row: right)
+                if CanonicalSQLValueSemantics.isTemporal(leftType) || CanonicalSQLValueSemantics.isTemporal(rightType) {
+                    guard leftType.flatMap(CanonicalQueryTypeBinder.temporalType) == rightType.flatMap(CanonicalQueryTypeBinder.temporalType) else { return nil }
+                }
+            }
+        }
+
         let keySlotBytes = try DatabaseIntermediateFootprint(
-            bytes: UInt64(max(1, MemoryLayout<FieldValue?>.stride + 16))
+            bytes: UInt64(max(1, MemoryLayout<CanonicalSQLValueIdentity?>.stride + 16))
         ).multiplied(by: UInt64(plan.left.count)).bytes
         let hashEntryBytes = try DatabaseIntermediateFootprint(
             bytes: UInt64(
@@ -4979,9 +5010,9 @@ extension DatabaseContext {
     private func canonicalJoinKey(
         sources: [CanonicalJoinKeySource], row: CanonicalSourceRow, workMeter: DatabaseWorkMeter
     ) throws -> CanonicalJoinKey? {
-        let footprint = try DatabaseIntermediateCollectionMeter.arrayFootprint(count: sources.count, element: FieldValue.self)
+        let footprint = try DatabaseIntermediateCollectionMeter.arrayFootprint(count: sources.count, element: CanonicalSQLValueIdentity.self)
         let reservation = try workMeter.reserveIntermediate(bytes: footprint.bytes, at: .joinCandidate)
-        var values: [FieldValue] = []
+        var values: [CanonicalSQLValueIdentity] = []
         values.reserveCapacity(sources.count)
         for source in sources {
             let column: ColumnRef
@@ -4990,11 +5021,12 @@ extension DatabaseContext {
             case .unqualified(let name): column = ColumnRef(name)
             }
             let indices = row.layout.matching(column)
-            guard let slot = indices.first, case .primitive(let value) = row.values[slot], value != .null else { return nil }
+            guard let slot = indices.first, !row.values[slot].isNull else { return nil }
+            let value = row.values[slot]
             let payload = try CanonicalRelationalFootprintMeter.valueFootprint(of: value,
                 workMeter: workMeter, stage: .joinCandidate)
             try reservation.reserveAdditional(bytes: payload.bytes, at: .joinCandidate)
-            values.append(try canonicalValueIdentity(value, operation: "hash JOIN", type: row.layout.types[slot], workMeter: workMeter))
+            values.append(try canonicalQueryValueIdentity(value, operation: "hash JOIN", type: row.layout.types[slot], workMeter: workMeter))
         }
         return CanonicalJoinKey(values: values, reservation: reservation)
     }
@@ -5021,7 +5053,7 @@ extension DatabaseContext {
                 let leftType = left.layout.types[leftSlot] ?? .primitive(.string)
                 let rightType = right.layout.types[rightSlot] ?? .primitive(.string)
                 if try Self.selectedComparison(left.values[leftSlot], right.values[rightSlot], comparison: .equal,
-                    leftType: leftType, rightType: rightType, workMeter: workMeter) != true { return false }
+                    leftType: leftType, rightType: rightType, temporalEnvironment: evaluationContext?.options.temporalEnvironment ?? inheritedSQLTemporalEnvironment, workMeter: workMeter) != true { return false }
             }
             return true
         case .on(let expression):
@@ -5470,7 +5502,7 @@ extension DatabaseContext {
             count: row.layout.visibleSlots.count,
             valueAt: { row.values[row.layout.visibleSlots[$0]] },
             annotations: [:], version: nil, workMeter: workMeter, stage: .deduplication
-        )
+        ).adding(identityArrayAdditionalFootprint(count: row.layout.visibleSlots.count))
         let reservation = try workMeter.reserveIntermediate(bytes: footprint.bytes, at: .deduplication)
         return try CanonicalRowValueIdentity(
             values: canonicalIdentityValues(row, operation: operation, workMeter: workMeter),
@@ -5478,11 +5510,17 @@ extension DatabaseContext {
         )
     }
 
+    private func identityArrayAdditionalFootprint(count: Int) throws -> DatabaseIntermediateFootprint {
+        let selected = try DatabaseIntermediateCollectionMeter.arrayFootprint(count: count, element: CanonicalSQLValueIdentity.self)
+        let source = try DatabaseIntermediateCollectionMeter.arrayFootprint(count: count, element: QueryValue.self)
+        return DatabaseIntermediateFootprint(bytes: selected.bytes > source.bytes ? selected.bytes - source.bytes : 0)
+    }
+
     private func canonicalIdentityValues(
         _ row: CanonicalSourceRow,
         operation: String, workMeter: DatabaseWorkMeter
-    ) throws -> [QueryValue] {
-        var values: [QueryValue] = []
+    ) throws -> [CanonicalSQLValueIdentity] {
+        var values: [CanonicalSQLValueIdentity] = []
         values.reserveCapacity(row.layout.visibleSlots.count)
         for slot in row.layout.visibleSlots {
             let value = row.values[slot]
@@ -5513,15 +5551,15 @@ extension DatabaseContext {
         }
     }
 
-    private func canonicalQueryValueIdentity(_ value: QueryValue, operation: String, type: QueryColumnType? = nil, workMeter: DatabaseWorkMeter) throws -> QueryValue {
+    private func canonicalQueryValueIdentity(_ value: QueryValue, operation: String, type: QueryColumnType? = nil, workMeter: DatabaseWorkMeter) throws -> CanonicalSQLValueIdentity {
+        if let identity = try CanonicalSQLValueSemantics.temporalIdentity(value, type: type,
+            environment: inheritedSQLTemporalEnvironment, workMeter: workMeter) { return .temporal(identity) }
         switch value {
         case .primitive(let primitive):
-            return .primitive(try canonicalValueIdentity(primitive, operation: operation, type: type, workMeter: workMeter))
+            return .value(.primitive(try canonicalValueIdentity(primitive, operation: operation, type: type, workMeter: workMeter)))
         case .numeric(let numeric):
-            return .primitive(try canonicalValueIdentity(.decimal(numeric.value), operation: operation, type: type, workMeter: workMeter))
-        default:
-            // Other rich SQL equality is owned by the later semantic comparator.
-            return value
+            return .value(.primitive(try canonicalValueIdentity(.decimal(numeric.value), operation: operation, type: type, workMeter: workMeter)))
+        default: return .value(value)
         }
     }
 
@@ -5577,14 +5615,14 @@ extension DatabaseContext {
                 count: rows.count,
                 element: (
                     CanonicalSourceRow,
-                    [DatabaseQueryScopedFieldValue],
+                    [ProjectedQueryValue],
                     ByteString
                 ).self
             )
         let nestedValuesFootprint = try DatabaseIntermediateCollectionMeter
             .arrayFootprint(
                 count: orderBy.count,
-                element: DatabaseQueryScopedFieldValue.self
+                element: ProjectedQueryValue.self
             )
             .multiplied(by: UInt64(rows.count))
         let decorationFootprint = try outerArrayFootprint
@@ -5606,16 +5644,16 @@ extension DatabaseContext {
         try workMeter.consume(UInt64(rows.count), at: .sortInput)
         var decorated: [(
             CanonicalSourceRow,
-            [DatabaseQueryScopedFieldValue],
+            [ProjectedQueryValue],
             ByteString
         )] = []
         decorated.reserveCapacity(rows.count)
         for row in rows {
-            var values: [DatabaseQueryScopedFieldValue] = []
+            var values: [ProjectedQueryValue] = []
             values.reserveCapacity(orderBy.count)
             for (index, _) in orderBy.enumerated() {
                 values.append(
-                    try await evaluateBoundScopedValue(
+                    try await evaluateBoundValue(
                         boundOrder[index],
                         on: row,
                         context: evaluationContext,
@@ -5631,22 +5669,16 @@ extension DatabaseContext {
         }
         let sorted: [(
             CanonicalSourceRow,
-            [DatabaseQueryScopedFieldValue],
+            [ProjectedQueryValue],
             ByteString
         )]
         do {
             sorted = try decorated.sorted { lhs, rhs in
                 for (index, sortKey) in orderBy.enumerated() {
                     try workMeter.consume(2, at: .sortComparison)
-                    var comparison = QueryComparison.equal
-                    try lhs.1[index].withValue { lhsValue in
-                        try rhs.1[index].withValue { rhsValue in
-                            try CanonicalSQLValueSemantics.chargeComparison(lhsValue, workMeter: workMeter, stage: .sortComparison)
-                            try CanonicalSQLValueSemantics.chargeComparison(rhsValue, workMeter: workMeter, stage: .sortComparison)
-                            comparison = try CanonicalSQLValueSemantics.compare(
-                                lhsValue, rhsValue, type: boundOrder[index].type, using: sortKey)
-                        }
-                    }
+                    let comparison = try Self.selectedOrdering(lhs.1[index].value, rhs.1[index].value,
+                        bound: boundOrder[index], using: sortKey,
+                        environment: evaluationContext?.options.temporalEnvironment ?? inheritedSQLTemporalEnvironment, workMeter: workMeter)
                     guard comparison != .equal else { continue }
                     return comparison == .lessThan
                 }
@@ -5682,7 +5714,8 @@ extension DatabaseContext {
     /// payload lease through its persistence boundary. Scalar/lazy semantics
     /// remain the same selected path used by SELECT.
     static func evaluateCanonicalScalar(
-        _ bound: CanonicalBoundExpression, on row: CanonicalSourceRow, workMeter: DatabaseWorkMeter
+        _ bound: CanonicalBoundExpression, on row: CanonicalSourceRow,
+        temporalEnvironment: SQLTemporalEnvironment? = nil, workMeter: DatabaseWorkMeter
     ) async throws -> (value: QueryValue, leases: [DatabaseQueryPayloadLease]) {
         guard row.layout.reservation.map({ $0.workMeter === workMeter }) ?? true,
               row.layout.payloadLeases.allSatisfy({ $0.workMeter === workMeter }),
@@ -5699,7 +5732,7 @@ extension DatabaseContext {
         guard !requiresRelation(bound) else {
             throw DatabaseExpressionEvaluationError.unsupportedExpression("scalar execution requires a context-free expression")
         }
-        let result = try await evaluateSelectedValue(bound, on: row, context: nil, databaseContext: nil, workMeter: workMeter)
+        let result = try await evaluateSelectedValue(bound, on: row, context: nil, databaseContext: nil, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
         return (result.value, result.leases)
     }
 
@@ -5763,8 +5796,10 @@ extension DatabaseContext {
         effectiveRow suppliedRow: CanonicalSourceRow? = nil,
         context: CanonicalQueryEvaluationContext?,
         databaseContext: DatabaseContext?,
+        temporalEnvironment suppliedTemporalEnvironment: SQLTemporalEnvironment? = nil,
         workMeter: DatabaseWorkMeter
     ) async throws -> ProjectedQueryValue {
+        let temporalEnvironment = suppliedTemporalEnvironment ?? context?.options.temporalEnvironment ?? databaseContext?.inheritedSQLTemporalEnvironment
         do {
         try workMeter.consume(at: .expressionEvaluation)
         let claim = try workMeter.reserveIntermediate(
@@ -5785,7 +5820,7 @@ extension DatabaseContext {
                 throw CanonicalReadError.unsupportedSelectQuery("An executable expression has no selected child")
             }
             return try await evaluateSelectedValue(bound.children[index], on: row, group: group,
-                effectiveRow: effectiveRow, context: context, databaseContext: databaseContext, workMeter: workMeter)
+                effectiveRow: effectiveRow, context: context, databaseContext: databaseContext, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
         }
         func normalized(_ cell: ProjectedQueryValue) throws -> ProjectedQueryValue {
             ProjectedQueryValue(value: try bound.normalize(cell.value), leases: cell.leases,
@@ -5816,7 +5851,7 @@ extension DatabaseContext {
             let right = try await child(1)
             let equal: Bool
             if left.value.isNull || right.value.isNull { equal = left.value.isNull && right.value.isNull }
-            else { equal = try selectedComparison(left.value, right.value, comparison: .equal, leftType: bound.children[0].type, rightType: bound.children[1].type, workMeter: workMeter) == true }
+            else { equal = try selectedComparison(left.value, right.value, comparison: .equal, leftType: bound.children[0].type, rightType: bound.children[1].type, temporalEnvironment: temporalEnvironment, workMeter: workMeter) == true }
             return ProjectedQueryValue(value: .primitive(.bool(negated ? equal : !equal)),
                 leases: [], payloadIsRetained: false)
         case .greatest, .least:
@@ -5828,7 +5863,7 @@ extension DatabaseContext {
                 guard !value.value.isNull else { continue }
                 if let current = selected {
                     if try selectedComparison(value.value, current.value,
-                        comparison: greatest ? .greaterThan : .lessThan, leftType: bound.type, rightType: bound.type, workMeter: workMeter) == true { selected = value }
+                        comparison: greatest ? .greaterThan : .lessThan, leftType: bound.type, rightType: bound.type, temporalEnvironment: temporalEnvironment, workMeter: workMeter) == true { selected = value }
                 } else { selected = value }
             }
             return try normalized(selected ?? ProjectedQueryValue(value: .primitive(.null),
@@ -5836,7 +5871,7 @@ extension DatabaseContext {
         case .nullIf:
             let left = try await child(0)
             let right = try await child(1)
-            if try selectedComparison(left.value, right.value, comparison: .equal, leftType: bound.children[0].type, rightType: bound.children[1].type, workMeter: workMeter) == true {
+            if try selectedComparison(left.value, right.value, comparison: .equal, leftType: bound.children[0].type, rightType: bound.children[1].type, temporalEnvironment: temporalEnvironment, workMeter: workMeter) == true {
                 return try normalized(ProjectedQueryValue(value: .primitive(.null), leases: [], payloadIsRetained: false))
             }
             return try normalized(left)
@@ -5846,9 +5881,9 @@ extension DatabaseContext {
             func examine(_ member: QueryValue, sourceType: QueryColumnType) throws -> Bool? {
                 try workMeter.consume(at: .expressionEvaluation)
                 let selected = try coerceSelectedComparisonValue(member, from: sourceType,
-                    to: bound.children[0].type, workMeter: workMeter)
+                    to: bound.children[0].type, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
                 defer { withExtendedLifetime(selected) {} }
-                guard let value = try selectedComparison(left.value, selected.value, comparison: comparison, leftType: bound.children[0].type, rightType: bound.children[0].type, workMeter: workMeter) else {
+                guard let value = try selectedComparison(left.value, selected.value, comparison: comparison, leftType: bound.children[0].type, rightType: bound.children[0].type, temporalEnvironment: temporalEnvironment, workMeter: workMeter) else {
                     sawNull = true
                     return nil
                 }
@@ -5913,11 +5948,11 @@ extension DatabaseContext {
                     do {
                         // Coerce the saved original value independently for this WHEN.
                         let left = try coerceSelectedComparisonValue(selectedOperand.value,
-                            from: bound.children[0].type, to: comparison.children[0].type, workMeter: workMeter)
+                            from: bound.children[0].type, to: comparison.children[0].type, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
                         defer { withExtendedLifetime(left) {} }
                         let right = try await evaluateSelectedValue(comparison.children[1], on: row, group: group,
-                            effectiveRow: effectiveRow, context: context, databaseContext: databaseContext, workMeter: workMeter)
-                        matches = try selectedComparison(left.value, right.value, comparison: .equal, leftType: comparison.children[0].type, rightType: comparison.children[1].type, workMeter: workMeter) == true
+                            effectiveRow: effectiveRow, context: context, databaseContext: databaseContext, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
+                        matches = try selectedComparison(left.value, right.value, comparison: .equal, leftType: comparison.children[0].type, rightType: comparison.children[1].type, temporalEnvironment: temporalEnvironment, workMeter: workMeter) == true
                     } catch let cause as DatabaseExpressionEvaluationError {
                         throw CanonicalReadError.expressionEvaluation(cause, occurrence: comparison.occurrence)
                     }
@@ -5945,7 +5980,7 @@ extension DatabaseContext {
             if case .or = bound.expression, left.value == .primitive(.bool(true)) { return try normalized(left) }
             let right = try await child(1)
             return try await evaluateBoundKernel(bound, children: [left, right], on: effectiveRow,
-                context: context, workMeter: workMeter)
+                context: context, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
         case .isNull, .isNotNull:
             let value = try await child(0)
             let result: Bool
@@ -5978,9 +6013,9 @@ extension DatabaseContext {
                     guard let member else { throw CanonicalReadError.invalidMembershipSubquery(columnCount: 0) }
                     if member.isNull || candidate.value.isNull { sawNull = true; continue }
                     let selectedMember = try coerceSelectedComparisonValue(member,
-                        from: plan.columns[0].type, to: bound.children[0].type, workMeter: workMeter)
+                        from: plan.columns[0].type, to: bound.children[0].type, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
                     defer { withExtendedLifetime(selectedMember) {} }
-                    if try selectedComparison(candidate.value, selectedMember.value, comparison: .equal, leftType: bound.children[0].type, rightType: bound.children[0].type, workMeter: workMeter) == true {
+                    if try selectedComparison(candidate.value, selectedMember.value, comparison: .equal, leftType: bound.children[0].type, rightType: bound.children[0].type, temporalEnvironment: temporalEnvironment, workMeter: workMeter) == true {
                         return ProjectedQueryValue(value: .primitive(.bool(true)), leases: [], payloadIsRetained: false)
                     }
                 }
@@ -6012,6 +6047,30 @@ extension DatabaseContext {
                 return try await databaseContext.evaluateNumericAggregate(aggregate, bound: bound, rows: group.rows,
                     workMeter: workMeter, evaluationContext: context)
             }
+            if case .count(_, let distinct) = aggregate, let input = bound.children.first,
+               CanonicalSQLValueSemantics.isTemporal(input.type) {
+                let scratch = try DatabaseIntermediateFootprint(bytes: UInt64(MemoryLayout<CanonicalSQLValueIdentity>.stride + 32))
+                    .multiplied(by: UInt64(distinct ? group.rows.count : 0))
+                let reservation = try workMeter.reserveIntermediate(bytes: scratch.bytes, at: .aggregateInput)
+                defer { reservation.release() }
+                var seen = Set<CanonicalSQLValueIdentity>()
+                if distinct { seen.reserveCapacity(group.rows.count) }
+                var count: Int64 = 0
+                for member in group.rows {
+                    let cell = try await evaluateSelectedValue(input, on: member, context: context,
+                        databaseContext: databaseContext, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
+                    guard !cell.value.isNull else { continue }
+                    if distinct {
+                        let key = try databaseContext.canonicalQueryValueIdentity(cell.value, operation: "COUNT(DISTINCT)",
+                            type: input.type, workMeter: workMeter)
+                        guard seen.insert(key).inserted else { continue }
+                    }
+                    let increment = count.addingReportingOverflow(1)
+                    guard !increment.overflow else { throw DatabaseExpressionEvaluationError.numericOverflow }
+                    count = increment.partialValue
+                }
+                return try normalized(ProjectedQueryValue(value: .primitive(.int64(count)), leases: [], payloadIsRetained: false))
+            }
             switch aggregate {
             case .min, .max, .sample:
                 guard case .sql = bound.type else { break }
@@ -6021,14 +6080,14 @@ extension DatabaseContext {
                 var selected: ProjectedQueryValue?
                 for row in group.rows {
                     try workMeter.consume(at: .aggregateInput)
-                    let cell = try await evaluateSelectedValue(input, on: row, context: context, databaseContext: databaseContext, workMeter: workMeter)
+                    let cell = try await evaluateSelectedValue(input, on: row, context: context, databaseContext: databaseContext, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
                     guard !cell.value.isNull else { continue }
                     if let current = selected {
                         switch aggregate {
                         case .min:
-                            if try selectedComparison(cell.value, current.value, comparison: .lessThan, leftType: input.type, rightType: input.type, workMeter: workMeter) == true { selected = cell }
+                            if try selectedComparison(cell.value, current.value, comparison: .lessThan, leftType: input.type, rightType: input.type, temporalEnvironment: temporalEnvironment, workMeter: workMeter) == true { selected = cell }
                         case .max:
-                            if try selectedComparison(cell.value, current.value, comparison: .greaterThan, leftType: input.type, rightType: input.type, workMeter: workMeter) == true { selected = cell }
+                            if try selectedComparison(cell.value, current.value, comparison: .greaterThan, leftType: input.type, rightType: input.type, temporalEnvironment: temporalEnvironment, workMeter: workMeter) == true { selected = cell }
                         default: break
                         }
                     } else { selected = cell }
@@ -6046,8 +6105,10 @@ extension DatabaseContext {
             var values: [ProjectedQueryValue] = []
             values.reserveCapacity(bound.children.count)
             for index in bound.children.indices { values.append(try await child(index)) }
-            return try await evaluateBoundKernel(bound, children: values, on: effectiveRow, context: context, workMeter: workMeter)
+            return try await evaluateBoundKernel(bound, children: values, on: effectiveRow, context: context, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
         }
+        } catch let cause as SQLTimeZoneError {
+            throw CanonicalReadError.expressionEvaluation(.timeZone(cause), occurrence: bound.occurrence)
         } catch let cause as DatabaseExpressionEvaluationError {
             throw CanonicalReadError.expressionEvaluation(cause, occurrence: bound.occurrence)
         } catch CanonicalReadError.expressionEvaluation(let cause, let occurrence) {
@@ -6077,6 +6138,7 @@ extension DatabaseContext {
     }
 
     private static func selectedScalarCastTarget(_ target: QueryColumnType) -> Bool {
+        if CanonicalQueryTypeBinder.temporalType(target) != nil { return true }
         if CanonicalSQLScalarCast.usesPayload(target) { return true }
         switch target {
         case .sql(let type): return type == .uuid || selectedNumericCastTarget(type)
@@ -6101,45 +6163,56 @@ extension DatabaseContext {
         }
     }
 
+    private static func selectedOrdering(_ left: QueryValue, _ right: QueryValue,
+        bound: CanonicalBoundExpression, using key: SortKey,
+        environment: SQLTemporalEnvironment?, workMeter: DatabaseWorkMeter) throws -> QueryComparison {
+        do {
+            return try CanonicalSQLValueSemantics.compareValues(left, right, type: bound.type,
+                using: key, environment: environment, workMeter: workMeter)
+        } catch let cause as SQLTimeZoneError {
+            throw CanonicalReadError.expressionEvaluation(.timeZone(cause), occurrence: bound.occurrence)
+        } catch let cause as DatabaseExpressionEvaluationError {
+            throw CanonicalReadError.expressionEvaluation(cause, occurrence: bound.occurrence)
+        }
+    }
+
     private static func selectedComparison(
         _ left: QueryValue, _ right: QueryValue, comparison: DatabaseKit.ComparisonOperator,
-        leftType: QueryColumnType, rightType: QueryColumnType, workMeter: DatabaseWorkMeter
+        leftType: QueryColumnType, rightType: QueryColumnType,
+        temporalEnvironment: SQLTemporalEnvironment? = nil, workMeter: DatabaseWorkMeter
     ) throws -> Bool? {
         try workMeter.consume(at: .expressionEvaluation)
         if left.isNull || right.isNull { return nil }
-        func scalar(_ value: QueryValue) throws -> FieldValue {
-            switch value {
-            case .primitive(let value): return value
-            case .numeric(let value): return .decimal(value.value)
-            default: throw DatabaseExpressionEvaluationError.typeMismatch(operation: "selected scalar comparison")
-            }
-        }
-        let left = try scalar(left), right = try scalar(right)
-        try CanonicalSQLValueSemantics.chargeComparison(left, workMeter: workMeter, stage: .expressionEvaluation)
-        try CanonicalSQLValueSemantics.chargeComparison(right, workMeter: workMeter, stage: .expressionEvaluation)
         do {
-            switch comparison {
-            case .equal: return try CanonicalSQLValueSemantics.equal(left, right, leftType: leftType, rightType: rightType)
-            case .notEqual: return try !CanonicalSQLValueSemantics.equal(left, right, leftType: leftType, rightType: rightType)
-            default:
-                let result = try CanonicalSQLValueSemantics.compare(left, right, leftType: leftType, rightType: rightType)
-                switch comparison {
-                case .lessThan: return result == .lessThan
-                case .lessThanOrEqual: return result != .greaterThan
-                case .greaterThan: return result == .greaterThan
-                case .greaterThanOrEqual: return result != .lessThan
-                case .equal, .notEqual: preconditionFailure("Equality is handled before ordering")
-                }
+            if comparison == .equal || comparison == .notEqual {
+                let equal = try CanonicalSQLValueSemantics.equalValues(left, right,
+                    leftType: leftType, rightType: rightType, environment: temporalEnvironment, workMeter: workMeter)
+                return comparison == .equal ? equal : !equal
             }
-        } catch let failure {
+            let result = try CanonicalSQLValueSemantics.compareValues(left, right,
+                leftType: leftType, rightType: rightType, environment: temporalEnvironment, workMeter: workMeter)
+            switch comparison {
+            case .lessThan: return result == .lessThan
+            case .lessThanOrEqual: return result != .greaterThan
+            case .greaterThan: return result == .greaterThan
+            case .greaterThanOrEqual: return result != .lessThan
+            case .equal, .notEqual: preconditionFailure("Equality is handled before ordering")
+            }
+        } catch let failure as FieldValueComparisonError {
             throw canonicalComparisonReadError(failure, operation: "selected scalar comparison")
         }
     }
 
     private static func coerceSelectedComparisonValue(
         _ value: QueryValue, from source: QueryColumnType, to target: QueryColumnType,
-        workMeter: DatabaseWorkMeter
+        temporalEnvironment: SQLTemporalEnvironment? = nil, workMeter: DatabaseWorkMeter
     ) throws -> ProjectedQueryValue {
+        if CanonicalQueryTypeBinder.temporalType(source) != nil, CanonicalQueryTypeBinder.temporalType(target) != nil {
+            guard let temporalEnvironment else { throw DatabaseExpressionEvaluationError.missingTemporalEnvironment }
+            let result = try CanonicalSQLTemporalEvaluator.cast(value, from: source, to: target, context: .implicit,
+                environment: temporalEnvironment, workMeter: workMeter)
+            return ProjectedQueryValue(value: result, leases: [], payloadIsRetained: false)
+        }
         if case .sql(.char) = source, target == .sql(.text) {
             let result = try CanonicalSQLScalarCast.evaluatePayload(value, from: source, to: target,
                 context: .implicit, workMeter: workMeter)
@@ -6167,7 +6240,7 @@ extension DatabaseContext {
         children: [ProjectedQueryValue],
         on row: CanonicalSourceRow,
         context: CanonicalQueryEvaluationContext?,
-        workMeter: DatabaseWorkMeter
+        temporalEnvironment: SQLTemporalEnvironment? = nil, workMeter: DatabaseWorkMeter
     ) async throws -> ProjectedQueryValue {
         let claim = try workMeter.reserveIntermediate(bytes: UInt64(children.count) * 512 + 256,
             at: .expressionEvaluation)
@@ -6195,7 +6268,14 @@ extension DatabaseContext {
             if let lease = result.lease { leases.append(lease) }
             return ProjectedQueryValue(value: try bound.normalize(result.value), leases: leases, payloadIsRetained: !leases.isEmpty)
         }
+        func temporalResult() throws -> ProjectedQueryValue {
+            guard let temporalEnvironment else { throw DatabaseExpressionEvaluationError.missingTemporalEnvironment }
+            let value = try CanonicalSQLTemporalEvaluator.evaluate(bound, operands: children.map { $0.value },
+                environment: temporalEnvironment, workMeter: workMeter)
+            return ProjectedQueryValue(value: try bound.normalize(value), leases: children.flatMap { $0.leases }, payloadIsRetained: false)
+        }
         switch bound.expression {
+        case .currentValue: return try temporalResult()
         case .equal, .notEqual, .lessThan, .lessThanOrEqual, .greaterThan, .greaterThanOrEqual:
             guard children.count == 2 else {
                 throw DatabaseExpressionEvaluationError.typeMismatch(operation: "selected comparison arity")
@@ -6211,15 +6291,15 @@ extension DatabaseContext {
             default: preconditionFailure("The selected expression is a scalar comparison")
             }
             return try booleanResult(selectedComparison(children[0].value, children[1].value,
-                comparison: comparison, leftType: bound.children[0].type, rightType: bound.children[1].type, workMeter: workMeter))
+                comparison: comparison, leftType: bound.children[0].type, rightType: bound.children[1].type, temporalEnvironment: temporalEnvironment, workMeter: workMeter))
         case .between:
             guard children.count == 3 else {
                 throw DatabaseExpressionEvaluationError.typeMismatch(operation: "selected BETWEEN arity")
             }
             let lower = try selectedComparison(children[0].value, children[1].value,
-                comparison: .greaterThanOrEqual, leftType: bound.children[0].type, rightType: bound.children[1].type, workMeter: workMeter)
+                comparison: .greaterThanOrEqual, leftType: bound.children[0].type, rightType: bound.children[1].type, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
             let upper = try selectedComparison(children[0].value, children[2].value,
-                comparison: .lessThanOrEqual, leftType: bound.children[0].type, rightType: bound.children[2].type, workMeter: workMeter)
+                comparison: .lessThanOrEqual, leftType: bound.children[0].type, rightType: bound.children[2].type, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
             if lower == false || upper == false { return try booleanResult(false) }
             if lower == nil || upper == nil { return try booleanResult(nil) }
             return try booleanResult(true)
@@ -6232,12 +6312,13 @@ extension DatabaseContext {
             var sawNull = false
             for (index, member) in children.enumerated().dropFirst() {
                 let result = try selectedComparison(candidate.value, member.value,
-                    comparison: .equal, leftType: bound.children[0].type, rightType: bound.children[index].type, workMeter: workMeter)
+                    comparison: .equal, leftType: bound.children[0].type, rightType: bound.children[index].type, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
                 if result == true { return try booleanResult(!negated) }
                 if result == nil { sawNull = true }
             }
             return try booleanResult(sawNull ? nil : negated)
         case .add, .subtract, .multiply, .divide, .modulo, .negate:
+            if bound.children.contains(where: { CanonicalSQLValueSemantics.isTemporal($0.type) }) { return try temporalResult() }
             let result = try CanonicalSQLNumericEvaluator.evaluate(bound,
                 operands: children.map { $0.value }, workMeter: workMeter)
             return ProjectedQueryValue(value: try bound.normalize(result),
@@ -6260,19 +6341,36 @@ extension DatabaseContext {
             }
             if CanonicalSQLScalarCast.usesPayload(bound.type) {
                 return try payloadResult(CanonicalSQLScalarCast.evaluatePayload(value, from: input.type,
-                    to: bound.type, context: bound.castContext, workMeter: workMeter))
+                    to: bound.type, context: bound.castContext, temporalEnvironment: temporalEnvironment, workMeter: workMeter))
             }
             let result = try CanonicalSQLScalarCast.evaluateValue(value, from: input.type,
-                to: bound.type, context: bound.castContext, workMeter: workMeter)
+                to: bound.type, context: bound.castContext, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
             return ProjectedQueryValue(value: try bound.normalize(result), leases: children.flatMap { $0.leases }, payloadIsRetained: false)
         case .patternMatch: return try patternResult()
         case .concatenate:
             if bound.type == .sql(.blob) {
                 return try payloadResult(CanonicalSQLBinaryEvaluator.evaluate(bound, operands: children.map { $0.value }, workMeter: workMeter))
             }
-            return try payloadResult(CanonicalSQLStringEvaluator.evaluate(bound, operands: children.map { $0.value }, workMeter: workMeter))
+            return try payloadResult(CanonicalSQLStringEvaluator.evaluate(bound, operands: children.map { $0.value }, temporalEnvironment: temporalEnvironment, workMeter: workMeter))
         case .function(let function):
             let name = function.name
+            if ["to_char", "to_date"].contains(name) || (name == "to_timestamp" && children.count == 2) {
+                guard let temporalEnvironment else { throw DatabaseExpressionEvaluationError.missingTemporalEnvironment }
+                let structural = context?.options.queryStructuralLimits ?? .default
+                let limits = QueryValueLimits(maximumRetainedBytes: min(structural.maximumRetainedBytes, workMeter.budget.maximumIntermediateBytes),
+                    maximumTotalNodes: min(structural.maximumTotalNodes, workMeter.budget.maximumWorkUnits),
+                    maximumNestingDepth: min(structural.maximumNestingDepth, workMeter.budget.maximumWorkUnits),
+                    maximumCollectionElements: min(structural.maximumCollectionElements, workMeter.budget.maximumWorkUnits))
+                let result = try SQLTemporalFormatting.evaluate(bound, operands: children.map { $0.value },
+                    environment: temporalEnvironment, workMeter: workMeter, limits: limits)
+                var leases = children.flatMap { $0.leases }
+                if let lease = result.lease { leases.append(lease) }
+                return ProjectedQueryValue(value: try bound.normalize(result.value), leases: leases, payloadIsRetained: !leases.isEmpty)
+            }
+            if ["now", "transaction_timestamp", "statement_timestamp", "clock_timestamp", "extract", "date_part", "date_trunc", "date_bin", "age",
+                "make_date", "make_time", "make_timestamp", "make_timestamptz", "make_interval", "timezone", "to_timestamp"].contains(name) {
+                return try temporalResult()
+            }
             if ["regexp_like", "regexp_match", "regexp_replace", "regexp_split_to_array"].contains(name)
                 || (name == "substring" && bound.children.count > 1 && bound.children[1].type == .sql(.text)) {
                 return try patternResult()
@@ -6282,7 +6380,7 @@ extension DatabaseContext {
                     && bound.children.first?.type == .sql(.blob)) {
                 return try payloadResult(CanonicalSQLBinaryEvaluator.evaluate(bound, operands: children.map { $0.value }, workMeter: workMeter))
             }
-            return try payloadResult(CanonicalSQLStringEvaluator.evaluate(bound, operands: children.map { $0.value }, workMeter: workMeter))
+            return try payloadResult(CanonicalSQLStringEvaluator.evaluate(bound, operands: children.map { $0.value }, temporalEnvironment: temporalEnvironment, workMeter: workMeter))
         default: break
         }
         let operands = children.enumerated().map { index, value in
@@ -6482,7 +6580,7 @@ extension DatabaseContext {
             count: lookupCapacity
         )
 
-        func lookupSlot(for identity: [FieldValue]) -> (Int, Int?) {
+        func lookupSlot(for identity: [CanonicalSQLValueIdentity]) -> (Int, Int?) {
             let mask = lookupCapacity - 1
             var slot = canonicalHashLookupSlot(
                 hashValue: identity.hashValue,
@@ -6506,11 +6604,11 @@ extension DatabaseContext {
                 stage: .aggregateInput
             )
             defer { scopedValueReservation.release() }
-            var scopedValues: [DatabaseQueryScopedFieldValue] = []
+            var scopedValues: [ProjectedQueryValue] = []
             scopedValues.reserveCapacity(groupBy.count)
             for (index, _) in groupBy.enumerated() {
                 scopedValues.append(
-                    try await evaluateBoundScopedValue(
+                    try await evaluateBoundValue(
                         boundGroupBy[index],
                         on: row,
                         context: evaluationContext,
@@ -6521,11 +6619,11 @@ extension DatabaseContext {
             let keyArrays = try DatabaseIntermediateCollectionMeter
                 .arrayFootprint(
                     count: groupBy.count,
-                    element: FieldValue.self
+                    element: QueryValue.self
                 ).adding(
                     DatabaseIntermediateCollectionMeter.arrayFootprint(
                         count: groupBy.count,
-                        element: FieldValue.self
+                        element: CanonicalSQLValueIdentity.self
                     )
                 )
             let keyReservation = try workMeter.reserveIntermediate(
@@ -6533,49 +6631,18 @@ extension DatabaseContext {
                 at: .aggregateInput
             )
             defer { keyReservation.release() }
-            var values: [FieldValue] = []
+            var values: [QueryValue] = []
             values.reserveCapacity(groupBy.count)
-            var identities: [FieldValue] = []
+            var identities: [CanonicalSQLValueIdentity] = []
             identities.reserveCapacity(groupBy.count)
             for (index, scopedValue) in scopedValues.enumerated() {
-                try scopedValue.withValue { value in
-                    let valueFootprint = try CanonicalRelationalFootprintMeter
-                        .valueFootprint(
-                            of: value,
-                            workMeter: workMeter,
-                            stage: .aggregateInput
-                        )
-                    try keyReservation.reserveAdditional(
-                        bytes: valueFootprint.bytes,
-                        at: .aggregateInput
-                    )
-                    values.append(value)
-
-                    let identityScratch = try workMeter.reserveIntermediate(
-                        bytes: valueFootprint.bytes,
-                        at: .aggregateInput
-                    )
-                    defer { identityScratch.release() }
-                    let identity = try canonicalValueIdentity(
-                        value,
-                        operation: "GROUP BY", type: boundGroupBy[index].type, workMeter: workMeter
-                    )
-                    let identityFootprint = try CanonicalRelationalFootprintMeter
-                        .valueFootprint(
-                            of: identity,
-                            workMeter: workMeter,
-                            stage: .aggregateInput
-                        )
-                    precondition(
-                        identityFootprint.bytes <= valueFootprint.bytes,
-                        "Canonical value identity cannot grow its source payload"
-                    )
-                    try keyReservation.reserveAdditional(
-                        bytes: identityFootprint.bytes,
-                        at: .aggregateInput
-                    )
-                    identities.append(identity)
-                }
+                let value = scopedValue.value
+                let valueFootprint = try CanonicalRelationalFootprintMeter.valueFootprint(of: value, workMeter: workMeter, stage: .aggregateInput)
+                try keyReservation.reserveAdditional(bytes: valueFootprint.bytes, at: .aggregateInput)
+                values.append(value)
+                let identity = try canonicalQueryValueIdentity(value, operation: "GROUP BY", type: boundGroupBy[index].type, workMeter: workMeter)
+                try keyReservation.reserveAdditional(bytes: identity.payloadFootprint(workMeter: workMeter, stage: .aggregateInput).bytes, at: .aggregateInput)
+                identities.append(identity)
             }
             let (slot, existingGroupIndex) = lookupSlot(for: identities)
             if let groupIndex = existingGroupIndex {
@@ -6716,13 +6783,13 @@ extension DatabaseContext {
                 count: groups.count,
                 element: (
                     CanonicalGroupedRow,
-                    [DatabaseQueryScopedFieldValue]
+                    [ProjectedQueryValue]
                 ).self
             )
         let nestedValuesFootprint = try DatabaseIntermediateCollectionMeter
             .arrayFootprint(
                 count: orderBy.count,
-                element: DatabaseQueryScopedFieldValue.self
+                element: ProjectedQueryValue.self
             )
             .multiplied(by: UInt64(groups.count))
         let decorationFootprint = try outerArrayFootprint
@@ -6740,15 +6807,15 @@ extension DatabaseContext {
         try workMeter.consume(UInt64(groups.count), at: .sortInput)
         var decorated: [(
             CanonicalGroupedRow,
-            [DatabaseQueryScopedFieldValue]
+            [ProjectedQueryValue]
         )] = []
         decorated.reserveCapacity(groups.count)
         for group in groups {
-            var values: [DatabaseQueryScopedFieldValue] = []
+            var values: [ProjectedQueryValue] = []
             values.reserveCapacity(orderBy.count)
             for (index, _) in orderBy.enumerated() {
                 values.append(
-                    try await evaluateBoundScopedValue(
+                    try await evaluateBoundValue(
                         boundOrder[index],
                         on: group.representative,
                         group: group,
@@ -6761,27 +6828,21 @@ extension DatabaseContext {
         }
         let sorted: [(
             CanonicalGroupedRow,
-            [DatabaseQueryScopedFieldValue]
+            [ProjectedQueryValue]
         )]
         do {
             sorted = try decorated.sorted { lhs, rhs in
                 for (index, sortKey) in orderBy.enumerated() {
                     try workMeter.consume(2, at: .sortComparison)
-                    var comparison = QueryComparison.equal
-                    try lhs.1[index].withValue { lhsValue in
-                        try rhs.1[index].withValue { rhsValue in
-                            try CanonicalSQLValueSemantics.chargeComparison(lhsValue, workMeter: workMeter, stage: .sortComparison)
-                            try CanonicalSQLValueSemantics.chargeComparison(rhsValue, workMeter: workMeter, stage: .sortComparison)
-                            comparison = try CanonicalSQLValueSemantics.compare(
-                                lhsValue, rhsValue, type: boundOrder[index].type, using: sortKey)
-                        }
-                    }
+                    let comparison = try Self.selectedOrdering(lhs.1[index].value, rhs.1[index].value,
+                        bound: boundOrder[index], using: sortKey,
+                        environment: evaluationContext?.options.temporalEnvironment ?? inheritedSQLTemporalEnvironment, workMeter: workMeter)
                     guard comparison != .equal else { continue }
                     return comparison == .lessThan
                 }
                 try workMeter.consume(2, at: .sortComparison)
-                return lhs.0.key.identity.lexicographicallyPrecedes(
-                    rhs.0.key.identity
+                return try lhs.0.key.identity.lexicographicallyPrecedes(
+                    rhs.0.key.identity, by: CanonicalSQLValueIdentity.precedes
                 )
             }
         } catch let failure as FieldValueComparisonError {
@@ -7131,10 +7192,10 @@ extension DatabaseContext {
             throw CanonicalReadError.unsupportedSelectQuery("A numeric aggregate requires SUM or AVG")
         }
         let distinctClaim: DatabaseIntermediateReservation?
-        var seen = Set<QueryValue>()
+        var seen = Set<CanonicalSQLValueIdentity>()
         if distinct {
             let footprint = try DatabaseIntermediateFootprint(
-                bytes: UInt64(MemoryLayout<QueryValue>.stride + 32)).multiplied(by: UInt64(rows.count))
+                bytes: UInt64(MemoryLayout<CanonicalSQLValueIdentity>.stride + 32)).multiplied(by: UInt64(rows.count))
             distinctClaim = try workMeter.reserveIntermediate(rows: UInt64(rows.count), bytes: footprint.bytes,
                 at: .aggregateInput)
             seen.reserveCapacity(rows.count)
@@ -7554,7 +7615,7 @@ extension DatabaseContext {
     ) throws -> CanonicalRetainedQueryRows {
         let setBytes = try DatabaseIntermediateFootprint(
             bytes: UInt64(
-                max(1, MemoryLayout<[QueryValue]>.stride + 32)
+                max(1, MemoryLayout<[CanonicalSQLValueIdentity]>.stride + 32)
             )
         ).multiplied(by: UInt64(rows.count)).bytes
         let setReservation = try workMeter.reserveIntermediate(
@@ -7562,7 +7623,7 @@ extension DatabaseContext {
             at: .deduplication
         )
         defer { setReservation.release() }
-        var seen: Set<[QueryValue]> = []
+        var seen: Set<[CanonicalSQLValueIdentity]> = []
         seen.reserveCapacity(rows.count)
         var unique = try DatabaseRetainedArrayBuilder<QueryRow>(
             workMeter: workMeter,
@@ -7576,9 +7637,9 @@ extension DatabaseContext {
                 let identityFootprint = try CanonicalRelationalFootprintMeter.positionalRowFootprint(
                     values: row.values, annotations: [:], version: nil,
                     workMeter: workMeter, stage: .deduplication
-                )
+                ).adding(identityArrayAdditionalFootprint(count: row.values.count))
                 try setReservation.reserveAdditional(bytes: identityFootprint.bytes, at: .deduplication)
-                var identity: [QueryValue] = []
+                var identity: [CanonicalSQLValueIdentity] = []
                 identity.reserveCapacity(row.values.count)
                 for (index, value) in row.values.enumerated() {
                     identity.append(try canonicalQueryValueIdentity(value, operation: "SELECT DISTINCT", type: rows.columns[index].type, workMeter: workMeter))
@@ -7607,11 +7668,11 @@ extension DatabaseContext {
     ) throws -> DatabaseIntermediateFootprint {
         var footprint = try DatabaseIntermediateCollectionMeter.arrayFootprint(
                 count: group.key.values.count,
-                element: FieldValue.self
+                element: QueryValue.self
             ).adding(
             try DatabaseIntermediateCollectionMeter.arrayFootprint(
                 count: group.key.identity.count,
-                element: FieldValue.self
+                element: CanonicalSQLValueIdentity.self
             )
         )
         for value in group.key.values {
@@ -7625,11 +7686,7 @@ extension DatabaseContext {
         }
         for identity in group.key.identity {
             footprint = try footprint.adding(
-                CanonicalRelationalFootprintMeter.valueFootprint(
-                    of: identity,
-                    workMeter: workMeter,
-                    stage: .aggregateInput
-                )
+                identity.payloadFootprint(workMeter: workMeter, stage: .aggregateInput)
             )
         }
         footprint = try footprint.adding(
@@ -7704,7 +7761,7 @@ extension DatabaseContext {
             case .inSubquery(let child, let nested): descendants = try sum(expression(child), statement(nested))
             case .triple(let subject, let predicate, let object):
                 descendants = try sum(expression(subject), expression(predicate), expression(object))
-            case .literal, .column, .variable, .parameter, .bound: descendants = 0
+            case .currentValue, .literal, .column, .variable, .parameter, .bound: descendants = 0
             }
             return try sum(1024, descendants)
         }
@@ -8058,7 +8115,7 @@ extension DatabaseContext {
         workMeter: DatabaseWorkMeter? = nil
     ) throws -> [QueryColumn] {
         let execution = ReadExecutionContext(options: .default, monotonicClock: container.monotonicClock,
-            workMeter: workMeter)
+            workMeter: workMeter, temporalEnvironment: inheritedSQLTemporalEnvironment)
         try QueryStructuralValidator.validate(query, limits: execution.queryStructuralLimits)
         let binding = CanonicalQueryBindingEnvironment(
             parameters: try CanonicalParameterBindingState(parameters: parameters, workMeter: execution.workMeter),

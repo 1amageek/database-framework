@@ -6,6 +6,8 @@ package enum DirectoryComponentCodecError: Error, Equatable, Sendable {
     /// payload names the rejected `FieldValue` case.
     case unsupportedFieldKind(String)
 
+    case invalidDeclaredValue
+
     /// The component violates the grammar of SPEC 12.2.
     case malformedComponent(Malformation)
 

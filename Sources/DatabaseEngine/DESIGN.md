@@ -33,6 +33,8 @@ StorageKit Directory node through [Directory](Directory/DESIGN.md).
 | [Core](Core/DESIGN.md) | child | Polymorphic orchestration | Composes this direct component contract. | Does not decide query authority. |
 | [Serialization](Serialization/DESIGN.md) | child | Retained bounded item read | Composes this direct component contract. | Envelope and chunks are bounded. |
 | [QueryExecution](QueryExecution/DESIGN.md) | child | Retained aggregate/destinations | Composes this direct component contract. | Copyable raw values do not escape. |
+| [Index](Index/DESIGN.md) | child | Descriptor-aware key and retirement scope | Preserves finite and extended temporal keys across lifecycle. | Directory types come from the admitted/source snapshot. |
+| [Transaction](Transaction/DESIGN.md) | child | Attempt state and logical transaction binding | Coordinates retry-stable time with existing lifecycle. | Core captures outside retry; time grants no authority. |
 | [Fusion](Fusion/DESIGN.md) | child | Authorized prepared inputs and selected relational plans | Coordinates bound operators within one admitted session. | Shared parameter identity and exact meter precede source scans. |
 | [Mutation](Mutation/DESIGN.md) | child | Prepared mutation and typed adaptation failures | Preserves entity-change authority and query-value causes. | Revalidate direct server error mapping. |
 | [Base](Base/DESIGN.md) | child | MultiBase Composition execution | Coordinates retained member rows and provenance. | Enabled only with MultiBase. |

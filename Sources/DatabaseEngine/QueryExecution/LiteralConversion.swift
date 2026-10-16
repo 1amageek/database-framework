@@ -103,8 +103,16 @@ extension Literal {
                     type = .sql(.jsonb)
                 case .array(let array):
                     type = .sql(.array(array.elementType))
-                case .interval:
-                    type = .sql(.interval)
+                case .interval, .intervalInfinity:
+                    type = .sql(.interval())
+                case .time:
+                    type = .sql(.time(withTimeZone: false))
+                case .timeWithTimeZone:
+                    type = .sql(.time(withTimeZone: true))
+                case .dateInfinity:
+                    type = .sql(.date)
+                case .timestampInfinity(_, let zone):
+                    type = .sql(.timestamp(withTimeZone: zone))
                 case .primitive:
                     throw .fieldValueConversionInvariantViolation
                 }

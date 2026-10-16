@@ -210,3 +210,24 @@ Direct semantic IR may have no occurrence. Meter, cancellation, aggregate and
 subquery failures retain their existing owners and are never converted into
 scalar errors. Database maps a retained address through its own source map;
 Read does not import parser ranges or retain source text.
+
+
+### S06 inherited temporal environment
+
+ReadExecutionContext carries an optional immutable SQLTemporalEnvironment until
+the public operation resolves it. Removing an external page window or deriving
+a subquery keeps the same environment. DatabaseReadSession retains the admitted
+statement environment and logical transaction time; authorizedSession copies
+them unchanged. The default non-SQL session uses its admitted transaction's
+instant for the implicit statement rather than sampling a new time per member.
+
+The [Core clock owner](../Core/DESIGN.md#s06-clock-and-configuration-ownership)
+captures and propagates time; Read does not interpret zones or grant authority
+from clock data. Scope validation, exact meter, schema, principal and storage
+transaction checks remain mandatory. Session-bound execution uses the same
+environment for selected values, nested reads and output formatting.
+
+Tests prove environment identity through authorization attenuation, derived
+sessions, page/subquery contexts, retry and failure cleanup on Native and the
+applicable portable owner paths. Clock state is Sendable immutable data on all
+targets, with no new shared mutable cache or conditional synchronization.

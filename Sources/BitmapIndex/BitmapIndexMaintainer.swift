@@ -521,8 +521,12 @@ public struct BitmapIndexMaintainer<Item: PersistedEntityValue>: SubspaceIndexMa
         for storedValue in storedValues {
             var decodedValue: [FieldValue] = []
             decodedValue.reserveCapacity(storedValue.count)
-            for element in storedValue {
-                decodedValue.append(try FieldValue(tupleElement: element))
+            for (position, element) in storedValue.enumerated() {
+                guard position < index.descriptor.fieldSchemas.count else {
+                    throw FieldValueTupleCodecError.invalidDeclaredQueryValue(.incompatibleType)
+                }
+                decodedValue.append(try DeclaredTemporalIndexKeyCodec.decode(element,
+                    schema: index.descriptor.fieldSchemas[position]))
             }
             values.append(decodedValue)
         }

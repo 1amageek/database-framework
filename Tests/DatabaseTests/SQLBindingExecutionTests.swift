@@ -162,16 +162,15 @@ struct SQLBindingExecutionTests {
             QueryParameter(position: 1, value: .primitive(.dateTime(dateTime)), type: .sql(.timestamp(withTimeZone: false, precision: 6))),
             QueryParameter(position: 1, value: .primitive(.time(time)), type: .sql(.time(withTimeZone: false, precision: 6)))
         ]
-        for (sql, parameter) in zip(["SELECT $1::timestamp(3)", "SELECT $1::time(3)"], nonNullParameters) {
-            do {
-                _ = try await context.executeSQL(sql, parameters: [parameter])
-                Issue.record("Expected non-NULL temporal precision conversion to remain deferred")
-            } catch let failure as SQLBindingSourceFailure {
-                guard case .expression(.unsupportedExpression("temporal precision conversion")) = failure.cause else {
-                    Issue.record("Expected the explicit deferred temporal conversion failure")
-                    return
-                }
-            }
+        let roundedTime = try CivilTime(hour: 12, minute: 0, second: 0, nanoseconds: 123_000_000)
+        let roundedDateTime = CivilDateTime(date: dateTime.date, time: roundedTime)
+        let roundedSQLTime = try QueryTimeValue(microsecondsSinceMidnight: 43_200_123_000)
+        let roundedTypes: [QueryColumnType] = [.sql(.timestamp(withTimeZone: false, precision: 3)), .sql(.time(withTimeZone: false, precision: 3))]
+        let expectedValues: [QueryValue] = [.primitive(.dateTime(roundedDateTime)), .time(roundedSQLTime)]
+        for (index, pair) in zip(["SELECT $1::timestamp(3)", "SELECT $1::time(3)"], nonNullParameters).enumerated() {
+            let result = try await context.executeSQL(pair.0, parameters: [pair.1])
+            #expect(result.columns.map(\.type) == [roundedTypes[index]])
+            #expect(result.rows[0].values == [expectedValues[index]])
         }
         await container.shutdown()
     }

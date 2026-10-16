@@ -105,7 +105,7 @@ struct SQLSerializerTests {
             (.numeric(try QueryNumericValue(value: .init(coefficient: 123, scale: 2), displayScale: 4)), .decimal(precision: nil, scale: nil)),
             (.json(try QueryJSONValue(bytes: ByteString(utf8: " { \"a\": 1, \"a\": 2 } "), limits: valueLimits)), .json),
             (.jsonb(try QueryJSONBValue(json: QueryJSONValue(bytes: ByteString(utf8: "{\"z\": [null,true,1.2300], \"a\": \"x\\n'y\"}"), limits: valueLimits), limits: valueLimits)), .jsonb),
-            (.interval(try QueryIntervalValue(period: CalendarPeriod(months: -2, days: 3), time: TimeSpan(seconds: -1, nanoseconds: 999_999_000))), .interval),
+            (.interval(try QueryIntervalValue(period: CalendarPeriod(months: -2, days: 3), time: TimeSpan(seconds: -1, nanoseconds: 999_999_000))), .interval()),
             (.array(try QueryArrayValue(elementType: .integer,
                 dimensions: [QueryArrayDimension(lowerBound: -2, length: 2), QueryArrayDimension(lowerBound: 3, length: 2)],
                 elements: [.primitive(.int32(1)), .primitive(.null), .primitive(.int32(-3)), .primitive(.int32(4))], limits: valueLimits)), .array(.integer))
@@ -145,7 +145,7 @@ struct SQLSerializerTests {
         let cases: [(DataType, QueryValue)] = [
             (.decimal(precision: 8, scale: 3), .numeric(try QueryNumericValue(value: .init(coefficient: 12, scale: 1), displayScale: 3))),
             (.jsonb, .jsonb(try QueryJSONBValue(json: QueryJSONValue(bytes: ByteString(utf8: "{\"n\":0.00}"), limits: valueLimits), limits: valueLimits))),
-            (.interval, .interval(try QueryIntervalValue(period: CalendarPeriod(months: -1, days: 2), time: TimeSpan(seconds: 3))))
+            (.interval(), .interval(try QueryIntervalValue(period: CalendarPeriod(months: -1, days: 2), time: TimeSpan(seconds: 3))))
         ]
         for (type, value) in cases {
             let array = try QueryArrayValue(elementType: type, dimensions: [QueryArrayDimension(lowerBound: 1, length: 1)], elements: [value], limits: valueLimits)

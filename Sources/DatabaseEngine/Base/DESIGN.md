@@ -151,3 +151,25 @@ meter pre-admits dynamic limb/math capacity; the existing fixed state claim
 covers only fixed state. Clear/failure/cancel/final-output paths release the
 accumulator exactly at its actual lifetime. S04-C09/C10/C12 require MultiBase
 widened AVG/cancellation SUM, scale retention, budget failure and release.
+
+
+### S06 Composition temporal inheritance
+
+CompositionDataSource owns one container. Each public execution captures one
+[Core-owned temporal environment](../Core/DESIGN.md#s06-clock-and-configuration-ownership)
+before lease/read acquisition. Its snapshot, member sessions, join/aggregate
+ReadExecutionContext copies and new transaction bindings retain the same
+transaction/statement instants. CompositionDecisionTransaction relays its
+writer's logical transaction instant into member read bindings. Member
+selection never re-samples transaction time or chooses another zone provider.
+Existing lease, authorization, domain, row/byte budget and closure guarantees
+remain unchanged. An advancing clock across members and a derived read
+counterexample verify the added immutable relay; portable MultiBase remains
+part of the agreed S18 integrated lane.
+
+The global Composition merger retains its existing primitive/numeric value
+capability in S06. New rich temporal carriers fail with the same typed
+unsupported-plan contract in global ORDER BY and MIN/MAX; member-local selected
+SQL uses the full S06 temporal owner. S08 owns global typed sorting and S09 owns
+the retained rich aggregate transition. The callable primitive-only branch is
+marked incomplete until those planned contracts and behavioral tests replace it.

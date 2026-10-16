@@ -145,6 +145,19 @@ struct CanonicalQueryTypeBinder {
         parameterContext: CanonicalParameterBindingState.Context
     ) throws -> CanonicalBoundExpression {
         switch expression {
+        case .currentValue(let kind, let precision):
+            guard precision == nil || (0...6).contains(precision!), kind != .date || precision == nil else {
+                throw DatabaseExpressionEvaluationError.invalidTemporalInput
+            }
+            let type: DataType
+            switch kind {
+            case .date: type = .date
+            case .time: type = .time(withTimeZone: true, precision: precision)
+            case .timestamp: type = .timestamp(withTimeZone: true, precision: precision)
+            case .localTime: type = .time(withTimeZone: false, precision: precision)
+            case .localTimestamp: type = .timestamp(withTimeZone: false, precision: precision)
+            }
+            return node(expression, .sql(type), false)
         case .greatest(let expressions), .least(let expressions):
             guard !expressions.isEmpty else { throw mismatch("GREATEST/LEAST") }
             let children = try bindCommon(expressions, defaultType: contextualType ?? .sql(.text), field: .argument)
@@ -165,6 +178,11 @@ struct CanonicalQueryTypeBinder {
         case .literal(let literal):
             let type = try literalType(literal, contextualType: contextualType)
             if case .sqlUnknownString(let text) = literal {
+                if let target = Self.temporalType(type) {
+                    let input = node(.literal(.queryValue(.primitive(.string(text)), type: .sql(.text))), .sql(.text), false)
+                    return CanonicalBoundExpression(expression: .cast(input.expression, targetType: target), type: type,
+                        isNullable: false, children: [input], occurrence: currentOccurrence, castContext: .implicit)
+                }
                 return node(.literal(.queryValue(try unknownString(text, to: type), type: type)), type, false)
             }
             return node(expression, type, literal.isNull)
@@ -187,7 +205,9 @@ struct CanonicalQueryTypeBinder {
         case .add(let lhs, let rhs), .subtract(let lhs, let rhs),
              .multiply(let lhs, let rhs), .divide(let lhs, let rhs),
              .modulo(let lhs, let rhs):
-            let inputs = try bindInputs([lhs, rhs], defaultType: .sql(.bigint))
+            var known: [CanonicalBoundExpression?] = []
+            if let temporal = try bindTemporalArithmetic(expression, operands: [lhs, rhs], inputs: &known) { return temporal }
+            let inputs = try bindInputs([lhs, rhs], defaultType: .sql(.bigint), known: known)
             let type = try arithmeticType(inputs.map { $0.type })
             if case .modulo = expression, Self.numericKind(type) == .floating { throw mismatch("floating MOD") }
             let children: [CanonicalBoundExpression]
@@ -200,7 +220,9 @@ struct CanonicalQueryTypeBinder {
             try requirePrimitiveOperation(children, operation: "arithmetic")
             return node(expression, type, children.contains { $0.isNullable }, children)
         case .negate(let operand):
-            let child = try childBinder(.operand, 0).bind(operand, contextualType: .sql(.bigint))
+            var known: [CanonicalBoundExpression?] = []
+            if let temporal = try bindTemporalArithmetic(expression, operands: [operand], inputs: &known) { return temporal }
+            let child = try known[0] ?? childBinder(.operand, 0).bind(operand, contextualType: .sql(.bigint))
             try requirePrimitiveOperation([child], operation: "negation")
             let type = try arithmeticType([child.type])
             return node(expression, type, child.isNullable, [try coerce(child, to: type)])
@@ -312,7 +334,7 @@ struct CanonicalQueryTypeBinder {
             catch let cause as DatabaseExpressionEvaluationError { throw located(cause, at: childBinder(.castType).currentOccurrence) }
             let inputType: QueryColumnType
             if case .decimal = target { inputType = .sql(.decimal(precision: nil, scale: nil)) }
-            else if Self.isText(type) { inputType = .sql(.text) }
+            else if Self.isText(type) || Self.temporalType(type) != nil { inputType = .sql(.text) }
             else { inputType = type }
             let child = try childBinder(.operand, 0).bind(operand, contextualType: inputType)
             do { try validateCast(from: child.type, to: type) }
@@ -320,23 +342,7 @@ struct CanonicalQueryTypeBinder {
             if Self.isStaticallyNull(child.expression) {
                 return node(.literal(.queryValue(.primitive(.null), type: type)), type, true)
             }
-            if child.type == type, type != .sql(.char(length: nil)) { return child }
-            var scalarType = target
-            while case .array(let element) = scalarType { scalarType = element }
-            // FIXME(INCOMPLETE_IMPLEMENTATION): SQL CAST binding reaches nonliteral/non-NULL temporal typmods here.
-            // S06 must implement precision conversion and rounding before these casts can succeed.
-            switch scalarType {
-            case .time(_, .some), .timestamp(_, .some):
-                throw DatabaseExpressionEvaluationError.unsupportedExpression("temporal precision conversion")
-            default: break
-            }
-            if Self.isText(child.type) {
-                switch target {
-                case .date, .time, .timestamp:
-                    throw DatabaseExpressionEvaluationError.unsupportedExpression("temporal input conversion")
-                default: break
-                }
-            }
+            if child.type == type, type != .sql(.char(length: nil)), Self.temporalType(type) == nil { return child }
             try requirePrimitiveOperation([child], operation: "CAST")
             return node(expression, type, child.isNullable, [child])
         case .function(let function):
@@ -363,6 +369,134 @@ struct CanonicalQueryTypeBinder {
         }
     }
 
+    static func temporalType(_ type: QueryColumnType) -> DataType? {
+        switch type {
+        case .sql(.date), .primitive(.date, false): return .date
+        case .sql(.time(let zone, _)): return .time(withTimeZone: zone)
+        case .primitive(.time, false): return .time(withTimeZone: false)
+        case .sql(.timestamp(let zone, _)): return .timestamp(withTimeZone: zone)
+        case .primitive(.dateTime, false): return .timestamp(withTimeZone: false)
+        case .primitive(.timestamp, false): return .timestamp(withTimeZone: true)
+        case .sql(.interval): return .interval()
+        default: return nil
+        }
+    }
+
+    private static func temporalCastAllowed(from source: DataType, to target: DataType, context: CastContext) -> Bool {
+        if source == target { return true }
+        let implicit: Bool
+        switch (source, target) {
+        case (.date, .timestamp), (.time(false, _), .time(true, _)),
+             (.time(false, _), .interval), (.timestamp(false, _), .timestamp(true, _)): implicit = true
+        default: implicit = false
+        }
+        if implicit { return true }
+        guard context != .implicit else { return false }
+        switch (source, target) {
+        case (.timestamp(false, _), .date), (.timestamp(false, _), .time(false, _)),
+             (.timestamp(true, _), .date), (.timestamp(true, _), .time),
+             (.timestamp(true, _), .timestamp(false, _)), (.interval, .time(false, _)),
+             (.time(true, _), .time(false, _)): return true
+        default: return false
+        }
+    }
+
+    private func bindTemporalFunction(_ function: FunctionCall, expression: Expression) throws -> CanonicalBoundExpression? {
+        let text = DataType.text, integer = DataType.integer, double = DataType.doublePrecision
+        let time = DataType.time(withTimeZone: false), timetz = DataType.time(withTimeZone: true)
+        let timestamp = DataType.timestamp(withTimeZone: false), instant = DataType.timestamp(withTimeZone: true)
+        let interval = DataType.interval()
+        let name = function.name
+        var arguments = function.arguments
+        let signatures: [[DataType]]
+        switch name {
+        case "now", "transaction_timestamp", "statement_timestamp", "clock_timestamp": signatures = [[]]
+        case "extract", "date_part": signatures = [.date, time, timetz, timestamp, instant, interval].map { [text, $0] }
+        case "date_trunc": signatures = [[text, timestamp], [text, instant], [text, interval], [text, instant, text]]
+        case "date_bin": signatures = [[interval, timestamp, timestamp], [interval, instant, instant]]
+        case "age": signatures = [[timestamp], [instant], [timestamp, timestamp], [instant, instant]]
+        case "make_date": signatures = [[integer, integer, integer]]
+        case "make_time": signatures = [[integer, integer, double]]
+        case "make_timestamp": signatures = [[integer, integer, integer, integer, integer, double]]
+        case "make_timestamptz": signatures = [[integer, integer, integer, integer, integer, double], [integer, integer, integer, integer, integer, double, text]]
+        case "make_interval":
+            guard arguments.count <= 7 else { throw mismatch(name) }
+            while arguments.count < 7 {
+                arguments.append(.literal(.queryValue(arguments.count == 6 ? .primitive(.float64(0)) : .primitive(.int32(0)),
+                    type: .sql(arguments.count == 6 ? double : integer))))
+            }
+            signatures = [[integer, integer, integer, integer, integer, integer, double]]
+        case "timezone": signatures = [text, interval].flatMap { zone in [timestamp, instant, timetz].map { [zone, $0] } }
+        case "to_char": signatures = [[timestamp, text], [instant, text], [interval, text]]
+        case "to_date": signatures = [[text, text]]
+        case "to_timestamp": signatures = [[text, text], [double]]
+        default: return nil
+        }
+        let candidates = signatures.filter { $0.count == arguments.count }
+        guard !candidates.isEmpty else { throw mismatch(name) }
+        let inputs: [CanonicalBoundExpression?] = try arguments.enumerated().map { index, argument in
+            try isContextualUnknown(argument) ? nil : childBinder(.argument, index).bind(argument)
+        }
+        let selected = try selectFunction(candidates, inputs: inputs, name: name)
+        let children = try arguments.indices.map { index in
+            let target = QueryColumnType.sql(selected[index])
+            let input = try inputs[index] ?? childBinder(.argument, index).bind(arguments[index], contextualType: target)
+            return try coerce(input, to: target)
+        }
+        let result: DataType
+        switch name {
+        case "extract": result = .decimal(precision: nil, scale: nil)
+        case "date_part": result = double
+        case "date_trunc": result = selected[1]
+        case "date_bin": result = selected[1]
+        case "age", "make_interval": result = interval
+        case "make_date", "to_date": result = .date
+        case "make_time": result = time
+        case "make_timestamp": result = timestamp
+        case "timezone": result = selected[1] == timestamp ? instant : (selected[1] == instant ? timestamp : timetz)
+        case "to_char": result = text
+        default: result = instant
+        }
+        let nullable = ["extract", "date_part", "to_char"].contains(name) || children.contains { $0.isNullable }
+        return node(expression, .sql(result), nullable, children)
+    }
+
+    private func bindTemporalArithmetic(_ expression: Expression, operands: [Expression],
+        inputs: inout [CanonicalBoundExpression?]) throws -> CanonicalBoundExpression? {
+        let date = DataType.date, integer = DataType.integer, double = DataType.doublePrecision
+        let time = DataType.time(withTimeZone: false), timetz = DataType.time(withTimeZone: true)
+        let timestamp = DataType.timestamp(withTimeZone: false), instant = DataType.timestamp(withTimeZone: true)
+        let interval = DataType.interval()
+        inputs = try operands.enumerated().map { index, operand in
+            try isContextualUnknown(operand) ? nil : childBinder(.operand, index).bind(operand)
+        }
+        guard inputs.contains(where: { $0.map { Self.temporalType($0.type) != nil } ?? false }) else { return nil }
+        var signatures: [([DataType], DataType)] = []
+        switch expression {
+        case .add:
+            signatures = [([date, integer], date), ([date, interval], timestamp), ([date, time], timestamp), ([date, timetz], instant),
+                ([timestamp, interval], timestamp), ([instant, interval], instant), ([time, interval], time), ([timetz, interval], timetz)]
+            signatures += signatures.map { (Array($0.0.reversed()), $0.1) }
+            signatures.append(([interval, interval], interval))
+        case .subtract:
+            signatures = [([date, integer], date), ([date, date], integer), ([date, interval], timestamp),
+                ([timestamp, interval], timestamp), ([instant, interval], instant), ([time, interval], time), ([timetz, interval], timetz),
+                ([timestamp, timestamp], interval), ([instant, instant], interval), ([time, time], interval), ([interval, interval], interval)]
+        case .multiply: signatures = [([interval, double], interval), ([double, interval], interval)]
+        case .divide: signatures = [([interval, double], interval)]
+        case .negate: signatures = [([interval], interval)]
+        default: throw mismatch("temporal arithmetic")
+        }
+        let selected = try selectFunction(signatures.map { $0.0 }, inputs: inputs, name: "temporal arithmetic")
+        guard let result = signatures.first(where: { $0.0 == selected })?.1 else { throw mismatch("temporal arithmetic") }
+        let children = try operands.indices.map { index in
+            let target = QueryColumnType.sql(selected[index])
+            let input = try inputs[index] ?? childBinder(.operand, index).bind(operands[index], contextualType: target)
+            return try coerce(input, to: target)
+        }
+        return node(expression, .sql(result), children.contains { $0.isNullable }, children)
+    }
+
     private func bindFunction(
         _ function: FunctionCall, expression: DatabaseKit.Expression
     ) throws -> CanonicalBoundExpression {
@@ -370,6 +504,7 @@ struct CanonicalQueryTypeBinder {
         guard function.schema == nil || function.schema == "pg_catalog", !function.distinct else {
             throw DatabaseExpressionEvaluationError.unsupportedFunction(name)
         }
+        if let selected = try bindTemporalFunction(function, expression: expression) { return selected }
         if let selected = try bindScalarFunction(function, expression: expression) { return selected }
         if name == "width_bucket", function.arguments.count == 2 {
             let children = try bindArrayComparison(function.arguments[0], array: function.arguments[1], field: .argument, commonSelection: true)
@@ -424,6 +559,7 @@ struct CanonicalQueryTypeBinder {
     }
 
     private static func permitsScalarText(_ type: QueryColumnType) -> Bool {
+        if temporalType(type) != nil { return true }
         if numericKind(type) != nil || isText(type) || isBytes(type) { return true }
         return type == .sql(.boolean) || type == .primitive(.bool)
             || type == .sql(.uuid) || type == .primitive(.uuid)
@@ -526,7 +662,7 @@ struct CanonicalQueryTypeBinder {
         let exactCandidates = admitted.filter { exact($0) == maximumExact }
         func preferred(_ signature: [DataType]) -> Int {
             zip(inputs, signature).filter { input, target in
-                (target == .doublePrecision || target == .text) && (input.map { Self.sqlScalar($0.type) != target } ?? true)
+                (target == .doublePrecision || target == .text || target == .timestamp(withTimeZone: true)) && (input.map { Self.sqlScalar($0.type) != target } ?? true)
             }.count
         }
         let maximumPreferred = exactCandidates.map(preferred).max() ?? 0
@@ -587,13 +723,14 @@ struct CanonicalQueryTypeBinder {
 
     private func bindInputs(
         _ expressions: [DatabaseKit.Expression], defaultType: QueryColumnType = .sql(.text),
-        field: QueryOccurrenceField = .operand, addresses: [QueryOccurrenceID?]? = nil
+        field: QueryOccurrenceField = .operand, addresses: [QueryOccurrenceID?]? = nil,
+        known: [CanonicalBoundExpression?]? = nil
     ) throws -> [CanonicalBoundExpression] {
         var bound: [Int: CanonicalBoundExpression] = [:]
         for (index, expression) in expressions.enumerated() where try !isContextualUnknown(expression) {
             var scoped = childBinder(field, index)
             if let addresses { scoped.currentOccurrence = addresses[index] }
-            bound[index] = try scoped.bind(expression)
+            bound[index] = try known?[index] ?? scoped.bind(expression)
         }
         var context: QueryColumnType?
         for index in expressions.indices {
@@ -702,7 +839,7 @@ struct CanonicalQueryTypeBinder {
     private func requireComparable(_ children: [CanonicalBoundExpression], operation: String) throws {
         try requirePrimitiveOperation(children, operation: operation)
         guard children.allSatisfy({ child in
-            !Self.isPrimitiveArray(child.type) && Self.primitiveKind(child.type) != nil
+            !Self.isPrimitiveArray(child.type) && (Self.primitiveKind(child.type) != nil || Self.temporalType(child.type) != nil)
         }) else { throw mismatch(operation) }
     }
 
@@ -730,6 +867,18 @@ struct CanonicalQueryTypeBinder {
     func commonType(_ types: [QueryColumnType]) throws -> QueryColumnType {
         guard let first = types.first else { return .sql(.text) }
         if types.allSatisfy({ $0 == first }) { return first }
+        if types.allSatisfy({ Self.temporalType($0) != nil }) {
+            let bases = types.compactMap(Self.temporalType)
+            let interval = DataType.interval()
+            guard bases.allSatisfy({ ($0 == interval) == (bases[0] == interval) }) else { throw mismatch("temporal common type") }
+            let candidates = bases.filter { target in
+                bases.allSatisfy { Self.temporalCastAllowed(from: $0, to: target, context: .implicit) }
+            }
+            guard let selected = candidates.first(where: { $0 == .timestamp(withTimeZone: true) }) ?? candidates.last else {
+                throw mismatch("temporal common type")
+            }
+            return .sql(selected)
+        }
         if types.allSatisfy({ if case .sql(.char) = $0 { return true }; return false }) { return .sql(.char(length: nil)) }
         if types.allSatisfy(Self.isText) { return .sql(.text) }
         if types.allSatisfy(Self.isBytes) { return .sql(.blob) }
@@ -789,6 +938,7 @@ struct CanonicalQueryTypeBinder {
 
     private static func sqlScalar(_ type: QueryColumnType) -> DataType? {
         guard !isPrimitiveArray(type) else { return nil }
+        if let temporal = temporalType(type) { return temporal }
         switch primitiveKind(type) {
         case .int8?, .int64?: return .bigint
         case .int16?: return .smallint
@@ -804,6 +954,9 @@ struct CanonicalQueryTypeBinder {
 
     private static func permitsImplicit(from source: QueryColumnType, to target: QueryColumnType) -> Bool {
         if source == target { return true }
+        if let source = temporalType(source), let target = temporalType(target) {
+            return temporalCastAllowed(from: source, to: target, context: .implicit)
+        }
         if numericKind(source) != nil, numericKind(target) != nil {
             func rank(_ type: DataType?) -> Int {
                 switch type {
@@ -868,7 +1021,11 @@ struct CanonicalQueryTypeBinder {
         case .numeric: return .sql(.decimal(precision: nil, scale: nil))
         case .json: return .sql(.json)
         case .jsonb: return .sql(.jsonb)
-        case .interval: return .sql(.interval)
+        case .interval, .intervalInfinity: return .sql(.interval())
+        case .time: return .sql(.time(withTimeZone: false))
+        case .timeWithTimeZone: return .sql(.time(withTimeZone: true))
+        case .dateInfinity: return .sql(.date)
+        case .timestampInfinity(_, let zone): return .sql(.timestamp(withTimeZone: zone))
         case .array(let value): return .sql(.array(value.elementType))
         case .primitive(let value):
             switch value {
@@ -928,6 +1085,12 @@ struct CanonicalQueryTypeBinder {
 
     func validateCast(from source: QueryColumnType, to target: QueryColumnType, context: CastContext = .explicit) throws {
         if source == target { return }
+        if let from = Self.temporalType(source), let to = Self.temporalType(target) {
+            guard Self.temporalCastAllowed(from: from, to: to, context: context) else { throw DatabaseExpressionEvaluationError.invalidCast("temporal conversion") }
+            return
+        }
+        if context == .explicit, Self.isText(source), Self.temporalType(target) != nil { return }
+        if context != .implicit, Self.temporalType(source) != nil, Self.isText(target) { return }
         if case .sql(.time(let sourceZone, _)) = source,
            case .sql(.time(let targetZone, _)) = target, sourceZone == targetZone { return }
         if Self.numericKind(source) != nil && Self.numericKind(target) != nil {
@@ -970,6 +1133,7 @@ struct CanonicalQueryTypeBinder {
         guard child.type != type else { return child }
         guard Self.permitsImplicit(from: child.type, to: type),
               (Self.numericKind(child.type) != nil && Self.numericKind(type) != nil)
+                || (Self.temporalType(child.type) != nil && Self.temporalType(type) != nil)
                 || (Self.primitiveKind(child.type) == .bool && Self.primitiveKind(type) == .bool
                     && !Self.isPrimitiveArray(child.type) && !Self.isPrimitiveArray(type))
                 || (Self.isText(child.type) && Self.isText(type))
@@ -1152,6 +1316,7 @@ struct CanonicalQueryTypeBinder {
     private func requirePrimitiveOperation(_ children: [CanonicalBoundExpression], operation: String) throws {
         for child in children {
             try requirePrimitiveOperation(child.children, operation: operation)
+            if Self.temporalType(child.type) != nil { continue }
             if case .literal(.queryValue(let value, _)) = child.expression, !value.isNull {
                 switch value {
                 case .primitive, .numeric: break

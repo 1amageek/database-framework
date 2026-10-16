@@ -3,126 +3,51 @@ import DatabaseTypes
 @_spi(DatabaseExecution) import DatabaseWire
 import StorageKit
 
-/// The source directory contract of one durable retirement marker.
-///
-/// Version 1 records the scope alone. Version 2 appends the layer of each
-/// component of that scope's path, so the address the work runs against can be
-/// verified against the declaration that issued it. A version 1 marker written
-/// before the layers were recorded stays readable and reports no layers, which
-/// is the state its writer actually knew.
+/// The captured source Directory contract of one durable retirement marker.
 private struct IndexRetirementScopeFrame: StorageFrameValue {
-    private static let versionWithoutLayers: UInt8 = 1
-    private static let versionWithLayers: UInt8 = 2
-
+    private static let version: UInt8 = 3
     let scope: DatabaseIndexStorageScope
     let directoryLayers: [DirectoryLayer]?
 
     init(_ retirement: DatabasePendingIndexRetirement) {
-        self.scope = retirement.scope
-        self.directoryLayers = retirement.directoryLayers
+        scope = retirement.scope
+        directoryLayers = retirement.directoryLayers
     }
 
-    func encode(
-        to encoder: inout StorageFrameEncoder
-    ) throws(StorageFrameError) {
-        encoder.writeUInt8(
-            directoryLayers == nil
-                ? Self.versionWithoutLayers
-                : Self.versionWithLayers
-        )
-        switch scope {
-        case .entity(let name, let components):
-            encoder.writeUInt8(0)
-            try encoder.writeString(name)
-            try encoder.writeCount(components.count)
-            for component in components {
-                switch component {
-                case .staticPath(let value):
-                    encoder.writeUInt8(0)
-                    try encoder.writeString(value)
-                case .dynamicField(let name):
-                    encoder.writeUInt8(1)
-                    try encoder.writeString(name)
-                }
-            }
-        case .polymorphicGroup(let identifier, let directoryPath):
-            encoder.writeUInt8(1)
-            try encoder.writeString(identifier)
-            try encoder.writeCount(directoryPath.count)
-            for component in directoryPath {
-                try encoder.writeString(component)
-            }
-        }
-        guard let directoryLayers else { return }
-        try encoder.writeCount(directoryLayers.count)
-        for layer in directoryLayers {
-            encoder.writeUInt8(Self.image(of: layer))
+    func encode(to encoder: inout StorageFrameEncoder) throws(StorageFrameError) {
+        encoder.writeUInt8(Self.version)
+        let bytes: ByteString
+        do { bytes = try DatabaseIndexStorageScopeCodec.encode(scope, limits: encoder.limits) }
+        catch let error as StorageFrameError { throw error }
+        catch { throw .invalidValue }
+        try encoder.writeBytes(bytes)
+        encoder.writeBool(directoryLayers != nil)
+        if let directoryLayers {
+            try encoder.writeCount(directoryLayers.count)
+            for layer in directoryLayers { encoder.writeUInt8(Self.image(of: layer)) }
         }
     }
 
-    init(
-        from decoder: inout StorageFrameDecoder
-    ) throws(StorageFrameError) {
-        let version = try decoder.readUInt8()
-        guard version == Self.versionWithoutLayers
-            || version == Self.versionWithLayers
-        else {
-            throw .invalidValue
-        }
-        let kind = try decoder.readUInt8()
-        let identifier = try decoder.readString()
-        let count = try decoder.readCount()
-        switch kind {
-        case 0:
-            var components: [DirectoryPathComponent] = []
-            components.reserveCapacity(count)
-            for _ in 0..<count {
-                let componentKind = try decoder.readUInt8()
-                let value = try decoder.readString()
-                switch componentKind {
-                case 0:
-                    components.append(.staticPath(value))
-                case 1:
-                    components.append(.dynamicField(fieldName: value))
-                default:
-                    throw .invalidValue
-                }
+    init(from decoder: inout StorageFrameDecoder) throws(StorageFrameError) {
+        guard try decoder.readUInt8() == Self.version else { throw .invalidValue }
+        do { scope = try DatabaseIndexStorageScopeCodec.decode(decoder.readBytes(), limits: decoder.limits) }
+        catch let error as StorageFrameError { throw error }
+        catch { throw .invalidValue }
+        if try decoder.readBool() {
+            let expected: Int
+            switch scope {
+            case .entity(_, let components, _): expected = components.count
+            case .polymorphicGroup(_, let path): expected = path.count
             }
-            scope = .entity(
-                name: identifier,
-                directoryComponents: components
-            )
-        case 1:
-            var directoryPath: [String] = []
-            directoryPath.reserveCapacity(count)
-            for _ in 0..<count {
-                directoryPath.append(try decoder.readString())
+            guard try decoder.readCount() == expected else { throw .invalidValue }
+            var layers: [DirectoryLayer] = []
+            layers.reserveCapacity(expected)
+            for _ in 0..<expected {
+                guard let layer = Self.layer(ofImage: try decoder.readUInt8()) else { throw .invalidValue }
+                layers.append(layer)
             }
-            scope = .polymorphicGroup(
-                identifier: identifier,
-                directoryPath: directoryPath
-            )
-        default:
-            throw .invalidValue
-        }
-        guard version == Self.versionWithLayers else {
-            directoryLayers = nil
-            return
-        }
-        // One layer per component: a shorter or longer vector cannot type the
-        // path this marker addresses.
-        guard try decoder.readCount() == count else {
-            throw .invalidValue
-        }
-        var layers: [DirectoryLayer] = []
-        layers.reserveCapacity(count)
-        for _ in 0..<count {
-            guard let layer = Self.layer(ofImage: try decoder.readUInt8()) else {
-                throw .invalidValue
-            }
-            layers.append(layer)
-        }
-        directoryLayers = layers
+            directoryLayers = layers
+        } else { directoryLayers = nil }
     }
 
     private static func image(of layer: DirectoryLayer) -> UInt8 {
@@ -347,6 +272,26 @@ extension DBContainer {
         }
     }
 
+    /// Enumerates the captured source declaration after its entity is removed.
+    @_spi(DatabaseExecution)
+    public func executionRetirementPartitionCatalogPage(
+        _ retirement: DatabasePendingIndexRetirement,
+        continuation: ByteString? = nil,
+        limit: Int,
+        transaction: any TransactionAccess
+    ) async throws -> DatabasePartitionCatalogPage {
+        try validateSchemaIndexRetirement(retirement)
+        guard case .entity(let name, let components, let fields) = retirement.scope,
+              let layers = retirement.directoryLayers,
+              layers.count == components.count else {
+            throw DatabaseSchemaPublicationError.corruptedState("retirement source Directory metadata is incomplete")
+        }
+        return try await DatabaseDirectoryPartitionEnumerator.page(
+            entityName: name, components: components, fieldSchemas: fields.map { $0.schema }, layers: layers,
+            below: operationDataDirectory(), access: operationDirectoryAccess(),
+            continuation: continuation, limit: limit, transaction: transaction)
+    }
+
     /// Retires the exact generation using the source directory contract stored
     /// with the durable marker. The published target schema is intentionally
     /// not consulted because the source entity or group may have been removed;
@@ -361,9 +306,10 @@ extension DBContainer {
         try validateSchemaIndexRetirement(retirement)
         let path: [String]
         switch retirement.scope {
-        case .entity(_, let components):
+        case .entity(_, let components, let fields):
             path = try Self.resolveRetirementDirectory(
                 components,
+                fields: fields,
                 partitions: partitions
             )
         case .polymorphicGroup(_, let directoryPath):
@@ -394,9 +340,8 @@ extension DBContainer {
                 transaction: transaction
             )
         } else {
-            // A marker staged before the source layers were recorded has no
-            // declared layer to verify against, and the declaration it names
-            // may be gone. The stored tag stays authoritative for addressing.
+            // An undeclared scope had no source layer at staging. Existing
+            // static-path cleanup uses the stored node tag for addressing.
             subspace = try await openUnverifiedDataDirectory(
                 relativePath: path,
                 transaction: transaction
@@ -433,9 +378,9 @@ extension DBContainer {
         in lease: DatabaseSchemaLease
     ) throws -> [DirectoryLayer]? {
         switch scope {
-        case .entity(let name, let components):
+        case .entity(let name, _, _):
             guard let entity = lease.schema.entity(named: name),
-                  entity.directoryComponents == components else {
+                  DatabaseIndexStorageScope.entity(entity) == scope else {
                 return nil
             }
             return try DBContainer.declaredLayers(
@@ -460,9 +405,9 @@ extension DBContainer {
         let index = retirement.identity.name
         let isDeclared: Bool
         switch retirement.scope {
-        case .entity(let name, let directoryComponents):
+        case .entity(let name, _, _):
             isDeclared = target.entity(named: name).map { entity in
-                entity.directoryComponents == directoryComponents
+                DatabaseIndexStorageScope.entity(entity) == retirement.scope
                     && entity.indexDescriptors.contains { $0.name == index }
             } ?? false
         case .polymorphicGroup(let identifier, let directoryPath):
@@ -524,6 +469,7 @@ extension DBContainer {
 
     private static func resolveRetirementDirectory(
         _ components: [DirectoryPathComponent],
+        fields: [DatabaseIndexStorageScope.DirectoryField],
         partitions: FieldObject
     ) throws -> [String] {
         let dynamicNames = components.compactMap { component in
@@ -547,7 +493,10 @@ extension DBContainer {
                         "index retirement partition is missing"
                     )
                 }
-                result.append(try DirectoryComponentCodec.encode(value))
+                guard let field = fields.first(where: { $0.name == name }) else {
+                    throw DatabaseSchemaPublicationError.corruptedState("index retirement source descriptor is missing")
+                }
+                result.append(try DirectoryComponentCodec.encode(value, schema: field.schema))
             }
         }
         return result

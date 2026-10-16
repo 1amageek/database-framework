@@ -594,7 +594,7 @@ extension SQLParser {
             }
             if let next = byte(1) {
                 let pair = String(decoding: [value, next], as: UTF8.self)
-                if ["<=", ">=", "<>", "!=", "||", "&&", "->", "<-", "::", "~*", "!~"].contains(pair) {
+                if ["<=", ">=", "<>", "!=", "||", "&&", "->", "<-", "::", "~*", "!~", "=>", ":="].contains(pair) {
                     position += 2; admitToken(.symbol(pair)); return
                 }
             }
@@ -1725,10 +1725,10 @@ extension SQLParser {
     }
 
     private func parseMulExpression() throws -> Expression {
-        var left = try parseUnaryExpression()
+        var left = try parseAtTimeZoneExpression()
         while case .symbol(let s) = currentToken, ["*", "/", "%"].contains(s) {
             advance()
-            let right = try parseUnaryExpression()
+            let right = try parseAtTimeZoneExpression()
             switch s {
             case "*": left = try makeStructuralNode(.multiply(left, right))
             case "/": left = try makeStructuralNode(.divide(left, right))
@@ -1737,6 +1737,20 @@ extension SQLParser {
             }
         }
         return left
+    }
+
+    private func parseAtTimeZoneExpression() throws -> Expression {
+        var value = try parseUnaryExpression()
+        while isContextualWord("AT") {
+            let start = tokenStart
+            advance()
+            try expectContextualWord("TIME")
+            try expectContextualWord("ZONE")
+            let zone = try parseUnaryExpression()
+            try sourceCapture?.reorderLastExpressions([1, 0])
+            value = try makeStructuralNode(.function(FunctionCall(name: "timezone", arguments: [zone, value])), at: start)
+        }
+        return value
     }
 
     private func parseUnaryExpression() throws -> Expression {
@@ -1803,6 +1817,20 @@ extension SQLParser {
         if !tokenIsQuoted, let word = labelText {
             let upper = asciiUppercase(word)
             let next = peekNextToken()
+            if let kind = Self.currentValueKind(upper) {
+                let identifierEnd = tokenEnd
+                advance()
+                let precision: Int?
+                if kind == .date { precision = nil }
+                else { precision = try parseTemporalPrecision() }
+                return try makeStructuralNode(.currentValue(kind: kind, precision: precision), at: primaryStart, identifierEnd: identifierEnd)
+            }
+            if upper == "INTERVAL", next.isString || next == .symbol("(") {
+                return try parseIntervalLiteral(at: primaryStart)
+            }
+            if upper == "EXTRACT", next == .symbol("(") {
+                return try parseExtractExpression(at: primaryStart)
+            }
             if ["ARRAY", "ROW"].contains(upper), next == .symbol(upper == "ARRAY" ? "[" : "(") {
                 advance()
                 return try parseConstructor(array: upper == "ARRAY", at: primaryStart)
@@ -1935,6 +1963,138 @@ extension SQLParser {
         }
     }
 
+    private static func currentValueKind(_ spelling: String) -> SQLCurrentValueKind? {
+        switch spelling {
+        case "CURRENT_DATE": return .date
+        case "CURRENT_TIME": return .time
+        case "CURRENT_TIMESTAMP": return .timestamp
+        case "LOCALTIME": return .localTime
+        case "LOCALTIMESTAMP": return .localTimestamp
+        default: return nil
+        }
+    }
+
+    private func parseExtractExpression(at start: Int) throws -> Expression {
+        let identifierEnd = tokenEnd
+        advance()
+        try expect("(")
+        let fieldStart = tokenStart, fieldEnd = tokenEnd
+        let field: String
+        if case .string(let value) = currentToken { field = value }
+        else if let value = labelText { field = tokenIsQuoted ? value : value.lowercased() }
+        else { throw ParseError.unexpectedToken(expected: "EXTRACT field", found: tokenDescription(currentToken), position: tokenStart) }
+        advance()
+        let fieldExpression = try makeStructuralNode(Expression.literal(.queryValue(.primitive(.string(field)), type: .sql(.text))), at: fieldStart, end: fieldEnd)
+        try expect("FROM")
+        let source = try parseExpression()
+        try expect(")")
+        return try makeStructuralNode(.function(FunctionCall(name: "extract", arguments: [fieldExpression, source])), at: start, identifierEnd: identifierEnd)
+    }
+
+    private func parseIntervalLiteral(at start: Int) throws -> Expression {
+        advance()
+        let precision = try parseTemporalPrecision()
+        guard case .string(let text) = currentToken else {
+            throw ParseError.unexpectedToken(expected: "interval string", found: tokenDescription(currentToken), position: tokenStart)
+        }
+        let literalStart = tokenStart
+        advance()
+        let value = try makeLiteralExpression(.sqlUnknownString(text), at: literalStart)
+        if precision != nil, let word = labelText, !tokenIsQuoted,
+           ["YEAR", "MONTH", "DAY", "HOUR", "MINUTE", "SECOND"].contains(asciiUppercase(word)) {
+            throw ParseError.invalidSyntax(message: "Interval precision cannot precede restricted fields", position: tokenStart)
+        }
+        let fields = precision == nil ? try parseIntervalFields() : nil
+        let fieldPrecision = fields == nil ? nil : try parseTemporalPrecision()
+        let type = DataType.interval(fields: fields, precision: precision ?? fieldPrecision)
+        guard QueryValueValidator.accepts(.primitive(.null), type: .sql(type)) else {
+            throw ParseError.invalidSyntax(message: "Invalid interval field precision", position: start)
+        }
+        _ = try makeStructuralNode(type, at: start)
+        return try normalizedCast(value, as: type, at: start)
+    }
+
+    private func parseIntervalFields() throws -> SQLIntervalFields? {
+        guard let word = labelText, !tokenIsQuoted else { return nil }
+        let first = asciiUppercase(word)
+        guard ["YEAR", "MONTH", "DAY", "HOUR", "MINUTE", "SECOND"].contains(first) else { return nil }
+        let start = tokenStart
+        advance()
+        var spelling = first
+        if consumeContextualWord("TO") {
+            guard let last = labelText, !tokenIsQuoted else {
+                throw ParseError.unexpectedToken(expected: "interval terminal field", found: tokenDescription(currentToken), position: tokenStart)
+            }
+            spelling += " TO " + asciiUppercase(last)
+            advance()
+        }
+        let field: SQLIntervalFields
+        switch spelling {
+        case "YEAR": field = .year
+        case "MONTH": field = .month
+        case "DAY": field = .day
+        case "HOUR": field = .hour
+        case "MINUTE": field = .minute
+        case "SECOND": field = .second
+        case "YEAR TO MONTH": field = .yearToMonth
+        case "DAY TO HOUR": field = .dayToHour
+        case "DAY TO MINUTE": field = .dayToMinute
+        case "DAY TO SECOND": field = .dayToSecond
+        case "HOUR TO MINUTE": field = .hourToMinute
+        case "HOUR TO SECOND": field = .hourToSecond
+        case "MINUTE TO SECOND": field = .minuteToSecond
+        default: throw ParseError.invalidSyntax(message: "Invalid interval field range", position: start)
+        }
+        return field
+    }
+
+    private func parseMakeIntervalArguments(at start: Int, identifierEnd: Int) throws -> [Expression] {
+        let names = ["years", "months", "weeks", "days", "hours", "mins", "secs"]
+        var supplied: [Expression] = []
+        var slots: [Int?] = Array(repeating: nil, count: names.count)
+        var named = false
+        if !isSymbol(")") {
+            while true {
+                try admitCollectionElement()
+                let slot: Int
+                if let name = labelText, peekNextToken() == .symbol("=>") || peekNextToken() == .symbol(":=") {
+                    named = true
+                    let exact = tokenIsQuoted ? name : name.lowercased()
+                    guard let index = names.firstIndex(of: exact), slots[index] == nil else {
+                        throw ParseError.invalidSyntax(message: "Unknown or duplicate MAKE_INTERVAL argument", position: tokenStart)
+                    }
+                    slot = index
+                    advance(); advance()
+                } else {
+                    guard !named, supplied.count < names.count else {
+                        throw ParseError.invalidSyntax(message: "Invalid MAKE_INTERVAL argument order or count", position: tokenStart)
+                    }
+                    slot = supplied.count
+                }
+                slots[slot] = supplied.count
+                supplied.append(try parseExpression())
+                guard isSymbol(",") else { break }
+                advance()
+            }
+        }
+        try expect(")")
+        guard named else { return supplied }
+        for index in slots.indices where slots[index] == nil {
+            try admitCollectionElement()
+            let literal: Literal = index == 6 ? .queryValue(.primitive(.float64(0)), type: .sql(.doublePrecision))
+                : .queryValue(.primitive(.int32(0)), type: .sql(.integer))
+            slots[index] = supplied.count
+            supplied.append(try makeStructuralNode(Expression.literal(literal), at: start, end: identifierEnd))
+        }
+        var order: [Int] = []
+        for slot in slots {
+            guard let slot else { throw ParseError.invalidSyntax(message: "Missing MAKE_INTERVAL slot", position: start) }
+            order.append(slot)
+        }
+        try sourceCapture?.reorderLastExpressions(order)
+        return order.map { supplied[$0] }
+    }
+
     private func parseIdentifierExpression(_ firstName: String) throws -> Expression {
         let firstQuoted = tokenIsQuoted
         let start = tokenStart
@@ -1969,6 +2129,10 @@ extension SQLParser {
                 guard !isSymbol(")") else {
                     throw ParseError.invalidSyntax(message: "DISTINCT function call requires arguments", position: tokenStart)
                 }
+            }
+            if name == "make_interval", schema == nil || schema == "pg_catalog", !distinct {
+                let args = try parseMakeIntervalArguments(at: start, identifierEnd: identifierEnd)
+                return try makeStructuralNode(.function(FunctionCall(name: name, arguments: args, schema: schema)), at: start, identifierEnd: identifierEnd)
             }
             var args: [Expression] = []
             if !isSymbol(")") {
@@ -2181,7 +2345,13 @@ extension SQLParser {
             let withTimeZone = firstWord == "TIMESTAMPTZ" ? true : try parseOptionalTimeZoneQualifier()
             baseType = .timestamp(withTimeZone: withTimeZone, precision: precision)
         case "INTERVAL":
-            baseType = .interval
+            let fields = try parseIntervalFields()
+            let precision = try parseTemporalPrecision()
+            let interval = DataType.interval(fields: fields, precision: precision)
+            guard QueryValueValidator.accepts(.primitive(.null), type: .sql(interval)) else {
+                throw ParseError.invalidSyntax(message: "Invalid interval field precision", position: typeStart)
+            }
+            baseType = interval
         case "BINARY":
             baseType = .binary(
                 length: try parseOptionalPositiveTypeParameter(

@@ -119,7 +119,7 @@ struct SQLiteStorageTests {
         #expect(selected.rows.count == 1)
         #expect(selected.rows[0].values == expected)
         let types: [QueryColumnType] = [.sql(.decimal(precision: nil, scale: nil)), .sql(.json),
-            .sql(.jsonb), .sql(.interval), .sql(.array(.integer))]
+            .sql(.jsonb), .sql(.interval()), .sql(.array(.integer))]
         #expect(selected.columns.map(\.type) == types)
         #expect(selected.columns.allSatisfy { !$0.isNullable })
         let empty = try await context.executeSQL(projection + " WHERE FALSE")
@@ -206,7 +206,6 @@ struct SQLiteStorageTests {
         for (sql, reason) in [
             ("SELECT ARRAY[1] WHERE FALSE", "SQL ARRAY/ROW constructor"),
             ("SELECT ROW(1, NULL)", "SQL ARRAY/ROW constructor"),
-            ("SELECT TIMESTAMP(3) '2026-10-15 10:20:30'", "SQL unknown string input for unsupported target type"),
         ] {
             do {
                 _ = try await context.executeSQL(sql)
@@ -223,6 +222,11 @@ struct SQLiteStorageTests {
                 Issue.record("Unexpected SQL execution failure: \(error)")
             }
         }
+        let temporal = try await context.executeSQL("SELECT TIMESTAMP(3) '2026-10-15 10:20:30', CAST(TIMESTAMP(3) '2026-10-15 10:20:30' AS text)")
+        let expectedTemporal = CivilDateTime(date: try CivilDate(year: 2026, month: 10, day: 15),
+            time: try CivilTime(hour: 10, minute: 20, second: 30))
+        #expect(temporal.columns.map(\.type) == [.sql(.timestamp(withTimeZone: false, precision: 3)), .sql(.text)])
+        #expect(temporal.rows[0].values == [.primitive(.dateTime(expectedTemporal)), .primitive(.string("2026-10-15 10:20:30"))])
         for type: DataType in [
             .time(withTimeZone: false, precision: 0),
             .time(withTimeZone: true, precision: 3),

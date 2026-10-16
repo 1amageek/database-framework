@@ -592,6 +592,7 @@ public struct DatabaseReadSession: Sendable {
     public let schema: Schema
     public let monotonicClock: any StorageMonotonicClock
     public let wallClock: any WallClock
+    public let temporalEnvironment: SQLTemporalEnvironment
     package let schemaGeneration: UInt64
 
     private init(
@@ -628,6 +629,13 @@ public struct DatabaseReadSession: Sendable {
         self.dataRoot = binding.dataRoot
         self.monotonicClock = context.container.monotonicClock
         self.wallClock = context.container.wallClock
+        self.temporalEnvironment = context.inheritedSQLTemporalEnvironment
+            ?? SQLTemporalEnvironment(
+                transactionInstant: binding.transactionInstant,
+                statementInstant: binding.transactionInstant,
+                wallClock: context.container.wallClock,
+                configuration: context.container.configuration.sqlTemporal
+            )
     }
 
     private init(
@@ -638,7 +646,8 @@ public struct DatabaseReadSession: Sendable {
         systemRoot: Subspace,
         dataRoot: Subspace,
         monotonicClock: any StorageMonotonicClock,
-        wallClock: any WallClock
+        wallClock: any WallClock,
+        temporalEnvironment: SQLTemporalEnvironment
     ) {
         self.scope = scope
         self.transaction = transaction
@@ -648,6 +657,7 @@ public struct DatabaseReadSession: Sendable {
         self.dataRoot = dataRoot
         self.monotonicClock = monotonicClock
         self.wallClock = wallClock
+        self.temporalEnvironment = temporalEnvironment
     }
 
     package static func withSession<Result: ~Copyable & Sendable>(
@@ -1169,7 +1179,8 @@ public struct DatabaseReadSession: Sendable {
             systemRoot: systemRoot,
             dataRoot: dataRoot,
             monotonicClock: monotonicClock,
-            wallClock: wallClock
+            wallClock: wallClock,
+            temporalEnvironment: temporalEnvironment
         )
     }
 

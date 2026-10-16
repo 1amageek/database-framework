@@ -434,6 +434,66 @@ borrow, and `ContainerDirectoryTransactionBorrow` retains the whole stack until
 because `admittedReadAccess` never re-wraps an admitted access and `scoped`
 always resolves to a distinct parent.
 
+
+### S06 declared SQL temporal Directory values
+
+The existing primitive component grammar and golden spellings remain unchanged.
+SQL temporal union storage is admitted only by the compiled `FieldSchema.queryType`
+contract from DatabaseKit. `FieldSchema.type` alone never authorizes interpretation
+of an object as a SQL temporal value. Declaration validation, physical value
+validation, path construction, partition enumeration and durable source-directory
+resolution must use the same field descriptor.
+
+The canonical Directory image preserves physical value identity. It differs from
+[declared SQL index key equality](../Index/DESIGN.md): an existing primitive TIME
+and a new SQL TIME envelope can denote the same SQL time while remaining distinct
+canonical `FieldValue` payloads. They therefore cannot share a Directory component.
+
+| Declared payload | Canonical component |
+|---|---|
+| Existing finite primitive DATE/TIME/DATETIME/TIMESTAMP | Existing `d`/`t`/`dt`/`ts` spelling, byte for byte |
+| SQL DATE negative/positive infinity | `qdi-n` / `qdi-p` |
+| SQL TIMESTAMP without zone negative/positive infinity | `qdti-n` / `qdti-p` |
+| SQL TIMESTAMPTZ negative/positive infinity | `qtsi-n` / `qtsi-p` |
+| New SQL TIME envelope, including values below 24:00 | `qtime-<microseconds>`; canonical unsigned decimal in 0...86400000000 |
+
+The temporal tags are Framework-owned Directory syntax, not new DatabaseTypes
+field kinds. Their parser validates the required descriptor and reconstructs the
+exact Kit-owned persistence payload. A temporal tag under an absent, primitive,
+or incompatible SQL descriptor is a typed failure. Generic object encoding stays
+unsupported; familiar object keys do not authorize SQL interpretation. A new
+SQL TIME envelope below 24:00 retains its `qtime` identity instead of collapsing
+to primitive `t`, and 24:00 never constructs an invalid `CivilTime`.
+
+The added canonical image is reserved against static Directory components by the
+same structural canonicality check as the primitive image. Decode followed by
+re-encode must preserve every accepted component; malformed sign, out-of-range
+microseconds, redundant zeros and wrong descriptors reject. Per-declared-kind
+injectivity and total conversion for admitted SQL DATE/TIME/TIMESTAMP values are
+required. New TIMETZ and existing INTERVAL remain outside Directory declaration
+admission; this adds no generic SQL Directory capability.
+
+Durable index retirement is a direct consumer of this contract: after removal of
+the source entity, it must retain the source dynamic-field descriptors required
+to reconstruct these components. Looking up a target/current schema or inferring
+a descriptor from an object is forbidden. `DatabaseIndexStorageScope.entity` retains an ordered immutable snapshot of
+its dynamic fields: name, primitive field kind and optional query type. The
+Framework-owned scope codec persists this snapshot; host job payloads relay its
+opaque bytes. This metadata excludes defaults, policy and unrelated schema
+state. Resolution consumes the source snapshot after entity deletion; the
+current target schema is never an authority fallback.
+
+After source removal, the retirement snapshot overload supplies entity name,
+components, field schemas and recorded layers directly to the same enumerator.
+It does not fabricate a Schema.Entity or consult the current entity catalog.
+The existing operation data-directory/access admission remains authoritative.
+Missing source layers for a dynamic retirement is a typed corrupted-state failure.
+
+Verification adds fixed temporal extension vectors, preserved primitive finite
+vectors, exact physical payload round trips, static-image collisions,
+wrong-descriptor/malformed rejection, real partition resolution/enumeration,
+and index retirement after removal of the declaring SQL temporal entity.
+
 ## Runtime Flows
 
 ### Bootstrap
@@ -559,7 +619,7 @@ Owners:
 for the canonical form, injectivity, and bijection;
 [DirectoryLayerTagMapTests](../../../Tests/DatabaseEngineTests/DirectoryLayerTagMapTests.swift)
 for derivation, the reserved image, and admitted kinds;
-[DirectoryBindingTests](../../../Tests/DatabaseEngineTests/DirectoryBindingTests.swift)
+[Directory tests](../../../Tests/DatabaseEngineTests)
 for topology, bootstrap, and binding;
 [DirectoryReadCreatesNothingTests](../../../Tests/DatabaseEngineTests/DirectoryReadCreatesNothingTests.swift)
 for the read direction creating nothing;

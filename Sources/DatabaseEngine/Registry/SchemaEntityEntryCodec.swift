@@ -179,7 +179,7 @@ enum SchemaEntityEntryCodec {
         }
     }
 
-    private static func writeQueryType(
+    package static func writeQueryType(
         _ type: QueryColumnType,
         into writer: inout StorageFrameEncoder
     ) throws(StorageFrameError) {
@@ -226,7 +226,21 @@ enum SchemaEntityEntryCodec {
             writer.writeUInt8(precision == nil ? 12 : 23)
             writer.writeBool(withTimeZone)
             if let precision { writer.writeUInt8(UInt8(precision)) }
-        case .interval: writer.writeUInt8(13)
+        case .interval(let fields, let precision):
+            if fields == nil, precision == nil { writer.writeUInt8(13) }
+            else {
+                writer.writeUInt8(25)
+                writer.writeBool(fields != nil)
+                if let fields {
+                    guard let index = SQLIntervalFields.allCases.firstIndex(of: fields) else { throw .invalidValue }
+                    writer.writeUInt8(UInt8(index))
+                }
+                writer.writeBool(precision != nil)
+                if let precision {
+                    guard (0...6).contains(precision) else { throw .invalidValue }
+                    writer.writeUInt8(UInt8(precision))
+                }
+            }
         case .binary(let length):
             writer.writeUInt8(14)
             try writeOptionalInt(length, into: &writer)
@@ -808,7 +822,7 @@ enum SchemaEntityEntryCodec {
         )
     }
 
-    private static func readQueryType(
+    package static func readQueryType(
         from reader: inout StorageFrameDecoder
     ) throws -> QueryColumnType {
         let type: QueryColumnType
@@ -855,7 +869,21 @@ enum SchemaEntityEntryCodec {
             guard precision <= 6 else { throw .invalidValue }
             return tag == 22 ? .time(withTimeZone: withTimeZone, precision: Int(precision))
                 : .timestamp(withTimeZone: withTimeZone, precision: Int(precision))
-        case 13: return .interval
+        case 13: return .interval()
+        case 25:
+            let fields: SQLIntervalFields?
+            if try reader.readBool() {
+                let index = Int(try reader.readUInt8())
+                guard index < SQLIntervalFields.allCases.count else { throw .invalidValue }
+                fields = SQLIntervalFields.allCases[index]
+            } else { fields = nil }
+            let precision: Int?
+            if try reader.readBool() {
+                let value = Int(try reader.readUInt8())
+                guard value <= 6 else { throw .invalidValue }
+                precision = value
+            } else { precision = nil }
+            return .interval(fields: fields, precision: precision)
         case 14: return .binary(length: try readOptionalInt(from: &reader))
         case 15: return .varbinary(length: try readOptionalInt(from: &reader))
         case 16: return .blob

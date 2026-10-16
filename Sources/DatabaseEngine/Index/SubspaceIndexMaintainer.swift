@@ -126,11 +126,11 @@ extension SubspaceIndexMaintainer {
     /// - Parameter item: The item to extract fields from
     /// - Returns: Array of field values as TupleElements
     /// - Throws: Error if field extraction fails
-    @inlinable
     public func evaluateIndexFields(from item: Item) throws -> [any TupleElement] {
         return try DataAccess.evaluate(
             item: item,
-            expression: index.rootExpression
+            expression: index.rootExpression,
+            fieldSchemas: index.descriptor.fieldSchemas
         )
     }
 }

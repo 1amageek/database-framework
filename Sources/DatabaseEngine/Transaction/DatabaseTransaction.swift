@@ -22,6 +22,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
     }
 
     nonisolated package let storageAccess: any TransactionAccess
+    nonisolated package let transactionInstant: Timestamp
 
     @_spi(DatabaseExecution)
     public nonisolated var executionStorageAccess: any TransactionAccess {
@@ -52,10 +53,12 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
     public init(
         storageAccess: any TransactionAccess,
         container: DBContainer,
-        authorization: AuthorizationContext
+        authorization: AuthorizationContext,
+        transactionInstant: Timestamp? = nil
     ) {
         self.storageAccess = storageAccess
         self.container = container
+        self.transactionInstant = transactionInstant ?? container.wallClock.now
         self.readPolicy = DatabaseReadPolicy(
             schemaLease: container.acquireActiveSchemaLease(),
             authorization: authorization
@@ -72,10 +75,12 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         storageAccess: any TransactionAccess,
         container: DBContainer,
         readPolicy: DatabaseReadPolicy,
-        readAuthorization: DatabaseReadAuthorization? = nil
+        readAuthorization: DatabaseReadAuthorization? = nil,
+        transactionInstant: Timestamp? = nil
     ) {
         self.storageAccess = storageAccess
         self.container = container
+        self.transactionInstant = transactionInstant ?? container.wallClock.now
         self.readPolicy = readPolicy
         self.readAuthorization = readAuthorization
         self.mutationMaintenanceService =
@@ -83,6 +88,15 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
                 maintainers: container.runtimeConfiguration
                     .persistableMutationMaintainers
             )
+    }
+
+    package nonisolated func makeSQLTemporalEnvironment() -> SQLTemporalEnvironment {
+        SQLTemporalEnvironment(
+            transactionInstant: transactionInstant,
+            statementInstant: container.wallClock.now,
+            wallClock: container.wallClock,
+            configuration: container.configuration.sqlTemporal
+        )
     }
 
     // MARK: - Typed reads

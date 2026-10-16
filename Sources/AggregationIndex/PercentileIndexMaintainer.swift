@@ -470,7 +470,7 @@ public struct PercentileIndexMaintainer<Item: PersistedEntityValue>:
             }
             results.append((
                 grouping: try AggregationGroupingValueDecoder.decode(
-                    group.grouping
+                    group.grouping, fieldSchemas: index.descriptor.keyFieldSchemas
                 ),
                 values: try digest.quantiles(percentiles)
             ))

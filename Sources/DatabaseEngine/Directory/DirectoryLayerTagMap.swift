@@ -262,11 +262,6 @@ package struct DirectoryLayerTagMap: Sendable {
     /// A dynamic sibling produces canonical components, so a static component
     /// that decodes as one is not addressable as a distinct node.
     private static func isCanonicalComponent(_ value: String) -> Bool {
-        do {
-            _ = try DirectoryComponentCodec.decode(value)
-            return true
-        } catch {
-            return false
-        }
+        DirectoryComponentCodec.isCanonicalImage(value)
     }
 }

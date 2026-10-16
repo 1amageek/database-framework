@@ -9,6 +9,8 @@ struct SPARQLAggregateRewriter {
     ) throws -> Expression {
         switch expression {
         // SQL conditionals and quantified predicates have no RDF interpretation.
+        case .currentValue:
+            throw SPARQLExpressionCompilationError.unsupportedExpression("SQL current value")
         case .concatenate:
             throw SPARQLExpressionCompilationError.unsupportedExpression("SQL concatenation")
         case .greatest, .least, .truthTest, .isDistinctFrom, .quantifiedComparison:

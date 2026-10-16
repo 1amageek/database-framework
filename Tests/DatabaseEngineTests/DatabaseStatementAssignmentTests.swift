@@ -61,6 +61,30 @@ struct DatabaseStatementAssignmentTests {
             filter: .and(.equal(.col("id"), .string("delete")), codepoints))), container: container)
         #expect(try await title("delete", container: container) == nil)
         #expect(try await title("one", container: container) == .string("ok"))
+
+        let temporal = try await makeContainer(fieldType: .object, queryType: .sql(.interval()))
+        defer { await temporal.shutdown() }
+        let initial = Expression.cast(.string("1 month"), targetType: .interval())
+        _ = try await execute(insert("interval", initial), container: temporal)
+        let equalMonth = Expression.equal(.col("title"), .cast(.string("30 days"), targetType: .interval()))
+        _ = try await execute(.update(UpdateQuery(target: TableRef("Assignment"),
+            assignments: [Assignment(column: "title", value: .add(.col("title"), .cast(.string("2 seconds"), targetType: .interval())))],
+            filter: equalMonth)), container: temporal)
+        let payload = try #require(try await title("interval", container: temporal))
+        let limits = try QueryFieldStorageAdapter.inferredLimits(for: payload, type: .sql(.interval()))
+        let decoded = try QueryFieldStorageAdapter.decode(payload, type: .sql(.interval()), limits: limits)
+        let expected = try QueryIntervalValue(period: CalendarPeriod(months: 1), time: TimeSpan(seconds: 2))
+        #expect(decoded == .interval(expected))
+        let failedMeter = meter()
+        await #expect(throws: CanonicalReadError.self) {
+            try await execute(update(.cast(.string("invalid interval"), targetType: .interval())), container: temporal, workMeter: failedMeter)
+        }
+        #expect(failedMeter.retainedIntermediateBytes == 0)
+        #expect(try await title("interval", container: temporal) == payload)
+        _ = try await execute(update(.cast(.string("infinity"), targetType: .interval())), container: temporal)
+        let infinitePayload = try #require(try await title("interval", container: temporal))
+        let infiniteLimits = try QueryFieldStorageAdapter.inferredLimits(for: infinitePayload, type: .sql(.interval()))
+        #expect(try QueryFieldStorageAdapter.decode(infinitePayload, type: .sql(.interval()), limits: infiniteLimits) == .intervalInfinity(.positive))
     }
 
     @Test("A late assignment failure leaves all rows unchanged and permits the next mutation")

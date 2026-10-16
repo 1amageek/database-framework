@@ -65,6 +65,7 @@ public struct DirectoryPath<T: Persistable>: Sendable {
 
     internal func resolve() throws -> [String] {
         let partitions = try canonicalPartitions()
+        let fieldSchemas = try T.fieldSchemas
         var path: [String] = []
         path.reserveCapacity(T.directoryPathComponents.count)
 
@@ -76,7 +77,8 @@ public struct DirectoryPath<T: Persistable>: Sendable {
                 guard let value = partitions[name] else {
                     throw DirectoryPathError.missingFields([name])
                 }
-                path.append(try DirectoryComponentCodec.encode(value))
+                guard let schema = fieldSchemas.first(where: { $0.name == name }) else { throw DirectoryPathError.missingFields([name]) }
+                path.append(try DirectoryComponentCodec.encode(value, schema: schema))
             }
         }
         return path
@@ -133,10 +135,7 @@ public struct DirectoryPath<T: Persistable>: Sendable {
                     reason: "partition fields cannot be null"
                 )
             }
-            guard FieldSchemaValueValidator.accepts(
-                value,
-                as: schema.type
-            ) else {
+            guard DirectoryComponentCodec.accepts(value, schema: schema) else {
                 throw DirectoryPathError.invalidField(
                     typeName: T.persistableType,
                     field: name,
@@ -275,7 +274,7 @@ public struct AnyDirectoryPath: Sendable {
                   !schema.isArray,
                   schema.type != .nested,
                   value != .null,
-                  FieldSchemaValueValidator.accepts(value, as: schema.type) else {
+                  DirectoryComponentCodec.accepts(value, schema: schema) else {
                 throw DirectoryPathError.invalidField(
                     typeName: entity.name,
                     field: name,
@@ -294,7 +293,8 @@ public struct AnyDirectoryPath: Sendable {
                 guard let value = partitions[name] else {
                     throw DirectoryPathError.missingFields([name])
                 }
-                resolved.append(try DirectoryComponentCodec.encode(value))
+                guard let schema = entity.fieldMapByName[name] else { throw DirectoryPathError.missingFields([name]) }
+                resolved.append(try DirectoryComponentCodec.encode(value, schema: schema))
             }
         }
         self.components = resolved

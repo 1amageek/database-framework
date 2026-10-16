@@ -7,7 +7,7 @@ import Testing
 @Suite("Canonical SQL expression type binding")
 struct CanonicalQueryTypeBinderTests {
 
-    @Test("SQL constructors reject binding while temporal literal NULL casts retain their declared type")
+    @Test("SQL constructors reject binding while temporal casts retain declarations for runtime conversion")
     func deferredSQLSemanticsFailBinding() throws {
         for expression: Expression in [.array([.int(1)]), .row([.null])] {
             let query = SelectQuery(projection: .items([ProjectionItem(expression)]),
@@ -27,9 +27,9 @@ struct CanonicalQueryTypeBinderTests {
             #expect(throws: DatabaseExpressionEvaluationError.self) {
                 try binder().bind(.cast(.literal(.queryValue(.primitive(.null), type: .sql(.integer))), targetType: type))
             }
-            #expect(throws: DatabaseExpressionEvaluationError.unsupportedExpression("temporal precision conversion")) {
-                try binder().bind(.cast(.string("12:00"), targetType: type))
-            }
+            let selected = try binder().bind(.cast(.string("12:00"), targetType: type))
+            #expect(selected.type == .sql(type))
+            #expect(selected.children[0].type == .sql(.text))
             let identity = try binder(parameters: [QueryParameter(position: 1, value: .primitive(.null), type: .sql(type))])
                 .bind(.cast(.parameter(.position(1)), targetType: type))
             #expect(identity.type == .sql(type))

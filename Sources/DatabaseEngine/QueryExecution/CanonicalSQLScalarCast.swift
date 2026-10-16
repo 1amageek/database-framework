@@ -13,9 +13,14 @@ enum CanonicalSQLScalarCast {
 
     static func evaluateValue(_ value: QueryValue, from source: QueryColumnType,
         to target: QueryColumnType, context: CanonicalQueryTypeBinder.CastContext,
-        workMeter: DatabaseWorkMeter) throws -> QueryValue {
+        temporalEnvironment: SQLTemporalEnvironment? = nil, workMeter: DatabaseWorkMeter) throws -> QueryValue {
         try validate(value, source: source, target: target, workMeter: workMeter)
         if case .primitive = target, source == target { return value }
+        if CanonicalQueryTypeBinder.temporalType(target) != nil {
+            guard let temporalEnvironment else { throw DatabaseExpressionEvaluationError.missingTemporalEnvironment }
+            return try CanonicalSQLTemporalEvaluator.cast(value, from: source, to: target, context: context,
+                environment: temporalEnvironment, workMeter: workMeter)
+        }
         if target == .sql(.uuid) || target == .primitive(.uuid, isArray: false) {
             guard isText(source) || isUUID(source) else { throw invalid("UUID") }
             if value.isNull { return .primitive(.null) }
@@ -87,7 +92,7 @@ enum CanonicalSQLScalarCast {
 
     static func evaluatePayload(_ value: QueryValue, from source: QueryColumnType,
         to target: QueryColumnType, context: CanonicalQueryTypeBinder.CastContext,
-        workMeter: DatabaseWorkMeter) throws -> DatabaseQueryScopedFieldValue {
+        temporalEnvironment: SQLTemporalEnvironment? = nil, workMeter: DatabaseWorkMeter) throws -> DatabaseQueryScopedFieldValue {
         try validate(value, source: source, target: target, workMeter: workMeter)
         guard usesPayload(target) else { throw invalid("selected payload target") }
         if isBinary(target) {
@@ -119,7 +124,7 @@ enum CanonicalSQLScalarCast {
                 context: context, workMeter: workMeter)
         }
         return try CanonicalSQLScalarText.withText(of: value, type: source,
-            preservingCharacterPadding: isCharacter(target), workMeter: workMeter) { text in
+            preservingCharacterPadding: isCharacter(target), temporalEnvironment: temporalEnvironment, workMeter: workMeter) { text in
                 try characterResult(text, target: target, context: context, workMeter: workMeter)
             }
     }
@@ -177,6 +182,7 @@ enum CanonicalSQLScalarCast {
     }
 
     static func supportsTextOutput(_ type: QueryColumnType) -> Bool {
+        if CanonicalQueryTypeBinder.temporalType(type) != nil { return true }
         switch type {
         case .sql(.smallint), .sql(.integer), .sql(.bigint), .sql(.real), .sql(.doublePrecision),
              .sql(.decimal), .sql(.boolean), .sql(.text), .sql(.char), .sql(.varchar), .sql(.uuid),

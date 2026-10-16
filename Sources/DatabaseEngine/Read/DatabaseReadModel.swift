@@ -92,12 +92,14 @@ public struct ReadExecutionContext: Sendable {
     public let options: ReadExecutionOptions
     public let workMeter: DatabaseWorkMeter
     public let queryStructuralLimits: QueryStructuralLimits
+    public let temporalEnvironment: SQLTemporalEnvironment?
 
     public init(
         options: ReadExecutionOptions = .default,
         monotonicClock: any StorageMonotonicClock,
         workMeter: DatabaseWorkMeter? = nil,
-        queryStructuralLimits: QueryStructuralLimits = .default
+        queryStructuralLimits: QueryStructuralLimits = .default,
+        temporalEnvironment: SQLTemporalEnvironment? = nil
     ) {
         self.options = options
         self.workMeter = workMeter ?? DatabaseWorkMeter(
@@ -105,6 +107,7 @@ public struct ReadExecutionContext: Sendable {
             monotonicClock: monotonicClock
         )
         self.queryStructuralLimits = queryStructuralLimits
+        self.temporalEnvironment = temporalEnvironment
     }
 
     public var consistency: ReadConsistency? { options.consistency }
@@ -114,18 +117,30 @@ public struct ReadExecutionContext: Sendable {
         Self(
             options: options.withoutExternalPageWindow(),
             workMeter: workMeter,
-            queryStructuralLimits: queryStructuralLimits
+            queryStructuralLimits: queryStructuralLimits,
+            temporalEnvironment: temporalEnvironment
         )
     }
 
     private init(
         options: ReadExecutionOptions,
         workMeter: DatabaseWorkMeter,
-        queryStructuralLimits: QueryStructuralLimits
+        queryStructuralLimits: QueryStructuralLimits,
+        temporalEnvironment: SQLTemporalEnvironment?
     ) {
         self.options = options
         self.workMeter = workMeter
         self.queryStructuralLimits = queryStructuralLimits
+        self.temporalEnvironment = temporalEnvironment
+    }
+
+    package func withTemporalEnvironment(_ environment: SQLTemporalEnvironment) -> Self {
+        Self(
+            options: options,
+            workMeter: workMeter,
+            queryStructuralLimits: queryStructuralLimits,
+            temporalEnvironment: environment
+        )
     }
 
     public func resolvePageSize() throws -> Int? {

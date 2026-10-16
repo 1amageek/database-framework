@@ -24,7 +24,8 @@ public struct ScalarIndexPhysicalEntryDecoder: IndexPhysicalEntryDecoder {
         for fieldIndex in 0..<indexedFieldCount {
             let element = try cursor.requireNext()
             do {
-                indexedValues.append(try FieldValue(tupleElement: element))
+                indexedValues.append(try DeclaredTemporalIndexKeyCodec.decode(element,
+                    schema: index.descriptor.fieldSchemas[fieldIndex]))
             } catch let error {
                 throw ScalarIndexPhysicalEntryError.invalidIndexedValue(
                     fieldIndex: fieldIndex,

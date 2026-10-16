@@ -303,3 +303,13 @@ reservation grows before each rewritten occurrence and origin-map entry is
 retained; arena and origin ownership therefore remain request-accounted until
 the prepared carrier is released. Parameter value payloads and the original
 parse arena retain their existing owners without copying those payloads.
+
+
+### S06 SQL statement boundary
+
+executeSQL captures the [Core temporal environment](../DatabaseEngine/Core/DESIGN.md#s06-clock-and-configuration-ownership)
+before parsing and passes it through ReadExecutionContext and the existing
+canonical/SPARQL preparation path. Internal reentry retains that statement
+time. The public facade does not implement temporal conversion, acquire zone
+data or read a process default. Binding/source failure mapping still uses the
+original occurrence arena; injected clocks and zones grant no authority.

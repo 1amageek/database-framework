@@ -36,13 +36,28 @@ package enum DatabaseDirectoryPartitionEnumerator {
         limit: Int,
         transaction: any TransactionReadAccess
     ) async throws -> DatabasePartitionCatalogPage {
+        try await page(entityName: entity.name, components: entity.directoryComponents,
+            fieldSchemas: entity.fields, layers: layers, below: data, access: access,
+            continuation: continuation, limit: limit, transaction: transaction)
+    }
+
+    package static func page(
+        entityName: String,
+        components: [DirectoryPathComponent],
+        fieldSchemas: [FieldSchema],
+        layers: [DirectoryLayer],
+        below data: Directory,
+        access: any DirectoryAccess,
+        continuation: ByteString?,
+        limit: Int,
+        transaction: any TransactionReadAccess
+    ) async throws -> DatabasePartitionCatalogPage {
         guard limit > 0, limit <= maximumPageSize else {
             throw DatabasePartitionCatalogError.invalidPageLimit(
                 actual: limit,
                 maximum: maximumPageSize
             )
         }
-        let components = entity.directoryComponents
         precondition(
             layers.count == components.count,
             "A directory path is typed component by component"
@@ -55,7 +70,7 @@ package enum DatabaseDirectoryPartitionEnumerator {
         }
 
         let declaration = declarationBinding(
-            entity: entity.name,
+            entity: entityName,
             components: components
         )
         var stack = try await descend(
@@ -88,11 +103,12 @@ package enum DatabaseDirectoryPartitionEnumerator {
             guard index + 1 < components.count else {
                 entries.append(
                     DatabasePartitionCatalogItem(
-                        entity: entity.name,
+                        entity: entityName,
                         partitions: try partitions(
                             of: stack,
                             components: components,
-                            entity: entity.name
+                            entity: entityName,
+                            fieldSchemas: fieldSchemas
                         )
                     )
                 )
@@ -223,7 +239,8 @@ package enum DatabaseDirectoryPartitionEnumerator {
     private static func partitions(
         of stack: [Frame],
         components: [DirectoryPathComponent],
-        entity: String
+        entity: String,
+        fieldSchemas: [FieldSchema]
     ) throws -> FieldObject {
         var fields: [(key: String, value: FieldValue)] = []
         for index in components.indices {
@@ -237,7 +254,10 @@ package enum DatabaseDirectoryPartitionEnumerator {
                 )
             }
             do {
-                fields.append((key: field, value: try DirectoryComponentCodec.decode(name)))
+                guard let schema = fieldSchemas.first(where: { $0.name == field }) else {
+                    throw DirectoryComponentCodecError.invalidDeclaredValue
+                }
+                fields.append((key: field, value: try DirectoryComponentCodec.decode(name, schema: schema)))
             } catch {
                 throw DatabasePartitionCatalogError.invalidPartitions(
                     entity: entity,

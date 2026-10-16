@@ -60,6 +60,7 @@ public final class CompositionDecisionTransaction: Sendable {
             let executionBinding = try DatabaseTransactionExecutionBinding(
                 context: context,
                 transaction: storageAccess,
+                transactionInstant: writerTransaction.transactionInstant,
                 grantedAccess: .read,
                 databaseTransaction: nil
             )

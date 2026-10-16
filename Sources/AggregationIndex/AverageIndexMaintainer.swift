@@ -269,7 +269,7 @@ public struct AverageIndexMaintainer<Item: PersistedEntityValue, Value: IndexNum
             }
             results.append((
                 grouping: try AggregationGroupingValueDecoder.decode(
-                    sumInfo.grouping
+                    sumInfo.grouping, fieldSchemas: index.descriptor.keyFieldSchemas
                 ),
                 count: count,
                 average: try exactAverage(sum: sumInfo.sum, count: count)

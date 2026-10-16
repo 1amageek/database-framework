@@ -747,7 +747,7 @@ extension DBContainer {
         let lease = acquireActiveSchemaLease()
         let activeTarget: DatabaseIndexTransitionPlan.Target
         switch target.scope {
-        case .entity(let entity, _):
+        case .entity(let entity, _, _):
             guard let declaration = lease.schema.entity(named: entity) else {
                 throw DatabaseSchemaPublicationError.corruptedState(
                     "completed schema index build entity is not declared"
@@ -998,10 +998,7 @@ extension DBContainer {
     private static func entityIndexBuildScope(
         _ entity: Schema.Entity
     ) -> DatabaseIndexStorageScope {
-        .entity(
-            name: entity.name,
-            directoryComponents: entity.directoryComponents
-        )
+        .entity(entity)
     }
 
     private static func polymorphicIndexBuildScope(

@@ -468,7 +468,7 @@ public struct DistinctIndexMaintainer<Item: PersistedEntityValue>:
             )
             results.append((
                 grouping: try AggregationGroupingValueDecoder.decode(
-                    group.grouping
+                    group.grouping, fieldSchemas: index.descriptor.keyFieldSchemas
                 ),
                 estimated: try estimatedCardinality(estimator),
                 errorRate: estimator.estimatedRelativeError
@@ -505,7 +505,7 @@ public struct DistinctIndexMaintainer<Item: PersistedEntityValue>:
         }
 
         let value = try canonicalDistinctValue(
-            FieldValue(tupleElement: fields.value),
+            DeclaredTemporalIndexKeyCodec.decode(fields.value, schema: index.descriptor.keyFieldSchemas.last!),
             fieldName: index.name
         )
         guard value != .null else {

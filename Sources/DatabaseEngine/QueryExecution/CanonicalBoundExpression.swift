@@ -155,7 +155,7 @@ struct CanonicalBoundExpression: Sendable {
                 lowered = try .arrayAgg(argument(), orderBy: keys, distinct: distinct)
             }
             result = .aggregate(lowered)
-        case .subquery, .exists, .literal, .parameter, .column,
+        case .currentValue, .subquery, .exists, .literal, .parameter, .column,
              .array, .row, .variable, .bound, .regex, .triple, .isTriple, .subject, .predicate, .object:
             result = expression
         }

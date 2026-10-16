@@ -3,6 +3,7 @@ import DatabaseKit
 
 public indirect enum FieldValueTupleCodecError: Error, Sendable, Equatable {
     case unsupportedElementType(String)
+    case invalidDeclaredQueryValue(QueryValueError)
     case invalidEnvelopeMagic
     case unsupportedEnvelopeVersion(UInt8)
     case invalidRootTag(UInt8)

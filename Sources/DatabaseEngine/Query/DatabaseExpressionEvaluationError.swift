@@ -15,6 +15,10 @@ public enum DatabaseExpressionEvaluationError: Error, Sendable, Equatable, Custo
     case invalidPattern(offset: UInt64, reason: String)
     case unsupportedPattern(offset: UInt64, reason: String)
     case invalidCast(String)
+    case invalidTemporalInput
+    case temporalValueOutOfRange
+    case timeZone(SQLTimeZoneError)
+    case missingTemporalEnvironment
     case invalidRDFLiteral(datatype: String)
 
     public var description: String {
@@ -51,6 +55,14 @@ public enum DatabaseExpressionEvaluationError: Error, Sendable, Equatable, Custo
             return "Unsupported pattern at offset \(offset): \(reason)"
         case .invalidCast(let type):
             return "Expression cannot be cast to \(type)"
+        case .invalidTemporalInput:
+            return "Expression contains invalid temporal input"
+        case .temporalValueOutOfRange:
+            return "Expression temporal value is outside the selected range"
+        case .timeZone:
+            return "Expression cannot resolve its selected time zone"
+        case .missingTemporalEnvironment:
+            return "Expression requires an explicit temporal environment"
         case .invalidRDFLiteral(let datatype):
             return "Expression contains an invalid RDF literal for \(datatype)"
         }

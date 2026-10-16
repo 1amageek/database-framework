@@ -88,7 +88,13 @@ extension SQLTextWriter {
         case .date: try append("DATE")
         case .time(let zone, let precision): try temporalType("TIME", zone, precision)
         case .timestamp(let zone, let precision): try temporalType("TIMESTAMP", zone, precision)
-        case .interval: try append("INTERVAL")
+        case .interval(let fields, let precision):
+            guard QueryValueValidator.accepts(.primitive(.null), type: .sql(value)) else {
+                throw .unsupportedType("Invalid interval field precision")
+            }
+            try append("INTERVAL")
+            if let fields { try append(" "); try append(SQLConstantSyntax.intervalFieldsText(fields)) }
+            if let precision { try append("(\(precision))") }
         case .binary(let length): try lengthType("BINARY", length)
         case .varbinary(let length): try lengthType("VARBINARY", length)
         case .blob: try append("BYTEA")
@@ -189,6 +195,16 @@ extension SQLTextWriter {
                 catch let error as SQLSerializationError { throw error }
                 catch let error as SQLConstantError { throw constantError(error) }
                 catch { throw .constant("SQL constant conversion failed") }
+            case .time(let value):
+                try append("TIME "); try string(SQLConstantSyntax.timeText(value))
+            case .timeWithTimeZone(let value): try offsetTimeLiteral(value)
+            case .dateInfinity(let value):
+                try append("DATE "); try string(SQLConstantSyntax.infinityText(value))
+            case .timestampInfinity(let value, let zone):
+                try append(zone ? "TIMESTAMP WITH TIME ZONE " : "TIMESTAMP WITHOUT TIME ZONE ")
+                try string(SQLConstantSyntax.infinityText(value))
+            case .intervalInfinity(let value):
+                try append("INTERVAL "); try string(SQLConstantSyntax.infinityText(value))
             case .interval(let value): try append("INTERVAL "); try string(SQLConstantSyntax.intervalText(value))
             case .array(let value):
                 try append("CAST(")
@@ -204,6 +220,34 @@ extension SQLTextWriter {
         }
     }
 
+    private mutating func offsetTimeLiteral(_ value: QueryTimeWithTimeZoneValue) throws(SQLSerializationError) {
+        if (-57_599...57_599).contains(value.utcOffsetSeconds) {
+            try append("TIME WITH TIME ZONE ")
+            do { try string(SQLConstantSyntax.offsetTimeText(value)) }
+            catch let error as SQLSerializationError { throw error }
+            catch let error as SQLConstantError { throw constantError(error) }
+            catch { throw .unsupportedLiteral("Invalid TIMETZ lexical value") }
+            return
+        }
+        let day: Int64 = 86_400_000_000
+        guard value.time.microsecondsSinceMidnight < day else {
+            throw .unsupportedLiteral("Wide-offset TIMETZ 24:00 cannot preserve its endpoint in SQL text")
+        }
+        let offset = Int64(value.utcOffsetSeconds).multipliedReportingOverflow(by: 1_000_000)
+        let utc = value.time.microsecondsSinceMidnight.subtractingReportingOverflow(offset.partialValue)
+        guard !offset.overflow, !utc.overflow else { throw .unsupportedLiteral("TIMETZ offset overflow") }
+        let remainder = utc.partialValue % day
+        let micros = remainder < 0 ? remainder + day : remainder
+        let base: QueryTimeValue
+        do throws(QueryValueError) { base = try QueryTimeValue(microsecondsSinceMidnight: micros) }
+        catch let error { throw .constant(SQLConstantError.value(error).description) }
+        try append("\"timezone\"(INTERVAL ")
+        try string("0 mons 0 days \(offset.partialValue) microseconds")
+        try append(", TIME WITH TIME ZONE ")
+        try string(SQLConstantSyntax.timeText(base) + "+00:00")
+        try append(")")
+    }
+
     private mutating func admitQueryValue(_ value: QueryValue) throws(SQLSerializationError) {
         let footprint: QueryValueFootprint
         do {
@@ -213,7 +257,7 @@ extension SQLTextWriter {
             case .array(let array):
                 guard UInt64(array.elements.count) <= limits.maximumCollectionElements else { throw SQLSerializationError.structuralLimit("SQL array collection budget exceeded") }
                 footprint = try QueryValueValidator.measure(value)
-            case .numeric, .interval:
+            case .numeric, .interval, .time, .timeWithTimeZone, .dateInfinity, .timestampInfinity, .intervalInfinity:
                 footprint = QueryValueFootprint(nodeCount: 1, collectionElementCount: 0, retainedByteCount: 0, maximumNestingDepth: 1)
             case .primitive: return
             }
@@ -300,6 +344,20 @@ extension SQLTextWriter {
     mutating func expression(_ value: Expression) throws(SQLSerializationError) {
         try enter(); defer { depth -= 1 }
         switch value {
+        case .currentValue(let kind, let precision):
+            guard precision == nil || kind != .date && (0...6).contains(precision!) else {
+                throw .invalidStructure("Invalid current-value precision")
+            }
+            let keyword: String
+            switch kind {
+            case .date: keyword = "CURRENT_DATE"
+            case .time: keyword = "CURRENT_TIME"
+            case .timestamp: keyword = "CURRENT_TIMESTAMP"
+            case .localTime: keyword = "LOCALTIME"
+            case .localTimestamp: keyword = "LOCALTIMESTAMP"
+            }
+            try append(keyword)
+            if let precision { try append("(\(precision))") }
         case .literal(let value): try literal(value)
         case .array(let values): try append("ARRAY["); try list(values) { (writer: inout SQLTextWriter, value: Expression) throws(SQLSerializationError) -> Void in try writer.expression(value) }; try append("]")
         case .row(let values): try append("ROW("); try list(values) { (writer: inout SQLTextWriter, value: Expression) throws(SQLSerializationError) -> Void in try writer.expression(value) }; try append(")")

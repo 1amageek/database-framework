@@ -421,7 +421,7 @@ enum FusionSelectQueryGraphWalker {
         to stack: inout WorkStack
     ) throws {
         switch expression {
-        case .literal, .column, .variable, .parameter, .bound:
+        case .literal, .currentValue, .column, .variable, .parameter, .bound:
             break
         case .add(let lhs, let rhs), .subtract(let lhs, let rhs),
              .multiply(let lhs, let rhs), .divide(let lhs, let rhs),

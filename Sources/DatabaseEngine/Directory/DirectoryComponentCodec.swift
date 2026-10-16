@@ -1,4 +1,5 @@
 import DatabaseTypes
+import DatabaseKit
 
 /// Converts between a declared scalar field value and its canonical Directory
 /// component (SPEC 12.2).
@@ -19,6 +20,92 @@ import DatabaseTypes
 /// fails at declaration validation rather than producing a component this codec
 /// cannot invert.
 package enum DirectoryComponentCodec {
+
+    package static func accepts(_ value: FieldValue, schema: FieldSchema) -> Bool {
+        guard !schema.isOptional, !schema.isArray, value != .null,
+              schema.type.hasCanonicalDirectoryComponent else { return false }
+        guard let descriptor = schema.queryType else {
+            return FieldSchemaValueValidator.accepts(value, as: schema.type)
+        }
+        do {
+            try QueryFieldStorageAdapter.validateDescriptor(descriptor, fieldType: schema.type, isArray: false)
+            _ = try QueryFieldStorageAdapter.measureDecoded(value, type: descriptor)
+            return true
+        } catch { return false }
+    }
+
+    package static func encode(_ value: FieldValue, schema: FieldSchema) throws(DirectoryComponentCodecError) -> String {
+        guard let descriptor = schema.queryType else {
+            guard FieldSchemaValueValidator.accepts(value, as: schema.type) else { throw .invalidDeclaredValue }
+            return try encode(value)
+        }
+        let decoded: QueryValue
+        do {
+            try QueryFieldStorageAdapter.validateDescriptor(descriptor, fieldType: schema.type, isArray: schema.isArray)
+            decoded = try QueryFieldStorageAdapter.decode(value, type: descriptor,
+                limits: QueryFieldStorageAdapter.inferredLimits(for: value, type: descriptor))
+        } catch { throw .invalidDeclaredValue }
+        switch decoded {
+        case .primitive(let primitive): return try encode(primitive)
+        case .time(let time): return component("qtime", unsignedToken(UInt64(time.microsecondsSinceMidnight)))
+        case .dateInfinity(let sign): return component("qdi", sign == .negative ? "n" : "p")
+        case .timestampInfinity(let sign, let withTimeZone):
+            return component(withTimeZone ? "qtsi" : "qdti", sign == .negative ? "n" : "p")
+        default: throw .invalidDeclaredValue
+        }
+    }
+
+    package static func decode(_ component: String, schema: FieldSchema) throws(DirectoryComponentCodecError) -> FieldValue {
+        let bytes = Array(component.utf8)
+        guard let separator = bytes.firstIndex(of: 0x2D) else { throw .malformedComponent(.missingTagSeparator) }
+        let tag = String(decoding: bytes[..<separator], as: UTF8.self)
+        guard ["qdi", "qdti", "qtsi", "qtime"].contains(tag) else {
+            let value = try decode(component)
+            guard try encode(value, schema: schema) == component else { throw .invalidDeclaredValue }
+            return value
+        }
+        guard let descriptor = schema.queryType else { throw .invalidDeclaredValue }
+        let tokens = try unescapedTokens(of: bytes[(separator + 1)...])
+        let token = try only(tokens)
+        let value: QueryValue
+        switch (tag, descriptor) {
+        case ("qtime", .sql(.time(false, _))):
+            let microseconds = try unsignedInteger(token, as: UInt64.self)
+            guard let signed = Int64(exactly: microseconds) else { throw .invalidDeclaredValue }
+            do { value = .time(try QueryTimeValue(microsecondsSinceMidnight: signed)) }
+            catch { throw .invalidDeclaredValue }
+        case ("qdi", .sql(.date)), ("qdti", .sql(.timestamp(false, _))), ("qtsi", .sql(.timestamp(true, _))):
+            let sign: QueryTemporalInfinity
+            if token == [0x6E] { sign = .negative }
+            else if token == [0x70] { sign = .positive }
+            else { throw .invalidDeclaredValue }
+            value = tag == "qdi" ? .dateInfinity(sign) : .timestampInfinity(sign, withTimeZone: tag == "qtsi")
+        default: throw .invalidDeclaredValue
+        }
+        let payload: FieldValue
+        do {
+            try QueryFieldStorageAdapter.validateDescriptor(descriptor, fieldType: schema.type, isArray: false)
+            payload = try QueryFieldStorageAdapter.encode(value, type: descriptor,
+                limits: QueryFieldStorageAdapter.inferredLimits(for: value, type: descriptor))
+        } catch { throw .invalidDeclaredValue }
+        let canonical = try encode(payload, schema: schema)
+        guard canonical == component else { throw .nonCanonicalComponent(canonical: canonical) }
+        return payload
+    }
+
+    package static func isCanonicalImage(_ component: String) -> Bool {
+        let schema: FieldSchema?
+        if component.hasPrefix("qdi-") { schema = FieldSchema(name: "value", fieldNumber: 1, type: .date, queryType: .sql(.date)) }
+        else if component.hasPrefix("qdti-") { schema = FieldSchema(name: "value", fieldNumber: 1, type: .dateTime, queryType: .sql(.timestamp(withTimeZone: false))) }
+        else if component.hasPrefix("qtsi-") { schema = FieldSchema(name: "value", fieldNumber: 1, type: .timestamp, queryType: .sql(.timestamp(withTimeZone: true))) }
+        else if component.hasPrefix("qtime-") { schema = FieldSchema(name: "value", fieldNumber: 1, type: .time, queryType: .sql(.time(withTimeZone: false))) }
+        else { schema = nil }
+        do {
+            if let schema { _ = try decode(component, schema: schema) }
+            else { _ = try decode(component) }
+            return true
+        } catch { return false }
+    }
 
     // MARK: - Encoding
 

@@ -55,6 +55,9 @@ public struct DBConfiguration: Sendable {
     /// Absolute time source for persisted values and observable events.
     public let wallClock: any WallClock
 
+    /// Immutable SQL session calendar and time-zone policy.
+    public let sqlTemporal: SQLTemporalConfiguration
+
     /// Explicit test-only Base bootstrap supplied by TestSupport.
     #if DATABASE_MULTI_BASE
     package let testingBootstrap: TestingBootstrap?
@@ -73,6 +76,7 @@ public struct DBConfiguration: Sendable {
         storageTopology: DatabaseStorageTopology,
         monotonicClock: any StorageMonotonicClock,
         wallClock: any WallClock,
+        sqlTemporal: SQLTemporalConfiguration = .utc,
         itemStorage: ItemStorageConfiguration = .v1,
         logging: DatabaseLoggingConfiguration = .disabled,
         metrics: DatabaseMetricsConfiguration = .disabled
@@ -86,6 +90,7 @@ public struct DBConfiguration: Sendable {
         self.metrics = metrics
         self.monotonicClock = monotonicClock
         self.wallClock = wallClock
+        self.sqlTemporal = sqlTemporal
         self.testingBootstrap = nil
     }
 
@@ -95,6 +100,7 @@ public struct DBConfiguration: Sendable {
         storageTopology: DatabaseStorageTopology,
         monotonicClock: any StorageMonotonicClock,
         wallClock: any WallClock,
+        sqlTemporal: SQLTemporalConfiguration = .utc,
         testingBaseID: Base.ID,
         testingPrincipal: Principal,
         itemStorage: ItemStorageConfiguration = .v1,
@@ -110,6 +116,7 @@ public struct DBConfiguration: Sendable {
         self.metrics = metrics
         self.monotonicClock = monotonicClock
         self.wallClock = wallClock
+        self.sqlTemporal = sqlTemporal
         self.testingBootstrap = TestingBootstrap(
             baseID: testingBaseID,
             principal: testingPrincipal
@@ -148,6 +155,7 @@ public struct DBConfiguration: Sendable {
         databaseRootPath: [String] = [],
         monotonicClock: any StorageMonotonicClock,
         wallClock: any WallClock,
+        sqlTemporal: SQLTemporalConfiguration = .utc,
         itemStorage: ItemStorageConfiguration = .v1,
         logging: DatabaseLoggingConfiguration = .disabled,
         metrics: DatabaseMetricsConfiguration = .disabled
@@ -166,6 +174,7 @@ public struct DBConfiguration: Sendable {
         self.metrics = metrics
         self.monotonicClock = monotonicClock
         self.wallClock = wallClock
+        self.sqlTemporal = sqlTemporal
     }
 
     func claimStorageEngine() throws -> any StorageEngine {

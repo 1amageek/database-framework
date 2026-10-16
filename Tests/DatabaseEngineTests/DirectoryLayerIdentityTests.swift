@@ -434,10 +434,7 @@ struct DirectoryLayerIdentityTests {
         for entity: Schema.Entity
     ) throws -> DatabasePendingIndexRetirement {
         DatabasePendingIndexRetirement(
-            scope: .entity(
-                name: entity.name,
-                directoryComponents: entity.directoryComponents
-            ),
+            scope: .entity(entity),
             identity: try identity()
         )
     }

@@ -296,3 +296,38 @@ Concatenation emits ||. The SQL whereLike builder supplies explicit backslash
 escape; a quoted generic function remains an ordinary exact function call.
 Special SQL grammar uses the canonical ordinary call representation chosen by
 Parser, so serialization need not reconstruct syntactic spelling.
+
+
+### S06 temporal emission
+
+Consume [Parser temporal normalization](../Parser/DESIGN.md#s06-temporal-syntax-and-provenance)
+and the Kit-owned temporal declarations. Emit currentValue using its SQL keyword
+and optional precision, never by inventing an ordinary quoted function. Generic
+FunctionCall emission remains exact: extract and timezone are actual catalog
+calls, while quoted current-like names retain their independent generic identity.
+Normalized MAKE_INTERVAL arguments serialize in positional semantic order.
+
+Emit unconstrained INTERVAL directly, full-range precision as INTERVAL(p), and
+restricted fields with precision only after terminal SECOND. Preserve absent
+versus explicit precision and every field range. DATE/TIME/TIMESTAMP input stays
+lexical CAST; the serializer does not consult host clocks, locale or timezone.
+New time/offset-time values and temporal infinities emit bounded typed lexical
+forms with their exact declaration. Infinity direction and timestamp zone
+identity survive scalar and array text. Modified interval values retain explicit
+target metadata; canonical component formatting never performs their adjustment.
+Existing output admission precedes growth and existing typed serialization
+errors retain invalid declarations, unsupported language and resource failures.
+S06-SYN01...06 require parse/serialize/parse stabilization and exact metadata;
+public execution of those forms remains the Framework verification owner.
+
+
+Wide-offset TIMETZ values whose wall time is below 24:00 emit an actual
+`timezone(interval-offset, TIMETZ baseUTC)` expression. Checked arithmetic and
+Euclidean day modulo derive baseUTC while retaining the complete Int32 offset.
+A wide-offset 24:00 endpoint cannot survive that operation, so serialization
+returns typed unsupportedLiteral for that exact combination; it never emits
+00:00 instead. Directly representable offsets retain ordinary typed literals.
+Wire, IR and persistence remain lossless for every carrier value. A wide-offset
+TIMETZ array cell has no equivalent lexical array element and also fails typed
+at this text-only boundary; it is not silently transformed into a different
+array value or a future S07 constructor.

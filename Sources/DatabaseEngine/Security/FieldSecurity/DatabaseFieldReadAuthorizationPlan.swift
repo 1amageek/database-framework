@@ -505,7 +505,7 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                     query,
                     outerScopes: [localBindings] + outerScopes
                 )
-            case .literal, .variable, .parameter, .bound:
+            case .literal, .currentValue, .variable, .parameter, .bound:
                 break
             }
         }

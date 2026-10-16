@@ -168,6 +168,7 @@ final class DatabaseCompositionReadSnapshotVault: Sendable {
 /// value may escape internally, but its vault is synchronously invalidated
 /// before the owning transaction lifecycle advances.
 package struct DatabaseCompositionReadSnapshot: Sendable {
+    package let temporalEnvironment: SQLTemporalEnvironment
     package let metadata: DatabaseCompositionReadMetadata
     package let members: [DatabaseCompositionMember]
     let sourceIdentity: DatabaseCompositionSourceIdentity
@@ -180,8 +181,10 @@ package struct DatabaseCompositionReadSnapshot: Sendable {
         sourceIdentity: DatabaseCompositionSourceIdentity,
         authorization: AuthorizationContext,
         transactions: [String: DatabaseReadTransaction],
-        readPoints: [DomainReadPoint]
+        readPoints: [DomainReadPoint],
+        temporalEnvironment: SQLTemporalEnvironment
     ) {
+        self.temporalEnvironment = temporalEnvironment
         self.metadata = DatabaseCompositionReadMetadata(lease: lease)
         self.members = lease.members.map {
             DatabaseCompositionMember(baseID: $0.baseID)

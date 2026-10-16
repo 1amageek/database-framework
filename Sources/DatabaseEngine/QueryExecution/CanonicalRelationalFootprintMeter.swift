@@ -268,7 +268,9 @@ package enum CanonicalRelationalFootprintMeter {
                             .multiplied(by: UInt64(array.dimensions.capacity)).bytes)
                         bytes = try adding(bytes, 64)
                         if !array.elements.isEmpty { try push(.arrayElements(array.elements, index: 0)) }
-                    case .primitive, .numeric, .json, .interval:
+                    // Fixed temporal payloads are inline in the already charged QueryValue slots.
+                    case .primitive, .numeric, .json, .interval, .time, .timeWithTimeZone,
+                         .dateInfinity, .timestampInfinity, .intervalInfinity:
                         break
                     }
                 }

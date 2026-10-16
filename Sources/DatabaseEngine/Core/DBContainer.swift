@@ -1216,7 +1216,7 @@ public final class DBContainer: Sendable {
 
     /// Directory an application `#Directory` path is bound below for the
     /// current operation.
-    private func operationDataDirectory() throws -> Directory {
+    package func operationDataDirectory() throws -> Directory {
         #if DATABASE_MULTI_BASE
         return try requireActiveDataRoot().tenant.data
         #else
@@ -1225,7 +1225,7 @@ public final class DBContainer: Sendable {
     }
 
     /// Directory catalog owning the Partition bound to the current operation.
-    private func operationDirectoryAccess() throws -> any DirectoryAccess {
+    package func operationDirectoryAccess() throws -> any DirectoryAccess {
         #if DATABASE_MULTI_BASE
         return try requireActiveDataRoot().domain.directoryAccess
         #else
@@ -3595,7 +3595,7 @@ extension DBContainer {
         // different definition and remain recoverable if a build is retried.
         for build in indexTransition.builds {
             switch build.scope {
-            case .entity(let entityName, _):
+            case .entity(let entityName, _, _):
                 guard let entity = targetSchema.entity(named: entityName),
                     let descriptor = entity.indexDescriptors.first(
                         where: { $0.name == build.identity.name }

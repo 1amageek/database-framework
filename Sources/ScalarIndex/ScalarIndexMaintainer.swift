@@ -158,7 +158,8 @@ public struct ScalarIndexMaintainer<Item: PersistedEntityValue>: IndexUniqueness
         do {
             fieldValues = try DataAccess.evaluate(
                 item: item,
-                expression: index.rootExpression
+                expression: index.rootExpression,
+                fieldSchemas: index.descriptor.fieldSchemas
             )
         } catch DataAccessError.nilValueCannotBeIndexed {
             return []
@@ -200,10 +201,9 @@ public struct ScalarIndexMaintainer<Item: PersistedEntityValue>: IndexUniqueness
                 }
                 var conflictingValues: [FieldValue] = []
                 conflictingValues.reserveCapacity(values.count)
-                for value in values {
-                    conflictingValues.append(
-                        try FieldValue(tupleElement: value)
-                    )
+                for (position, value) in values.enumerated() {
+                    conflictingValues.append(try DeclaredTemporalIndexKeyCodec.decode(value,
+                        schema: index.descriptor.fieldSchemas[position]))
                 }
                 return IndexUniquenessConflict(
                     valueKey: valueKey,
@@ -262,7 +262,8 @@ public struct ScalarIndexMaintainer<Item: PersistedEntityValue>: IndexUniqueness
         do {
             fieldValues = try DataAccess.evaluate(
                 item: item,
-                expression: index.rootExpression
+                expression: index.rootExpression,
+                fieldSchemas: index.descriptor.fieldSchemas
             )
         } catch DataAccessError.nilValueCannotBeIndexed {
             // Sparse index behavior: nil values are not indexed

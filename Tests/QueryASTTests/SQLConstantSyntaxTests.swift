@@ -68,7 +68,7 @@ struct SQLConstantSyntaxTests {
         for type in [DataType.json, .jsonb] {
             #expect(throws: SQLConstantError.self) { try SQLConstantSyntax.normalize(.literal(.string("{bad}")), as: type, limits: limits) }
         }
-        #expect(throws: SQLConstantError.self) { try SQLConstantSyntax.normalize(.literal(.string("1 mons 2 days bad microseconds")), as: .interval, limits: limits) }
+        #expect(throws: SQLConstantError.self) { try SQLConstantSyntax.normalize(.literal(.string("1 mons 2 days bad microseconds")), as: .interval(), limits: limits) }
         for (text, type): (String, DataType) in [("1.2.3", .decimal(precision: nil, scale: nil)), ("bad", .uuid), (#"\xzz"#, .blob)] {
             #expect(throws: SQLConstantError.self) { try SQLConstantSyntax.normalize(.literal(.string(text)), as: type, limits: limits) }
         }
@@ -102,7 +102,7 @@ struct SQLConstantSyntaxTests {
 
     @Test("Int64 minimum interval uses signed components without absolute-value overflow")
     func minimumInterval() throws {
-        let literal = try SQLConstantSyntax.normalize(.literal(.string("-2147483648 mons 2147483647 days -9223372036854775808 microseconds")), as: .interval, limits: limits)
+        let literal = try SQLConstantSyntax.normalize(.literal(.string("-2147483648 mons 2147483647 days -9223372036854775808 microseconds")), as: .interval(), limits: limits)
         guard case .queryValue(.interval(let interval), _) = literal else { Issue.record("Expected interval"); return }
         #expect(interval.microseconds == .min)
         #expect(SQLConstantSyntax.intervalText(interval) == "-2147483648 mons 2147483647 days -9223372036854775808 microseconds")

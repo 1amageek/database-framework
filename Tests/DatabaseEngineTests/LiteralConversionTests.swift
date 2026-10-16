@@ -222,7 +222,7 @@ struct LiteralConversionTests {
             )), .sql(.array(.integer))),
             (.interval(try QueryIntervalValue(
                 period: CalendarPeriod(months: 2, days: 3), time: TimeSpan(seconds: 4)
-            )), .sql(.interval)),
+            )), .sql(.interval())),
         ]
         for (value, type) in fixtures {
             let inferred = try Literal.queryValue(value).toFieldValue()

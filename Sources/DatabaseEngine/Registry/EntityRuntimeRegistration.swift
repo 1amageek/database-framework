@@ -778,6 +778,15 @@ public struct EntityRuntimeDefinition: Sendable {
             }
             return
         }
+        if let descriptor = schema.queryType {
+            do {
+                try QueryFieldStorageAdapter.validateDescriptor(descriptor, fieldType: schema.type, isArray: schema.isArray)
+                _ = try QueryFieldStorageAdapter.measureDecoded(value, type: descriptor)
+            } catch {
+                throw SchemaDrivenEntityRuntimeError.invalidFieldValue(entity: entity, field: schema.name, expected: schema.type)
+            }
+            return
+        }
         if schema.isArray {
             guard case .array(let values) = value,
                   values.allSatisfy({
@@ -837,10 +846,7 @@ public struct EntityRuntimeDefinition: Sendable {
                   value != .null,
                   !schema.isOptional,
                   !schema.isArray,
-                  FieldSchemaValueValidator.accepts(
-                      value,
-                      as: schema.type
-                  ) else {
+                  DirectoryComponentCodec.accepts(value, schema: schema) else {
                 throw SchemaDrivenEntityRuntimeError.invalidPartition(
                     entity: entity.name,
                     field: fieldName

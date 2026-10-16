@@ -67,10 +67,7 @@ public struct DatabaseIndexTransitionPlan: Sendable, Hashable {
         for entity in schema.entities {
             for descriptor in entity.indexDescriptors {
                 result.append(try Target(
-                    scope: .entity(
-                        name: entity.name,
-                        directoryComponents: entity.directoryComponents
-                    ),
+                    scope: .entity(entity),
                     identity: identity(
                         named: descriptor.name,
                         schema: schema,

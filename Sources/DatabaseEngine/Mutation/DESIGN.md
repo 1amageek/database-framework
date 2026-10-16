@@ -124,3 +124,61 @@ rejected before source scanning. Exact/one-past resource admission, failure and
 cancel cleanup, and subsequent valid mutation verify the temporary-to-destination
 ownership handoff. Existing statement mutation lifecycle/precondition/budget
 tests remain regressions for primitive fields and model adaptation.
+
+## S06 Selected Temporal Integration
+
+This section specifies the Mutation caller of the
+[selected temporal contract](../QueryExecution/SQLTemporal/DESIGN.md).
+It is a design contract; implementation starts only after the parent S06
+freeze. QueryExecution owns overloads, casts, temporal identity and algorithms.
+Core, Transaction and Read own the admitted `SQLTemporalEnvironment` and its
+clock/zone lifetime. Mutation does not sample another clock, resolve a host
+timezone or create an execution context to evaluate an assignment.
+
+```text
+admitted transaction + one statement temporal environment
+  -> bind all destination casts and predicates before reads
+    -> evaluateCanonicalScalar(bound, on: row,
+         temporalEnvironment: environment, workMeter: meter)
+      -> selected temporal result and retained leases
+        -> descriptor-selected persistence encoding
+          -> existing prepared-change admission and atomic publication
+```
+
+The selected assignment gate includes SQL DATE, TIME, TIMETZ, TIMESTAMP,
+TIMESTAMPTZ and INTERVAL, including their modifiers and admitted infinity
+carriers. Primitive temporal model fields retain their existing intrinsic
+meaning; a conversion into a primitive destination succeeds only when the
+selected result is representable without losing its SQL value. Declared SQL
+TIME24, offset time and infinity are never replaced by an ordinary primitive
+value or an inferred object representation.
+
+INSERT supplied cells, UPDATE and conflict-update assignments preserve explicit
+inner CAST contexts and use `.assignment` only at the outer compiled destination.
+UPDATE, DELETE and conflict predicates use the same selected temporal comparison
+as SELECT. Invalid signatures and declared modifiers fail before a source scan
+or conflicting-row lookup, including an empty source. Value-dependent range,
+zone, precision, input and formatting errors remain decisive typed failures.
+
+One statement environment is reused for every candidate row and assignment,
+including conflict processing. The caller passes the admitted transaction's
+logical transaction instant and the statement owner's captured statement
+instant; retries and internal read sessions do not resample them. Volatile clock
+reads occur only when the selected expression occurrence is evaluated. Lazy
+CASE/COALESCE and strict NULL keep the shared evaluator's evaluation rules.
+
+Rich temporal results use `QueryFieldStorageAdapter` under the compiled field
+descriptor. Mutation retains source-row and returned payload leases through
+encoding and destination admission under the same meter. A late conversion,
+unavailable-zone, cancellation or budget failure publishes no prepared changes
+and releases all temporary claims. The immutable environment grants no storage,
+transaction or publication authority.
+
+| Case | Falsifiable caller evidence |
+|---|---|
+| S06-M01 | Empty UPDATE/INSERT conflict paths reject invalid temporal signatures and modifiers before reads. |
+| S06-M02 | DATE/TIME24/TIMETZ/local timestamp/instant/mixed interval/infinity INSERT and UPDATE round trips retain their declared values and precision. |
+| S06-M03 | Multiple rows and conflict assignments share transaction/statement snapshots; selected volatile occurrences advance while skipped lazy branches do not read the clock. |
+| S06-M04 | Temporal predicates, interval-equivalent values and TIMETZ offset ties select the same rows as public SELECT. |
+| S06-M05 | A later invalid zone/range or unrepresentable primitive destination leaves all stored rows unchanged; subsequent valid work succeeds with temporary retained rows/bytes zero. |
+| S06-M06 | Exact and one-past payload admission, cancellation and destination handoff preserve meter identity and last-owner release. |

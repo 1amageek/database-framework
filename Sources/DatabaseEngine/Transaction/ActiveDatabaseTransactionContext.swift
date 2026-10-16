@@ -1,8 +1,10 @@
 import DatabaseKit
+import DatabaseTypes
 import StorageKit
 
 package struct DatabaseTransactionExecutionBinding: Sendable {
     package let transaction: any TransactionAccess
+    package let transactionInstant: Timestamp
     package let container: DBContainer
     package let schemaLease: DatabaseSchemaLease
     package let storageDomainIdentity: ObjectIdentifier
@@ -26,10 +28,12 @@ package struct DatabaseTransactionExecutionBinding: Sendable {
     package init(
         context: DatabaseContext,
         transaction: any TransactionAccess,
+        transactionInstant: Timestamp,
         grantedAccess: Security.Access,
         databaseTransaction: DatabaseTransaction?
     ) throws {
         self.transaction = transaction
+        self.transactionInstant = transactionInstant
         self.container = context.container
         self.schemaLease = context.container.acquireActiveSchemaLease()
         let lease = try context.requireOperationDataRoot()
@@ -49,9 +53,11 @@ package struct DatabaseTransactionExecutionBinding: Sendable {
     package init(
         context: DatabaseContext,
         transaction: any TransactionAccess,
+        transactionInstant: Timestamp,
         databaseTransaction: DatabaseTransaction?
     ) throws {
         self.transaction = transaction
+        self.transactionInstant = transactionInstant
         self.container = context.container
         self.schemaLease = context.container.acquireActiveSchemaLease()
         self.storageDomainIdentity = ObjectIdentifier(
@@ -83,6 +89,7 @@ package struct DatabaseTransactionExecutionBinding: Sendable {
         transaction: ReadAuthorizedTransactionAccess
     ) {
         self.transaction = transaction
+        self.transactionInstant = binding.transactionInstant
         self.container = binding.container
         self.schemaLease = binding.schemaLease
         self.storageDomainIdentity = binding.storageDomainIdentity

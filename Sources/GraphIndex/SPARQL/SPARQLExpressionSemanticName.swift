@@ -10,6 +10,7 @@ enum SPARQLExpressionSemanticName {
         case .truthTest: return "SQL truth test"
         case .isDistinctFrom: return "SQL DISTINCT predicate"
         case .quantifiedComparison: return "SQL quantified comparison"
+        case .currentValue: return "SQL current value"
         case .literal: return "literal"
         case .column: return "column"
         case .variable: return "variable"

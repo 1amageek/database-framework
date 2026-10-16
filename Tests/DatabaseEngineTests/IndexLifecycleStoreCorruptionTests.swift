@@ -139,7 +139,8 @@ struct IndexLifecycleStoreCorruptionTests {
                 .staticPath("accounts"),
                 .dynamicField(fieldName: "tenant"),
                 .dynamicField(fieldName: "region"),
-            ]
+            ],
+            directoryFields: [.init(name: "tenant", type: .string), .init(name: "region", type: .string)]
         )
         #expect(
             scope.accepts(
@@ -195,10 +196,7 @@ struct IndexLifecycleStoreCorruptionTests {
             revision: 99
         )
         let mismatchedTarget = try DatabaseIndexTransitionPlan.Target(
-            scope: .entity(
-                name: entity.name,
-                directoryComponents: entity.directoryComponents
-            ),
+            scope: .entity(entity),
             identity: try DatabaseIndexStorageIdentity(
                 name: descriptor.name,
                 definitionFingerprint:
@@ -508,10 +506,7 @@ struct IndexLifecycleStoreCorruptionTests {
         let store = Subspace(
             prefix: Tuple("exact-index-retirement").pack()
         )
-        let scope = DatabaseIndexStorageScope.entity(
-            name: entity.name,
-            directoryComponents: entity.directoryComponents
-        )
+        let scope = DatabaseIndexStorageScope.entity(entity)
         let pendingBuilds = try await container.withTestBaseOperation {
             try container.dataRootSchemaMetadataSubspace()
                 .subspace("schema")

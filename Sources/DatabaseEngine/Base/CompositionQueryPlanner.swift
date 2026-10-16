@@ -257,6 +257,13 @@ public struct CompositionQueryPlanner: Sendable {
         options: CompositionQueryExecutionOptions,
         emit: @Sendable @escaping (CompositionQueryEvent) async throws -> Bool
     ) async throws {
+        let operationOptions = CompositionQueryExecutionOptions(
+            pageSize: options.pageSize,
+            readContext: options.readContext.withTemporalEnvironment(
+                options.readContext.temporalEnvironment ?? source.makeSQLTemporalEnvironment()
+            ),
+            parameters: options.parameters
+        )
         try QueryStructuralValidator.validate(
             query,
             limits: structuralLimits
@@ -269,7 +276,7 @@ public struct CompositionQueryPlanner: Sendable {
         try await executeValidated(
             query,
             source: source,
-            options: options,
+            options: operationOptions,
             crossBaseJoin: crossBaseJoin,
             memberExecutor: memberExecutor,
             emit: emit
@@ -286,6 +293,13 @@ public struct CompositionQueryPlanner: Sendable {
         memberExecutor: any CompositionMemberQueryExecutor,
         emit: @Sendable @escaping (CompositionQueryEvent) async throws -> Bool
     ) async throws {
+        let operationOptions = CompositionQueryExecutionOptions(
+            pageSize: options.pageSize,
+            readContext: options.readContext.withTemporalEnvironment(
+                options.readContext.temporalEnvironment ?? source.makeSQLTemporalEnvironment()
+            ),
+            parameters: options.parameters
+        )
         try QueryStructuralValidator.validate(
             query,
             limits: structuralLimits
@@ -301,7 +315,7 @@ public struct CompositionQueryPlanner: Sendable {
         try await executeValidated(
             query,
             source: source,
-            options: options,
+            options: operationOptions,
             crossBaseJoin: nil,
             memberExecutor: memberExecutor,
             emit: emit
@@ -333,7 +347,9 @@ public struct CompositionQueryPlanner: Sendable {
         defer { withExtendedLifetime(parameterClaim) {} }
 
         let ready = try CompositionQueryReadyBuffer(workMeter: workMeter)
-        try await source.withReadSnapshot { snapshot in
+        try await source.withReadSnapshot(
+            temporalEnvironment: originalOptions.readContext.temporalEnvironment
+        ) { snapshot in
             let options: CompositionQueryExecutionOptions
             let memberExecutor: any CompositionMemberQueryExecutor
             if let relational = originalMemberExecutor as? RelationalMemberQueryExecutor,
@@ -530,7 +546,12 @@ public struct CompositionQueryPlanner: Sendable {
         switch value {
         case .primitive(let primitive): return primitive
         case .numeric(let numeric): return .decimal(numeric.value)
-        case .json, .jsonb, .array, .interval:
+        // FIXME(INCOMPLETE_IMPLEMENTATION): Global Composition ORDER BY and
+        // MIN/MAX still consume this primitive-only merger. Rich temporal
+        // values must fail explicitly until S08 sorting and S09 aggregate
+        // owners preserve their typed comparison and retained value contracts.
+        case .json, .jsonb, .array, .interval, .time, .timeWithTimeZone,
+             .dateInfinity, .timestampInfinity, .intervalInfinity:
             throw CompositionQueryError.unsupportedPlan("this operation does not support rich query values")
         }
     }
@@ -701,7 +722,8 @@ public struct CompositionQueryPlanner: Sendable {
             options: options.readContext.options.withoutExternalPageWindow(),
             monotonicClock: source.container.monotonicClock,
             workMeter: workMeter,
-            queryStructuralLimits: structuralLimits
+            queryStructuralLimits: structuralLimits,
+            temporalEnvironment: options.readContext.temporalEnvironment
         )
         let rows: DatabaseSharedRetainedQueryRows
         do {
@@ -1652,7 +1674,8 @@ public struct CompositionQueryPlanner: Sendable {
             ),
             monotonicClock: source.container.monotonicClock,
             workMeter: workMeter,
-            queryStructuralLimits: structuralLimits
+            queryStructuralLimits: structuralLimits,
+            temporalEnvironment: options.readContext.temporalEnvironment
         )
     }
 

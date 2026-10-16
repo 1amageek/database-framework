@@ -5,6 +5,7 @@ import DatabaseTypes
 public struct DatabaseEntityStatementMutationExecutor: Sendable {
     private let container: DBContainer
     private let limits: DatabaseEntityMutationLimits
+    private var temporalEnvironment: SQLTemporalEnvironment?
 
     public init(
         container: DBContainer,
@@ -12,13 +13,24 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
     ) {
         self.container = container
         self.limits = limits
+        self.temporalEnvironment = nil
     }
 
     public func execute(
-        _ statement: QueryStatement,
+        _ statementInput: QueryStatement,
         preconditions: [EntityMutationPrecondition] = [],
         transaction: DatabaseTransaction,
         workMeter: DatabaseWorkMeter
+    ) async throws -> [EntityMutationEffect] {
+        var statement = self
+        statement.temporalEnvironment = transaction.makeSQLTemporalEnvironment()
+        return try await statement.executeStatement(statement: statementInput, preconditions: preconditions,
+            transaction: transaction, workMeter: workMeter)
+    }
+
+    private func executeStatement(
+        statement: QueryStatement, preconditions: [EntityMutationPrecondition],
+        transaction: DatabaseTransaction, workMeter: DatabaseWorkMeter
     ) async throws -> [EntityMutationEffect] {
         let entities = DatabaseEntityMutationExecutor(
             container: container,
@@ -597,11 +609,12 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
         switch type {
         case .sql(.text), .sql(.char), .sql(.varchar), .sql(.blob), .sql(.binary), .sql(.varbinary),
              .sql(.uuid), .sql(.boolean), .sql(.smallint), .sql(.integer), .sql(.bigint),
-             .sql(.real), .sql(.doublePrecision), .sql(.decimal): selected = true
+             .sql(.real), .sql(.doublePrecision), .sql(.decimal),
+             .sql(.date), .sql(.time), .sql(.timestamp), .sql(.interval): selected = true
         case .primitive(let kind, false):
             switch kind {
             case .string, .bytes, .uuid, .bool, .int8, .int16, .int32, .int64, .uint8, .uint16,
-                 .uint32, .uint64, .float32, .float64, .decimal: selected = true
+                 .uint32, .uint64, .float32, .float64, .decimal, .date, .time, .dateTime, .timestamp: selected = true
             default: selected = false
             }
         default: selected = false
@@ -642,7 +655,7 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
         table: TableRef, workMeter: DatabaseWorkMeter
     ) async throws -> Bool {
         let row = try assignmentRow(fields: fields, entity: entity, table: table, workMeter: workMeter)
-        let result = try await DatabaseContext.evaluateCanonicalScalar(filter, on: row, workMeter: workMeter)
+        let result = try await DatabaseContext.evaluateCanonicalScalar(filter, on: row, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
         return try withExtendedLifetime(result.leases) {
             switch result.value {
             case .primitive(.bool(let value)): return value
@@ -696,7 +709,7 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
         payloads: inout DatabaseRetainedArrayBuilder<DatabaseQueryPayloadLease>, workMeter: DatabaseWorkMeter
     ) async throws -> FieldValue {
         guard let bound = assignment.bound else { return try evaluator.evaluate(assignment.expression) }
-        let result = try await DatabaseContext.evaluateCanonicalScalar(bound, on: row, workMeter: workMeter)
+        let result = try await DatabaseContext.evaluateCanonicalScalar(bound, on: row, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
         for lease in result.leases {
             guard lease.workMeter === workMeter else { throw DatabaseIntermediateReservationError.workMeterMismatch }
             try payloads.append(footprint: DatabaseIntermediateFootprint(), make: { lease })

@@ -16,7 +16,8 @@ enum AggregationFieldExtractor {
     static func grouping<Item: PersistedEntityValue, FieldNames: Collection>(
         from item: Item,
         fieldNames: FieldNames,
-        indexName: String
+        indexName: String,
+        fieldSchemas: [FieldSchema]
     ) throws -> [any TupleElement] where FieldNames.Element == String {
         var grouping: [any TupleElement] = []
         grouping.reserveCapacity(fieldNames.count)
@@ -26,7 +27,8 @@ enum AggregationFieldExtractor {
                     from: item,
                     fieldName: fieldName,
                     nullBehavior: .encode,
-                    indexName: indexName
+                    indexName: indexName,
+                    schema: fieldSchemas.first(where: { $0.name == fieldName })
                 )
             )
         }
@@ -55,7 +57,8 @@ enum AggregationFieldExtractor {
                 from: item,
                 fieldName: valueFieldName,
                 nullBehavior: .exclude,
-                indexName: index.name
+                indexName: index.name,
+                schema: index.descriptor.keyFieldSchemas.last
             )
         } catch AggregationNullValue.excluded {
             return nil
@@ -64,7 +67,8 @@ enum AggregationFieldExtractor {
         let grouping = try grouping(
             from: item,
             fieldNames: fieldNames.dropLast(),
-            indexName: index.name
+            indexName: index.name,
+            fieldSchemas: index.descriptor.keyFieldSchemas
         )
         return AggregationContributionFields(
             grouping: grouping,
@@ -85,7 +89,8 @@ enum AggregationFieldExtractor {
         from item: Item,
         fieldName: String,
         nullBehavior: NullBehavior,
-        indexName: String
+        indexName: String,
+        schema: FieldSchema?
     ) throws -> any TupleElement {
         let value = try canonicalValue(from: item, at: fieldName)
         if value.isNull {
@@ -95,6 +100,9 @@ enum AggregationFieldExtractor {
             case .exclude:
                 throw AggregationNullValue.excluded
             }
+        }
+        if let schema, DeclaredTemporalIndexKeyCodec.requiresAdaptation(schema) {
+            return try DeclaredTemporalIndexKeyCodec.encode(value, schema: schema)
         }
         let elements = try DataAccess.extractField(
             from: item,

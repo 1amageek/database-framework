@@ -66,6 +66,22 @@ public struct DataAccess: Sendable {
         }
     }
 
+    /// Resolves index keys using the descriptor that admitted each field.
+    package static func evaluate<Item: PersistedEntityValue>(
+        item: Item, expression: KeyExpression, fieldSchemas: [FieldSchema]
+    ) throws -> [any TupleElement] {
+        try expression.evaluate { path in
+            guard let schema = fieldSchemas.first(where: { $0.name == path }) else {
+                return try extractField(from: item, keyPath: path)
+            }
+            let value = try extractFieldValue(from: item, keyPath: path)
+            if case .array(let elements) = value {
+                return try elements.map { try DeclaredTemporalIndexKeyCodec.encode($0, schema: schema) }
+            }
+            return [try DeclaredTemporalIndexKeyCodec.encode(value, schema: schema)]
+        }
+    }
+
     /// Extract a field value through its compiled schema identity.
     ///
     /// This method is called by the KeyExpression evaluator.
@@ -84,9 +100,16 @@ public struct DataAccess: Sendable {
     /// - Returns: Array of tuple elements (typically single element)
     /// - Throws: Error if field not found or type conversion fails
     public static func extractField<Item: PersistedEntityValue>(
-        from item: Item,
-        keyPath: String
+        from item: Item, keyPath: String
     ) throws -> [any TupleElement] {
+        let value = try extractFieldValue(from: item, keyPath: keyPath)
+        if case .array(let values) = value { return try FieldValue.toTupleElements(values) }
+        return [try value.toTupleElement()]
+    }
+
+    package static func extractFieldValue<Item: PersistedEntityValue>(
+        from item: Item, keyPath: String
+    ) throws -> FieldValue {
         let components = keyPath.split(separator: ".", omittingEmptySubsequences: false)
         guard let first = components.first,
               !first.isEmpty,
@@ -110,10 +133,7 @@ public struct DataAccess: Sendable {
             }
             value = nested
         }
-        if case .array(let values) = value {
-            return try FieldValue.toTupleElements(values)
-        }
-        return [try value.toTupleElement()]
+        return value
     }
 
     public static func extractField(

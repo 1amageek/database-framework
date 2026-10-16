@@ -122,7 +122,7 @@ public struct CountIndexMaintainer<Item: PersistedEntityValue>: CountAggregation
         return try storedResults.map { result in
             (
                 grouping: try AggregationGroupingValueDecoder.decode(
-                    result.grouping
+                    result.grouping, fieldSchemas: index.descriptor.keyFieldSchemas
                 ),
                 count: result.count
             )
@@ -142,7 +142,8 @@ public struct CountIndexMaintainer<Item: PersistedEntityValue>: CountAggregation
         return try AggregationFieldExtractor.grouping(
             from: item,
             fieldNames: index.fieldNames,
-            indexName: index.name
+            indexName: index.name,
+            fieldSchemas: index.descriptor.keyFieldSchemas
         )
     }
 }

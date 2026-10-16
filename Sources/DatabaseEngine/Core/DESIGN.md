@@ -103,3 +103,34 @@ point cleanup is owned by the Read operation scope and local retained owners.
   after consuming output promotion.
 - A changed group key, type-code, runtime canonicalization, or transaction
   contract invalidates this component and QueryExecution destination evidence.
+
+
+### S06 clock and configuration ownership
+
+Core owns DBConfiguration.sqlTemporal (default SQLTemporalConfiguration.utc),
+its existing injected WallClock, and the operation bridge to the
+[SQLTemporal environment](../QueryExecution/SQLTemporal/DESIGN.md). Both standard
+and MultiBase initializers retain the same immutable configuration and
+Sendable capability; no platform branch replaces isolation.
+
+DatabaseContext.makeSQLTemporalEnvironment captures statement time once and
+uses a matching active transaction's logical start, or that same statement
+time for an implicit transaction. A container-bound immutable TaskLocal
+statement binding propagates the explicit environment through internal
+reentry. Public SQL starts a fresh statement before parsing; typed read and
+Mutation entries also capture once. Helpers preserve explicit/inherited
+environments instead of reading the clock during row evaluation. This binding
+confers no transaction, schema, Base or principal authority.
+
+withTransaction and withStorageAccess capture logical transaction time outside
+TransactionRunner retry closures and pass it into each attempt binding/actor.
+Nested/attenuated bindings preserve it even if databaseTransaction becomes nil.
+Composition's single container captures one operation environment and relays it
+to member/decision bindings. A context from another container starts its own
+configuration/environment rather than inheriting a foreign statement binding.
+
+Clock output conversion is the SQLTemporal contract; monotonic scheduling and
+deadlines stay unchanged. Advancing-clock tests prove fresh public statements,
+stable transaction time through retries, live per-occurrence CLOCK_TIMESTAMP,
+attenuation, nested reads and Composition inheritance. Stored state remains
+immutable or under the existing actor/Mutex owners.

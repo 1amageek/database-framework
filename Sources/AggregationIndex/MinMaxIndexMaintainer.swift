@@ -260,7 +260,7 @@ public struct MinIndexMaintainer<Item: PersistedEntityValue, Value: IndexCompara
 
             results.append((
                 grouping: try AggregationGroupingValueDecoder.decode(
-                    groupingElements
+                    groupingElements, fieldSchemas: index.descriptor.keyFieldSchemas
                 ),
                 min: aggregate.value,
                 itemId: aggregate.itemId
@@ -628,7 +628,7 @@ public struct MaxIndexMaintainer<Item: PersistedEntityValue, Value: IndexCompara
 
             results.append((
                 grouping: try AggregationGroupingValueDecoder.decode(
-                    groupingElements
+                    groupingElements, fieldSchemas: index.descriptor.keyFieldSchemas
                 ),
                 max: aggregate.value,
                 itemId: aggregate.itemId
@@ -774,7 +774,7 @@ private func decodeStoredAggregationValue<Value: IndexComparableValue>(
         )
     }
     return try Value.decodeFieldValue(
-        FieldValue(tupleElement: element),
+        DeclaredTemporalIndexKeyCodec.decode(element, schema: index.descriptor.keyFieldSchemas.last!),
         field: fieldName
     )
 }

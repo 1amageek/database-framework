@@ -141,6 +141,20 @@ public enum FieldValueTupleCodec {
     private static let identifierUUIDTag: UInt8 = 0x3C
     private static let identifierCompositeTag: UInt8 = 0x3D
 
+    /// SQL-only key endpoint; generic primitive TIME remains strictly below24h.
+    private static let sqlTimeEndpointPayload = ByteString([magic0, magic1, magic2, version, timeTag,
+            firstNibble + 1, firstNibble + 8,
+            firstNibble, firstNibble, firstNibble, firstNibble,
+            firstNibble, firstNibble, firstNibble, firstNibble,
+            firstNibble, firstNibble, firstNibble, firstNibble])
+
+    package static func sqlTimeEndpointKey() -> ByteString { sqlTimeEndpointPayload }
+
+    package static func isSQLTimeEndpointKey(_ element: any TupleElement) -> Bool {
+        guard case .bytes(let bytes) = element.tupleValue else { return false }
+        return bytes == sqlTimeEndpointKey()
+    }
+
     public static func tupleElement(
         for value: FieldValue,
         limits: FieldValueTupleCodecLimits = .default

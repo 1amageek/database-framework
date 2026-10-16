@@ -9,6 +9,7 @@ final public output.
 
 - Parent: [DatabaseEngine](../DESIGN.md).
 - Child: [SQLPatternMatching](SQLPatternMatching/DESIGN.md), the bounded SQL pattern language implementation.
+- Child: [SQLTemporal](SQLTemporal/DESIGN.md), the S06 temporal evaluation design; S06 contract and completion are tracked by the workspace progress record.
 - Planned S01–S10 SQL execution obligations are recorded below; implementation
   completeness remains tracked by the workspace progress record.
 
@@ -38,6 +39,7 @@ copyable and could escape without their reservation.
 | [Core](../Core/DESIGN.md) | used by | Pre-admitted builder append | Produces present and missing entries. | Runtime metadata is validated before append. |
 | [Read](../Read/DESIGN.md) | coordinates with | Exact session work meter | Supplies the meter to builder and destination. | Budget equality is not identity. |
 | [SQLPatternMatching](SQLPatternMatching/DESIGN.md) | child | Immutable pattern programs and retained match/split results | Supplies SQL pattern algorithms without inheriting Graph XPath regex semantics. | Parent owns selected SQL types, NULL and public result adaptation. |
+| [SQLTemporal](SQLTemporal/DESIGN.md) | child | Temporal evaluation and explicit clock/zone environment | Owns T07/T08/F07 execution design. | Consumes the explicit operation-owned environment; no ambient clock/zone. |
 
 ## Architecture
 

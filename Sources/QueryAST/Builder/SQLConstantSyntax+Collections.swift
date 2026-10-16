@@ -147,6 +147,9 @@ extension SQLConstantSyntax {
         case .json(let json): return json.bytes.withUnsafeBytes { String(decoding: $0, as: UTF8.self) }
         case .jsonb(let json): return try jsonbText(json, limits: limits)
         case .interval(let interval): return intervalText(interval)
+        case .time(let time): return timeText(time)
+        case .timeWithTimeZone(let time): return try offsetTimeText(time)
+        case .dateInfinity(let value), .timestampInfinity(let value, _), .intervalInfinity(let value): return infinityText(value)
         case .primitive(let value):
             switch value {
             case .bool(let value): return value ? "true" : "false"

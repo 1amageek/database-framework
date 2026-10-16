@@ -250,7 +250,7 @@ public struct SumIndexMaintainer<Item: PersistedEntityValue, Value: IndexNumeric
             }
             results.append((
                 grouping: try AggregationGroupingValueDecoder.decode(
-                    storedGrouping
+                    storedGrouping, fieldSchemas: index.descriptor.keyFieldSchemas
                 ),
                 sum: sum
             ))

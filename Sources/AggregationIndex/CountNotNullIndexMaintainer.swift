@@ -126,7 +126,7 @@ public struct CountNotNullIndexMaintainer<Item: PersistedEntityValue>: CountAggr
         return try storedResults.map { result in
             (
                 grouping: try AggregationGroupingValueDecoder.decode(
-                    result.grouping
+                    result.grouping, fieldSchemas: index.descriptor.keyFieldSchemas
                 ),
                 count: result.count
             )

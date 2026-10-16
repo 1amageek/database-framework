@@ -81,6 +81,23 @@ public enum CanonicalRowFingerprint {
             for element in array.elements {
                 try updateValue(element, hasher: &hasher, workMeter: workMeter)
             }
+        case .time(let time):
+            updateByte(6, hasher: &hasher)
+            updateInteger(time.microsecondsSinceMidnight, hasher: &hasher)
+        case .timeWithTimeZone(let time):
+            updateByte(7, hasher: &hasher)
+            updateInteger(time.time.microsecondsSinceMidnight, hasher: &hasher)
+            updateInteger(time.utcOffsetSeconds, hasher: &hasher)
+        case .dateInfinity(let direction):
+            updateByte(8, hasher: &hasher)
+            updateInfinity(direction, hasher: &hasher)
+        case .timestampInfinity(let direction, let withTimeZone):
+            updateByte(9, hasher: &hasher)
+            updateInfinity(direction, hasher: &hasher)
+            updateByte(withTimeZone ? 1 : 0, hasher: &hasher)
+        case .intervalInfinity(let direction):
+            updateByte(10, hasher: &hasher)
+            updateInfinity(direction, hasher: &hasher)
         case .interval(let interval):
             updateByte(5, hasher: &hasher)
             updateInteger(interval.period.months, hasher: &hasher)
@@ -159,6 +176,13 @@ public enum CanonicalRowFingerprint {
         }
     }
 
+    private static func updateInfinity(_ direction: QueryTemporalInfinity, hasher: inout SHA256Accumulator) {
+        switch direction {
+        case .negative: updateByte(0, hasher: &hasher)
+        case .positive: updateByte(1, hasher: &hasher)
+        }
+    }
+
     private static func updateNumeric(_ value: QueryNumericValue, hasher: inout SHA256Accumulator) {
         updateInteger(value.value.coefficient, hasher: &hasher)
         updateInteger(value.value.scale, hasher: &hasher)
@@ -205,7 +229,16 @@ public enum CanonicalRowFingerprint {
             updateByte(precision == nil ? 12 : 23, hasher: &hasher)
             updateByte(withTimeZone ? 1 : 0, hasher: &hasher)
             if let precision { updateInteger(Int64(precision), hasher: &hasher) }
-        case .interval: updateByte(13, hasher: &hasher)
+        case .interval(let fields, let precision):
+            if fields == nil && precision == nil { updateByte(13, hasher: &hasher) }
+            else {
+                updateByte(25, hasher: &hasher)
+                if let fields {
+                    updateByte(1, hasher: &hasher)
+                    updateString(fields.rawValue, hasher: &hasher)
+                } else { updateByte(0, hasher: &hasher) }
+                updateOptionalInteger(precision, hasher: &hasher)
+            }
         case .binary(let length):
             updateByte(14, hasher: &hasher)
             updateOptionalInteger(length, hasher: &hasher)

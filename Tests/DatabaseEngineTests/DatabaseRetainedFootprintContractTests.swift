@@ -71,6 +71,55 @@ struct DatabaseRetainedFootprintContractTests {
             DatabaseIntermediateFootprint(bytes: expectedBytes),
             stage: .projection
         )
+
+        let limits = QueryValueLimits(maximumRetainedBytes: 4096, maximumTotalNodes: 64,
+            maximumNestingDepth: 8, maximumCollectionElements: 16)
+        let time = try QueryTimeValue(microsecondsSinceMidnight: 86_400_000_000)
+        let temporal: [QueryValue] = [.time(time), .timeWithTimeZone(.init(time: time, utcOffsetSeconds: .min)),
+            .dateInfinity(.negative), .timestampInfinity(.positive, withTimeZone: true), .intervalInfinity(.positive)]
+        let inlineBytes = UInt64(max(MemoryLayout<QueryValue>.stride, MemoryLayout<QueryJSONBMember>.stride) + 32)
+        func decoded(_ values: [QueryValue]) throws -> DatabaseIntermediateFootprint {
+            try CanonicalRelationalFootprintMeter.decodedRowStructureFootprint(values: values,
+                annotations: [:], version: nil, payloadLeaseCount: 0, workMeter: meter, stage: .projection)
+        }
+        func rowBase(_ values: [QueryValue]) -> UInt64 {
+            64 + UInt64(values.capacity * MemoryLayout<QueryValue>.stride)
+                + UInt64(MemoryLayout<[String: FieldValue]>.stride)
+                + UInt64(MemoryLayout<[DatabaseQueryPayloadLease]>.stride)
+        }
+        for value in temporal {
+            let fixed = try CanonicalRelationalFootprintMeter.valueFootprint(of: value, workMeter: meter, stage: .projection)
+            #expect(fixed.bytes == inlineBytes)
+            try assertExactAdmission(fixed, stage: .projection)
+            let values = [value]
+            let structure = try decoded(values)
+            #expect(structure == DatabaseIntermediateFootprint(rows: 1, bytes: rowBase(values)))
+            try assertExactAdmission(structure, stage: .projection)
+        }
+
+        let intervalType = DataType.interval(fields: .dayToSecond, precision: 3)
+        let interval = try QueryArrayValue(elementType: intervalType,
+            dimensions: [QueryArrayDimension(lowerBound: -2, length: 2)],
+            elements: [.intervalInfinity(.negative), .primitive(.null)], limits: limits)
+        let jsonb = try QueryJSONBValue(root: .array([.string("retained-jsonb"), .bool(true)], limits: limits), limits: limits)
+        let jsonArray = try QueryArrayValue(elementType: .jsonb,
+            dimensions: [QueryArrayDimension(lowerBound: 1, length: 1)], elements: [.jsonb(jsonb)], limits: limits)
+        let values = [QueryValue.array(interval), .array(jsonArray)]
+        let owner = jsonb.root.storageFootprint
+        var complete = rowBase(values) + owner.retainedStorageByteCount + owner.utf8ByteCount
+        for array in [interval, jsonArray] {
+            complete += 64 + UInt64(array.elements.capacity * MemoryLayout<QueryValue>.stride)
+                + UInt64(array.dimensions.capacity * MemoryLayout<QueryArrayDimension>.stride)
+        }
+        let structure = try decoded(values)
+        #expect(structure == DatabaseIntermediateFootprint(rows: 1, bytes: complete))
+        #expect(owner.retainedStorageByteCount > 0)
+        try assertExactAdmission(structure, stage: .projection)
+        let plainInterval = try QueryArrayValue(elementType: .interval(), dimensions: interval.dimensions,
+            elements: interval.elements, limits: limits)
+        #expect(try CanonicalRelationalFootprintMeter.valueFootprint(of: QueryValue.array(interval), workMeter: meter, stage: .projection)
+            == CanonicalRelationalFootprintMeter.valueFootprint(of: QueryValue.array(plainInterval), workMeter: meter, stage: .projection))
+        #expect(meter.retainedIntermediateBytes == 0)
     }
 
     @Test("persisted model footprint is independently derived from fields")

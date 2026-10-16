@@ -31,6 +31,8 @@ package struct DatabaseExpressionEvaluator: Sendable {
         // S07 ARRAY and S08 ROW evaluation must be implemented before returning a value.
         case .array, .row:
             throw DatabaseExpressionEvaluationError.unsupportedExpression("SQL ARRAY/ROW constructor")
+        case .currentValue:
+            throw DatabaseExpressionEvaluationError.missingTemporalEnvironment
         case .concatenate:
             throw DatabaseExpressionEvaluationError.unsupportedExpression("SQL concatenation requires selected SQL execution")
         case .literal(let literal):

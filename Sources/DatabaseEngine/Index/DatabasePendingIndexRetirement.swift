@@ -13,7 +13,7 @@ public struct DatabasePendingIndexRetirement: Sendable, Hashable {
     public let identity: DatabaseIndexStorageIdentity
 
     /// Layer of each component of the source directory path, in scope order,
-    /// or `nil` for a record staged before the layers were recorded.
+    /// or `nil` when the source declaration was unavailable at staging.
     ///
     /// The path a retirement addresses belongs to a declaration the published
     /// schema may no longer have, so the layer of each node cannot be derived

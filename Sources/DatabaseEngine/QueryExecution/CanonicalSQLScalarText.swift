@@ -4,12 +4,17 @@ import DatabaseTypes
 /// Selected SQL type output; formatted temporaries live only through the borrow.
 enum CanonicalSQLScalarText {
     static func withText<Result>(of value: QueryValue, type: QueryColumnType,
-        preservingCharacterPadding: Bool, workMeter: DatabaseWorkMeter,
+        preservingCharacterPadding: Bool, temporalEnvironment: SQLTemporalEnvironment? = nil, workMeter: DatabaseWorkMeter,
         _ body: (borrowing Substring) throws -> Result) throws -> Result {
         guard QueryValueValidator.accepts(value, type: type), !value.isNull else {
             throw DatabaseExpressionEvaluationError.typeMismatch(operation: "selected scalar text input")
         }
         try workMeter.checkpoint(at: .expressionEvaluation)
+        if CanonicalQueryTypeBinder.temporalType(type) != nil {
+            guard let temporalEnvironment else { throw DatabaseExpressionEvaluationError.missingTemporalEnvironment }
+            return try SQLTemporalFormatting.withText(of: value, type: type, environment: temporalEnvironment,
+                workMeter: workMeter, body)
+        }
         if case .primitive(.string(let text)) = value {
             try charge(text.utf8.count, workMeter)
             var view = text[...]
