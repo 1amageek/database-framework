@@ -6,17 +6,18 @@ enum SQLCatalogCodec {
     private static let version: UInt16 = 1
     private static let digestFootprint = ByteString(repeating: 0, count: SHA256Accumulator.digestByteCount)
 
+    @discardableResult
     static func admit(_ catalog: SQLCatalog, fingerprint: SchemaFingerprint,
         protectedContracts: [SQLCatalogProtectedContract], limits: StorageFrameLimits,
         runtimeConfiguration: DatabaseRuntimeConfiguration? = nil
-    ) throws {
+    ) throws -> Int {
         // Existing protection keys have an admitted input footprint. Count new
         // compiled witnesses without allocating their digests or lookup indexes.
-        _ = try StorageFrameEncoder.measure(limits: limits) { writer throws(StorageFrameError) in
+        let byteCount = try StorageFrameEncoder.measure(limits: limits) { writer throws(StorageFrameError) in
             try write(catalog, fingerprint: fingerprint, protectedContracts: protectedContracts, into: &writer)
             try writer.writeBytes(digestFootprint)
         }
-        guard let runtimeConfiguration else { return }
+        guard let runtimeConfiguration else { return byteCount }
         let existing = Set(protectedContracts.map { SQLCatalogName($0.relationID) })
         var additions = 0
         for relation in catalog.relations where !existing.contains(SQLCatalogName(relation.id)) {
@@ -28,7 +29,7 @@ enum SQLCatalogCodec {
         }
         let count = protectedContracts.count.addingReportingOverflow(additions)
         guard !count.overflow else { throw StorageFrameError.byteCountOverflow }
-        _ = try StorageFrameEncoder.measure(limits: limits) { writer throws(StorageFrameError) in
+        return try StorageFrameEncoder.measure(limits: limits) { writer throws(StorageFrameError) in
             try writeDeclaration(catalog, fingerprint: fingerprint, into: &writer)
             try writer.writeCount(count.partialValue)
             for protection in protectedContracts { try writeProtection(protection, into: &writer) }

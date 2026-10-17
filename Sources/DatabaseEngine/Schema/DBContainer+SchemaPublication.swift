@@ -107,6 +107,71 @@ extension DBContainer {
             publishedLease: lease, sqlCatalog: snapshot, requiresIdleSchemaTransition: true)
     }
 
+    func stageSQLCatalog(
+        _ catalog: SQLCatalog,
+        expectedGeneration: UInt64,
+        idempotencyKey: String,
+        authorization: AuthorizationContext,
+        sourceLease: DatabaseSchemaLease,
+        transaction: any TransactionAccess,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> DatabaseSchemaStagingOutcome {
+        guard !idempotencyKey.isEmpty else {
+            throw DatabaseSchemaPublicationError.invalidIdempotencyKey
+        }
+        #if DATABASE_MULTI_BASE
+        let schemaEngine = storageTopology.controlDomain.engine
+        let schemaRoot = storageTopology.controlDomain.systemRoot
+        #else
+        let schemaEngine = engine
+        let schemaRoot = defaultTenant.systemRoot
+        #endif
+        guard transaction.transactionDomain === schemaEngine.transactionDomain else {
+            throw StorageError.invalidOperation(
+                "Schema staging requires the aggregate's owning storage domain")
+        }
+        try workMeter.consume(at: .validation)
+        let byteCount = try SQLCatalogCodec.admit(catalog,
+            fingerprint: sourceLease.fingerprint,
+            protectedContracts: sourceLease.sqlCatalog.protectedContracts,
+            limits: .default, runtimeConfiguration: sourceLease.runtimeConfiguration)
+        let metadataBytes = MemoryLayout<DatabaseSchemaGeneration>.stride
+            + MemoryLayout<DatabaseSchemaStagingOutcome>.stride
+            + MemoryLayout<DatabaseSchemaPublicationResult>.stride
+            + MemoryLayout<DatabasePreparedSchemaGeneration>.stride
+        let reservation = try workMeter.reserveIntermediate(
+            bytes: UInt64(byteCount) + UInt64(metadataBytes), at: .validation)
+        let snapshot = try sourceLease.sqlCatalog.replacingCatalog(catalog,
+            physicalSchema: sourceLease.schema, runtimeConfiguration: sourceLease.runtimeConfiguration)
+        let prepared = try prepareSchemaGeneration(sourceLease.schema,
+            runtimeConfiguration: sourceLease.runtimeConfiguration, catalogSnapshot: snapshot)
+        let registry = SchemaRegistry(database: schemaEngine, root: schemaRoot, clock: monotonicClock)
+        #if DATABASE_MULTI_BASE
+        try await databaseGrantStore.require(.administer,
+            authorization: authorization, transaction: transaction)
+        #endif
+        let outcome = try await writeSchemaAggregate(sourceLease.schema,
+            fingerprint: sourceLease.fingerprint, expectedFingerprint: sourceLease.fingerprint,
+            expectedGeneration: expectedGeneration, idempotencyKey: idempotencyKey,
+            preparedGeneration: prepared, publishedLease: sourceLease, sqlCatalog: snapshot,
+            requiresIdleSchemaTransition: true, registry: registry, transaction: transaction)
+        guard outcome.shouldPublishGeneration else {
+            return DatabaseSchemaStagingOutcome(publication: outcome.publication, state: nil)
+        }
+        let generation = DatabaseSchemaGeneration(identifier: outcome.publication.generation,
+            fingerprint: outcome.publication.fingerprint,
+            indexPhysicalFingerprint: outcome.publication.indexPhysicalFingerprint,
+            executionRuntimeFingerprint: outcome.publication.executionRuntimeFingerprint,
+            schema: sourceLease.schema, sqlCatalog: snapshot,
+            runtimeConfiguration: sourceLease.runtimeConfiguration,
+            indexPhysicalLayouts: prepared.indexPhysicalLayouts,
+            directoryLayers: sourceLease.directoryLayers,
+            securityDelegate: sourceLease.securityDelegate)
+        return DatabaseSchemaStagingOutcome(publication: outcome.publication,
+            state: DatabaseSchemaStagingState(container: self, generation: generation,
+                sourceLease: sourceLease, reservation: reservation))
+    }
+
     @_spi(DatabaseExecution)
     public func publishSchema(
         _ schema: Schema,
@@ -165,63 +230,14 @@ extension DBContainer {
             let databaseTransaction = DatabaseTransaction(storageAccess: transaction, container: self,
                 readPolicy: DatabaseReadPolicy(schemaLease: publishedLease, authorization: authorization))
             do {
-                let state = try await Self.loadSchemaCatalog(registry: registry,
-                    metadataSubspace: self.metadataSubspace, transaction: transaction)
-                if let stored = try await Self.loadSchemaPublication(idempotencyKey: idempotencyKey,
-                    metadataSubspace: self.metadataSubspace, transaction: transaction) {
-                    guard stored.fingerprint == targetFingerprint,
-                        stored.indexPhysicalFingerprint == preparedGeneration.indexPhysicalFingerprint,
-                        stored.executionRuntimeFingerprint == preparedGeneration.executionRuntimeFingerprint else {
-                        throw DatabaseSchemaPublicationError.idempotencyKeyReused(idempotencyKey)
-                    }
-                    guard state.sqlCatalog != nil else {
-                        throw DatabaseSchemaPublicationError.corruptedState("idempotent publication exists without its schema aggregate")
-                    }
-                    let active = state.generation == stored.generation && state.fingerprint == stored.fingerprint
-                        && state.indexPhysicalFingerprint == stored.indexPhysicalFingerprint
-                        && state.executionRuntimeFingerprint == stored.executionRuntimeFingerprint
-                    if active {
-                        guard state.sqlCatalog?.digest == sqlCatalog.digest,
-                            state.indexLayoutFingerprints == preparedGeneration.indexPhysicalLayouts.mapValues({ $0.fingerprint }) else {
-                            throw DatabaseSchemaPublicationError.corruptedState("idempotent publication does not match its active aggregate")
-                        }
-                    }
-                    try await databaseTransaction.prepareForCommit()
-                    return SchemaPublicationTransactionOutcome(publication: stored, shouldPublishGeneration: active)
-                }
-                if requiresIdleSchemaTransition {
-                    try await self.requireNoActiveSchemaTransition(transaction: transaction)
-                }
-                let actualFingerprint = state.sqlCatalog == nil ? publishedLease.fingerprint : state.fingerprint
-                guard actualFingerprint == expectedFingerprint else {
-                    throw DatabaseSchemaPublicationError.fingerprintConflict(expected: expectedFingerprint, actual: actualFingerprint)
-                }
-                let actualGeneration = state.sqlCatalog == nil ? publishedLease.generation : state.generation
-                let requiredGeneration = expectedGeneration ?? publishedLease.generation
-                guard actualGeneration == requiredGeneration, actualGeneration == publishedLease.generation else {
-                    throw DatabaseSchemaPublicationError.generationConflict(expected: requiredGeneration, actual: actualGeneration)
-                }
-                if state.sqlCatalog != nil {
-                    guard state.executionRuntimeFingerprint == publishedLease.executionRuntimeFingerprint,
-                        state.indexPhysicalFingerprint == publishedLease.indexPhysicalFingerprint,
-                        state.sqlCatalog?.digest == publishedLease.sqlCatalog.digest else {
-                        throw DatabaseSchemaPublicationError.corruptedState("the active aggregate differs from its leased execution generation")
-                    }
-                }
-                let next = actualGeneration.addingReportingOverflow(1)
-                guard !next.overflow else { throw DatabaseSchemaPublicationError.generationOverflow }
-                try await Self.persistSchemaCatalog(schema, fingerprint: targetFingerprint,
-                    preparedGeneration: preparedGeneration, generation: next.partialValue,
-                    sqlCatalog: sqlCatalog, registry: registry, mode: .strict, metadataSubspace: self.metadataSubspace,
-                    transaction: transaction)
-                let result = DatabaseSchemaPublicationResult(previousFingerprint: actualFingerprint,
-                    fingerprint: targetFingerprint, schemaVersion: schema.version, generation: next.partialValue,
-                    indexPhysicalFingerprint: preparedGeneration.indexPhysicalFingerprint,
-                    executionRuntimeFingerprint: preparedGeneration.executionRuntimeFingerprint)
-                try transaction.setValue(Self.encodeSchemaPublication(result),
-                    for: Self.schemaPublicationKey(idempotencyKey: idempotencyKey, metadataSubspace: self.metadataSubspace))
+                let outcome = try await self.writeSchemaAggregate(schema,
+                    fingerprint: targetFingerprint, expectedFingerprint: expectedFingerprint,
+                    expectedGeneration: expectedGeneration, idempotencyKey: idempotencyKey,
+                    preparedGeneration: preparedGeneration, publishedLease: publishedLease,
+                    sqlCatalog: sqlCatalog, requiresIdleSchemaTransition: requiresIdleSchemaTransition,
+                    registry: registry, transaction: transaction)
                 try await databaseTransaction.prepareForCommit()
-                return SchemaPublicationTransactionOutcome(publication: result, shouldPublishGeneration: true)
+                return outcome
             } catch {
                 await databaseTransaction.invalidate()
                 throw error
@@ -236,6 +252,76 @@ extension DBContainer {
                 generation: outcome.publication.generation, sqlCatalog: sqlCatalog)
         }
         return outcome.publication
+    }
+
+    private func writeSchemaAggregate(
+        _ schema: Schema,
+        fingerprint targetFingerprint: SchemaFingerprint,
+        expectedFingerprint: SchemaFingerprint,
+        expectedGeneration: UInt64?,
+        idempotencyKey: String,
+        preparedGeneration: DatabasePreparedSchemaGeneration,
+        publishedLease: DatabaseSchemaLease,
+        sqlCatalog: SQLCatalogSnapshot,
+        requiresIdleSchemaTransition: Bool,
+        registry: SchemaRegistry,
+        transaction: any TransactionAccess
+    ) async throws -> SchemaPublicationTransactionOutcome {
+        let state = try await Self.loadSchemaCatalog(registry: registry,
+            metadataSubspace: self.metadataSubspace, transaction: transaction)
+        if let stored = try await Self.loadSchemaPublication(idempotencyKey: idempotencyKey,
+            metadataSubspace: self.metadataSubspace, transaction: transaction) {
+            guard stored.fingerprint == targetFingerprint,
+                stored.indexPhysicalFingerprint == preparedGeneration.indexPhysicalFingerprint,
+                stored.executionRuntimeFingerprint == preparedGeneration.executionRuntimeFingerprint else {
+                throw DatabaseSchemaPublicationError.idempotencyKeyReused(idempotencyKey)
+            }
+            guard state.sqlCatalog != nil else {
+                throw DatabaseSchemaPublicationError.corruptedState("idempotent publication exists without its schema aggregate")
+            }
+            let active = state.generation == stored.generation && state.fingerprint == stored.fingerprint
+                && state.indexPhysicalFingerprint == stored.indexPhysicalFingerprint
+                && state.executionRuntimeFingerprint == stored.executionRuntimeFingerprint
+            if active {
+                guard state.sqlCatalog?.digest == sqlCatalog.digest,
+                    state.indexLayoutFingerprints == preparedGeneration.indexPhysicalLayouts.mapValues({ $0.fingerprint }) else {
+                    throw DatabaseSchemaPublicationError.corruptedState("idempotent publication does not match its active aggregate")
+                }
+            }
+            return SchemaPublicationTransactionOutcome(publication: stored, shouldPublishGeneration: active)
+        }
+        if requiresIdleSchemaTransition {
+            try await self.requireNoActiveSchemaTransition(transaction: transaction)
+        }
+        let actualFingerprint = state.sqlCatalog == nil ? publishedLease.fingerprint : state.fingerprint
+        guard actualFingerprint == expectedFingerprint else {
+            throw DatabaseSchemaPublicationError.fingerprintConflict(expected: expectedFingerprint, actual: actualFingerprint)
+        }
+        let actualGeneration = state.sqlCatalog == nil ? publishedLease.generation : state.generation
+        let requiredGeneration = expectedGeneration ?? publishedLease.generation
+        guard actualGeneration == requiredGeneration, actualGeneration == publishedLease.generation else {
+            throw DatabaseSchemaPublicationError.generationConflict(expected: requiredGeneration, actual: actualGeneration)
+        }
+        if state.sqlCatalog != nil {
+            guard state.executionRuntimeFingerprint == publishedLease.executionRuntimeFingerprint,
+                state.indexPhysicalFingerprint == publishedLease.indexPhysicalFingerprint,
+                state.sqlCatalog?.digest == publishedLease.sqlCatalog.digest else {
+                throw DatabaseSchemaPublicationError.corruptedState("the active aggregate differs from its leased execution generation")
+            }
+        }
+        let next = actualGeneration.addingReportingOverflow(1)
+        guard !next.overflow else { throw DatabaseSchemaPublicationError.generationOverflow }
+        try await Self.persistSchemaCatalog(schema, fingerprint: targetFingerprint,
+            preparedGeneration: preparedGeneration, generation: next.partialValue,
+            sqlCatalog: sqlCatalog, registry: registry, mode: .strict, metadataSubspace: self.metadataSubspace,
+            transaction: transaction)
+        let result = DatabaseSchemaPublicationResult(previousFingerprint: actualFingerprint,
+            fingerprint: targetFingerprint, schemaVersion: schema.version, generation: next.partialValue,
+            indexPhysicalFingerprint: preparedGeneration.indexPhysicalFingerprint,
+            executionRuntimeFingerprint: preparedGeneration.executionRuntimeFingerprint)
+        try transaction.setValue(Self.encodeSchemaPublication(result),
+            for: Self.schemaPublicationKey(idempotencyKey: idempotencyKey, metadataSubspace: self.metadataSubspace))
+        return SchemaPublicationTransactionOutcome(publication: result, shouldPublishGeneration: true)
     }
 
     static func applicationSQLCatalog(from lease: DatabaseSchemaLease, schema: Schema,

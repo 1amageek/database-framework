@@ -99,8 +99,8 @@ package struct DatabaseReadAuthorization: Sendable {
 /// decisions shared by DatabaseContext and revocable read sessions. Callers
 /// provide domain values; the policy never exposes its delegate or registry.
 package struct DatabaseReadPolicy: Sendable {
-    private let schemaLease: DatabaseSchemaLease
-    private let authorization: AuthorizationContext
+    package let schemaLease: DatabaseSchemaLease
+    package let authorization: AuthorizationContext
 
     package var schemaGeneration: UInt64 { schemaLease.generation }
 

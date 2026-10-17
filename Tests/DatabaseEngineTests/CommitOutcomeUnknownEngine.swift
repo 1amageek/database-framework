@@ -37,6 +37,20 @@ final class CommitOutcomeUnknownEngine: StorageEngine, Sendable {
             underlying.capabilities
         }
 
+        var checkpoints: (any TransactionCheckpointAccess)? {
+            underlying.checkpoints
+        }
+
+        func configureCheckpoints(limits: TransactionCheckpointLimits) throws {
+            try underlying.configureCheckpoints(limits: limits)
+        }
+
+        func performOperation(
+            _ operation: @escaping @Sendable () async throws -> Void
+        ) async throws {
+            try await underlying.performOperation(operation)
+        }
+
         var mutationByteLimit: Int? {
             underlying.mutationByteLimit
         }

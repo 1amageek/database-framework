@@ -630,3 +630,20 @@ Changing the canonical grammar, the reserved image rule, the derived tag rule,
 or the reserved topology is persistent schema identity under SPEC 10.2. It
 invalidates stored layouts and requires explicit data movement, so it is never
 lightweight schema evolution.
+
+### S12 Compound checkpoint boundaries
+
+Framework relative path walks in `DatabaseDirectoryBinding` and root/tenant
+layout operations in `DatabaseDirectoryLayout` enter one StorageKit
+`TransactionOperationExecutor` scope around the complete operation. Node
+borrowing through ContainerDirectoryAccess retains its existing container
+and read leases; the outer scope prevents a checkpoint barrier between node
+resolutions, reserved-child checks or remove/recreate steps. Read walks still
+create nothing and preserve missing-node and malformed-layout failures.
+
+The [Transaction read-wrapper propagation contract](../Transaction/DESIGN.md#read-wrapper-propagation)
+defines how that scope reaches the backend journal through each attenuated
+access. Native, WASM and Embedded use the same scope and retained ownership.
+Behavioral verification must suspend a multi-node walk, attempt a checkpoint,
+and prove the barrier cannot complete before the entire walk closes, then
+check that rollback preserves the expected complete Directory layout.

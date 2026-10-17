@@ -9,15 +9,20 @@ coordinates with [SQLCatalog](../SQLCatalog/DESIGN.md), which owns the
 validated SQL catalog snapshot, deterministic persistence, and
 SQL-to-physical binding checks.
 
-S11 changes the publication aggregate. SQL text DDL execution, block execution,
-constraint enforcement, and SQL DML belong to later execution components.
+S11 changes the publication aggregate. S12 adds trusted transaction-owned
+candidate staging and checkpoint restoration. SQL text DDL execution belongs
+to S15; block sequencing belongs to its execution owner. Constraint enforcement
+and SQL DML remain outside this component.
 `Schema`, `SchemaManifest`, DatabaseWire, and schema JSON retain their existing
 physical-schema contracts.
 
 ## Responsibilities and Boundaries
 
-- Schema owns the transaction that publishes the physical schema, SQL catalog,
-  active fingerprints, physical-index metadata, and generation together.
+- Schema owns aggregate validation, persistence, candidate identity, and
+  authoritative publication of physical schema, SQL catalog, active
+  fingerprints, physical-index metadata, and generation together. Standalone
+  management calls open their transaction; S12 staging consumes the outer
+  transaction's attenuated access and never opens or commits another one.
 - SQLCatalog owns declaration validation, canonical bytes and digest, persisted
   static-model protection, and logical-to-physical mappings. It never commits
   or obtains an independent transaction.
@@ -40,6 +45,7 @@ physical-schema contracts.
 | [DatabaseEngine](../DESIGN.md) | parent | Admission and module composition | Composes immutable generations with execution. | Leases do not grant mutation authority. |
 | [SQLCatalog](../SQLCatalog/DESIGN.md) | coordinates with | Validated snapshot and transaction-scoped persistence | Supplies immutable SQL meaning and protection witnesses. | Never opens or commits a transaction. |
 | [Core](../Core/DESIGN.md) | coordinates with | Container and storage lifetime | Opens, restores, and publishes generations. | Global and data-root metadata are different authorities. |
+| [Transaction](../Transaction/DESIGN.md) | coordinates with | Attempt-local candidate snapshots, rollback barrier, authoritative commit transfer | Owns candidate selection and checkpoint lifetime inside its actor. | Storage rollback precedes candidate restore; callback return does not permit publication. |
 | [Registry](../Registry/DESIGN.md) | depends on | Physical schema persistence and model-runtime witnesses | Supplies physical entities and compiled model contracts. | Schema-driven factories cannot erase persisted protection. |
 | [DatabaseKit Schema](../../../../database-kit/Sources/DatabaseKit/Schema/DESIGN.md) | depends on | Physical schema and SQL catalog declarations | Separates persistent layout from logical SQL naming. | Catalog publication does not change the Schema manifest. |
 | [StorageKit](../../../../storage-kit/Sources/StorageKit/DESIGN.md) | depends on | Caller-owned transaction and commit outcome | Provides atomic aggregate storage and conflict reads. | A failed or unknown commit is not published in memory. |
@@ -187,6 +193,105 @@ complete aggregate. An older successful request remains an old result and
 cannot roll the current aggregate backward. Same-key/different-catalog
 requests fail with the existing typed idempotency error.
 
+### S12 transaction-owned candidate contract
+
+The S12 trusted staging seam accepts a catalog-only declaration plus the outer
+transaction access, authorization, expected generation, and idempotency key.
+Its fixed internal signature is:
+
+```swift
+func stageSQLCatalog(
+    _ catalog: SQLCatalog,
+    expectedGeneration: UInt64,
+    idempotencyKey: String,
+    authorization: AuthorizationContext,
+    sourceLease: DatabaseSchemaLease,
+    transaction: any TransactionAccess,
+    workMeter: DatabaseWorkMeter
+) async throws -> DatabaseSchemaStagingOutcome
+```
+
+`DatabaseSchemaStagingOutcome.publication` is the management result;
+`state` is an optional replacement `DatabaseSchemaStagingState`. The state's
+`lease` supplies execution meaning and its `publication` is an immutable
+`DatabasePreparedSchemaPublication`. The actor facade derives authorization,
+source lease, storage access and meter from its admitted owner. It consumes the
+transaction's current candidate lease when present, otherwise its original
+lease. SQL text and ordinary block statements do not acquire management
+authority through this seam. It retains the existing physical schema, runtime,
+maintainers, and index layouts. Physical candidate staging and the required
+dynamic runtime/maintainer replacement belong to S15 alongside transactional
+schema/table/index DDL. S12 adds no physical-staging declaration or DDL block
+step.
+
+`DatabaseSchemaStagingState` is an immutable candidate owner containing a
+fully constructed `DatabaseSchemaGeneration` and its request-only lease. The
+generation's catalog, runtime, security delegate, Directory layer map, layouts,
+and fingerprints are validated before the state can become current. The
+candidate retains its original published lease and its admitted metadata
+reservation. Checkpoints share this owner; sharing does not add or release a
+reservation. The reservation is released only after the last candidate or
+checkpoint reference is discarded. A candidate lease is never registered as a
+published generation in the global store.
+
+Admission measures the bounded durable catalog footprint before constructing
+the candidate snapshot and reserves that footprint plus the fixed generation
+and candidate metadata values on the existing request meter. This is encoded
+payload and semantic metadata accounting, not a claim about allocator heap
+bytes. The prepared publication and request-only lease retain that same claim
+through commit; checkpoint sharing never duplicates it.
+
+The `DatabaseTransaction` actor owns the optional current staging state. Its
+checkpoint records retain the optional value. The Schema seam returns the
+publication result separately from a replacement candidate: replaying an old
+idempotency result cannot erase a newer candidate or roll its meaning backward.
+Catalog replacement continues to use `SQLCatalogSnapshot.replacingCatalog`.
+It preserves S11 static protection, generation CAS, and the in-transaction
+transition guard. Existing standalone application-owned physical publication
+retains its separate authority and runtime validation.
+
+```text
+trusted stage call
+  -> current candidate lease or original attempt lease
+  -> validate complete candidate before retaining it
+  -> caller transaction: Grant + transition guard + CAS + aggregate/idempotency
+  -> immutable candidate becomes current for later statements in this attempt
+      -> checkpoint retains candidate owner
+      -> ROLLBACK TO: close statement resources -> storage rollback
+          -> restore Framework state -> restore retained candidate owner
+      -> prepare: transfer latest fully constructed candidate to commit owner
+          -> authoritative commit success -> synchronous nonthrow publication
+          -> failure / cancellation / unknown -> discard without publication
+```
+
+Aggregate and idempotency entries are journaled physical writes. Their rollback
+uses the same StorageKit checkpoint as row/index/Directory effects; Schema
+does not introduce a second reservation registry or a compensating transaction.
+Consumed work and deadline never rewind. Abandoned candidate owners release
+their retained claims; candidates retained by surviving checkpoints remain
+charged. A restored candidate must again supply the exact lease used for SQL
+binding, policy, runtime, and later staging.
+
+The caller's transaction must address the ordinary root, or the control root
+under `MultiBase`, that owns this aggregate. An unrelated data-domain
+transaction cannot stage global metadata. Candidate staging is serialized by
+the transaction actor and participates in its operation-entry gate; a failure
+leaves the attempt failed until the documented checkpoint recovery succeeds.
+
+Publication consumes only the candidate transferred out of successful
+precommit closure. All fallible generation construction precedes commit;
+post-commit publication calls only the existing generation-store mutex update.
+`DatabasePreparedSchemaPublication.publish()` calls the synchronous nonthrow
+Core hook `publishPreparedSchemaGeneration(_:)`; Core delegates directly to
+the existing monotonic generation store. Transaction's existing
+`prepareForCommit()` keeps its Void contract and the checkpoint-aware caller
+then transfers ownership with `takePreparedSchemaPublication()`.
+Neither callback return, cleanup completion, persisted writes seen through the
+overlay, nor an unknown commit outcome establishes authoritative success.
+Independent leases keep the committed generation until confirmed publication;
+reopen reads only the committed complete aggregate. Unknown outcomes retain
+the S11 idempotent confirmation rule.
+
 ### Compiled model protection and application evolution
 
 `EntityRuntimeDefinition` captures a package-visible
@@ -251,6 +356,8 @@ physical backing.
 |---|---|---|---|
 | Published generation and lease counts | Existing `Mutex<State>` | Same storage and read/mutation entry points | Same storage and read/mutation entry points |
 | SQL snapshot and protection | Immutable generation-owned value | Same | Same |
+| Current candidate / checkpoint snapshots | Transaction actor / immutable candidate owner | Same actor and owners | Same actor and owners |
+| Candidate metadata claim | Existing reservation `Mutex<State>`; request-only lease retains the claim and original published lease | Same claim and retention | Same claim and retention |
 | Drain continuation completion | Resume outside existing mutex | Same | Same |
 | Durable aggregate | Caller-owned storage transaction | Backend transaction contract | Backend transaction contract |
 
@@ -280,6 +387,10 @@ semantics and are resolved by idempotent retry rather than assumed success.
 | C06 holds an old lease through rename publication; old/new leases resolve their own names over unchanged backing without an unnecessary drain | `Tests/DatabaseEngineTests/S11SchemaGenerationPublicationTests.swift` |
 | Catalog-only stale-generation and reused-key requests fail | Schema publication tests in `Tests/DatabaseEngineTests` |
 | Failed/unknown commit and partial state never publish synthetic success | `Tests/DatabaseEngineTests/S11SchemaGenerationPublicationTests.swift` |
+| S12-SC01: later statement binding consumes the current candidate while independent leases retain the committed catalog | `Tests/DatabaseEngineTests/S12SchemaStagingTests.swift`, `candidateVisibilityAndCommit`; actual row read in `Tests/SQLiteTests/S12SchemaStagingSQLiteTests.swift` |
+| S12-SC02: nested rollback restores candidate identity and idempotency entries, releases only abandoned claims, and preserves surviving checkpoint claims | `S12SchemaStagingTests.nestedRollbackRestoresCandidate` |
+| S12-SC03: full rollback, failed commit, cancellation, and commit-unknown never publish; successful outer commit publishes exactly the final candidate | `S12SchemaStagingTests` failure/outcome cases plus both file-backed restart cases in `S12SchemaStagingSQLiteTests` |
+| S12-SC04: staging preserves stale CAS, transition admission, compiled protection, and old idempotency replay behavior | `S12SchemaStagingTests` admission/replay cases; budget/domain cases verify rejection before aggregate writes |
 | Static compiled contracts survive schema-driven restore and reject catalog retarget/delete | Catalog protection and publication tests in `Tests/DatabaseEngineTests` |
 | Application-owned compiled schema evolution and historical stage preparation remain valid | `Tests/DatabaseEngineTests/S11SchemaGenerationPublicationTests.swift` plus existing bootstrap/evolution tests |
 | Historical boundary reconciliation does not apply the latest runtime contract to an older stage; committed V2 survives a failing V3 stage and reopens with a matching V2 runtime | `Tests/SQLiteTests/MigrationExecutionSQLiteTests.swift`, `multiStageMigrationExecutesInOrderAndPersistsBetweenStages` and `failedLaterStageKeepsEarlierStageCommitted`; existing SQLite migration suites cover one-stage, concurrent, Directory, and polymorphic transitions |

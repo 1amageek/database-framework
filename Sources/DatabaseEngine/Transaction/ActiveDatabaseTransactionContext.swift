@@ -84,6 +84,28 @@ package struct DatabaseTransactionExecutionBinding: Sendable {
         )
     }
 
+    package func rebindingSchemaLease(_ lease: DatabaseSchemaLease) -> Self {
+        Self(copying: self, schemaLease: lease)
+    }
+
+    private init(copying binding: Self, schemaLease: DatabaseSchemaLease) {
+        self.transaction = binding.transaction
+        self.transactionInstant = binding.transactionInstant
+        self.container = binding.container
+        self.schemaLease = schemaLease
+        self.storageDomainIdentity = binding.storageDomainIdentity
+        self.partitionRoot = binding.partitionRoot
+        self.partitionGeneration = binding.partitionGeneration
+        self.systemRoot = binding.systemRoot
+        self.dataRoot = binding.dataRoot
+        self.authorization = binding.authorization
+        #if DATABASE_MULTI_BASE
+        self.resource = binding.resource
+        self.grantedAccess = binding.grantedAccess
+        #endif
+        self.databaseTransaction = binding.databaseTransaction
+    }
+
     private init(
         reading binding: DatabaseTransactionExecutionBinding,
         transaction: ReadAuthorizedTransactionAccess

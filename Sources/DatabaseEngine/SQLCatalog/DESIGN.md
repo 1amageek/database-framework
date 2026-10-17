@@ -156,6 +156,13 @@ before lookup allocation. Store uses bounded point reads with the same frame
 limit. This finite metadata format has no recursive payload. No unsafe memory
 or target-specific synchronization implementation is added.
 
+For S12 candidate admission, `SQLCatalogCodec.admit` returns the measured
+durable frame footprint, including the digest and compiled protection that
+snapshot construction will retain. Schema reserves this encoded footprint on
+the existing operation meter before constructing the replacement snapshot.
+The component does not own reservation lifetime or checkpoint restoration;
+those follow the immutable candidate owner in [Schema](../Schema/DESIGN.md).
+
 ## Verification and Change Impact
 
 [S11SQLCatalogTests](../../../Tests/DatabaseEngineTests/S11SQLCatalogTests.swift)

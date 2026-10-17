@@ -54,6 +54,42 @@ Compiled fields -> bind supplied INSERT cells / UPDATE assignments
 
 ## Contracts and Invariants
 
+### S12 Statement Effects and Explicit Temporal Environment
+
+Mutation owns two distinct outcome scopes. Existing public
+`DatabaseEntityMutationExecutor.execute` retains its transaction-net-effect
+contract and the transaction-wide journal remains authoritative for final
+validation, maintenance and checkpoint undo. The package-only
+`executeStatementEffects` path reports only the current prepared statement's
+distinct requested identities, whose uniqueness is already established by
+preparation. It determines INSERT/UPDATE/DELETE meaning from the immediately
+preceding state, applies those mutations through the existing transaction
+owner, then obtains post-apply versions only for those identities. Derived
+relationship work does not add SQL affected rows. Later journal coalescing or
+rollback does not rewrite an earlier statement outcome.
+
+The statement outcome records its own affected-row count once on the exact
+request meter. INSERT(a); INSERT(b) therefore reports [1, 1] and consumes two
+rows, while INSERT(a); DELETE(a) reports [1, 1] even though the transaction's
+final net effect is empty. SQLBlock consumes this Mutation-owned result; it
+never inspects journal history to infer statement effects.
+
+`DatabaseEntityStatementMutationExecutor.execute` accepts an optional explicit
+`SQLTemporalEnvironment` after its existing work-meter argument. Existing
+callers that omit it keep the admitted transaction's prior environment
+capture. SQLBlock supplies its immutable retry-stable statement environment
+explicitly; Mutation passes that same value to assignment and predicate
+evaluation without sampling a replacement statement clock. CLOCK_TIMESTAMP
+continues to invoke the supplied live clock at each evaluated occurrence.
+
+Statement-kind scratch and outcome storage use existing request-accounted
+retained builders. There is no new shared mutation state, journal copy or
+target-specific synchronization branch. Public SQLBlock tests own the two
+per-statement count/budget counterexamples; its lifecycle suite owns explicit
+temporal propagation through a real transaction retry. Existing ordinary
+mutation lifecycle, precondition, net-effect and version tests remain required
+regressions for the preserved public executor path.
+
 Mutation footprint measurement consumes primitive named fields directly and
 does not construct QueryRow or infer a query schema. A model encoding failure
 with QueryValueError is preserved as

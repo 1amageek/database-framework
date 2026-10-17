@@ -1653,6 +1653,107 @@ public enum DatabaseContextError: Error, Sendable, Equatable, CustomStringConver
 // MARK: - Transaction API
 
 extension DatabaseContext {
+    /// Executes one checkpoint-capable callback with authoritative completion.
+    ///
+    /// - Parameters:
+    ///   - configuration: Retry, timeout and storage execution policy.
+    ///   - checkpointLimits: Bounds selected before storage access begins.
+    ///   - workMeter: The exact request meter shared across attempts and rollback.
+    ///   - executionDeadline: An optional inherited monotonic deadline.
+    ///   - operation: The attempt-scoped callback; retries receive a fresh actor.
+    /// - Returns: The callback value after authoritative commit and required publication.
+    public func withCheckpointTransaction<Result: Sendable>(
+        configuration: TransactionConfiguration = .default,
+        checkpointLimits: TransactionCheckpointLimits,
+        workMeter: DatabaseWorkMeter,
+        executionDeadline: TransactionExecutionDeadline? = nil,
+        _ operation: @Sendable @escaping (DatabaseTransaction) async throws -> Result
+    ) async throws -> Result {
+        try await withCheckpointTransaction(requiredAccess: .write,
+            configuration: configuration, checkpointLimits: checkpointLimits,
+            workMeter: workMeter, executionDeadline: executionDeadline, operation)
+    }
+
+    package func withCheckpointTransaction<Result: Sendable>(
+        requiredAccess: Security.Access,
+        configuration: TransactionConfiguration = .default,
+        checkpointLimits: TransactionCheckpointLimits,
+        workMeter: DatabaseWorkMeter,
+        executionDeadline: TransactionExecutionDeadline? = nil,
+        _ operation: @Sendable @escaping (DatabaseTransaction) async throws -> Result
+    ) async throws -> Result {
+        try ensureUsable()
+        guard ActiveDatabaseTransactionContext.binding == nil else {
+            throw DatabaseTransactionError.invalidOperationContext
+        }
+        return try await withDataOperation {
+            #if DATABASE_MULTI_BASE
+            let lease = try self.requireOperationDataRoot()
+            let executor = lease.transactionExecutor
+            let authority = lease.partitionAuthority
+            #else
+            let executor = self.container.transactionExecutor
+            let authority = self.container.defaultPartitionAuthority
+            #endif
+            let instant = self.inheritedSQLTemporalEnvironment?.transactionInstant
+                ?? self.container.wallClock.now
+            let runner = TransactionRunner(transactionExecutor: executor,
+                clock: self.container.monotonicClock,
+                logging: self.container.configuration.logging,
+                metrics: self.container.configuration.metrics)
+            let outcome = try await runner.run(configuration: configuration,
+                executionDeadline: executionDeadline,
+                readVersionCache: self.readVersionCache,
+                operationDescription: "DatabaseContext.withCheckpointTransaction",
+                onCommitOutcomeUnknown: { [self] in
+                    stateLock.withLock { $0.commitOutcomeUnknown = true }
+                }, partitionAuthority: authority, checkpointLimits: checkpointLimits
+            ) { storageAccess in
+                #if DATABASE_MULTI_BASE
+                let grantedAccess = try await self.requireGrant(requiredAccess,
+                    lease: lease, transaction: storageAccess)
+                #endif
+                let access = requiredAccess == .read
+                    ? ReadAuthorizedTransactionAccess.admitted(storageAccess) : storageAccess
+                let transaction = DatabaseTransaction(storageAccess: access,
+                    container: self.container, readPolicy: try self.readPolicy(),
+                    transactionInstant: instant)
+                do {
+                    guard let checkpoints = storageAccess.checkpoints else {
+                        throw DatabaseTransactionCheckpointError.unavailable
+                    }
+                    try await transaction.configureCheckpointExecution(workMeter: workMeter,
+                        checkpoints: checkpoints)
+                    #if DATABASE_MULTI_BASE
+                    let binding = try DatabaseTransactionExecutionBinding(context: self,
+                        transaction: access, transactionInstant: instant,
+                        grantedAccess: grantedAccess, databaseTransaction: transaction)
+                    #else
+                    let binding = try DatabaseTransactionExecutionBinding(context: self,
+                        transaction: access, transactionInstant: instant,
+                        databaseTransaction: transaction)
+                    #endif
+                    return try await ActiveDatabaseTransactionContext.$binding.withValue(binding) {
+                        let result = try await operation(transaction)
+                        try await transaction.prepareForCommit()
+                        return (result, await transaction.takePreparedSchemaPublication())
+                    }
+                } catch {
+                    let operationError = error
+                    await transaction.invalidate()
+                    if let cleanupError = await transaction.takeCheckpointCleanupFailure() {
+                        throw DatabaseReadSessionCleanupError(operationError: operationError,
+                            cleanupError: cleanupError)
+                    }
+                    throw operationError
+                }
+            }
+            outcome.1?.publish()
+            try ensureDatabaseTaskIsActive()
+            return outcome.0
+        }
+    }
+
     /// Execute a transactional operation with configurable retry and timeout
     ///
     /// Provides Firestore-like transaction semantics with explicit read isolation control.

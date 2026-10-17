@@ -190,6 +190,28 @@ public struct DatabaseEntityMutationExecutor: Sendable {
         workMeter: DatabaseWorkMeter,
         transaction: DatabaseTransaction
     ) async throws -> [EntityMutationEffect] {
+        try await execute(preparedMutation, workMeter: workMeter,
+            transaction: transaction, resultScope: .transaction)
+    }
+
+    /// Reports the direct effects of this statement independently of net transaction coalescing.
+    package func executeStatementEffects(
+        _ preparedMutation: DatabasePreparedEntityMutation,
+        workMeter: DatabaseWorkMeter,
+        transaction: DatabaseTransaction
+    ) async throws -> [EntityMutationEffect] {
+        try await execute(preparedMutation, workMeter: workMeter,
+            transaction: transaction, resultScope: .statement)
+    }
+
+    private enum ResultScope: Sendable { case transaction, statement }
+
+    private func execute(
+        _ preparedMutation: DatabasePreparedEntityMutation,
+        workMeter: DatabaseWorkMeter,
+        transaction: DatabaseTransaction,
+        resultScope: ResultScope
+    ) async throws -> [EntityMutationEffect] {
         guard preparedMutation.workMeter === workMeter else {
             throw DatabaseEntityMutationError.workMeterMismatch
         }
@@ -204,6 +226,15 @@ public struct DatabaseEntityMutationExecutor: Sendable {
                 layout: try DatabaseRetainedArrayLayout.forElement(PersistableMutation.self),
                 expectedCount: preparedMutation.changes.count
             )
+            var statementKinds: DatabaseRetainedArrayBuilder<EntityMutationKind>?
+            switch resultScope {
+            case .transaction: statementKinds = nil
+            case .statement:
+                statementKinds = try DatabaseRetainedArrayBuilder(workMeter: workMeter,
+                    stage: .mutationPlanning,
+                    layout: try DatabaseRetainedArrayLayout.forElement(EntityMutationKind.self),
+                    expectedCount: preparedMutation.changes.count)
+            }
 
             for prepared in preparedMutation.changes {
                 try workMeter.consume(at: .mutationPlanning)
@@ -223,6 +254,13 @@ public struct DatabaseEntityMutationExecutor: Sendable {
                     identity: prepared.identity,
                     state: state
                 )
+                let actualKind: EntityMutationKind
+                switch (prepared.kind, state) {
+                case (.upsert, .missing): actualKind = .insert
+                case (.upsert, .present): actualKind = .update
+                default: actualKind = prepared.kind
+                }
+                try statementKinds?.append(footprint: DatabaseIntermediateFootprint()) { actualKind }
 
                 let mutation: PersistableMutation
                 switch prepared.kind {
@@ -283,6 +321,12 @@ public struct DatabaseEntityMutationExecutor: Sendable {
                 )
             }
 
+            if let statementKinds = statementKinds.take() {
+                return try await statementEffects(preparedMutation,
+                    kinds: statementKinds.finish(), workMeter: workMeter,
+                    transaction: transaction, operationID: operationID)
+            }
+
             let persistedEffectCount = try await transaction
                 .persistedMutationEffectCount(within: operationID)
             guard persistedEffectCount <= limits.maximumChanges else {
@@ -317,6 +361,47 @@ public struct DatabaseEntityMutationExecutor: Sendable {
                 )
             }
         }
+    }
+
+    private func statementEffects(
+        _ prepared: DatabasePreparedEntityMutation,
+        kinds: consuming DatabaseRetainedBuffer<EntityMutationKind>,
+        workMeter: DatabaseWorkMeter,
+        transaction: DatabaseTransaction,
+        operationID: UInt64
+    ) async throws -> [EntityMutationEffect] {
+        guard let outputCount = UInt32(exactly: prepared.changes.count) else {
+            throw DatabaseWorkLimitError.maximumRows(stage: .resultMaterialization,
+                consumed: workMeter.consumedRows, requested: .max, maximum: workMeter.budget.maximumRows)
+        }
+        try workMeter.consume(UInt64(outputCount), at: .validation)
+        try workMeter.recordOutputRows(outputCount)
+        var effects = try DatabaseRetainedArrayBuilder<EntityMutationEffect>(
+            workMeter: workMeter, stage: .resultMaterialization,
+            layout: try DatabaseRetainedArrayLayout.forElement(EntityMutationEffect.self),
+            expectedCount: prepared.changes.count)
+        for index in 0..<prepared.changes.count {
+            let change = prepared.changes[index]
+            let kind = kinds.withElement(at: index) { $0 }
+            let version: ByteString?
+            if kind == .delete {
+                version = nil
+            } else {
+                try workMeter.consume(at: .storageRow)
+                guard let model = try await transaction.fetchPersistedModel(
+                    identifiedBy: change.identity, within: operationID) else {
+                    throw DatabaseEntityMutationError.entityNotFound(change.identity)
+                }
+                version = try entityVersion(model)
+            }
+            let footprint = try DatabaseEntityMutationFootprintMeter.footprint(
+                of: change.identity, workMeter: workMeter).adding(
+                    DatabaseIntermediateFootprint(bytes: UInt64(version?.count ?? 0)))
+            try effects.append(footprint: footprint) {
+                EntityMutationEffect(kind: kind, identity: change.identity, version: version)
+            }
+        }
+        return effects.finish().promoteToOutput()
     }
 
     public func validate(

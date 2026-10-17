@@ -37,6 +37,16 @@ final class ContainerTransaction: Transaction, Sendable
         transaction.capabilities
     }
 
+    var checkpoints: (any TransactionCheckpointAccess)? {
+        transaction.checkpoints
+    }
+
+    func performOperation(
+        _ operation: @escaping @Sendable () async throws -> Void
+    ) async throws {
+        try await transaction.performOperation(operation)
+    }
+
     var compaction: StorageCompactionAccess? {
         transaction.compaction
     }
@@ -193,6 +203,10 @@ final class ContainerTransaction: Transaction, Sendable
         try transaction.configureMutationByteLimit(
             maximumBytes: maximumBytes
         )
+    }
+
+    func configureCheckpoints(limits: TransactionCheckpointLimits) throws {
+        try transaction.configureCheckpoints(limits: limits)
     }
 
     func commit() async throws {

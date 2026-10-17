@@ -220,6 +220,7 @@ internal struct TransactionRunner: Sendable {
         onCommitSuccess: (@Sendable (_ transaction: any Transaction, _ commitNanos: UInt64) -> Void)? = nil,
         partitionAuthority: DatabasePartitionAuthority? = nil,
         restoringReadPosition: DatabaseReadPosition? = nil,
+        checkpointLimits: TransactionCheckpointLimits? = nil,
         operation: @escaping @Sendable (any TransactionAccess) async throws -> T
     ) async throws -> T {
         try configuration.validate()
@@ -269,6 +270,10 @@ internal struct TransactionRunner: Sendable {
                     onCancel: onCancel
                 )
                 cancellationGate = newCancellationGate
+
+                if let checkpointLimits {
+                    try newTransaction.configureCheckpoints(limits: checkpointLimits)
+                }
 
                 // 2. Apply configuration options
                 let attemptConfiguration = try configurationForAttempt(

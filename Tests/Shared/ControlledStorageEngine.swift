@@ -95,6 +95,20 @@ public final class ControlledStorageEngine<Base: StorageEngine>:
             base.capabilities
         }
 
+        public var checkpoints: (any TransactionCheckpointAccess)? {
+            base.checkpoints
+        }
+
+        public func configureCheckpoints(limits: TransactionCheckpointLimits) throws {
+            try base.configureCheckpoints(limits: limits)
+        }
+
+        public func performOperation(
+            _ operation: @escaping @Sendable () async throws -> Void
+        ) async throws {
+            try await base.performOperation(operation)
+        }
+
         public var compaction: StorageCompactionAccess? {
             base.compaction
         }

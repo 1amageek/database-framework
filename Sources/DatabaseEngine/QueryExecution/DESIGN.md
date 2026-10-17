@@ -78,6 +78,32 @@ Fusion sealed projection + retained primary-key source
 
 ## Contracts and Invariants
 
+### S12 collecting-only block composition
+
+[SQLBlock](../SQLBlock/DESIGN.md) owns the aggregate statement-result lifecycle.
+Its selected read seam calls the existing session-bound retained query
+implementation under the exact admitted transaction, schema lease, parameters
+and work meter, and transfers the collecting row owner, visible range and
+metadata reservation exactly once. It constructs neither `CanonicalReadyQueryResponse`
+nor a public `QueryResponse` while the block transaction is active. Rows remain
+in their existing retained backing, without a materialize-then-retain copy.
+
+Each statement's Read session closes before the block proceeds to a checkpoint
+transition; surviving result claims remain live across rollback-to. Only the
+block owner may perform its purpose-specific Ready transition after runner
+closure and required generation work. This seam does not change ordinary
+public query cancellation, pagination or result-conversion behavior. The
+SQLBlock owner implements and verifies the seam together with the complete
+block path; an unused partial execution branch is not added in advance.
+
+This seam has no GraphIndex dependency: it is part of DatabaseEngine's
+graph-free target and reuses the existing session-bound canonical reader.
+Portable evidence must execute the seam/orchestrator to prove it; checkpoint
+or Kit declaration cases alone establish only those lower contracts. Native
+public facade evidence and the already deferred Graph-enabled Database
+WASM/Embedded obligation retain the boundaries recorded by
+[SQLBlock](../SQLBlock/DESIGN.md#verification-and-change-impact).
+
 - SELECT execution dispatch consumes Kit's source language applicability
   contract through `DataSource.usesSPARQLSemantics`. Executor capability and
   Read admission remain Framework checks after that semantic classification.

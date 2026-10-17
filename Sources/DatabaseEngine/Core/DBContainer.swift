@@ -1502,6 +1502,11 @@ public final class DBContainer: Sendable {
         )
     }
 
+    /// Publishes an aggregate whose fallible construction preceded commit.
+    func publishPreparedSchemaGeneration(_ generation: DatabaseSchemaGeneration) {
+        schemaGenerationStore.publish(generation)
+    }
+
     /// Releases the storage engine owned by this container.
     ///
     /// Shutdown is thread-safe and idempotent. It rejects new operations, waits

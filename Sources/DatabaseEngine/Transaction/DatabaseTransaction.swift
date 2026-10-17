@@ -8,11 +8,12 @@ import StorageKit
 /// receive an operation-scoped capability that permits recursive persistence
 /// while preserving this owner, shared storage access, and final validation.
 /// `TransactionRunner` alone owns commit, cancellation, and retry lifecycle.
-public final actor DatabaseTransaction: DatabaseTransactionWriting {
+public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTransactionCheckpointing {
     private enum State: Sendable, Equatable {
         case open
         case executing(UInt64)
         case preparingCommit(UInt64)
+        case failed
         case closed
     }
 
@@ -30,7 +31,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
     }
 
     private let container: DBContainer
-    private let readPolicy: DatabaseReadPolicy
+    private var readPolicy: DatabaseReadPolicy
     private let readAuthorization: DatabaseReadAuthorization?
     private let mutationMaintenanceService: PersistableMutationMaintenanceService
     private let operationGate = TransactionOperationGate()
@@ -42,6 +43,31 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
     private var scheduledWrites = EntityReferenceSet()
     private var activeMutationIdentities = EntityReferenceSet()
     private var mutationJournal = TransactionMutationJournal()
+
+    private struct CheckpointRecord: Sendable {
+        let checkpoint: DatabaseTransactionCheckpoint
+        let undoPosition: Int
+        let schema: DatabaseSchemaStagingState?
+    }
+    private struct ReadScopeRecord: Sendable {
+        let scope: DatabaseTransactionCheckpointScope
+        let close: @Sendable () async throws -> Void
+        let reservation: DatabaseIntermediateReservation
+    }
+    private let checkpointGate = TransactionOperationGate(permitsConcurrentOperations: true)
+    private var checkpointWorkMeter: DatabaseWorkMeter?
+    private var physicalCheckpoints: (any TransactionCheckpointAccess)?
+    private var checkpointInitialLease: DatabaseSchemaLease?
+    private var checkpointRecords: [CheckpointRecord] = []
+    private var checkpointRecordCapacity = 0
+    private var checkpointReservation: DatabaseIntermediateReservation?
+    private var checkpointTransitionPending = false
+    private var nextCheckpointScopeIdentifier: UInt64 = 1
+    private var checkpointReadScopes: [ReadScopeRecord] = []
+    private var schemaStagingState: DatabaseSchemaStagingState?
+    private var checkpointCleanupFailure: (any Error)?
+    private var checkpointFailure: (any Error)?
+    private var checkpointStatementIsActive = false
 
     private struct ResolvedSubspaces: Sendable {
         let items: Subspace
@@ -578,7 +604,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
                 partition: resolved.partition
             )
         } catch {
-            state = .closed
+            recordCheckpointFailure(error)
             throw error
         }
     }
@@ -591,7 +617,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             try ensureActive(operationID, permitsMutation: true)
             try await apply(mutations, operationID: operationID)
         } catch {
-            state = .closed
+            recordCheckpointFailure(error)
             throw error
         }
     }
@@ -610,7 +636,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
                 partition: partition
             )
         } catch {
-            state = .closed
+            recordCheckpointFailure(error)
             throw error
         }
     }
@@ -622,7 +648,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             try ensureActive(operationID, permitsMutation: false)
             return mutationJournal.persistedEffectCount
         } catch {
-            state = .closed
+            recordCheckpointFailure(error)
             throw error
         }
     }
@@ -637,7 +663,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             try ensureActive(operationID, permitsMutation: false)
             return try mutationJournal.mapPersistedEffects(transform)
         } catch {
-            state = .closed
+            recordCheckpointFailure(error)
             throw error
         }
     }
@@ -659,7 +685,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
                 source: .derived
             )
         } catch {
-            state = .closed
+            recordCheckpointFailure(error)
             throw error
         }
     }
@@ -681,7 +707,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
                 source: .derived
             )
         } catch {
-            state = .closed
+            recordCheckpointFailure(error)
             throw error
         }
     }
@@ -695,6 +721,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
     }
 
     package func prepareForCommit() async throws {
+        try await drainCheckpointScopes(permanently: true)
         await operationGate.closeAndWait()
         guard state == .open else {
             throw lifecycleError(for: state)
@@ -729,11 +756,13 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             }
             self.validationGate = nil
             mutationJournal.removeAll()
+            clearCheckpointRecords()
             state = .closed
         } catch {
             await context.closeAndWait()
             self.validationGate = nil
             mutationJournal.removeAll()
+            clearCheckpointRecords()
             state = .closed
             throw error
         }
@@ -741,9 +770,13 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
 
     package func invalidate() async {
         state = .closed
+        do { try await drainCheckpointScopes(permanently: true) }
+        catch { checkpointCleanupFailure = error }
         await operationGate.closeAndWait()
         await validationGate?.closeAndWait()
         mutationJournal.removeAll()
+        clearCheckpointRecords()
+        schemaStagingState = nil
     }
 
     // MARK: - Persistence pipeline
@@ -1292,9 +1325,295 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
         )
     }
 
+    // MARK: - Checkpoint lifecycle
+
+    package func configureCheckpointExecution(workMeter: DatabaseWorkMeter,
+        checkpoints: any TransactionCheckpointAccess
+    ) throws {
+        guard checkpointWorkMeter == nil, state == .open else {
+            throw DatabaseTransactionCheckpointError.unavailable
+        }
+        try mutationJournal.bind(to: workMeter)
+        let layout = try DatabaseRetainedArrayLayout.forElement(CheckpointRecord.self)
+        checkpointReservation = try workMeter.reserveIntermediate(
+            bytes: layout.containerByteCount, at: .mutationPlanning)
+        checkpointInitialLease = readPolicy.schemaLease
+        checkpointWorkMeter = workMeter
+        physicalCheckpoints = checkpoints
+    }
+
+    private func hasAdmittedCheckpointScope() -> Bool {
+        guard let scope = DatabaseTransactionCheckpointScope.current else { return false }
+        return scope.owner == ObjectIdentifier(self) && scope.isActive
+    }
+
+    private func beginCheckpointScope(independent: Bool = false) throws -> DatabaseTransactionCheckpointScope? {
+        guard checkpointWorkMeter != nil else { return nil }
+        if let inherited = DatabaseTransactionCheckpointScope.current,
+           inherited.owner == ObjectIdentifier(self), !inherited.isActive {
+            throw DatabaseTransactionError.closed
+        }
+        let descendant = hasAdmittedCheckpointScope()
+        if checkpointTransitionPending && !descendant { throw DatabaseTransactionError.concurrentOperation }
+        switch state {
+        case .failed: throw DatabaseTransactionCheckpointError.failed
+        case .closed, .preparingCommit: throw DatabaseTransactionError.closed
+        case .executing where !descendant: throw DatabaseTransactionError.concurrentOperation
+        case .open, .executing: break
+        }
+        if descendant && !independent { return nil }
+        guard nextCheckpointScopeIdentifier < UInt64.max else {
+            throw DatabaseTransactionCheckpointError.scopeIdentifierExhausted
+        }
+        try checkpointGate.enter(admittedDescendant: descendant)
+        let scope = DatabaseTransactionCheckpointScope(owner: ObjectIdentifier(self),
+            identifier: nextCheckpointScopeIdentifier, gate: checkpointGate)
+        nextCheckpointScopeIdentifier += 1
+        return scope
+    }
+
+    package func registerCheckpointReadScope(
+        close: @escaping @Sendable () async throws -> Void
+    ) throws -> DatabaseTransactionCheckpointScope? {
+        guard let scope = try beginCheckpointScope(independent: true),
+              let meter = checkpointWorkMeter else { return nil }
+        do {
+            let layout = try DatabaseRetainedArrayLayout.forElement(ReadScopeRecord.self)
+            let reservation = try meter.reserveIntermediate(
+                bytes: try DatabaseIntermediateFootprint(bytes: layout.elementCapacitySlotByteCount)
+                    .adding(DatabaseIntermediateFootprint(bytes: layout.sharedOwnerByteCount)).bytes,
+                at: .resultMaterialization)
+            checkpointReadScopes.append(ReadScopeRecord(scope: scope, close: close, reservation: reservation))
+            return scope
+        } catch {
+            scope.end()
+            recordCheckpointFailure(error)
+            throw error
+        }
+    }
+
+    package func endCheckpointReadScope(_ scope: DatabaseTransactionCheckpointScope?) {
+        guard let scope else { return }
+        checkpointReadScopes.removeAll { $0.scope.identifier == scope.identifier }
+        scope.end()
+    }
+
+    package func recordCheckpointFailure(_ error: any Error) {
+        guard state != .closed else { return }
+        if checkpointWorkMeter != nil, checkpointFailure == nil { checkpointFailure = error }
+        if checkpointWorkMeter != nil, !(error is CancellationError),
+           !(error is TransactionExecutionDeadlineExceeded),
+           !(error is DatabaseWorkLimitError),
+           !((error as? StorageError).map { $0.isRetryable || $0.code == .commitUnknownResult } ?? false) {
+            state = .failed
+        } else {
+            state = .closed
+        }
+    }
+
+    private func drainCheckpointScopes(permanently: Bool) async throws {
+        guard checkpointWorkMeter != nil else { return }
+        if hasAdmittedCheckpointScope() { throw DatabaseTransactionCheckpointError.barrierInsideOperation }
+        checkpointTransitionPending = true
+        checkpointGate.pause()
+        let scopes = checkpointReadScopes
+        checkpointReadScopes.removeAll()
+        var cleanupFailure: (any Error)?
+        for record in scopes {
+            do { try await record.close() } catch {
+                if let previous = cleanupFailure {
+                    cleanupFailure = DatabaseReadSessionCleanupError(operationError: previous, cleanupError: error)
+                } else {
+                    cleanupFailure = error
+                }
+            }
+            record.scope.end()
+        }
+        await checkpointGate.closeAndWait()
+        if let cleanupFailure { throw cleanupFailure }
+        if !permanently { try ensureDatabaseTaskIsActive() }
+    }
+
+    private func withCheckpointBarrier<Result: Sendable>(
+        recovering: Bool = false,
+        _ operation: () async throws -> Result
+    ) async throws -> Result {
+        guard checkpointWorkMeter != nil else { throw DatabaseTransactionCheckpointError.unavailable }
+        guard state != .closed else { throw DatabaseTransactionError.closed }
+        guard !checkpointTransitionPending else { throw DatabaseTransactionError.concurrentOperation }
+        if hasAdmittedCheckpointScope() { throw DatabaseTransactionCheckpointError.barrierInsideOperation }
+        do {
+            try await drainCheckpointScopes(permanently: false)
+            switch state {
+            case .open: break
+            case .failed where recovering: break
+            case .failed: throw DatabaseTransactionCheckpointError.failed
+            case .executing, .preparingCommit, .closed: throw DatabaseTransactionError.closed
+            }
+            let result = try await operation()
+            checkpointTransitionPending = false
+            checkpointGate.resume()
+            return result
+        } catch {
+            state = .closed
+            if recovering, let primary = checkpointFailure {
+                throw DatabaseReadSessionCleanupError(operationError: primary, cleanupError: error)
+            }
+            throw error
+        }
+    }
+
+    public func createCheckpoint() async throws -> DatabaseTransactionCheckpoint {
+        try await withCheckpointBarrier {
+            guard let checkpoints = physicalCheckpoints,
+                  let reservation = checkpointReservation,
+                  let meter = checkpointWorkMeter else { throw DatabaseTransactionCheckpointError.unavailable }
+            try meter.consume(at: .mutationPlanning)
+            let layout = try DatabaseRetainedArrayLayout.forElement(CheckpointRecord.self)
+            let growth = try layout.growth(from: checkpointRecordCapacity, toFit: checkpointRecords.count + 1)
+            try reservation.reserveAdditional(bytes: growth.additionalByteCount, at: .mutationPlanning)
+            checkpointRecords.reserveCapacity(growth.capacity)
+            checkpointRecordCapacity = growth.capacity
+            let checkpoint = DatabaseTransactionCheckpoint(physical: try await checkpoints.createCheckpoint())
+            checkpointRecords.append(CheckpointRecord(checkpoint: checkpoint,
+                undoPosition: mutationJournal.checkpointPosition(), schema: schemaStagingState))
+            return checkpoint
+        }
+    }
+
+    public func rollback(to checkpoint: DatabaseTransactionCheckpoint) async throws {
+        try await withCheckpointBarrier(recovering: true) {
+            guard let index = checkpointRecords.firstIndex(where: { $0.checkpoint == checkpoint }),
+                  let checkpoints = physicalCheckpoints,
+                  let meter = checkpointWorkMeter else { throw DatabaseTransactionCheckpointError.invalidToken }
+            try meter.consume(at: .mutationPlanning)
+            let record = checkpointRecords[index]
+            for _ in record.undoPosition..<mutationJournal.undoCount {
+                try meter.consume(at: .mutationPlanning)
+            }
+            try await checkpoints.rollback(to: checkpoint.physical)
+            mutationJournal.rollback(to: record.undoPosition)
+            schemaStagingState = record.schema
+            if let lease = record.schema?.lease ?? checkpointInitialLease {
+                readPolicy = DatabaseReadPolicy(schemaLease: lease, authorization: readPolicy.authorization)
+            }
+            checkpointRecords.removeSubrange((index + 1)..<checkpointRecords.count)
+            subspaceCache = DatabaseStoreCache()
+            scheduledDeletions.removeAll()
+            scheduledWrites.removeAll()
+            activeMutationIdentities.removeAll()
+            checkpointFailure = nil
+            state = .open
+        }
+    }
+
+    public func release(_ checkpoint: DatabaseTransactionCheckpoint) async throws {
+        try await withCheckpointBarrier {
+            guard let index = checkpointRecords.firstIndex(where: { $0.checkpoint == checkpoint }),
+                  let checkpoints = physicalCheckpoints,
+                  let meter = checkpointWorkMeter else { throw DatabaseTransactionCheckpointError.invalidToken }
+            try meter.consume(at: .mutationPlanning)
+            try await checkpoints.release(checkpoint.physical)
+            checkpointRecords.removeSubrange(index..<checkpointRecords.count)
+            if checkpointRecords.isEmpty { mutationJournal.releaseCheckpointHistory() }
+        }
+    }
+
+    private func clearCheckpointRecords() {
+        checkpointRecords.removeAll()
+        checkpointReservation = nil
+        checkpointRecordCapacity = 0
+        physicalCheckpoints = nil
+        checkpointFailure = nil
+        if let lease = checkpointInitialLease {
+            readPolicy = DatabaseReadPolicy(schemaLease: lease, authorization: readPolicy.authorization)
+        }
+        checkpointInitialLease = nil
+    }
+
+    package func withStatementScope<Result: Sendable>(
+        _ operation: @Sendable () async throws -> Result
+    ) async throws -> Result {
+        guard !checkpointStatementIsActive else { throw DatabaseTransactionError.concurrentOperation }
+        let scope = try beginCheckpointScope()
+        checkpointStatementIsActive = true
+        defer {
+            checkpointStatementIsActive = false
+            scope?.end()
+        }
+        let lease = readPolicy.schemaLease
+        guard let binding = ActiveDatabaseTransactionContext.binding,
+              binding.container === container else { throw DatabaseTransactionError.invalidOperationContext }
+        do {
+            try checkpointWorkMeter?.consume(at: .mutationPlanning)
+            return try await DatabaseTransactionCheckpointScope.$current.withValue(
+                scope ?? DatabaseTransactionCheckpointScope.current
+            ) {
+                try await DatabaseSchemaExecutionScope.$container.withValue(container) {
+                    try await DatabaseSchemaExecutionScope.$lease.withValue(lease) {
+                        try await ActiveDatabaseTransactionContext.$binding.withValue(binding.rebindingSchemaLease(lease)) {
+                            try await operation()
+                        }
+                    }
+                }
+            }
+        } catch {
+            recordCheckpointFailure(error)
+            throw error
+        }
+    }
+
+    @_spi(DatabaseExecution)
+    public func stageSQLCatalog(_ catalog: SQLCatalog, expectedGeneration: UInt64,
+        idempotencyKey: String) async throws -> DatabaseSchemaPublicationResult {
+        try await performOperation { _ in
+            guard let workMeter = checkpointWorkMeter else { throw DatabaseTransactionCheckpointError.unavailable }
+            let outcome = try await container.stageSQLCatalog(catalog,
+                expectedGeneration: expectedGeneration, idempotencyKey: idempotencyKey,
+                authorization: readPolicy.authorization, sourceLease: readPolicy.schemaLease,
+                transaction: storageAccess, workMeter: workMeter)
+            if let candidate = outcome.state {
+                schemaStagingState = candidate
+                readPolicy = DatabaseReadPolicy(schemaLease: candidate.lease, authorization: readPolicy.authorization)
+            }
+            return outcome.publication
+        }
+    }
+
+    package func takePreparedSchemaPublication() -> DatabasePreparedSchemaPublication? {
+        precondition(state == .closed)
+        let publication = schemaStagingState?.publication
+        schemaStagingState = nil
+        return publication
+    }
+
+    package func takeCheckpointCleanupFailure() -> (any Error)? {
+        let failure = checkpointCleanupFailure
+        checkpointCleanupFailure = nil
+        return failure
+    }
+
+    package var hasPendingCheckpointBarrier: Bool { checkpointTransitionPending }
+
     // MARK: - Operation lifecycle
 
     private func performOperation<Value: ~Copyable & Sendable>(
+        _ operation: (UInt64) async throws -> sending Value
+    ) async throws -> sending Value {
+        guard checkpointWorkMeter != nil else {
+            return try await performAdmittedOperation(operation)
+        }
+        let scope = try beginCheckpointScope()
+        defer { scope?.end() }
+        let box = try await DatabaseTransactionCheckpointScope.$current.withValue(
+            scope ?? DatabaseTransactionCheckpointScope.current
+        ) {
+            DatabaseReadResultBox(try await performAdmittedOperation(operation))
+        }
+        return box.take()
+    }
+
+    private func performAdmittedOperation<Value: ~Copyable & Sendable>(
         _ operation: (UInt64) async throws -> sending Value
     ) async throws -> sending Value {
         try operationGate.enter()
@@ -1320,7 +1639,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             return value
         } catch {
             if let operationID, state == .executing(operationID) {
-                state = .closed
+                recordCheckpointFailure(error)
             }
             operationGate.leave()
             throw error
@@ -1348,6 +1667,8 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             return
         case .executing, .preparingCommit:
             throw DatabaseTransactionError.invalidOperationContext
+        case .failed:
+            throw DatabaseTransactionCheckpointError.failed
         case .open, .closed:
             throw DatabaseTransactionError.closed
         }
@@ -1361,7 +1682,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting {
             return .concurrentOperation
         case .open:
             preconditionFailure("An open transaction has no lifecycle error")
-        case .preparingCommit, .closed:
+        case .failed, .preparingCommit, .closed:
             return .closed
         }
     }

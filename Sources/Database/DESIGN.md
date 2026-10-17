@@ -47,6 +47,7 @@ The concrete entry/adaptation paths are [DatabaseContext+SQL](DatabaseContext+SQ
 |---|---|---|---|---|
 | [database-framework](../../DESIGN.md) | parent | Package composition and dependency direction | Places this module at the public entry boundary. | Keep child contracts linked rather than duplicated here. |
 | [DatabaseEngine](../DatabaseEngine/DESIGN.md) | depends on | Read session, transaction-bound preparation, canonical rows, and typed failures | Supplies the session and persistence execution boundary. | `Database` must not replace session authority with ambient state. |
+| [SQLBlock](../DatabaseEngine/SQLBlock/DESIGN.md) | depends on | Semantic statement/block admission and post-closure result transfer | Owns the S12 aggregate execution lifecycle. | First error rolls back the request and throws; SQL control text and remote operations belong to S16/S17. |
 | [QueryAST](../QueryAST/DESIGN.md) | depends on | Strict parser and canonical SQL serializer | Adapts text without executing it. | SELECT and statement entry points must agree on shared syntax. |
 | [DatabaseKit SQL](../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md) | depends on | SQL profile, statement/block, positional typed result | Owns semantic values and compatibility inventory. | Public adaptation must preserve column order, duplicate names, types, and failures. |
 | [GraphIndex](../GraphIndex/DESIGN.md) | depends on | Transaction-bound graph-facing SPARQL and graph physical execution | Receives graph work after SQL entry/adaptation and session admission. | Graph layout, RDF bytes, and graph-facing SPARQL semantics remain in GraphIndex. |
@@ -241,7 +242,70 @@ session design and GraphIndex's transaction-bound executor evidence. Changes
 to parser semantics belong to the owning dependency and are not expanded into
 this module's design.
 
-### Planned statement and block entry contracts
+### S12 Semantic Entry Contract
+
+The proposed semantic overloads are
+`executeStatement(_:parameters:options:)` for an existing `QueryStatement`
+and `executeSQLBlock(_:parameters:options:)` for Kit's `SQLBlock`. The first
+uses the same block execution path with one statement and returns that
+statement's outcome. `SQLBlockExecutionOptions` is a Framework-owned immutable
+configuration with required StorageKit checkpoint limits and existing request
+budget, structural-limit, search-path and transaction defaults. Its mutation
+limit derivation and exact single-count accounting are owned only by
+[SQLBlock](../DatabaseEngine/SQLBlock/DESIGN.md#api-and-result-owner).
+The first statement
+or checkpoint error stops the immutable block, rolls back all effects and
+throws the typed failure after mandatory cleanup; later ROLLBACK TO steps
+are not automatically executed. Failed requests publish no earlier results.
+
+`Database` performs bounded structural/parameter admission and adapts the
+Engine-owned result only after its complete producing lifecycle closes. It
+does not loop over public `executeSQL`, open a transaction per statement,
+create a work meter per statement, or implement checkpoint/name semantics.
+The [SQLBlock component](../DatabaseEngine/SQLBlock/DESIGN.md) owns the execution
+subset, results, readiness and checkpoint coordination. Kit owns block input
+and command meaning; Framework owns `rows(QueryResponse)` and other results
+created by execution. Neither a third row type nor Kit-to-Framework dependency
+is required.
+
+The fixed Engine entry uses
+`withCheckpointTransaction(configuration:checkpointLimits:workMeter:executionDeadline:_:)`
+with required StorageKit checkpoint limits and the exact request meter. Its
+copyable callback result retains the existing `T: Sendable` signature;
+SQLBlock bridges its linear collecting owner using the existing internal
+`DatabaseReadResultBox` and finalizes only after authoritative runner return.
+The facade exposes neither that bridge nor a new transaction result factory.
+
+```text
+semantic QueryStatement / SQLBlock + parameters + immutable options
+    -> one cumulative admission -> SQLBlock execution owner
+        -> one meter + one transaction + transaction-bound sessions
+        -> authoritative close -> cancellation gate -> Ready result
+    -> one consuming caller-owned output transfer
+```
+
+The existing `executeSQL` text SELECT facade and its single-statement rejection
+contract remain unchanged. SQL control syntax is S16; new remote statement and
+block descriptors, transport invocation and SQL-file calls are S17. A trusted
+catalog-candidate test SPI is not part of public SQL input or parser grammar.
+
+Public S12 tests must observe read-your-writes, ordered typed/empty results,
+successful-result retention after rollback-to, catalog-subset rejection,
+exact/one-past cumulative limits, full failure/cancellation cleanup and no
+completion while commit/session/cleanup is suspended. They must enter these
+facades and perform real backend readback. Engine tests own the underlying
+state-machine and checkpoint cases instead of duplicating them here.
+
+Database's GraphIndex and OntologyIndex dependencies are selected only by the
+GraphIndexes trait; the semantic block facade and ordinary collecting seam do
+not intrinsically require that trait. S12 records native public-block evidence
+separately from formal Engine/Kit WASM/Embedded checkpoint/control/declaration
+evidence. A portable fixture proves the graph-free orchestrator or facade only
+when that exact path executes. The existing Graph-enabled Database portable
+obligation above remains SQL-S18.02.03, and lower Engine/Kit evidence does not
+close it or introduce a new deferral.
+
+### Aggregate Entry Assumptions
 
 The current `executeSQL` implementation parses one statement, binds values,
 and rejects non-SELECT statements. That read-only API remains read-only.

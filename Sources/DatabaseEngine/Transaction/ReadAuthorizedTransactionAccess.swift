@@ -233,6 +233,18 @@ final class ReadAuthorizedTransactionAccess:
         capabilitiesValue
     }
 
+    var checkpoints: (any TransactionCheckpointAccess)? { nil }
+
+    func performOperation(
+        _ body: @escaping @Sendable () async throws -> Void
+    ) async throws {
+        let operation = try beginScopeOperation?()
+        defer { operation?.end() }
+        try validate(operation: operation)
+        try await resolveTransaction().performOperation(body)
+        try validate(operation: operation)
+    }
+
     var transactionDomain: StorageTransactionDomain {
         transactionDomainValue
     }

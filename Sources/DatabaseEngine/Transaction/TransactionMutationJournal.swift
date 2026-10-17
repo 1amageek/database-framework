@@ -8,6 +8,7 @@ struct TransactionMutationJournal: Sendable {
         let originallyExisted: Bool
         var currentModel: PersistedModel?
         var currentFootprint: DatabaseIntermediateFootprint
+        let payloadReservation: DatabaseIntermediateReservation?
     }
 
     private struct Accounting: Sendable {
@@ -17,6 +18,8 @@ struct TransactionMutationJournal: Sendable {
         let lookupLayout: DatabaseRetainedHashTableLayout
         var entryCapacity: Int
         var lookupCapacity: Int
+        let undoLayout: DatabaseRetainedArrayLayout
+        var undoCapacity: Int
     }
 
     private struct LookupSlot: Sendable {
@@ -27,6 +30,44 @@ struct TransactionMutationJournal: Sendable {
     private var entries: [Entry] = []
     private var lookup: [EntityReference: Int] = [:]
     private var accounting: Accounting?
+    private struct Undo: Sendable {
+        let index: Int
+        let previous: Entry?
+    }
+    private var undo: [Undo] = []
+    private var recordsUndo = false
+
+    mutating func checkpointPosition() -> Int {
+        recordsUndo = true
+        return undo.count
+    }
+
+    var undoCount: Int { undo.count }
+
+    mutating func rollback(to position: Int) {
+        precondition(position >= 0 && position <= undo.count)
+        while undo.count > position {
+            let change = undo.removeLast()
+            if let previous = change.previous {
+                entries[change.index] = previous
+            } else {
+                precondition(change.index == entries.count - 1)
+                lookup.removeValue(forKey: entries.removeLast().identity)
+            }
+        }
+    }
+
+    mutating func releaseCheckpointHistory() {
+        undo.removeAll(keepingCapacity: false)
+        recordsUndo = false
+        if var accounting {
+            accounting.reservation.releaseGuaranteedPartial(
+                bytes: UInt64(accounting.undoCapacity) * accounting.undoLayout.elementCapacitySlotByteCount
+            )
+            accounting.undoCapacity = 0
+            self.accounting = accounting
+        }
+    }
 
     var workMeter: DatabaseWorkMeter? { accounting?.workMeter }
 
@@ -65,6 +106,8 @@ struct TransactionMutationJournal: Sendable {
                 bytes: lookupLayout.containerByteCount
             )
         ).adding(
+            DatabaseIntermediateFootprint(bytes: UInt64(MemoryLayout<[Undo]>.stride))
+        ).adding(
             DatabaseIntermediateFootprint(
                 bytes: entryGrowth.additionalByteCount
             )
@@ -86,7 +129,9 @@ struct TransactionMutationJournal: Sendable {
             entryLayout: entryLayout,
             lookupLayout: lookupLayout,
             entryCapacity: entryGrowth.capacity,
-            lookupCapacity: lookupGrowth.capacity
+            lookupCapacity: lookupGrowth.capacity,
+            undoLayout: try DatabaseRetainedArrayLayout.forElement(Undo.self),
+            undoCapacity: 0
         )
     }
 
@@ -95,96 +140,58 @@ struct TransactionMutationJournal: Sendable {
         previousModel: PersistedModel?,
         currentModel: PersistedModel?
     ) throws {
-        if let entryIndex = lookup[identity] {
-            let newCurrentFootprint: DatabaseIntermediateFootprint
-            if let accounting {
-                newCurrentFootprint = try Self.currentFootprint(
-                    identity: identity,
-                    model: currentModel,
-                    workMeter: accounting.workMeter
-                )
-                try Self.reserveGrowth(
-                    from: entries[entryIndex].currentFootprint,
-                    to: newCurrentFootprint,
-                    using: accounting.reservation
-                )
-            } else {
-                newCurrentFootprint = DatabaseIntermediateFootprint()
-            }
-            let previousFootprint = entries[entryIndex].currentFootprint
-            entries[entryIndex].currentModel = currentModel
-            entries[entryIndex].currentFootprint = newCurrentFootprint
-            if let accounting {
-                Self.releaseShrinkage(
-                    from: previousFootprint,
-                    to: newCurrentFootprint,
-                    using: accounting.reservation
-                )
-            }
-            return
-        }
-
-        let currentFootprint: DatabaseIntermediateFootprint
+        let existingIndex = lookup[identity]
+        let index = existingIndex ?? entries.count
+        let previous = existingIndex.map { entries[$0] }
+        let footprint: DatabaseIntermediateFootprint
+        let payloadReservation: DatabaseIntermediateReservation?
         if var accounting {
-            currentFootprint = try Self.currentFootprint(
-                identity: identity,
-                model: currentModel,
-                workMeter: accounting.workMeter
-            )
-            let (requiredCount, countOverflow) = entries.count
-                .addingReportingOverflow(1)
-            guard !countOverflow else {
-                throw DatabaseRetainedArrayLayoutError.capacityOverflow(
-                    currentCapacity: accounting.entryCapacity
-                )
-            }
-            let entryGrowth = try accounting.entryLayout.growth(
-                from: accounting.entryCapacity,
-                toFit: requiredCount
-            )
-            let lookupGrowth = try accounting.lookupLayout.growth(
-                from: accounting.lookupCapacity,
-                toFit: requiredCount
-            )
-            let growthFootprint = try currentFootprint
-                .adding(
-                    DatabaseIntermediateFootprint(
-                        bytes: entryGrowth.additionalByteCount
-                    )
-                )
-                .adding(
-                    DatabaseIntermediateFootprint(
-                        bytes: lookupGrowth.additionalByteCount
-                    )
-                )
-            try accounting.reservation.reserveAdditional(
-                rows: growthFootprint.rows,
-                bytes: growthFootprint.bytes,
-                at: .mutationPlanning
-            )
-            if entryGrowth.capacity != accounting.entryCapacity {
-                entries.reserveCapacity(entryGrowth.capacity)
-                accounting.entryCapacity = entryGrowth.capacity
-            }
-            if lookupGrowth.capacity != accounting.lookupCapacity {
-                lookup.reserveCapacity(lookupGrowth.capacity)
-                accounting.lookupCapacity = lookupGrowth.capacity
-            }
+            footprint = try Self.currentFootprint(identity: identity, model: currentModel,
+                workMeter: accounting.workMeter)
+            let previousFootprint = previous?.currentFootprint ?? DatabaseIntermediateFootprint()
+            let sharesPrevious = !recordsUndo && previous?.payloadReservation != nil
+            payloadReservation = try accounting.reservation.reserveChild(
+                rows: sharesPrevious ? max(footprint.rows, previousFootprint.rows) - previousFootprint.rows : footprint.rows,
+                bytes: sharesPrevious ? max(footprint.bytes, previousFootprint.bytes) - previousFootprint.bytes : footprint.bytes,
+                at: .mutationPlanning)
+            let requiredEntries = entries.count + (existingIndex == nil ? 1 : 0)
+            let entryGrowth = try accounting.entryLayout.growth(from: accounting.entryCapacity, toFit: requiredEntries)
+            let lookupGrowth = try accounting.lookupLayout.growth(from: accounting.lookupCapacity, toFit: requiredEntries)
+            let undoGrowth = try accounting.undoLayout.growth(from: accounting.undoCapacity,
+                toFit: undo.count + (recordsUndo ? 1 : 0))
+            let growth = try DatabaseIntermediateFootprint(bytes: entryGrowth.additionalByteCount)
+                .adding(DatabaseIntermediateFootprint(bytes: lookupGrowth.additionalByteCount))
+                .adding(DatabaseIntermediateFootprint(bytes: undoGrowth.additionalByteCount))
+            try accounting.reservation.reserveAdditional(bytes: growth.bytes, at: .mutationPlanning)
+            if entryGrowth.capacity != accounting.entryCapacity { entries.reserveCapacity(entryGrowth.capacity) }
+            if lookupGrowth.capacity != accounting.lookupCapacity { lookup.reserveCapacity(lookupGrowth.capacity) }
+            if undoGrowth.capacity != accounting.undoCapacity { undo.reserveCapacity(undoGrowth.capacity) }
+            accounting.entryCapacity = entryGrowth.capacity
+            accounting.lookupCapacity = lookupGrowth.capacity
+            accounting.undoCapacity = undoGrowth.capacity
             self.accounting = accounting
+            if sharesPrevious, let previousReservation = previous?.payloadReservation,
+               let payloadReservation {
+                // These claims move only after every fallible admission has succeeded.
+                payloadReservation.absorbGuaranteedPartial(from: previousReservation,
+                    rows: min(footprint.rows, previousFootprint.rows),
+                    bytes: min(footprint.bytes, previousFootprint.bytes))
+            }
         } else {
-            currentFootprint = DatabaseIntermediateFootprint()
+            footprint = DatabaseIntermediateFootprint()
+            payloadReservation = nil
         }
-
-        let entryIndex = entries.count
-        entries.append(
-            Entry(
-                identity: identity,
-                originallyExisted: previousModel != nil,
-                currentModel: currentModel,
-                currentFootprint: currentFootprint
-            )
-        )
-        lookup[identity] = entryIndex
+        if recordsUndo { undo.append(Undo(index: index, previous: previous)) }
+        let entry = Entry(identity: identity,
+            originallyExisted: previous?.originallyExisted ?? (previousModel != nil),
+            currentModel: currentModel, currentFootprint: footprint,
+            payloadReservation: payloadReservation)
+        if existingIndex != nil {
+            entries[index] = entry
+        } else {
+            entries.append(entry)
+            lookup[identity] = index
+        }
     }
 
     func currentModels() -> [PersistedModel] {
@@ -252,6 +259,8 @@ struct TransactionMutationJournal: Sendable {
     mutating func removeAll() {
         entries.removeAll()
         lookup.removeAll()
+        undo.removeAll()
+        recordsUndo = false
         accounting = nil
     }
 
@@ -295,34 +304,4 @@ struct TransactionMutationJournal: Sendable {
         )
     }
 
-    private static func reserveGrowth(
-        from previous: DatabaseIntermediateFootprint,
-        to replacement: DatabaseIntermediateFootprint,
-        using reservation: DatabaseIntermediateReservation
-    ) throws {
-        try reservation.reserveAdditional(
-            rows: replacement.rows > previous.rows
-                ? replacement.rows - previous.rows
-                : 0,
-            bytes: replacement.bytes > previous.bytes
-                ? replacement.bytes - previous.bytes
-                : 0,
-            at: .mutationPlanning
-        )
-    }
-
-    private static func releaseShrinkage(
-        from previous: DatabaseIntermediateFootprint,
-        to replacement: DatabaseIntermediateFootprint,
-        using reservation: DatabaseIntermediateReservation
-    ) {
-        reservation.releaseGuaranteedPartial(
-            rows: previous.rows > replacement.rows
-                ? previous.rows - replacement.rows
-                : 0,
-            bytes: previous.bytes > replacement.bytes
-                ? previous.bytes - replacement.bytes
-                : 0
-        )
-    }
 }

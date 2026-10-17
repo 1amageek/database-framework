@@ -37,6 +37,16 @@ final class ContainerTransactionAccess: TransactionAccess, Sendable
         transaction.capabilities
     }
 
+    var checkpoints: (any TransactionCheckpointAccess)? {
+        transaction.checkpoints
+    }
+
+    func performOperation(
+        _ operation: @escaping @Sendable () async throws -> Void
+    ) async throws {
+        try await transaction.performOperation(operation)
+    }
+
     var transactionDomain: StorageTransactionDomain {
         transaction.transactionDomain
     }

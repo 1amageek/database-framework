@@ -14,6 +14,12 @@ S11 additionally composes [SQLCatalog](SQLCatalog/DESIGN.md) for logical SQL
 identity and [Schema](Schema/DESIGN.md) for aggregate generation persistence,
 publication and restoration.
 
+S12 composes [SQLBlock](SQLBlock/DESIGN.md) with
+[Transaction](Transaction/DESIGN.md) for ordered semantic requests and joined
+physical/logical checkpoint restoration. Its concrete failure policy and
+completion status are owned by those component contracts and the workspace
+progress record.
+
 - Parent: [database-framework](../../DESIGN.md).
 - Children: the component designs linked above.
 
@@ -45,6 +51,7 @@ StorageKit Directory node through [Directory](Directory/DESIGN.md).
 | [Registry](Registry/DESIGN.md) | child | Admitted schema and declared model adaptation | Supplies ordered typed source metadata and direct slot construction. | Descriptor meaning is never inferred from payload shape. |
 | [SQLCatalog](SQLCatalog/DESIGN.md) | child | Resolved SQL relation/column mappings and bounded catalog persistence | Maps logical names to existing physical owners without granting authority. | Requests consume the snapshot retained by their schema generation. |
 | [Schema](Schema/DESIGN.md) | child | Aggregate schema/catalog generation lifecycle | Persists and restores the pair atomically and publishes only after commit. | Catalog-only changes participate in generation CAS and execution identity. |
+| [SQLBlock](SQLBlock/DESIGN.md) | child | Ordered semantic steps, named checkpoints and aggregate readiness | Coordinates one admitted transaction and request meter. | Grammar and remote operation dispatch remain S16/S17; physical journals remain StorageKit-owned. |
 | [Directory](Directory/DESIGN.md) | child | Declaration-to-node binding | Composes this direct component contract. | A resolved node is valid only in its resolving transaction. |
 
 ## Architecture

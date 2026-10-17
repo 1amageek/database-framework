@@ -134,3 +134,29 @@ deadlines stay unchanged. Advancing-clock tests prove fresh public statements,
 stable transaction time through retries, live per-occurrence CLOCK_TIMESTAMP,
 attenuation, nested reads and Composition inheritance. Stored state remains
 immutable or under the existing actor/Mutex owners.
+
+### S12 Storage operation propagation
+
+ContainerTransaction and ContainerTransactionAccess forward the StorageKit
+`performOperation` requirement to their retained underlying transaction,
+preserving whole-operation checkpoint barriers through container lifecycle
+adaptation. Both forward the configured mutable checkpoint capability; only
+ContainerTransaction forwards lifecycle-owned checkpoint configuration.
+Read attenuation and the no-rollback-authority contract are owned by
+[Transaction](../Transaction/DESIGN.md#read-wrapper-propagation).
+No new Core mutable state or target-specific synchronization is introduced.
+
+The checkpoint callback in DatabaseContext carries Schema's optional fully
+prepared generation publication beside the callback value through the
+existing runner. Only authoritative commit success permits the synchronous
+nonthrow DBContainer publication hook, after which the applicable cancellation
+check precedes result return. Schema owns that small hook in DBContainer and
+its prepared-generation type; Core does not rebuild or reinterpret the
+candidate after commit. Failure and unknown commit outcomes discard the
+candidate without publishing it.
+
+The lifecycle owner passes physical checkpoint control privately to the
+transaction actor independently of attenuating data access. A callback admitted with
+read access therefore preserves read-only storage and Directory enforcement
+while the actor can restore its own logical/physical checkpoint. No raw
+checkpoint or transaction lifecycle authority escapes through read wrappers.

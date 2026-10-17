@@ -65,16 +65,18 @@ package enum DatabaseDirectoryLayout {
         access: any DirectoryAccess,
         transaction: any TransactionAccess
     ) async throws -> Directory {
-        var current = try await access.openOrInitializeRoot(transaction: transaction)
-        for component in path {
-            current = try await access.openOrCreate(
-                component,
-                layer: .default,
-                in: current,
-                transaction: transaction
-            )
+        return try await TransactionOperationExecutor(access: transaction).withOperation {
+            var current = try await access.openOrInitializeRoot(transaction: transaction)
+            for component in path {
+                current = try await access.openOrCreate(
+                    component,
+                    layer: .default,
+                    in: current,
+                    transaction: transaction
+                )
+            }
+            return current
         }
-        return current
     }
 
     /// Opens the database root Directory without creating anything. `nil` means
@@ -84,21 +86,23 @@ package enum DatabaseDirectoryLayout {
         access: any DirectoryAccess,
         transaction: any TransactionReadAccess
     ) async throws -> Directory? {
-        guard var current = try await access.openRoot(transaction: transaction) else {
-            return nil
-        }
-        for component in path {
-            guard let next = try await access.open(
-                component,
-                expecting: .default,
-                in: current,
-                transaction: transaction
-            ) else {
+        return try await TransactionOperationExecutor(access: transaction).withOperation {
+            guard var current = try await access.openRoot(transaction: transaction) else {
                 return nil
             }
-            current = next
+            for component in path {
+                guard let next = try await access.open(
+                    component,
+                    expecting: .default,
+                    in: current,
+                    transaction: transaction
+                ) else {
+                    return nil
+                }
+                current = next
+            }
+            return current
         }
-        return current
     }
 
     // MARK: - Tenant Partitions
@@ -109,16 +113,18 @@ package enum DatabaseDirectoryLayout {
         access: any DirectoryAccess,
         transaction: any TransactionAccess
     ) async throws -> DatabaseTenantDirectories {
-        let partition = try await access.openOrCreatePartition(
-            defaultPartitionName,
-            in: databaseRoot,
-            transaction: transaction
-        )
-        return try await openOrCreateTenantChildren(
-            of: partition,
-            access: access,
-            transaction: transaction
-        )
+        return try await TransactionOperationExecutor(access: transaction).withOperation {
+            let partition = try await access.openOrCreatePartition(
+                defaultPartitionName,
+                in: databaseRoot,
+                transaction: transaction
+            )
+            return try await openOrCreateTenantChildren(
+                of: partition,
+                access: access,
+                transaction: transaction
+            )
+        }
     }
 
     /// Opens the Default Partition and its reserved children, creating nothing.
@@ -127,18 +133,20 @@ package enum DatabaseDirectoryLayout {
         access: any DirectoryAccess,
         transaction: any TransactionReadAccess
     ) async throws -> DatabaseTenantDirectories? {
-        guard let partition = try await access.openPartition(
-            defaultPartitionName,
-            in: databaseRoot,
-            transaction: transaction
-        ) else {
-            return nil
+        return try await TransactionOperationExecutor(access: transaction).withOperation {
+            guard let partition = try await access.openPartition(
+                defaultPartitionName,
+                in: databaseRoot,
+                transaction: transaction
+            ) else {
+                return nil
+            }
+            return try await openTenantChildren(
+                of: partition,
+                access: access,
+                transaction: transaction
+            )
         }
-        return try await openTenantChildren(
-            of: partition,
-            access: access,
-            transaction: transaction
-        )
     }
 
     /// Opens or creates `bases/<name>` and its reserved children.
@@ -148,21 +156,23 @@ package enum DatabaseDirectoryLayout {
         access: any DirectoryAccess,
         transaction: any TransactionAccess
     ) async throws -> DatabaseTenantDirectories {
-        let bases = try await access.openOrCreateDirectory(
-            basesDirectoryName,
-            in: databaseRoot,
-            transaction: transaction
-        )
-        let partition = try await access.openOrCreatePartition(
-            name,
-            in: bases,
-            transaction: transaction
-        )
-        return try await openOrCreateTenantChildren(
-            of: partition,
-            access: access,
-            transaction: transaction
-        )
+        return try await TransactionOperationExecutor(access: transaction).withOperation {
+            let bases = try await access.openOrCreateDirectory(
+                basesDirectoryName,
+                in: databaseRoot,
+                transaction: transaction
+            )
+            let partition = try await access.openOrCreatePartition(
+                name,
+                in: bases,
+                transaction: transaction
+            )
+            return try await openOrCreateTenantChildren(
+                of: partition,
+                access: access,
+                transaction: transaction
+            )
+        }
     }
 
     /// Opens `bases/<name>` and its reserved children, creating nothing.
@@ -172,25 +182,27 @@ package enum DatabaseDirectoryLayout {
         access: any DirectoryAccess,
         transaction: any TransactionReadAccess
     ) async throws -> DatabaseTenantDirectories? {
-        guard let bases = try await access.openDirectory(
-            basesDirectoryName,
-            in: databaseRoot,
-            transaction: transaction
-        ) else {
-            return nil
+        return try await TransactionOperationExecutor(access: transaction).withOperation {
+            guard let bases = try await access.openDirectory(
+                basesDirectoryName,
+                in: databaseRoot,
+                transaction: transaction
+            ) else {
+                return nil
+            }
+            guard let partition = try await access.openPartition(
+                name,
+                in: bases,
+                transaction: transaction
+            ) else {
+                return nil
+            }
+            return try await openTenantChildren(
+                of: partition,
+                access: access,
+                transaction: transaction
+            )
         }
-        guard let partition = try await access.openPartition(
-            name,
-            in: bases,
-            transaction: transaction
-        ) else {
-            return nil
-        }
-        return try await openTenantChildren(
-            of: partition,
-            access: access,
-            transaction: transaction
-        )
     }
 
     /// Lists the Base Partitions of a database root. An absent `bases`
@@ -203,30 +215,32 @@ package enum DatabaseDirectoryLayout {
         access: any DirectoryAccess,
         transaction: any TransactionReadAccess
     ) async throws -> [String] {
-        guard let bases = try await access.openDirectory(
-            basesDirectoryName,
-            in: databaseRoot,
-            transaction: transaction
-        ) else {
-            return []
-        }
-        let entries = try await access.listChildren(
-            in: bases,
-            after: after,
-            limit: limit,
-            transaction: transaction
-        )
-        // Skipping a child of another layer would report a shorter listing as
-        // a complete one and hide a node that occupies a Base address. Every
-        // Base is committed as a Partition, so a child of another layer is a
-        // corrupted layout the caller must see.
-        return try entries.map { entry in
-            guard entry.isPartition else {
-                throw DatabaseDirectoryLayoutError.nonPartitionBase(
-                    name: entry.name
-                )
+        return try await TransactionOperationExecutor(access: transaction).withOperation {
+            guard let bases = try await access.openDirectory(
+                basesDirectoryName,
+                in: databaseRoot,
+                transaction: transaction
+            ) else {
+                return []
             }
-            return entry.name
+            let entries = try await access.listChildren(
+                in: bases,
+                after: after,
+                limit: limit,
+                transaction: transaction
+            )
+            // Skipping a child of another layer would report a shorter listing as
+            // a complete one and hide a node that occupies a Base address. Every
+            // Base is committed as a Partition, so a child of another layer is a
+            // corrupted layout the caller must see.
+            return try entries.map { entry in
+                guard entry.isPartition else {
+                    throw DatabaseDirectoryLayoutError.nonPartitionBase(
+                        name: entry.name
+                    )
+                }
+                return entry.name
+            }
         }
     }
 
@@ -244,21 +258,23 @@ package enum DatabaseDirectoryLayout {
         access: any DirectoryAccess,
         transaction: any TransactionAccess
     ) async throws -> DatabaseTenantDirectories {
-        try await access.remove(
-            systemDirectoryName,
-            in: tenant.partition.root,
-            transaction: transaction
-        )
-        try await access.remove(
-            dataDirectoryName,
-            in: tenant.partition.root,
-            transaction: transaction
-        )
-        return try await openOrCreateTenantChildren(
-            of: tenant.partition,
-            access: access,
-            transaction: transaction
-        )
+        return try await TransactionOperationExecutor(access: transaction).withOperation {
+            try await access.remove(
+                systemDirectoryName,
+                in: tenant.partition.root,
+                transaction: transaction
+            )
+            try await access.remove(
+                dataDirectoryName,
+                in: tenant.partition.root,
+                transaction: transaction
+            )
+            return try await openOrCreateTenantChildren(
+                of: tenant.partition,
+                access: access,
+                transaction: transaction
+            )
+        }
     }
 
     /// Removes the Base Partition `bases/<name>` and its whole subtree.
@@ -273,23 +289,25 @@ package enum DatabaseDirectoryLayout {
         access: any DirectoryAccess,
         transaction: any TransactionAccess
     ) async throws {
-        guard let bases = try await access.openDirectory(
-            basesDirectoryName,
-            in: databaseRoot,
-            transaction: transaction
-        ) else {
-            return
+        return try await TransactionOperationExecutor(access: transaction).withOperation {
+            guard let bases = try await access.openDirectory(
+                basesDirectoryName,
+                in: databaseRoot,
+                transaction: transaction
+            ) else {
+                return
+            }
+            // Absence is the state this call establishes, so a resumed deletion or
+            // move-cleanup slice observing it has succeeded rather than failed.
+            guard try await access.openPartition(
+                name,
+                in: bases,
+                transaction: transaction
+            ) != nil else {
+                return
+            }
+            try await access.remove(name, in: bases, transaction: transaction)
         }
-        // Absence is the state this call establishes, so a resumed deletion or
-        // move-cleanup slice observing it has succeeded rather than failed.
-        guard try await access.openPartition(
-            name,
-            in: bases,
-            transaction: transaction
-        ) != nil else {
-            return
-        }
-        try await access.remove(name, in: bases, transaction: transaction)
     }
 
     // MARK: - Reserved children

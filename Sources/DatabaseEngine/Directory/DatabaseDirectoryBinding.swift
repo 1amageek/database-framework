@@ -29,23 +29,25 @@ package enum DatabaseDirectoryBinding {
         access: any DirectoryAccess,
         transaction: any TransactionReadAccess
     ) async throws -> Directory? {
-        precondition(
-            layers.count == path.count,
-            "A directory path is typed component by component"
-        )
-        var current = data
-        for index in path.indices {
-            guard let child = try await access.open(
-                path[index],
-                expecting: tag(layers[index]),
-                in: current,
-                transaction: transaction
-            ) else {
-                return nil
+        return try await TransactionOperationExecutor(access: transaction).withOperation {
+            precondition(
+                layers.count == path.count,
+                "A directory path is typed component by component"
+            )
+            var current = data
+            for index in path.indices {
+                guard let child = try await access.open(
+                    path[index],
+                    expecting: tag(layers[index]),
+                    in: current,
+                    transaction: transaction
+                ) else {
+                    return nil
+                }
+                current = child
             }
-            current = child
+            return current
         }
-        return current
     }
 
     /// Opens the node `path` addresses below `data` without verifying any
@@ -62,19 +64,21 @@ package enum DatabaseDirectoryBinding {
         access: any DirectoryAccess,
         transaction: any TransactionReadAccess
     ) async throws -> Directory? {
-        var current = data
-        for component in path {
-            guard let child = try await access.open(
-                component,
-                expecting: nil,
-                in: current,
-                transaction: transaction
-            ) else {
-                return nil
+        return try await TransactionOperationExecutor(access: transaction).withOperation {
+            var current = data
+            for component in path {
+                guard let child = try await access.open(
+                    component,
+                    expecting: nil,
+                    in: current,
+                    transaction: transaction
+                ) else {
+                    return nil
+                }
+                current = child
             }
-            current = child
+            return current
         }
-        return current
     }
 
     /// Opens the node `path` addresses below `data`, creating what is absent.
@@ -85,20 +89,22 @@ package enum DatabaseDirectoryBinding {
         access: any DirectoryAccess,
         transaction: any TransactionAccess
     ) async throws -> Directory {
-        precondition(
-            layers.count == path.count,
-            "A directory path is typed component by component"
-        )
-        var current = data
-        for index in path.indices {
-            current = try await access.openOrCreate(
-                path[index],
-                layer: tag(layers[index]),
-                in: current,
-                transaction: transaction
+        return try await TransactionOperationExecutor(access: transaction).withOperation {
+            precondition(
+                layers.count == path.count,
+                "A directory path is typed component by component"
             )
+            var current = data
+            for index in path.indices {
+                current = try await access.openOrCreate(
+                    path[index],
+                    layer: tag(layers[index]),
+                    in: current,
+                    transaction: transaction
+                )
+            }
+            return current
         }
-        return current
     }
 
     /// Storage tag of a declared layer.

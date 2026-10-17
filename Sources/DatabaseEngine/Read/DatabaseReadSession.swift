@@ -692,28 +692,51 @@ public struct DatabaseReadSession: Sendable {
         let readBinding = binding.admittingRead(
             session.transaction.storageAccess
         )
-        let output = try await ActiveDatabaseTransactionContext.$binding.withValue(
-            readBinding
-        ) {
-            let result: Result
-            do {
-                result = try await operation(session)
-            } catch {
-                let operationError = error
-                do {
-                    try await session.scope.invalidate()
-                } catch {
-                    throw DatabaseReadSessionCleanupError(
-                        operationError: operationError,
-                        cleanupError: error
-                    )
-                }
-                throw operationError
+        let checkpointOwner = binding.databaseTransaction
+        let checkpointScope: DatabaseTransactionCheckpointScope?
+        do {
+            checkpointScope = try await checkpointOwner?.registerCheckpointReadScope {
+                try await session.scope.invalidate()
             }
-            try await session.scope.invalidate()
-            return DatabaseReadResultBox(consume result)
+        } catch {
+            let operationError = error
+            do { try await session.scope.invalidate() }
+            catch { throw DatabaseReadSessionCleanupError(operationError: operationError, cleanupError: error) }
+            throw operationError
         }
-        return output.take()
+        do {
+            let output = try await DatabaseTransactionCheckpointScope.$current.withValue(
+                checkpointScope ?? DatabaseTransactionCheckpointScope.current
+            ) {
+                try await ActiveDatabaseTransactionContext.$binding.withValue(
+                    readBinding
+                ) {
+                    let result: Result
+                    do {
+                        result = try await operation(session)
+                    } catch {
+                        let operationError = error
+                        do {
+                            try await session.scope.invalidate()
+                        } catch {
+                            throw DatabaseReadSessionCleanupError(
+                                operationError: operationError,
+                                cleanupError: error
+                            )
+                        }
+                        throw operationError
+                    }
+                    try await session.scope.invalidate()
+                    return DatabaseReadResultBox(consume result)
+                }
+            }
+            await checkpointOwner?.endCheckpointReadScope(checkpointScope)
+            return output.take()
+        } catch {
+            await checkpointOwner?.endCheckpointReadScope(checkpointScope)
+            if checkpointScope != nil { await checkpointOwner?.recordCheckpointFailure(error) }
+            throw error
+        }
     }
 
     /// Resolves one schema-declared index on this session's snapshot.

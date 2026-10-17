@@ -2300,6 +2300,21 @@ extension DatabaseContext {
         }
     }
 
+    func collectSQLBlockRows(
+        _ selectQuery: SelectQuery,
+        execution: ReadExecutionContext,
+        session: DatabaseReadSession,
+        parameters: [QueryParameter]
+    ) async throws -> SQLBlockCollectedRows {
+        do {
+            let collecting = try await querySessionBoundRetainedUnmapped(selectQuery,
+                execution: execution, graphPartitions: FieldObject(), session: session, parameters: parameters)
+            return SQLBlockCollectedRows(consume collecting)
+        } catch {
+            throw sanitizedFusionExecutionError(error)
+        }
+    }
+
     private func querySessionBoundRetainedUnmapped(
         _ selectQuery: SelectQuery,
         execution: ReadExecutionContext,

@@ -6,12 +6,15 @@ import Synchronization
 public final class DatabaseSchemaLease: Sendable {
     private let value: DatabaseSchemaGeneration
     private let token: DatabaseSchemaLeaseToken
+    let publicationSource: DatabaseSchemaLease?
 
     init(_ value: DatabaseSchemaGeneration,
-        token: DatabaseSchemaLeaseToken
+        token: DatabaseSchemaLeaseToken,
+        publicationSource: DatabaseSchemaLease? = nil
     ) {
         self.value = value
         self.token = token
+        self.publicationSource = publicationSource
     }
 
     /// Monotonically increasing identifier persisted with schema publication.

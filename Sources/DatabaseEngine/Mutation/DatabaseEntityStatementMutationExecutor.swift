@@ -20,10 +20,11 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
         _ statementInput: QueryStatement,
         preconditions: [EntityMutationPrecondition] = [],
         transaction: DatabaseTransaction,
-        workMeter: DatabaseWorkMeter
+        workMeter: DatabaseWorkMeter,
+        temporalEnvironment: SQLTemporalEnvironment? = nil
     ) async throws -> [EntityMutationEffect] {
         var statement = self
-        statement.temporalEnvironment = transaction.makeSQLTemporalEnvironment()
+        statement.temporalEnvironment = temporalEnvironment ?? transaction.makeSQLTemporalEnvironment()
         return try await statement.executeStatement(statement: statementInput, preconditions: preconditions,
             transaction: transaction, workMeter: workMeter)
     }
@@ -452,7 +453,7 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
                 workMeter: workMeter
             )
         }
-        return try await entities.execute(
+        return try await entities.executeStatementEffects(
             prepared,
             workMeter: workMeter,
             transaction: transaction

@@ -751,6 +751,11 @@ struct ReadAuthorizationCapabilityTests {
                 snapshot: true
             )
         }
+        await #expect(throws: DatabaseTransactionError.invalidOperationContext) {
+            try await transaction.performOperation {
+                Issue.record("Revoked read access must not enter a compound operation")
+            }
+        }
     }
 
     @Test("Escaped cursor is closed and cannot outlive its public scope")

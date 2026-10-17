@@ -34,6 +34,12 @@ public struct DatabaseReadTransaction: TransactionReadAccess, Sendable
         storageAccess.transactionDomain
     }
 
+    public func performOperation(
+        _ operation: @escaping @Sendable () async throws -> Void
+    ) async throws {
+        try await storageAccess.performOperation(operation)
+    }
+
     /// Exposes the session-owned storage capability to package feature
     /// readers without exposing the database transaction or its lifecycle
     /// authority. The returned value remains read-only at the API boundary;

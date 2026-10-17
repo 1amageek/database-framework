@@ -13,15 +13,18 @@ package final class TransactionOperationGate: Sendable {
     }
 
     private let state = Mutex(State())
+    private let permitsConcurrentOperations: Bool
 
-    package init() {}
+    package init(permitsConcurrentOperations: Bool = false) {
+        self.permitsConcurrentOperations = permitsConcurrentOperations
+    }
 
-    package func enter() throws {
+    package func enter(admittedDescendant: Bool = false) throws {
         try state.withLock { state in
-            guard state.acceptsOperations else {
+            guard state.acceptsOperations || admittedDescendant else {
                 throw DatabaseTransactionError.closed
             }
-            guard state.activeOperationCount == 0 else {
+            guard permitsConcurrentOperations || state.activeOperationCount == 0 else {
                 throw DatabaseTransactionError.concurrentOperation
             }
             state.activeOperationCount += 1
@@ -58,6 +61,17 @@ package final class TransactionOperationGate: Sendable {
             if resumesImmediately {
                 continuation.resume()
             }
+        }
+    }
+
+    package func pause() {
+        state.withLock { $0.acceptsOperations = false }
+    }
+
+    package func resume() {
+        state.withLock { state in
+            precondition(state.activeOperationCount == 0)
+            state.acceptsOperations = true
         }
     }
 }
