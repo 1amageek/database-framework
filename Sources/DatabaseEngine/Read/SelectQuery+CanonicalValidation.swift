@@ -1,10 +1,14 @@
 import DatabaseKit
 
 extension SelectQuery {
-    package func requiredOrderByColumnNames(entity: Schema.Entity?, schema: Schema) throws -> [String]? {
+    package func requiredOrderByColumnNames(entity: Schema.Entity?, schema: Schema,
+        sqlResolution: SQLReadResolution? = nil) throws -> [String]? {
         guard let orderBy else { return nil }
         let items: [(expression: Expression, alias: String?)]?
-        if projection.contains(where: { if case .wildcard = $0 { return true }; return false }) {
+        if let sqlResolution {
+            items = try DatabaseFieldReadAuthorizationPlan.orderingProjection(
+                query: self, schema: schema, sqlResolution: sqlResolution)
+        } else if projection.contains(where: { if case .wildcard = $0 { return true }; return false }) {
             if let entity {
                 var expanded: [(expression: Expression, alias: String?)] = []
                 for item in projection {
@@ -30,6 +34,7 @@ extension SelectQuery {
             return "column\(index)"
         }
         func conservativeInputs() -> [Expression] {
+            if sqlResolution != nil { return items?.map { $0.expression } ?? [] }
             if let entity { return entity.allFields.map { .column(ColumnRef(column: $0)) } }
             return items?.map { $0.expression } ?? []
         }
@@ -52,7 +57,7 @@ extension SelectQuery {
                 return conservativeInputs()
             }
             if case .column(let column) = expression, column.table == nil, let items {
-                let matches = items.enumerated().filter { outputName($0.element, index: $0.offset) == column.column }
+                let matches = items.enumerated().filter { CanonicalSourceName.equal(outputName($0.element, index: $0.offset), column.column) }
                 if let first = matches.first {
                     if matches.allSatisfy({ $0.element.expression == first.element.expression }) {
                         return [first.element.expression]
@@ -67,8 +72,8 @@ extension SelectQuery {
         var fields: [String] = []
         for sortKey in orderBy {
             for expression in orderingInputs(sortKey.expression) {
-                let dependencies = DatabaseFieldReadAuthorizationPlan.orderingFields(
-                    query: self, inputs: [expression], schema: schema)
+                let dependencies = try DatabaseFieldReadAuthorizationPlan.orderingFields(
+                    query: self, inputs: [expression], schema: schema, sqlResolution: sqlResolution)
                 if let entity { fields.append(contentsOf: (dependencies[entity.name] ?? []).sorted()) }
                 else { fields.append(contentsOf: dependencies.values.flatMap { $0 }.sorted()) }
             }

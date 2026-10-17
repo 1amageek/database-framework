@@ -209,7 +209,7 @@ struct SQLiteStorageTests {
             _ = try await context.executeSQL("SELECT id FROM SQLiteStoredItem")
             Issue.record("Expected the folded SQL source name to reject binding")
         } catch let failure as SQLBindingSourceFailure {
-            guard case .read(.unsupportedSource("Entity 'sqlitestoreditem' not found in schema")) = failure.cause else {
+            guard case .catalog(.missingRelation(namespace: nil, name: "sqlitestoreditem")) = failure.cause else {
                 Issue.record("Expected the exact missing SQL source rejection")
                 return
             }

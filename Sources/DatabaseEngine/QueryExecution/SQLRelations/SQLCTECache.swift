@@ -110,7 +110,7 @@ struct SQLCTEEnvironment: Sendable {
     let entries: [Entry]
     init(entries: [Entry] = []) { self.entries = entries }
     func consumer(named name: String) async throws -> (any SQLRelationProducer)? {
-        guard let entry = entries.first(where: { $0.name == name }) else { return nil }
+        guard let entry = entries.first(where: { CanonicalSourceName.equal($0.name, name) }) else { return nil }
         if let cache = entry.cache { return cache.consumer() }
         guard let factory = entry.factory else {
             throw CanonicalReadError.unsupportedSelectQuery("An inline CTE has no producer")
@@ -118,9 +118,9 @@ struct SQLCTEEnvironment: Sendable {
         return try await factory()
     }
     func adding(name: String, cache: SQLCTECache) -> Self {
-        Self(entries: [Entry(name: name, cache: cache, factory: nil)] + entries.filter { $0.name != name })
+        Self(entries: [Entry(name: name, cache: cache, factory: nil)] + entries.filter { !CanonicalSourceName.equal($0.name, name) })
     }
     func adding(name: String, factory: @escaping @Sendable () async throws -> any SQLRelationProducer) -> Self {
-        Self(entries: [Entry(name: name, cache: nil, factory: factory)] + entries.filter { $0.name != name })
+        Self(entries: [Entry(name: name, cache: nil, factory: factory)] + entries.filter { !CanonicalSourceName.equal($0.name, name) })
     }
 }

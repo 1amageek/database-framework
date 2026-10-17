@@ -651,6 +651,7 @@ struct ReadAuthorizationCapabilityTests {
         defer { await container.shutdown() }
         let context = container.testBaseContext()
         let key = ByteString(utf8: "bounded-read-forwarding")
+        let pointReadsBefore = control.boundedValueReadMaximums.count
 
         try await context.indexQueryContext.withTransaction { transaction in
             let value = try await transaction.getValue(
@@ -661,7 +662,7 @@ struct ReadAuthorizationCapabilityTests {
             #expect(value == nil)
         }
 
-        #expect(control.boundedValueReadMaximums == [7])
+        #expect(Array(control.boundedValueReadMaximums.dropFirst(pointReadsBefore)) == [7])
     }
 
     @Test("Read snapshot metadata does not expose configuration authority")

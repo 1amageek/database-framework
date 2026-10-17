@@ -18,8 +18,10 @@ extension DatabaseContext {
         _ sql: String,
         parameters: [QueryParameter] = [],
         options: ReadExecutionOptions = .default,
-        structuralLimits: QueryStructuralLimits = .default
+        structuralLimits: QueryStructuralLimits = .default,
+        searchPath: SQLSearchPath = .default
     ) async throws -> QueryResponse {
+        try await withDataOperation { [self] in
         let temporalEnvironment = makeSQLTemporalEnvironment()
         let workMeter = DatabaseWorkMeter(
             budget: options.budget,
@@ -44,7 +46,7 @@ extension DatabaseContext {
             workMeter: workMeter,
             queryStructuralLimits: structuralLimits,
             temporalEnvironment: temporalEnvironment
-        )
+        ).withSQLResolution(try makeSQLReadResolution(searchPath: searchPath, workMeter: workMeter))
         let response: QueryResponse
         do {
             response = try await withSQLTemporalStatement(environment: temporalEnvironment) {
@@ -72,6 +74,7 @@ extension DatabaseContext {
         }
         try workMeter.recordOutputRows(rowCount)
         return response
+        }
     }
 
     /// Execute a SQL query string and return typed results
@@ -106,13 +109,15 @@ extension DatabaseContext {
         as type: T.Type,
         parameters: [QueryParameter] = [],
         budget: ExecutionBudget = ExecutionBudget(),
-        structuralLimits: QueryStructuralLimits = .default
+        structuralLimits: QueryStructuralLimits = .default,
+        searchPath: SQLSearchPath = .default
     ) async throws -> [T] {
         let response = try await executeSQL(
             sql,
             parameters: parameters,
             options: ReadExecutionOptions(budget: budget),
-            structuralLimits: structuralLimits
+            structuralLimits: structuralLimits,
+            searchPath: searchPath
         )
         return try response.rows.map { row in
             try QueryRowCodec.decode(row, columns: response.columns, as: type)
@@ -141,7 +146,8 @@ extension DatabaseContext {
                     structuralLimits: execution.queryStructuralLimits,
                     parameters: parameters,
                     occurrences: occurrences,
-                    occurrence: occurrence
+                    occurrence: occurrence,
+                    searchPath: execution.sqlResolution?.searchPath ?? .default
                 )
                 return try await preparedQuery.execute(
                     in: session,
@@ -175,8 +181,11 @@ extension DatabaseContext {
         structuralLimits: QueryStructuralLimits,
         parameters: [QueryParameter] = [],
         occurrences: QueryOccurrenceArena? = nil,
-        occurrence: QueryOccurrenceID? = nil
+        occurrence: QueryOccurrenceID? = nil,
+        searchPath: SQLSearchPath = .default
     ) async throws -> DatabasePreparedSQLSelect {
+        try await session.withCanonicalExecution(workMeter: workMeter) { _ in
+        let sqlResolution = try session.makeSQLReadResolution(searchPath: searchPath, workMeter: workMeter)
         try QueryParameterBinder(parameters: parameters, structuralLimits: structuralLimits)
             .validate(.select(selectQuery))
         let metadataReservation = try reserveSQLParameterMetadata(
@@ -188,10 +197,11 @@ extension DatabaseContext {
             parameters: parameters,
             workMeter: workMeter,
             allowingSPARQLFunctions: true,
+            sqlResolution: sqlResolution,
             occurrences: occurrences,
             occurrence: occurrence
         )
-        return try await session.withCanonicalExecution(
+        let prepared = try await session.withCanonicalExecution(
             workMeter: workMeter
         ) { transaction in
             guard SPARQLFunctionRewriter.containsSPARQLFunction(
@@ -225,6 +235,8 @@ extension DatabaseContext {
                 occurrence: occurrence
             )
         }
+        return prepared.withSQLResolution(sqlResolution)
+        }
     }
     #else
     @_spi(DatabaseExecution)
@@ -235,8 +247,11 @@ extension DatabaseContext {
         structuralLimits: QueryStructuralLimits,
         parameters: [QueryParameter] = [],
         occurrences: QueryOccurrenceArena? = nil,
-        occurrence: QueryOccurrenceID? = nil
+        occurrence: QueryOccurrenceID? = nil,
+        searchPath: SQLSearchPath = .default
     ) async throws -> DatabasePreparedSQLSelect {
+        try await session.withCanonicalExecution(workMeter: workMeter) { _ in
+        let sqlResolution = try session.makeSQLReadResolution(searchPath: searchPath, workMeter: workMeter)
         try QueryParameterBinder(parameters: parameters, structuralLimits: structuralLimits)
             .validate(.select(selectQuery))
         let metadataReservation = try reserveSQLParameterMetadata(
@@ -247,10 +262,11 @@ extension DatabaseContext {
             selectQuery,
             parameters: parameters,
             workMeter: workMeter,
+            sqlResolution: sqlResolution,
             occurrences: occurrences,
             occurrence: occurrence
         )
-        return try await session.withCanonicalExecution(
+        let prepared = try await session.withCanonicalExecution(
             workMeter: workMeter
         ) { _ in
             DatabasePreparedSQLSelect(
@@ -261,6 +277,8 @@ extension DatabaseContext {
                 occurrences: occurrences,
                 occurrence: occurrence
             )
+        }
+        return prepared.withSQLResolution(sqlResolution)
         }
     }
     #endif

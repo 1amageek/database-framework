@@ -106,6 +106,16 @@ package struct DatabaseReadPolicy: Sendable {
 
     package var schema: Schema { schemaLease.schema }
 
+    var sqlCatalog: SQLCatalogSnapshot { schemaLease.sqlCatalog }
+
+    var sqlCurrentUser: String? { authorization.principal?.identifier }
+
+    func matchesSQLGeneration(_ other: Self) -> Bool {
+        schemaLease.generation == other.schemaLease.generation
+            && schemaLease.executionRuntimeFingerprint == other.schemaLease.executionRuntimeFingerprint
+            && authorization == other.authorization
+    }
+
     /// Layer map derived from the same generation as `schema`.
     ///
     /// The layer of a Directory position is a property of the whole schema that
@@ -133,12 +143,14 @@ package struct DatabaseReadPolicy: Sendable {
 
     package func authorizeCanonicalListAccess(
         entityName: String,
-        selectQuery: SelectQuery
+        selectQuery: SelectQuery,
+        sqlResolution: SQLReadResolution? = nil
     ) throws {
+        try sqlResolution?.validate(self)
         try authorizeList(
             Self.listRequirement(
                 entityName: entityName,
-                selectQuery: selectQuery, schema: schema
+                selectQuery: selectQuery, schema: schema, sqlResolution: sqlResolution
             )
         )
     }
@@ -456,7 +468,8 @@ package struct DatabaseReadPolicy: Sendable {
     package static func listRequirement(
         entityName: String,
         selectQuery: SelectQuery,
-        schema: Schema
+        schema: Schema,
+        sqlResolution: SQLReadResolution? = nil
     ) throws -> DatabaseListReadAuthorizationRequirement {
         let window: DatabaseListReadAuthorizationRequirement.Window
         switch (selectQuery.pagination.limit, selectQuery.pagination.offset) {
@@ -482,7 +495,7 @@ package struct DatabaseReadPolicy: Sendable {
         }
         return DatabaseListReadAuthorizationRequirement(
             entityName: entityName, window: window,
-            orderBy: try selectQuery.requiredOrderByColumnNames(entity: schema.entity(named: entityName), schema: schema))
+            orderBy: try selectQuery.requiredOrderByColumnNames(entity: schema.entity(named: entityName), schema: schema, sqlResolution: sqlResolution))
     }
 }
 

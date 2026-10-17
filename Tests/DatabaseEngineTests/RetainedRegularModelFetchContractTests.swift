@@ -28,6 +28,7 @@ struct RetainedRegularModelFetchContractTests {
             workMeter: meter
         )
         var models: DatabaseRetainedPersistedModels?
+        let pointReadsBefore = fixture.control.boundedValueReadSnapshots.count
 
         models = try await fetch(
             fixture: fixture,
@@ -57,8 +58,9 @@ struct RetainedRegularModelFetchContractTests {
                     .string("second"),
                 ]
             )
-            #expect(!fixture.control.boundedValueReadSnapshots.isEmpty)
-            #expect(fixture.control.boundedValueReadSnapshots.allSatisfy { $0 })
+            let snapshots = fixture.control.boundedValueReadSnapshots.dropFirst(pointReadsBefore)
+            #expect(!snapshots.isEmpty)
+            #expect(snapshots.allSatisfy { $0 })
             #expect(meter.retainedIntermediateRows > 0)
             #expect(meter.retainedIntermediateBytes > 0)
         }

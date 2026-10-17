@@ -13,8 +13,12 @@ public struct DatabasePreparedSchemaGeneration: Sendable {
         schemaFingerprint: SchemaFingerprint,
         runtimeConfiguration: DatabaseRuntimeConfiguration,
         securityConfiguration: SecurityConfiguration,
-        indexPhysicalLayouts: [String: IndexPhysicalLayout]
+        indexPhysicalLayouts: [String: IndexPhysicalLayout],
+        sqlCatalogDigest: ByteString
     ) throws {
+        guard sqlCatalogDigest.count == SHA256Accumulator.digestByteCount else {
+            throw DatabaseSchemaPublicationError.corruptedState("SQL catalog digest has an invalid length")
+        }
         var policies: [(name: String, options: FieldObject)] = []
         policies.reserveCapacity(
             runtimeConfiguration.indexConfigurations.count
@@ -66,6 +70,7 @@ public struct DatabasePreparedSchemaGeneration: Sendable {
                 "database-framework.execution-runtime-generation"
             )
             try writer.writeBytes(indexPhysicalFingerprint)
+            try writer.writeBytes(sqlCatalogDigest)
             try writer.writeString(
                 runtimeConfiguration.executionIdentity.identifier
             )

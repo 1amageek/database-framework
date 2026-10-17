@@ -1465,6 +1465,20 @@ public struct DatabaseReadSession: Sendable {
         return try owners.policy.polymorphicTypeMap(for: group)
     }
 
+    package func makeSQLReadResolution(searchPath: SQLSearchPath,
+        workMeter: DatabaseWorkMeter) throws -> SQLReadResolution {
+        let (owners, operation) = try scope.beginOperation()
+        defer { operation.end() }
+        try scope.requireWorkMeter(workMeter)
+        return try SQLReadResolution.make(policy: owners.policy, searchPath: searchPath, workMeter: workMeter)
+    }
+
+    package func validateSQLReadResolution(_ resolution: SQLReadResolution) throws {
+        let (owners, operation) = try scope.beginOperation()
+        defer { operation.end() }
+        try resolution.validate(owners.policy)
+    }
+
     package func entityRuntime(
         named entityName: String
     ) throws -> EntityRuntimeRegistration? {

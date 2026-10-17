@@ -60,7 +60,8 @@ struct FusionExecution: Sendable {
         let listAuthorizationRequirement = try DatabaseReadPolicy
             .listRequirement(
                 entityName: entry.plan.entity.name,
-                selectQuery: query, schema: session.schema
+                selectQuery: query, schema: session.schema,
+                sqlResolution: options.sqlResolution
             )
         guard listAuthorizationRequirement
                 == entry.plan.listAuthorizationRequirement,

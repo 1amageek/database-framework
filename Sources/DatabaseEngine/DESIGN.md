@@ -10,6 +10,10 @@ DF-06R compose retained polymorphic and regular-model paths from [Read](Read/DES
 [Mutation](Mutation/DESIGN.md), with [Fusion](Fusion/DESIGN.md) coordination
 and optional [Base](Base/DESIGN.md).
 
+S11 additionally composes [SQLCatalog](SQLCatalog/DESIGN.md) for logical SQL
+identity and [Schema](Schema/DESIGN.md) for aggregate generation persistence,
+publication and restoration.
+
 - Parent: [database-framework](../../DESIGN.md).
 - Children: the component designs linked above.
 
@@ -39,6 +43,8 @@ StorageKit Directory node through [Directory](Directory/DESIGN.md).
 | [Mutation](Mutation/DESIGN.md) | child | Prepared mutation and typed adaptation failures | Preserves entity-change authority and query-value causes. | Revalidate direct server error mapping. |
 | [Base](Base/DESIGN.md) | child | MultiBase Composition execution | Coordinates retained member rows and provenance. | Enabled only with MultiBase. |
 | [Registry](Registry/DESIGN.md) | child | Admitted schema and declared model adaptation | Supplies ordered typed source metadata and direct slot construction. | Descriptor meaning is never inferred from payload shape. |
+| [SQLCatalog](SQLCatalog/DESIGN.md) | child | Resolved SQL relation/column mappings and bounded catalog persistence | Maps logical names to existing physical owners without granting authority. | Requests consume the snapshot retained by their schema generation. |
+| [Schema](Schema/DESIGN.md) | child | Aggregate schema/catalog generation lifecycle | Persists and restores the pair atomically and publishes only after commit. | Catalog-only changes participate in generation CAS and execution identity. |
 | [Directory](Directory/DESIGN.md) | child | Declaration-to-node binding | Composes this direct component contract. | A resolved node is valid only in its resolving transaction. |
 
 ## Architecture

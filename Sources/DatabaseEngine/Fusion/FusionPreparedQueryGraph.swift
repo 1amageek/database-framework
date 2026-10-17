@@ -24,6 +24,19 @@ struct FusionResolvedQueryGraph: Sendable {
 struct FusionPreparedQueryGraph: Sendable {
     struct EntryKey: Sendable, Hashable {
         let tableRef: TableRef
+        static func == (left: Self, right: Self) -> Bool {
+            CanonicalSourceName.equal(left.tableRef.schema, right.tableRef.schema)
+                && CanonicalSourceName.equal(left.tableRef.table, right.tableRef.table)
+                && CanonicalSourceName.equal(left.tableRef.alias, right.tableRef.alias)
+                && left.tableRef.partitions == right.tableRef.partitions
+                && left.source == right.source
+                && left.listAuthorizationRequirement == right.listAuthorizationRequirement
+        }
+        func hash(into hasher: inout Hasher) {
+            hasher.combine(tableRef.schema.map(CanonicalSourceName.init))
+            hasher.combine(CanonicalSourceName(tableRef.table)); hasher.combine(tableRef.alias.map(CanonicalSourceName.init))
+            hasher.combine(tableRef.partitions); hasher.combine(source); hasher.combine(listAuthorizationRequirement)
+        }
         let source: FusionSource
         let listAuthorizationRequirement:
             DatabaseListReadAuthorizationRequirement
@@ -199,7 +212,7 @@ enum FusionSelectQueryGraphWalker {
             while let scope = current {
                 for definition in scope.contents.definitions.prefix(scope.contents.visibleCount) {
                     try workMeter.consume(at: .validation)
-                    if definition.name == name { return true }
+                    if CanonicalSourceName.equal(definition.name, name) { return true }
                 }
                 current = scope.contents.parent
             }

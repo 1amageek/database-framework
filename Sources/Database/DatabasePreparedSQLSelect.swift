@@ -7,6 +7,7 @@ import StorageKit
 @_spi(DatabaseExecution)
 public struct DatabasePreparedSQLSelect: Sendable {
     private let query: SelectQuery
+    private var sqlResolution: SQLReadResolution? = nil
     private let workMeter: DatabaseWorkMeter
     private let parameters: [QueryParameter]
     private let metadataReservation: DatabaseIntermediateReservation?
@@ -41,6 +42,12 @@ public struct DatabasePreparedSQLSelect: Sendable {
         self.retainedStorage = retainedStorage
     }
 
+    package func withSQLResolution(_ resolution: SQLReadResolution) -> Self {
+        var result = self
+        result.sqlResolution = resolution
+        return result
+    }
+
     /// Executes the prepared query without exposing its copyable syntax value.
     /// Dynamic literals therefore cannot outlive the reservation retained by
     /// this owner. Preparation and execution must share one request meter.
@@ -52,6 +59,8 @@ public struct DatabasePreparedSQLSelect: Sendable {
         guard execution.workMeter === workMeter else {
             throw DatabasePreparedSQLSelectError.workMeterMismatch
         }
+        if let sqlResolution { try session.validateSQLReadResolution(sqlResolution) }
+        let execution = sqlResolution.map { execution.withSQLResolution($0) } ?? execution
         let lifetimeOwner = retainedStorage
         let metadataOwner = metadataReservation
         defer {
@@ -93,6 +102,8 @@ public struct DatabasePreparedSQLSelect: Sendable {
         guard execution.workMeter === workMeter else {
             throw DatabasePreparedSQLSelectError.workMeterMismatch
         }
+        if let sqlResolution { try session.validateSQLReadResolution(sqlResolution) }
+        let execution = sqlResolution.map { execution.withSQLResolution($0) } ?? execution
         let lifetimeOwner = retainedStorage
         let metadataOwner = metadataReservation
         defer {

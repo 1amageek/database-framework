@@ -8,4 +8,5 @@ struct DatabaseRestoredSchemaState: Sendable {
     let indexPhysicalFingerprint: ByteString?
     let executionRuntimeFingerprint: ByteString?
     let indexLayoutFingerprints: [String: ByteString]
+    let sqlCatalog: SQLCatalogStoredState?
 }

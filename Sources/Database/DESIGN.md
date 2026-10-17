@@ -342,3 +342,50 @@ rebuilds preserve every window definition. The canonical Engine path owns
 SQL grouping/aggregate/window execution and legality; this facade adds no
 alternate aggregate evaluator. QueryAST's S09-SYN05 and public Database SQL
 tests own provenance and inlining regression witnesses.
+
+
+### S11 SQL entry and prepared search path
+
+**Implementation contract; not completion evidence.** Both public `executeSQL`
+overloads and `prepareSQLSelectForCanonicalExecution` accept
+`searchPath: SQLSearchPath = .default`. SQL entry captures one Read-owned
+immutable reference resolution inside `withDataOperation` (which enters
+`withOperationSchemaLease`), from that admitted catalog generation, selected path and
+`AuthorizationContext.principal.identifier` (anonymous has no current-user
+schema), then passes it explicitly through parameter binding, SPARQL rewrite,
+prepared execution and canonical execution. This explicit SQL entry selection
+does not change typed QueryIR or graph-facing SPARQL physical semantics.
+
+```text
+SQL entry + path -> withDataOperation / withOperationSchemaLease
+  -> capture admitted SQL resolution -> bind parameters/source names
+     -> same-lease optional SPARQL rewrite -> retained prepared SQL
+        -> same-lease authorization and scan -> source-map failure
+```
+
+Prepared SQL retains its resolution owner and search path with the existing
+literal/metadata reservations and meter. Both ordinary execute and complete
+staging use that captured policy; caller-supplied execution options cannot
+silently switch it to another catalog generation or relation. External SPI
+preparation captures and retains its actual session policy/lease. Execution in
+a different session generation throws a typed prepared-resolution mismatch;
+it cannot reacquire the current snapshot or silently rebind. Nested ordinary
+SQL, preflight, rewrite, authorization and scan inherit the enclosing lease,
+including when publication happens between those steps. The package
+parameter-binding seam accepts explicit resolution while the existing generic
+binding entry retains physical semantics. SPARQL function work continues to
+borrow the admitted parent transaction and authority; its physical graph
+namespace is not reinterpreted as SQL schemas.
+
+[QueryExecution](../DatabaseEngine/QueryExecution/DESIGN.md#s11-frozen-catalog-bound-select-execution)
+owns missing catalog/runtime source failures. This entry preserves their typed
+cause and deterministic occurrence through the existing SQLBindingSourceFailure
+source-map adapter; it never converts them to an empty successful result.
+The reference owner and metadata are preadmitted under the supplied work meter.
+The normative [S11-C01–C12 matrix](../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s11-frozen-logical-catalog-and-identity)
+owns completion IDs. Prepared tests cover default/custom path, current-user/anonymous behavior,
+rewrite/staging carriage, retained owner release, same-lease execution during
+concurrent catalog publication and typed cross-session generation mismatch. Public
+SQL tests cover located qualified failures and stale continuation rejection;
+existing meter, literal, graph parent-transaction and typed-output behavior
+remain regressions. S11 does not add DDL, DML, constraints or SQL blocks.

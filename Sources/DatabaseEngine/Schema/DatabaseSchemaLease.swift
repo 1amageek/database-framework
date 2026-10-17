@@ -35,6 +35,8 @@ public final class DatabaseSchemaLease: Sendable {
     /// Schema used for the complete lifetime of the request holding this lease.
     public var schema: Schema { value.schema }
 
+    var sqlCatalog: SQLCatalogSnapshot { value.sqlCatalog }
+
     /// Runtime registrations paired with `schema` in this generation.
     package var runtimeConfiguration: DatabaseRuntimeConfiguration {
         value.runtimeConfiguration

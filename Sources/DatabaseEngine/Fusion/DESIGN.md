@@ -94,3 +94,64 @@ remains the regression owner for its supported subset.
 [QueryExecution's frozen execution contract](../QueryExecution/DESIGN.md#s10-frozen-recursive-and-function-execution) and [Query carriage](../../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md#s10-frozen-recursive-and-function-source-carriage) refine CTE scope: nonrecursive bodies retain earlier-sibling visibility, while every body in recursive WITH sees all local declarations, including self and forward siblings. Local names shadow inherited/physical entities only in their admitted scope; explicitly qualified physical tables remain physical. Canonical binding alone rejects invalid recursion. Fusion never grants a recursive self-reference physical list authority or drops authorization for genuine physical reads.
 
 Preflight iteratively visits every table-function argument, including its nested queries, under that same lexical scope and existing meter/reservation owner. Function sources themselves require no physical entity lookup. Immutable reconstruction preserves all recursive metadata. Focused Fusion tests distinguish self/forward logical references from same-named entities, retain physical reads, and visit physical subqueries inside function arguments before execution. No mutable-state/isolation/target contract changes.
+
+
+### S11 catalog-aware preflight and candidates
+
+**Implementation contract; not completion evidence.** Fusion consumes Read's
+explicit optional SQL resolution and
+[QueryExecution's catalog-bound source contract](../QueryExecution/DESIGN.md#s11-frozen-catalog-bound-select-execution).
+`resolveGraph`, additional index authorization and prepared graph entries use
+the exact catalog-resolved relation/physical field map later retained by the
+canonical source plan. A terminal-name `Schema.entity` lookup before binding
+cannot choose SQL authority or executor identity. Qualified sources bypass CTE
+shadowing; unqualified sources retain the S10 lexical walk. Typed QueryIR and
+SPARQL calls without SQL resolution retain physical lookup semantics.
+
+```text
+SQL resolution -> resolved physical list/field requirements -> authorization
+  -> prepared graph + same generation/source identity
+     -> physical feature candidates -> common SQL source alignment
+        -> bound canonical logical operators
+```
+
+Catalog resolution errors retain their source occurrence and typed cause before
+reads. Feature-specific connected/index declarations remain physical contracts
+unless their explicit owner selects a catalog mapping; SQL table aliases do
+not reinterpret those declarations. Prepared entry lookup and generation
+validation cannot cross two same-named catalog relations. Physical candidate
+columns reach canonical evaluation only through the selected alignment; a
+missing required field fails instead of yielding NULL. Wildcard candidates
+retain the existing sealed authorized subset and do not gain complete-model
+authority.
+
+Focused Fusion fixtures cover identical terminal relation names, relation and
+column rename, physical deny-before-I/O, parameterized filter/order, candidate
+projection and existing recursive/forward CTE scope. Binding metadata and
+lookup reservations include retained resolution/map storage before allocation.
+No mutable state, target-specific synchronization, transaction or lease owner
+changes are introduced.
+
+
+S11 relational candidate generation and incoming-candidate filter/order retain
+the original physical source owner and identity. Initial generation reuses the
+existing table fetch, pushdown, selected binding and sealed list requirement;
+Registry carries persisted identity as internal row metadata under the retained
+model claim, without adding a field to the authorized or SQL-visible layout.
+The same selection bridge returns physical candidate rows to the existing
+`FusionCandidateDomain` constructor; only that internal response may carry its
+required identity column. Incoming candidates keep `FusionCandidateDomain` as
+the owner of physical row identity. QueryExecution carries an internal source ordinal
+through logical alignment, bound filtering and ordering; that ordinal is not
+a SQL column or annotation. The internal stage response retains the selected
+original physical candidate rows and their claims, so existing candidate and
+score composition consumes its physical identity contract. Final request
+projection alone exposes catalog columns. A missing ordinal or expected
+physical identity fails explicitly; logical value equality never reconstructs
+identity, and unadmitted wildcard fields are not evaluated. This bridge does
+not widen field/list authorization or alter the non-SQL source path.
+Incoming SQL filter/order reconstructs its candidate domain by selecting keys
+from the original domain through `make(selecting:from:)`. Internal response
+identity columns serve routing/scoring only: they cannot enter domain column
+algebra. The original domain's columns, entries and retained claims remain
+identical across union/intersection boundaries.

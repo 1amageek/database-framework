@@ -155,6 +155,8 @@ let package = Package(
                 "Read/DESIGN.md",
                 "Mutation/DESIGN.md",
                 "Registry/DESIGN.md",
+                "SQLCatalog/DESIGN.md",
+                "Schema/DESIGN.md",
                 "Base/DESIGN.md",
                 "Fusion/DESIGN.md",
                 "Serialization/DESIGN.md",

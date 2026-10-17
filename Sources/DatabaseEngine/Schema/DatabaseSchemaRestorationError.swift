@@ -8,6 +8,7 @@ public enum DatabaseSchemaRestorationError: Error, Sendable, Equatable,
     case indexPhysicalFingerprintMismatch
     case missingExecutionRuntimeFingerprint
     case executionRuntimeFingerprintMismatch
+    case missingSQLCatalog
 
     public var description: String {
         switch self {
@@ -27,6 +28,8 @@ public enum DatabaseSchemaRestorationError: Error, Sendable, Equatable,
             return "Persisted schema generation has no execution runtime fingerprint"
         case .executionRuntimeFingerprintMismatch:
             return "Configured execution runtime does not match the persisted schema generation"
+        case .missingSQLCatalog:
+            return "Persisted schema generation has no SQL catalog"
         }
     }
 }

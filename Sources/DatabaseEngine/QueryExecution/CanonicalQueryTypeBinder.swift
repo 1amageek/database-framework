@@ -236,7 +236,12 @@ struct CanonicalQueryTypeBinder {
                     let candidate = CanonicalBoundKey(expression: projection[selected], projectionIndex: selected)
                     let duplicate = CanonicalBoundKey(expression: projection[position], projectionIndex: position)
                     guard try candidate.isSemanticallyEquivalent(to: duplicate, workMeter: workMeter,
-                        isVolatileSubquery: isVolatileSubquery) else { throw mismatch("ambiguous output alias") }
+                        isVolatileSubquery: isVolatileSubquery) else {
+                        let cause = CanonicalReadError.expressionEvaluation(.ambiguousColumn(column.displayName))
+                        guard occurrences != nil else { throw cause }
+                        throw CanonicalSQLBindingFailure(cause: .read(cause),
+                            occurrence: currentOccurrence, root: root)
+                    }
                 } else { selected = position }
             }
             index = selected

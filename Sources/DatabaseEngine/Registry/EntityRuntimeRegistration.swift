@@ -191,6 +191,7 @@ fileprivate struct EntityIndexReadRuntime: Sendable {
 
 public struct EntityRuntimeDefinition: Sendable {
     public let entity: Schema.Entity
+    package let compiledModelContract: Schema.Entity?
     private let groupingIdentityFields: [String]?
 
     private var indexReaders: [IndexType: EntityIndexReadRuntime]
@@ -212,6 +213,7 @@ public struct EntityRuntimeDefinition: Sendable {
         )
         let compiledIndexDescriptors = entity.indexDescriptors
         self.entity = entity
+        self.compiledModelContract = entity
         self.groupingIdentityFields = ["id"] + entity.dynamicFieldNames.filter { $0 != "id" }
         self.indexReaders = [:]
         self.indexProviders = [:]
@@ -292,7 +294,8 @@ public struct EntityRuntimeDefinition: Sendable {
                 entity: entity,
                 admittedFieldNames: admittedFieldNames,
                 sourceName: sourceName,
-                workMeter: options.workMeter
+                workMeter: options.workMeter,
+                retainingCandidateIdentity: options.sqlResolution != nil
             )
             let continuationPosition: ByteString?
             if let visiblePageSize = plan.visiblePageSize,
@@ -343,6 +346,7 @@ public struct EntityRuntimeDefinition: Sendable {
             ($0.fieldNumber, $0.name) < ($1.fieldNumber, $1.name)
         })
         self.entity = entity
+        self.compiledModelContract = nil
         self.groupingIdentityFields = nil
         self.indexReaders = [:]
         self.indexProviders = [:]
@@ -458,6 +462,7 @@ public struct EntityRuntimeDefinition: Sendable {
         let compiledIndexDescriptors = entity.indexDescriptors
         return EntityRuntimeRegistration(
             entity: entity,
+            compiledModelContract: compiledModelContract,
             groupingIdentityFields: groupingIdentityFields,
             indexReaders: indexReaders,
             indexProviders: indexProviders,
@@ -988,7 +993,8 @@ public struct EntityRuntimeDefinition: Sendable {
             entity: entity,
             admittedFieldNames: admittedFieldNames,
             sourceName: sourceName,
-            workMeter: options.workMeter
+            workMeter: options.workMeter,
+            retainingCandidateIdentity: options.sqlResolution != nil
         )
         let continuationPosition: ByteString?
         if let stablePageWindow,
@@ -1033,7 +1039,8 @@ public struct EntityRuntimeDefinition: Sendable {
         entity: Schema.Entity,
         admittedFieldNames: Set<String>,
         sourceName: String,
-        workMeter: DatabaseWorkMeter
+        workMeter: DatabaseWorkMeter,
+        retainingCandidateIdentity: Bool
     ) throws -> (rows: DatabaseSharedRetainedArray<CanonicalSourceRow>, layout: CanonicalSourceLayout) {
         guard models.workMeter === workMeter else {
             throw DatabaseIntermediateReservationError.workMeterMismatch
@@ -1093,8 +1100,17 @@ public struct EntityRuntimeDefinition: Sendable {
                             )
                             payloadLeases.append(DatabaseQueryPayloadLease(retaining: delta))
                         }
+                        let candidateIdentity: FieldValue?
+                        if retainingCandidateIdentity {
+                            guard let value = model.value(forFieldNamed: "id"), value != .null else {
+                                throw SchemaDrivenEntityRuntimeError.invalidIdentifier(entity: entity.name)
+                            }
+                            // Identity is internal routing metadata under the original model's retained claim.
+                            // Candidate construction validates its exact identifier type before routing.
+                            candidateIdentity = value
+                        } else { candidateIdentity = nil }
                         return CanonicalSourceRow(values: values, layout: layout,
-                                                  version: version, payloadLeases: payloadLeases)
+                            version: version, payloadLeases: payloadLeases, candidateIdentity: candidateIdentity)
                     }
                 }
             }
@@ -1585,6 +1601,7 @@ private func makeCanonicalEntityIndex(
 
 public struct EntityRuntimeRegistration: Sendable {
     public let entity: Schema.Entity
+    package let compiledModelContract: Schema.Entity?
     /// Static adapter identity used to prove base-source grouping dependencies.
     let groupingIdentityFields: [String]?
     private let indexProviders: [IndexType: EntityIndexProviderDescriptor]
@@ -1669,6 +1686,7 @@ public struct EntityRuntimeRegistration: Sendable {
 
     fileprivate init(
         entity: Schema.Entity,
+        compiledModelContract: Schema.Entity?,
         groupingIdentityFields: [String]?,
         indexReaders: [IndexType: EntityIndexReadRuntime],
         indexProviders: [IndexType: any EntityIndexProvider],
@@ -1683,6 +1701,7 @@ public struct EntityRuntimeRegistration: Sendable {
         finalizeIndex: @escaping FinalizeIndex
     ) {
         self.entity = entity
+        self.compiledModelContract = compiledModelContract
         self.groupingIdentityFields = groupingIdentityFields
         self.indexReaders = indexReaders
         self.indexProviders = indexProviders.mapValues {

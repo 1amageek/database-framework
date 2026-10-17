@@ -2,4 +2,6 @@
 public enum CanonicalSQLBindingCause: Sendable {
     case expression(DatabaseExpressionEvaluationError)
     case read(CanonicalReadError)
+    case catalog(SQLCatalogBindingError)
+    case resolution(SQLReadResolutionError)
 }

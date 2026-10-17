@@ -37,26 +37,52 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
         )
     }
 
+    package static func make(
+        query: SelectQuery,
+        schema: Schema,
+        sqlResolution: SQLReadResolution?
+    ) throws -> DatabaseFieldReadAuthorizationPlan {
+        var collector = Collector(schema: schema, sqlResolution: sqlResolution)
+        collector.collect(query)
+        if let failure = collector.resolutionFailure { throw failure }
+        return DatabaseFieldReadAuthorizationPlan(fieldsByEntity: collector.fieldsByEntity)
+    }
+
     /// Resolves selected ORDER inputs without treating source JOIN predicates
     /// or unrelated projected fields as ordering dependencies.
     package static func orderingFields(query: SelectQuery, inputs: [Expression], schema: Schema)
         -> [String: Set<String>] {
         var collector = Collector(schema: schema, collectingOrdering: true)
+        return collector.orderingFields(query: query, inputs: inputs)
+    }
+
+    package static func orderingFields(query: SelectQuery, inputs: [Expression], schema: Schema,
+        sqlResolution: SQLReadResolution?) throws -> [String: Set<String>] {
+        var collector = Collector(schema: schema, sqlResolution: sqlResolution, collectingOrdering: true)
+        let fields = collector.orderingFields(query: query, inputs: inputs)
+        if let failure = collector.resolutionFailure { throw failure }
+        return fields
+    }
+
+    package static func orderingProjection(query: SelectQuery, schema: Schema,
+        sqlResolution: SQLReadResolution) throws -> [(expression: Expression, alias: String?)]? {
+        var collector = Collector(schema: schema, sqlResolution: sqlResolution, collectingOrdering: true)
+        collector.collectCommonTables(query, outerScopes: [])
         let bindings = collector.collectBindings(query.source,
-            commonTableNames: Set(query.subqueries?.map { $0.name } ?? []), outerScopes: [])
-        let sourceDependencies = collector.fieldsByEntity
-        collector.fieldsByEntity = [:]
-        for expression in inputs {
-            collector.collect(expression, localBindings: bindings, outerScopes: [])
-        }
-        // Derived sources conservatively retain their underlying read dependencies.
-        if bindings.isEmpty {
-            collector.collect(query)
-            for (entity, fields) in sourceDependencies {
-                collector.fieldsByEntity[entity, default: []].formUnion(fields)
+            commonTableNames: CanonicalSourceNames(collector.commonTableColumns.keys.map { $0.value }), outerScopes: [])
+        if let failure = collector.resolutionFailure { throw failure }
+        var items: [(expression: Expression, alias: String?)] = []
+        for item in query.projection {
+            switch item {
+            case .expression(let expression, let alias): items.append((expression, alias))
+            case .wildcard(let qualifier):
+                let names = qualifier.map { collector.qualifiedColumnNames(query.source, qualifier: $0) }
+                    ?? collector.sourceColumnNames(query.source, bindings: bindings)
+                guard let names else { return nil }
+                items.append(contentsOf: names.map { (.column(ColumnRef(table: qualifier, column: $0)), nil) })
             }
         }
-        return collector.fieldsByEntity
+        return items
     }
 
     package static func rdfDataset(
@@ -91,12 +117,12 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
         }
 
         let entity: Schema.Entity
-        let qualifiers: Set<String>
+        let qualifiers: CanonicalSourceNames
         let fields: [Field]
 
         init(
             entity: Schema.Entity,
-            qualifiers: Set<String>,
+            qualifiers: CanonicalSourceNames,
             fields: [Field]? = nil
         ) {
             self.entity = entity
@@ -107,18 +133,21 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
         }
 
         func entityFieldName(for visibleName: String) -> String? {
-            fields.first { $0.visibleName == visibleName }?.entityFieldName
+            fields.first { CanonicalSourceName.equal($0.visibleName, visibleName) }?.entityFieldName
         }
     }
 
     private struct Collector {
         let schema: Schema
+        var sqlResolution: SQLReadResolution? = nil
         var collectingOrdering = false
+        var resolutionFailure: (any Error)? = nil
         var fieldsByEntity: [String: Set<String>] = [:]
-        private struct CommonTableColumns {
+        struct CommonTableColumns {
             let names: [String]?
+            var dependencies: [String: Set<String>] = [:]
         }
-        private var commonTableColumns: [String: CommonTableColumns] = [:]
+        var commonTableColumns: [CanonicalSourceName: CommonTableColumns] = [:]
 
         mutating func collect(
             _ query: SelectQuery,
@@ -126,18 +155,8 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
         ) {
             let inherited = commonTableColumns
             defer { commonTableColumns = inherited }
-            if query.withRecursive {
-                for subquery in query.subqueries ?? [] {
-                    commonTableColumns[subquery.name] = CommonTableColumns(names: subquery.columns)
-                }
-            }
-            for subquery in query.subqueries ?? [] {
-                // Recursive WITH predeclares every local logical name before physical collection.
-                collect(subquery.query, outerScopes: outerScopes)
-                commonTableColumns[subquery.name] = CommonTableColumns(
-                    names: declarationColumnNames(subquery, recursive: query.withRecursive))
-            }
-            let commonTableNames = Set(commonTableColumns.keys)
+            collectCommonTables(query, outerScopes: outerScopes)
+            let commonTableNames = CanonicalSourceNames(commonTableColumns.keys.map { $0.value })
             let bindings = collectBindings(
                 query.source,
                 commonTableNames: commonTableNames,
@@ -146,10 +165,10 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
             for item in query.projection {
                 switch item {
                 case .wildcard(nil):
-                    for binding in bindings { includeAll(binding.entity) }
+                    for binding in bindings { includeVisibleFields(binding) }
                 case .wildcard(.some(let qualifier)):
                     for binding in matchingBindings(qualifier: qualifier, localBindings: bindings, outerScopes: outerScopes) {
-                        includeAll(binding.entity)
+                        includeVisibleFields(binding)
                     }
                 case .expression(let expression, _):
                     collect(expression, localBindings: bindings, outerScopes: outerScopes)
@@ -198,10 +217,51 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
             collectIndexFields(query.accessPath, bindings: bindings)
         }
 
+        mutating func collectCommonTables(_ query: SelectQuery, outerScopes: [[SourceBinding]]) {
+            if query.withRecursive {
+                for subquery in query.subqueries ?? [] {
+                    commonTableColumns[CanonicalSourceName(subquery.name)] = CommonTableColumns(names: subquery.columns)
+                }
+            }
+            for subquery in query.subqueries ?? [] {
+                // Recursive WITH predeclares every local logical name before physical collection.
+                if collectingOrdering {
+                    var definition = self
+                    definition.fieldsByEntity = [:]
+                    definition.collect(subquery.query, outerScopes: outerScopes)
+                    if resolutionFailure == nil { resolutionFailure = definition.resolutionFailure }
+                    for (entity, fields) in definition.fieldsByEntity {
+                        fieldsByEntity[entity, default: []].formUnion(fields)
+                    }
+                    commonTableColumns[CanonicalSourceName(subquery.name)] = CommonTableColumns(
+                        names: declarationColumnNames(subquery, recursive: query.withRecursive),
+                        dependencies: definition.fieldsByEntity)
+                } else {
+                    collect(subquery.query, outerScopes: outerScopes)
+                    commonTableColumns[CanonicalSourceName(subquery.name)] = CommonTableColumns(
+                        names: declarationColumnNames(subquery, recursive: query.withRecursive))
+                }
+            }
+        }
+
+        mutating func orderingFields(query: SelectQuery, inputs: [Expression]) -> [String: Set<String>] {
+            collectCommonTables(query, outerScopes: [])
+            let bindings = collectBindings(query.source,
+                commonTableNames: CanonicalSourceNames(commonTableColumns.keys.map { $0.value }), outerScopes: [])
+            let sourceDependencies = fieldsByEntity
+            fieldsByEntity = [:]
+            for expression in inputs { collect(expression, localBindings: bindings, outerScopes: []) }
+            if bindings.isEmpty {
+                collect(query)
+                for (entity, fields) in sourceDependencies { fieldsByEntity[entity, default: []].formUnion(fields) }
+            }
+            return fieldsByEntity
+        }
+
         // Keep case payloads and post-child work out of recursive source dispatch.
         mutating func collectBindings(
             _ source: DataSource,
-            commonTableNames: Set<String>,
+            commonTableNames: CanonicalSourceNames,
             outerScopes: [[SourceBinding]]
         ) -> [SourceBinding] {
             switch source {
@@ -237,19 +297,36 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
             }
         }
 
-        private mutating func collectTableBindings(_ source: DataSource, commonTableNames: Set<String>) -> [SourceBinding] {
+        private mutating func collectTableBindings(_ source: DataSource, commonTableNames: CanonicalSourceNames) -> [SourceBinding] {
             guard case .table(let table) = source else { preconditionFailure("Expected table source") }
-            guard (table.schema != nil || !commonTableNames.contains(table.table)),
-                  let entity = schema.entity(named: table.table) else {
-                return []
+            if table.schema == nil, commonTableNames.contains(table.table) {
+                guard collectingOrdering,
+                      let declaration = commonTableColumns[CanonicalSourceName(table.table)] else { return [] }
+                return orderingBindings(names: declaration.names ?? [],
+                    dependencies: declaration.dependencies, qualifiers: [table.effectiveName])
             }
-            let qualifiers: Set<String> = [table.effectiveName]
-            if fieldsByEntity[entity.name] == nil {
-                fieldsByEntity[entity.name] = []
+            let entity: Schema.Entity
+            let fields: [SourceBinding.Field]?
+            if let sqlResolution {
+                do {
+                    let relation = try sqlResolution.resolve(table)
+                    entity = relation.entity
+                    fields = relation.columns.enumerated().map { ordinal, column in
+                        SourceBinding.Field(visibleName: column.declaration.name,
+                            entityFieldName: column.field.name, outputOrdinal: ordinal)
+                    }
+                } catch {
+                    if resolutionFailure == nil { resolutionFailure = error }
+                    return []
+                }
+            } else {
+                guard let physical = schema.entity(named: table.table) else { return [] }
+                entity = physical
+                fields = nil
             }
-            return [
-                SourceBinding(entity: entity, qualifiers: qualifiers)
-            ]
+            let qualifiers: CanonicalSourceNames = [table.effectiveName]
+            if fieldsByEntity[entity.name] == nil { fieldsByEntity[entity.name] = [] }
+            return [SourceBinding(entity: entity, qualifiers: qualifiers, fields: fields)]
         }
 
         private mutating func collectLogicalBindings(_ source: DataSource) -> [SourceBinding] {
@@ -279,29 +356,33 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                 var derived = self
                 derived.fieldsByEntity = [:]
                 derived.collect(query, outerScopes: outerScopes)
+                if resolutionFailure == nil { resolutionFailure = derived.resolutionFailure }
                 for (entity, fields) in derived.fieldsByEntity {
                     fieldsByEntity[entity, default: []].formUnion(fields)
                 }
                 let names = queryColumnNames(query, declarations: commonTableColumns) ?? []
-                return derived.fieldsByEntity.keys.sorted().compactMap { entityName in
-                    guard let entity = schema.entity(named: entityName),
-                          let dependencies = derived.fieldsByEntity[entityName] else { return nil }
-                    // Output ordinals preserve this conservative lineage through
-                    // enclosing aliases and JOIN layouts, independent of siblings.
-                    let fields = names.enumerated().flatMap { ordinal, name in
-                        dependencies.sorted().map { field in
-                            SourceBinding.Field(visibleName: name, entityFieldName: field,
-                                outputOrdinal: ordinal)
-                        }
-                    }
-                    return SourceBinding(entity: entity, qualifiers: [], fields: fields)
-                }
+                return orderingBindings(names: names, dependencies: derived.fieldsByEntity, qualifiers: [])
             }
             collect(query, outerScopes: outerScopes)
             return []
         }
 
-        private mutating func collectJoinBindings(_ source: DataSource, commonTableNames: Set<String>, outerScopes: [[SourceBinding]]) -> [SourceBinding] {
+        private func orderingBindings(names: [String], dependencies: [String: Set<String>],
+            qualifiers: CanonicalSourceNames) -> [SourceBinding] {
+            dependencies.keys.sorted().compactMap { entityName in
+                guard let entity = schema.entity(named: entityName),
+                      let fields = dependencies[entityName] else { return nil }
+                // Output ordinals retain conservative physical lineage through aliases and joins.
+                return SourceBinding(entity: entity, qualifiers: qualifiers,
+                    fields: names.enumerated().flatMap { ordinal, name in
+                        fields.sorted().map { field in
+                            SourceBinding.Field(visibleName: name, entityFieldName: field, outputOrdinal: ordinal)
+                        }
+                    })
+            }
+        }
+
+        private mutating func collectJoinBindings(_ source: DataSource, commonTableNames: CanonicalSourceNames, outerScopes: [[SourceBinding]]) -> [SourceBinding] {
             guard case .join(let join) = source else { preconditionFailure("Expected JOIN source") }
             let leftBindings = collectBindings(
                 join.left,
@@ -379,7 +460,7 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
             return []
         }
 
-        private mutating func collectAliasedBindings(_ source: DataSource, commonTableNames: Set<String>, outerScopes: [[SourceBinding]]) -> [SourceBinding] {
+        private mutating func collectAliasedBindings(_ source: DataSource, commonTableNames: CanonicalSourceNames, outerScopes: [[SourceBinding]]) -> [SourceBinding] {
             guard case .aliased(let inner, let name, let columns) = source else { preconditionFailure("Expected aliased source") }
             let bindings = collectBindings(inner, commonTableNames: commonTableNames, outerScopes: outerScopes)
             return aliasedBindings(bindings, name: name, columns: columns)
@@ -399,7 +480,7 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
         }
 
         #if DATABASE_MULTI_BASE
-        private mutating func collectBaseBindings(_ source: DataSource, commonTableNames: Set<String>, outerScopes: [[SourceBinding]]) -> [SourceBinding] {
+        private mutating func collectBaseBindings(_ source: DataSource, commonTableNames: CanonicalSourceNames, outerScopes: [[SourceBinding]]) -> [SourceBinding] {
             guard case .base(_, let source) = source else { preconditionFailure("Expected Base source") }
             return collectBindings(source, commonTableNames: commonTableNames, outerScopes: outerScopes)
         }
@@ -456,7 +537,7 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                     else { return [] }
                     let fields: [String]
                     if collectingOrdering {
-                        fields = binding.fields.filter { $0.visibleName == column.column }.map { $0.entityFieldName }
+                        fields = binding.fields.filter { CanonicalSourceName.equal($0.visibleName, column.column) }.map { $0.entityFieldName }
                     } else { fields = binding.entityFieldName(for: column.column).map { [$0] } ?? [] }
                     return fields.map { ResolvedFieldBinding(entity: binding.entity, entityFieldName: $0) }
                 }
@@ -477,6 +558,10 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                 if !matches.isEmpty { return matches }
             }
             return []
+        }
+
+        mutating func includeVisibleFields(_ binding: SourceBinding) {
+            fieldsByEntity[binding.entity.name, default: []].formUnion(binding.fields.map { $0.entityFieldName })
         }
 
         mutating func includeAll(_ entity: Schema.Entity) {
@@ -745,10 +830,8 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
             }
         }
 
-        func fieldNames(in bindings: [SourceBinding]) -> Set<String> {
-            bindings.reduce(into: Set<String>()) { result, binding in
-                result.formUnion(binding.fields.map { $0.visibleName })
-            }
+        func fieldNames(in bindings: [SourceBinding]) -> CanonicalSourceNames {
+            CanonicalSourceNames(bindings.flatMap { $0.fields.map { $0.visibleName } })
         }
 
         mutating func conservativeSetOperationBindings(
@@ -756,7 +839,7 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
         ) -> [SourceBinding] {
             let bindings = branches.flatMap { $0 }
             for binding in bindings {
-                includeAll(binding.entity)
+                includeVisibleFields(binding)
             }
             return bindings
         }
@@ -768,7 +851,11 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
             switch source {
             case .tableFunction: return nil
             case .table(let table):
-                if table.schema == nil, let declaration = commonTableColumns[table.table] { return declaration.names }
+                if table.schema == nil, let declaration = commonTableColumns[CanonicalSourceName(table.table)] { return declaration.names }
+                if let sqlResolution {
+                    do { return try sqlResolution.resolve(table).columns.map { $0.declaration.name } }
+                    catch { return nil } // Collection reports the same source failure before admission.
+                }
                 return schema.entity(named: table.table)?.allFields
             case .logical:
                 guard bindings.count == 1, let first = bindings.first else { return nil }
@@ -804,13 +891,13 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
             -> (names: [String], left: [Int], right: [Int])? {
             let merged: [String]
             if case .using(let columns) = join.condition { merged = columns }
-            else if isNatural(join.type) { merged = left.filter { right.contains($0) } }
+            else if isNatural(join.type) { merged = left.filter { name in right.contains { CanonicalSourceName.equal($0, name) } } }
             else { merged = [] }
             var names: [String] = []
             var leftOrdinals = Array(repeating: -1, count: left.count)
             var rightOrdinals = Array(repeating: -1, count: right.count)
             for name in merged {
-                guard let leftIndex = left.firstIndex(of: name), let rightIndex = right.firstIndex(of: name) else { return nil }
+                guard let leftIndex = left.firstIndex(where: { CanonicalSourceName.equal($0, name) }), let rightIndex = right.firstIndex(where: { CanonicalSourceName.equal($0, name) }) else { return nil }
                 leftOrdinals[leftIndex] = names.count
                 rightOrdinals[rightIndex] = names.count
                 names.append(name)
@@ -854,14 +941,14 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
             return names
         }
 
-        private func qualifiedColumnNames(_ source: DataSource, qualifier: String) -> [String]? {
+        func qualifiedColumnNames(_ source: DataSource, qualifier: String) -> [String]? {
             switch source {
             case .aliased(_, let name, _):
-                return name == qualifier ? sourceColumnNames(source, bindings: []) : nil
+                return CanonicalSourceName.equal(name, qualifier) ? sourceColumnNames(source, bindings: []) : nil
             case .table(let table):
-                return table.effectiveName == qualifier ? sourceColumnNames(source, bindings: []) : nil
+                return CanonicalSourceName.equal(table.effectiveName, qualifier) ? sourceColumnNames(source, bindings: []) : nil
             case .logical(let logical):
-                return logical.effectiveName == qualifier ? sourceColumnNames(source, bindings: []) : nil
+                return CanonicalSourceName.equal(logical.effectiveName, qualifier) ? sourceColumnNames(source, bindings: []) : nil
             case .join(let join):
                 return qualifiedColumnNames(join.left, qualifier: qualifier)
                     ?? qualifiedColumnNames(join.right, qualifier: qualifier)
@@ -880,16 +967,16 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
         }
 
         private func queryColumnNames(_ query: SelectQuery,
-            declarations: [String: CommonTableColumns]) -> [String]? {
+            declarations: [CanonicalSourceName: CommonTableColumns]) -> [String]? {
             var nested = self
             nested.commonTableColumns = declarations
             if query.withRecursive {
                 for cte in query.subqueries ?? [] {
-                    nested.commonTableColumns[cte.name] = CommonTableColumns(names: cte.columns)
+                    nested.commonTableColumns[CanonicalSourceName(cte.name)] = CommonTableColumns(names: cte.columns)
                 }
             }
             for cte in query.subqueries ?? [] {
-                nested.commonTableColumns[cte.name] = CommonTableColumns(
+                nested.commonTableColumns[CanonicalSourceName(cte.name)] = CommonTableColumns(
                     names: nested.declarationColumnNames(cte, recursive: query.withRecursive))
             }
             return nested.projectionColumnNames(query.projection, source: query.source,

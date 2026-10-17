@@ -114,11 +114,8 @@ enum FusionExecutor {
                 response = try await execution.executeRelationalRows(for: input, at: ordinal)
             }
             return InputExecutionResult(
-                candidates: try FusionCandidateDomain.make(
-                    rows: response.visibleRows,
-                    entity: execution.plan.entity,
-                    workMeter: execution.options.workMeter
-                ),
+                candidates: try relationalCandidates(rows: response.visibleRows,
+                    incoming: incoming, execution: execution),
                 scored: nil
             )
         case .order:
@@ -153,11 +150,8 @@ enum FusionExecutor {
                 }
                 let result = try sink.freeze(coverage: .exhausted)
                 return InputExecutionResult(
-                    candidates: try FusionCandidateDomain.make(
-                        rows: response.visibleRows,
-                        entity: execution.plan.entity,
-                        workMeter: execution.options.workMeter
-                    ),
+                    candidates: try relationalCandidates(rows: response.visibleRows,
+                        incoming: incoming, execution: execution),
                     scored: FusionScoredInput(
                         scoring: scoring,
                         result: result
@@ -193,6 +187,16 @@ enum FusionExecutor {
                 execution: execution
             )
         }
+    }
+
+    private static func relationalCandidates(rows: CanonicalRetainedQueryRowView,
+        incoming: FusionCandidateDomain?, execution: FusionExecution) throws -> FusionCandidateDomain {
+        if execution.options.sqlResolution != nil, let incoming {
+            return try FusionCandidateDomain.make(selecting: rows, from: incoming,
+                workMeter: execution.options.workMeter)
+        }
+        return try FusionCandidateDomain.make(rows: rows, entity: execution.plan.entity,
+            workMeter: execution.options.workMeter)
     }
 
     private static func executeConnected(

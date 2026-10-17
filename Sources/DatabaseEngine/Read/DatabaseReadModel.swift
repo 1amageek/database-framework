@@ -52,7 +52,7 @@ public struct ReadExecutionOptions: Sendable, Hashable {
         )
     }
 
-    private init(
+    fileprivate init(
         consistency: ReadConsistency?,
         pageSize: Int?,
         continuation: QueryContinuation?,
@@ -93,6 +93,8 @@ public struct ReadExecutionContext: Sendable {
     public let workMeter: DatabaseWorkMeter
     public let queryStructuralLimits: QueryStructuralLimits
     public let temporalEnvironment: SQLTemporalEnvironment?
+    package var sqlResolution: SQLReadResolution? = nil
+    private var sqlContinuationBase: ByteString? = nil
 
     public init(
         options: ReadExecutionOptions = .default,
@@ -114,12 +116,43 @@ public struct ReadExecutionContext: Sendable {
     public var continuation: QueryContinuation? { options.continuation }
 
     package func withoutExternalPageWindow() -> Self {
-        Self(
+        var result = Self(
             options: options.withoutExternalPageWindow(),
             workMeter: workMeter,
             queryStructuralLimits: queryStructuralLimits,
             temporalEnvironment: temporalEnvironment
         )
+        result.sqlResolution = sqlResolution
+        result.sqlContinuationBase = sqlContinuationBase
+        return result
+    }
+
+    package func withSQLResolution(_ resolution: SQLReadResolution) -> Self {
+        let base = sqlContinuationBase ?? options.continuationScope
+        var hasher = SHA256Accumulator()
+        hasher.update(base)
+        hasher.update(resolution.continuationIdentity)
+        let scoped = ReadExecutionOptions(consistency: options.consistency, pageSize: options.pageSize,
+            continuation: options.continuation, budget: options.budget,
+            continuationScope: hasher.finalize(), continuationSnapshotIsStable: options.continuationSnapshotIsStable,
+            appliesExternalPageWindow: options.appliesExternalPageWindow)
+        var result = Self(options: scoped, workMeter: workMeter, queryStructuralLimits: queryStructuralLimits,
+            temporalEnvironment: temporalEnvironment)
+        result.sqlResolution = resolution
+        result.sqlContinuationBase = base
+        return result
+    }
+
+    package func withContinuationScope(_ scope: ByteString) -> Self {
+        let scoped = ReadExecutionOptions(consistency: options.consistency, pageSize: options.pageSize,
+            continuation: options.continuation, budget: options.budget, continuationScope: scope,
+            continuationSnapshotIsStable: options.continuationSnapshotIsStable,
+            appliesExternalPageWindow: options.appliesExternalPageWindow)
+        var result = Self(options: scoped, workMeter: workMeter, queryStructuralLimits: queryStructuralLimits,
+            temporalEnvironment: temporalEnvironment)
+        result.sqlResolution = sqlResolution
+        result.sqlContinuationBase = sqlContinuationBase
+        return result
     }
 
     private init(
@@ -135,12 +168,15 @@ public struct ReadExecutionContext: Sendable {
     }
 
     package func withTemporalEnvironment(_ environment: SQLTemporalEnvironment) -> Self {
-        Self(
+        var result = Self(
             options: options,
             workMeter: workMeter,
             queryStructuralLimits: queryStructuralLimits,
             temporalEnvironment: environment
         )
+        result.sqlResolution = sqlResolution
+        result.sqlContinuationBase = sqlContinuationBase
+        return result
     }
 
     public func resolvePageSize() throws -> Int? {

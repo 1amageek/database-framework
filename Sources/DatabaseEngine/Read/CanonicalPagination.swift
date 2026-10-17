@@ -461,12 +461,23 @@ public enum CanonicalQueryPagination {
         }
     }
 
-    private static func queryFingerprint(
+    package static func queryFingerprint(
         _ selectQuery: SelectQuery,
         scope: ByteString,
         workMeter: DatabaseWorkMeter
     ) throws -> ByteString {
         var hasher = SHA256Accumulator()
+        let canonicalQuery: SelectQuery
+        let aliasClaim: DatabaseIntermediateReservation?
+        if case .table(let table) = selectQuery.source, let alias = table.alias {
+            // Internal physical table planning keeps its alias on TableRef; Wire's source contract uses an alias node.
+            aliasClaim = try workMeter.reserveIntermediate(bytes: UInt64(MemoryLayout<SelectQuery>.stride)
+                + UInt64(MemoryLayout<DataSource>.stride) * 2 + 128, at: .resultMaterialization)
+            try workMeter.consume(at: .resultMaterialization)
+            let physical = TableRef(schema: table.schema, table: table.table, partitions: table.partitions)
+            canonicalQuery = selectQuery.replacing(source: .aliased(.table(physical), name: alias))
+        } else { canonicalQuery = selectQuery; aliasClaim = nil }
+        defer { withExtendedLifetime(aliasClaim) {} }
         let maximumIntermediateBytes = workMeter.budget.maximumIntermediateBytes
         let maximumFrameBytes = Int(
             min(maximumIntermediateBytes, UInt64(Int.max))
@@ -491,7 +502,7 @@ public enum CanonicalQueryPagination {
         }
         do {
             try QueryIRWireFormat.emitCanonicalEncoding(
-                .select(selectQuery),
+                .select(canonicalQuery),
                 limits: limits,
                 prepare: { queryByteCount in
                     try claimFingerprintBytes(

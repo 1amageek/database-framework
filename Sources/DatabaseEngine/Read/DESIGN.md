@@ -287,3 +287,75 @@ Tests prove environment identity through authorization attenuation, derived
 sessions, page/subquery contexts, retry and failure cleanup on Native and the
 applicable portable owner paths. Clock state is Sendable immutable data on all
 targets, with no new shared mutable cache or conditional synchronization.
+
+
+### S11 explicit SQL resolution carriage
+
+**Implementation contract; not completion evidence.** Read adds a package-visible
+immutable final reference owner `SQLReadResolution: Sendable` containing the
+admitted SQLCatalog snapshot, captured read policy/schema lease, `SQLSearchPath`,
+authenticated current-user identifier and generation identity.
+`ReadExecutionContext` carries it explicitly as an optional package property.
+The public default remains absent for typed QueryIR/SPARQL calls. SQL entries
+obtain it through `DatabaseContext.makeSQLReadResolution(searchPath:workMeter:)`
+inside the existing `withDataOperation` / `withOperationSchemaLease` scope,
+never before that scope captures its generation. The factory uses the admitted
+read policy; absence is never inferred from source syntax. Anonymous authorization supplies
+no current-user schema. Resolution does not add authority.
+
+```text
+withDataOperation / withOperationSchemaLease
+  -> admitted generation + principal + explicit SQL search path
+     -> SQLReadResolution -> preflight/list/field requirements
+     -> sealed physical authorization -> bound logical rows
+```
+
+Every context reconstruction, temporal-environment change, page-window removal,
+prepared execution and Fusion batch retains the exact resolution owner.
+The reference owner retains its original policy/lease, and Read validates the
+actual execution session against that identity before work proceeds. A prepared
+owner presented to a different generation fails with a typed mismatch before
+authorization or reads; it never silently rebinds. A retained catalog cannot
+replace the session's live operation/transaction lease. The catalog owner validates physical mapping, and
+[QueryExecution](../QueryExecution/DESIGN.md#s11-frozen-catalog-bound-select-execution)
+owns alignment and source-position failure mapping. The runtime fingerprint
+includes the catalog digest; SQL continuation identity also distinguishes the
+selected search path/resolved source so changing either cannot resume another
+logical relation.
+
+Field and list authorization consume the same resolved relation as binding.
+Visible logical field names map to physical entity fields before security
+policy evaluation, including wildcard, whole-row, aliases, ORDER aliases and
+ordinals, derived sources, joins, index dependencies and Fusion inputs.
+`DatabaseFieldReadAuthorizationPlan` and `SelectQuery` ordering requirements
+must accept explicit resolution rather than separately looking up terminal
+names. Existing complete-model and sealed subset contracts remain intact.
+SQL namespace lookup, including privileged catalog inspection, never bypasses
+entity/field security or grants access to a physical source.
+
+The factory preadmits the reference owner, path/name bytes and retained metadata
+before constructing them. `CanonicalQueryBindingEnvironment` stores only the
+optional owner reference, preserving the S10 depth-30/8MiB stack contract. Every
+new retained reference/map remains charged through its last consumer.
+
+The normative [S11-C01–C12 acceptance matrix](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s11-frozen-logical-catalog-and-identity)
+owns the completion IDs. C03/C06/C08/C11/C12 specifically require an execution
+to keep its old mapping while a new generation is published, and require an
+external prepared owner to reject a different session generation.
+
+Focused authorization tests deny a renamed logical field's physical source
+before I/O, distinguish same terminal names in separate namespaces, and verify
+that qualified CTE-like names never suppress real physical authorization.
+Prepared/continuation tests reject stale catalog/search-path reuse. Existing
+physical typed QueryIR/SPARQL, meter, cancellation, lease and retained-output
+fixtures remain required. Added state is immutable across Native/WASM/Embedded;
+the existing Mutex/actor owners and shutdown paths remain unchanged.
+
+
+S11 logical source qualifiers, aliases, field names, CTE keys and USING/NATURAL
+column membership use the exact UTF-8 identity defined by
+[QueryExecution's source identity contract](../QueryExecution/DESIGN.md#s11-exact-logical-source-identity).
+`DatabaseFieldReadAuthorizationPlan` preserves that identity through source and
+ordering dependency collection before lowering to physical requirements.
+Normalized-equivalent logical names must not merge permissions, shadow a
+source, or suppress a required physical field read.

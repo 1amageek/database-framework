@@ -92,7 +92,6 @@ public final class DBContainer: Sendable {
         let defaultTenant: DatabaseTenantDirectories
         #endif
         let metadataSubspace: Subspace
-        let schemaGeneration: UInt64
         let transactionCapabilities: TransactionCapabilities
     }
 
@@ -320,12 +319,6 @@ public final class DBContainer: Sendable {
                 schema: schema,
                 runtimeConfiguration: runtimeConfiguration
             )
-            let preparedGeneration = try DatabasePreparedSchemaGeneration(
-                schemaFingerprint: schemaFingerprint,
-                runtimeConfiguration: runtimeConfiguration,
-                securityConfiguration: security,
-                indexPhysicalLayouts: indexPhysicalLayouts
-            )
 
             let transactionCapabilities = try await inspectTransactionCapabilities(
                 storageEngine: storageEngine
@@ -349,14 +342,35 @@ public final class DBContainer: Sendable {
                 transactionCapabilities: transactionCapabilities
             )
             #endif
+            #if DATABASE_MULTI_BASE
+            let schemaRoot = preparedStorage.topology.controlDomain.systemRoot
+            #else
+            let schemaRoot = preparedStorage.defaultTenant.systemRoot
+            #endif
+            let restored = try await restoreSchemaState(storageEngine: storageEngine,
+                root: schemaRoot, metadataSubspace: preparedStorage.metadataSubspace,
+                clock: configuration.monotonicClock)
+            let sqlCatalog: SQLCatalogSnapshot
+            if let stored = restored.sqlCatalog {
+                sqlCatalog = try stored.reconciledForApplication(physicalSchema: restored.schema,
+                    targetPhysicalSchema: schema, runtimeConfiguration: runtimeConfiguration)
+            } else {
+                sqlCatalog = try SQLCatalogSnapshot(catalog: SQLCatalogSnapshot.derivedCatalog(physicalSchema: schema),
+                    physicalSchema: schema, runtimeConfiguration: runtimeConfiguration)
+            }
+            let preparedGeneration = try DatabasePreparedSchemaGeneration(
+                schemaFingerprint: schemaFingerprint, runtimeConfiguration: runtimeConfiguration,
+                securityConfiguration: security, indexPhysicalLayouts: indexPhysicalLayouts,
+                sqlCatalogDigest: sqlCatalog.digest)
             let container = try DBContainer(
                 schema: schema,
                 schemaFingerprint: schemaFingerprint,
+                sqlCatalog: sqlCatalog,
                 indexPhysicalFingerprint:
                     preparedGeneration.indexPhysicalFingerprint,
                 executionRuntimeFingerprint:
                     preparedGeneration.executionRuntimeFingerprint,
-                schemaGeneration: nil,
+                schemaGeneration: restored.generation,
                 configuration: configuration,
                 runtimeConfiguration: runtimeConfiguration,
                 indexPhysicalLayouts: indexPhysicalLayouts,
@@ -371,11 +385,8 @@ public final class DBContainer: Sendable {
                     .initializeSchemaCatalogIfNeeded(
                         schema,
                         fingerprint: schemaFingerprint,
-                        indexPhysicalFingerprint:
-                            preparedGeneration.indexPhysicalFingerprint,
-                        executionRuntimeFingerprint:
-                            preparedGeneration.executionRuntimeFingerprint,
-                        indexPhysicalLayouts: indexPhysicalLayouts
+                        preparedGeneration: preparedGeneration,
+                        sqlCatalog: sqlCatalog
                     )
                 try container.publishSchemaGeneration(
                     schema,
@@ -386,7 +397,8 @@ public final class DBContainer: Sendable {
                         preparedGeneration.executionRuntimeFingerprint,
                     runtimeConfiguration: runtimeConfiguration,
                     indexPhysicalLayouts: indexPhysicalLayouts,
-                    generation: generation
+                    generation: generation,
+                    sqlCatalog: sqlCatalog
                 )
             }
 
@@ -472,11 +484,20 @@ public final class DBContainer: Sendable {
                 schema: restored.schema,
                 runtimeConfiguration: runtimeConfiguration
             )
+            let sqlCatalog: SQLCatalogSnapshot
+            if let stored = restored.sqlCatalog {
+                sqlCatalog = try stored.reconciledForApplication(physicalSchema: restored.schema,
+                    targetPhysicalSchema: restored.schema, runtimeConfiguration: runtimeConfiguration)
+            } else {
+                sqlCatalog = try SQLCatalogSnapshot(catalog: SQLCatalogSnapshot.derivedCatalog(physicalSchema: restored.schema),
+                    physicalSchema: restored.schema, runtimeConfiguration: runtimeConfiguration)
+            }
             let preparedGeneration = try DatabasePreparedSchemaGeneration(
                 schemaFingerprint: restored.fingerprint,
                 runtimeConfiguration: runtimeConfiguration,
                 securityConfiguration: security,
-                indexPhysicalLayouts: indexPhysicalLayouts
+                indexPhysicalLayouts: indexPhysicalLayouts,
+                sqlCatalogDigest: sqlCatalog.digest
             )
             if let persisted = restored.indexPhysicalFingerprint {
                 guard persisted == preparedGeneration.indexPhysicalFingerprint
@@ -505,6 +526,7 @@ public final class DBContainer: Sendable {
             let container = try DBContainer(
                 schema: restored.schema,
                 schemaFingerprint: restored.fingerprint,
+                sqlCatalog: sqlCatalog,
                 indexPhysicalFingerprint:
                     preparedGeneration.indexPhysicalFingerprint,
                 executionRuntimeFingerprint:
@@ -519,11 +541,8 @@ public final class DBContainer: Sendable {
             let generation = try await container.initializeSchemaCatalogIfNeeded(
                 restored.schema,
                 fingerprint: restored.fingerprint,
-                indexPhysicalFingerprint:
-                    preparedGeneration.indexPhysicalFingerprint,
-                executionRuntimeFingerprint:
-                    preparedGeneration.executionRuntimeFingerprint,
-                indexPhysicalLayouts: indexPhysicalLayouts
+                preparedGeneration: preparedGeneration,
+                sqlCatalog: sqlCatalog
             )
             try container.publishSchemaGeneration(
                 restored.schema,
@@ -534,7 +553,8 @@ public final class DBContainer: Sendable {
                     preparedGeneration.executionRuntimeFingerprint,
                 runtimeConfiguration: runtimeConfiguration,
                 indexPhysicalLayouts: indexPhysicalLayouts,
-                generation: generation
+                generation: generation,
+                sqlCatalog: sqlCatalog
             )
             #if DATABASE_MULTI_BASE
             try await container.prepareTestingBaseIfConfigured()
@@ -765,11 +785,6 @@ public final class DBContainer: Sendable {
         }
         let metadataSubspace = preparedTopology.controlDomain.systemRoot
             .subspace("_metadata")
-        let schemaGeneration = try await loadSchemaGeneration(
-            storageEngine: storageEngine,
-            metadataSubspace: metadataSubspace,
-            clock: configuration.monotonicClock
-        )
         return PreparedStorage(
             engine: storageEngine,
             format: persistedFormat,
@@ -780,7 +795,6 @@ public final class DBContainer: Sendable {
             baseGenerations: baseGenerations,
             databaseGrantStore: databaseGrantStore,
             metadataSubspace: metadataSubspace,
-            schemaGeneration: schemaGeneration,
             transactionCapabilities: resolvedTransactionCapabilities
         )
     }
@@ -833,17 +847,11 @@ public final class DBContainer: Sendable {
             clock: configuration.monotonicClock
         ).installIfEmptyOrValidate(expectedFormat)
         let metadataSubspace = defaultTenant.systemRoot.subspace("_metadata")
-        let schemaGeneration = try await loadSchemaGeneration(
-            storageEngine: storageEngine,
-            metadataSubspace: metadataSubspace,
-            clock: configuration.monotonicClock
-        )
         return PreparedStorage(
             engine: storageEngine,
             format: persistedFormat,
             defaultTenant: defaultTenant,
             metadataSubspace: metadataSubspace,
-            schemaGeneration: schemaGeneration,
             transactionCapabilities: resolvedTransactionCapabilities
         )
     }
@@ -858,45 +866,13 @@ public final class DBContainer: Sendable {
         return capabilities
     }
 
-    private static func loadSchemaGeneration(
-        storageEngine: any StorageEngine,
-        metadataSubspace: Subspace,
-        clock: any StorageMonotonicClock
-    ) async throws -> UInt64 {
-        try await StorageTransactionExecutor(engine: storageEngine)
-            .withTransaction(configuration: .default, clock: clock) {
-                transaction in
-                guard let bytes = try await transaction.getValue(
-                    for: schemaGenerationKey(metadataSubspace: metadataSubspace),
-                    snapshot: true
-                ) else {
-                    return UInt64(0)
-                }
-                let tuple = try Tuple(packed: bytes)
-                guard tuple.count == 1 else {
-                    throw DatabaseRuntimeError.internalError(
-                        "Invalid schema generation format"
-                    )
-                }
-                switch try tuple.value(at: 0) {
-                case .unsignedInteger(let generation):
-                    return generation
-                case .signedInteger(let generation) where generation >= 0:
-                    return UInt64(generation)
-                default:
-                    throw DatabaseRuntimeError.internalError(
-                        "Invalid schema generation format"
-                    )
-                }
-            }
-    }
-
     private init(
         schema: Schema,
         schemaFingerprint: SchemaFingerprint,
+        sqlCatalog: SQLCatalogSnapshot,
         indexPhysicalFingerprint: ByteString,
         executionRuntimeFingerprint: ByteString,
-        schemaGeneration: UInt64?,
+        schemaGeneration: UInt64,
         configuration: DBConfiguration,
         runtimeConfiguration: DatabaseRuntimeConfiguration,
         indexPhysicalLayouts: [String: IndexPhysicalLayout],
@@ -939,11 +915,12 @@ public final class DBContainer: Sendable {
         }
         self.schemaGenerationStore = DatabaseSchemaGenerationStore(
             initial: DatabaseSchemaGeneration(
-                identifier: schemaGeneration ?? preparedStorage.schemaGeneration,
+                identifier: schemaGeneration,
                 fingerprint: schemaFingerprint,
                 indexPhysicalFingerprint: indexPhysicalFingerprint,
                 executionRuntimeFingerprint: executionRuntimeFingerprint,
                 schema: schema,
+                sqlCatalog: sqlCatalog,
                 runtimeConfiguration: runtimeConfiguration,
                 indexPhysicalLayouts: indexPhysicalLayouts,
                 directoryLayers: try DirectoryLayerTagMap(
@@ -1484,15 +1461,18 @@ public final class DBContainer: Sendable {
 
     /// Publishes a fully built generation after its durable schema transaction
     /// has committed. Existing request leases continue to retain the old value.
-    package func publishSchemaGeneration(
+    func publishSchemaGeneration(
         _ schema: Schema,
         fingerprint: SchemaFingerprint,
         indexPhysicalFingerprint: ByteString,
         executionRuntimeFingerprint: ByteString,
         runtimeConfiguration: DatabaseRuntimeConfiguration,
         indexPhysicalLayouts: [String: IndexPhysicalLayout],
-        generation: UInt64
+        generation: UInt64,
+        sqlCatalog: SQLCatalogSnapshot? = nil
     ) throws {
+        let catalog = try sqlCatalog ?? Self.applicationSQLCatalog(from: acquireActiveSchemaLease(),
+            schema: schema, runtimeConfiguration: runtimeConfiguration)
         let securityDelegate: (any DataStoreSecurityDelegate)?
         switch securityConfiguration.policyEvaluation {
         case .enabled:
@@ -1510,6 +1490,7 @@ public final class DBContainer: Sendable {
                 indexPhysicalFingerprint: indexPhysicalFingerprint,
                 executionRuntimeFingerprint: executionRuntimeFingerprint,
                 schema: schema,
+                sqlCatalog: catalog,
                 runtimeConfiguration: runtimeConfiguration,
                 indexPhysicalLayouts: indexPhysicalLayouts,
                 directoryLayers: try DirectoryLayerTagMap(
@@ -2923,254 +2904,91 @@ extension DBContainer {
     /// schema remains database-wide.
     private func publishSchemaCatalogIfAllActiveBasesMatch(
         _ candidateSchema: Schema
-    )
-        async throws
-    {
-        let preparedGeneration = try prepareMigrationSchemaGeneration(
-            candidateSchema
-        )
-        let targetExecutionRuntimeFingerprint =
-            preparedGeneration.executionRuntimeFingerprint
-        let targetIndexPhysicalFingerprint =
-            preparedGeneration.indexPhysicalFingerprint
-        let targetIndexPhysicalLayouts =
-            preparedGeneration.indexPhysicalLayouts
-        guard try await allActiveDataRootsMatch(
-            candidateSchema,
-            preparedGeneration: preparedGeneration
-        ) else {
-            return
-        }
+    ) async throws {
+        let candidate = try prepareMigrationSchemaGeneration(candidateSchema)
+        guard try await allActiveDataRootsMatch(candidateSchema, preparedGeneration: candidate) else { return }
         #if DATABASE_MULTI_BASE
         let schemaEngine = controlEngine
         let schemaRoot = storageTopology.controlDomain.systemRoot
-        let schemaTransactionExecutor = controlTransactionExecutor
+        let executor = controlTransactionExecutor
         #else
         let schemaEngine = engine
         let schemaRoot = defaultTenant.systemRoot
-        let schemaTransactionExecutor = transactionExecutor
+        let executor = transactionExecutor
         #endif
-        let registry = SchemaRegistry(
-            database: schemaEngine,
-            root: schemaRoot,
-            clock: monotonicClock
-        )
-        let targetFingerprint = try SchemaManifest(schema: candidateSchema)
-            .fingerprint()
-        let nextGeneration = try await schemaTransactionExecutor
-            .withTransaction(
-                configuration: .batch,
-                clock: monotonicClock
-            ) { transaction in
-                let persistedEntities = try await registry.loadAll(
-                    transaction: transaction
-                )
-                let persistedVersion = try await Self.loadSchemaVersion(
-                    metadataSubspace: self.metadataSubspace,
-                    transaction: transaction
-                )
-                let persistedFingerprint = try await Self
-                    .loadActiveSchemaFingerprint(
-                        metadataSubspace: self.metadataSubspace,
-                        transaction: transaction
-                    )
-                let persistedGeneration = try await Self
-                    .loadPersistedSchemaGeneration(
-                        metadataSubspace: self.metadataSubspace,
-                        transaction: transaction
-                    )
-                let persistedExecutionRuntimeFingerprint =
-                    try await Self
-                    .loadActiveExecutionRuntimeFingerprint(
-                        metadataSubspace: self.metadataSubspace,
-                        transaction: transaction
-                    )
-                let persistedIndexPhysicalFingerprint =
-                    try await Self
-                    .loadActiveIndexPhysicalFingerprint(
-                        metadataSubspace: self.metadataSubspace,
-                        transaction: transaction
-                    )
-                let persistedIndexLayoutFingerprints =
-                    try await Self
-                    .loadActiveIndexLayoutFingerprints(
-                        metadataSubspace: self.metadataSubspace,
-                        transaction: transaction
-                    )
-
-                if persistedEntities.isEmpty,
-                    persistedFingerprint == nil,
-                    persistedGeneration == nil
-                {
-                    guard
-                        persistedVersion == nil
-                            || persistedVersion == candidateSchema.version
-                    else {
-                        throw DatabaseSchemaPublicationError.corruptedState(
-                            "bootstrap schema version does not match the migration boundary"
-                        )
-                    }
-                    guard
-                        persistedExecutionRuntimeFingerprint == nil
-                            || persistedExecutionRuntimeFingerprint
-                                == targetExecutionRuntimeFingerprint
-                    else {
-                        throw DatabaseSchemaRestorationError
-                            .executionRuntimeFingerprintMismatch
-                    }
-                    guard
-                        persistedIndexPhysicalFingerprint == nil
-                            || persistedIndexPhysicalFingerprint
-                                == targetIndexPhysicalFingerprint
-                    else {
-                        throw DatabaseSchemaRestorationError
-                            .indexPhysicalFingerprintMismatch
-                    }
-                    guard
-                        persistedIndexLayoutFingerprints.isEmpty
-                            || persistedIndexLayoutFingerprints
-                                == targetIndexPhysicalLayouts.mapValues({
-                                    $0.fingerprint
-                                })
-                    else {
-                        throw DatabaseSchemaRestorationError
-                            .indexPhysicalFingerprintMismatch
-                    }
-                    try await registry.persistInitialSchema(
-                        candidateSchema,
-                        transaction: transaction
-                    )
-                    try Self.setCurrentSchemaSnapshot(
-                        candidateSchema,
-                        indexPhysicalFingerprint:
-                            targetIndexPhysicalFingerprint,
-                        executionRuntimeFingerprint:
-                            targetExecutionRuntimeFingerprint,
-                        indexPhysicalLayouts:
-                            targetIndexPhysicalLayouts,
-                        metadataSubspace: self.metadataSubspace,
-                        transaction: transaction
-                    )
-                    try transaction.setValue(
-                        targetFingerprint.bytes,
-                        for: Self.activeSchemaFingerprintKey(
-                            metadataSubspace: self.metadataSubspace
-                        )
-                    )
-                    try transaction.setValue(
-                        Tuple(UInt64(0)).pack(),
-                        for: Self.schemaGenerationKey(
-                            metadataSubspace: self.metadataSubspace
-                        )
-                    )
-                    return UInt64(0)
+        let registry = SchemaRegistry(database: schemaEngine, root: schemaRoot, clock: monotonicClock)
+        let fingerprint = try SchemaManifest(schema: candidateSchema).fingerprint()
+        let isExecutableTarget = fingerprint == (try SchemaManifest(schema: schema).fingerprint())
+        let publication: (UInt64, DatabasePreparedSchemaGeneration?, SQLCatalogSnapshot?) =
+            try await executor.withTransaction(configuration: .batch, clock: monotonicClock) { transaction in
+            let state = try await Self.loadSchemaCatalog(registry: registry,
+                metadataSubspace: self.metadataSubspace, transaction: transaction)
+            if state.sqlCatalog != nil, state.fingerprint == fingerprint {
+                guard state.indexPhysicalFingerprint == candidate.indexPhysicalFingerprint,
+                    state.indexLayoutFingerprints == candidate.indexPhysicalLayouts.mapValues({ $0.fingerprint }) else {
+                    throw DatabaseSchemaRestorationError.indexPhysicalFingerprintMismatch
                 }
-
-                guard let persistedVersion else {
-                    throw DatabaseSchemaRestorationError.missingVersion
-                }
-                guard let persistedFingerprint else {
-                    throw DatabaseSchemaRestorationError.missingFingerprint
-                }
-                guard let persistedGeneration else {
-                    throw DatabaseSchemaRestorationError.invalidGeneration
-                }
-                guard let persistedExecutionRuntimeFingerprint else {
-                    throw DatabaseSchemaRestorationError
-                        .missingExecutionRuntimeFingerprint
-                }
-                guard let persistedIndexPhysicalFingerprint else {
-                    throw DatabaseSchemaRestorationError
-                        .missingIndexPhysicalFingerprint
-                }
-                let persistedSchema = try Schema(
-                    entities: persistedEntities,
-                    version: persistedVersion
-                )
-                guard
-                    try SchemaManifest(schema: persistedSchema)
-                        .fingerprint() == persistedFingerprint
-                else {
-                    throw DatabaseSchemaRestorationError.fingerprintMismatch
-                }
-                if persistedFingerprint == targetFingerprint {
-                    guard
-                        persistedIndexPhysicalFingerprint
-                            == targetIndexPhysicalFingerprint
-                    else {
-                        throw DatabaseSchemaRestorationError
-                            .indexPhysicalFingerprintMismatch
-                    }
-                    guard
-                        persistedIndexLayoutFingerprints
-                            == targetIndexPhysicalLayouts.mapValues({
-                                $0.fingerprint
-                            })
-                    else {
-                        throw DatabaseSchemaRestorationError
-                            .indexPhysicalFingerprintMismatch
-                    }
-                    if persistedExecutionRuntimeFingerprint
-                        == targetExecutionRuntimeFingerprint
-                    {
-                        return persistedGeneration
-                    }
-                }
-
-                let incremented =
-                    persistedGeneration
-                    .addingReportingOverflow(1)
-                guard !incremented.overflow else {
-                    throw DatabaseSchemaPublicationError.generationOverflow
-                }
-                try await registry.persist(
-                    candidateSchema,
-                    mode: .allowBreakingChanges(
-                        entityNames: Set(
-                            candidateSchema.entities.map { $0.name }
-                        )
-                    ),
-                    transaction: transaction
-                )
-                try Self.setCurrentSchemaSnapshot(
-                    candidateSchema,
-                    indexPhysicalFingerprint:
-                        targetIndexPhysicalFingerprint,
-                    executionRuntimeFingerprint:
-                        targetExecutionRuntimeFingerprint,
-                    indexPhysicalLayouts: targetIndexPhysicalLayouts,
-                    metadataSubspace: self.metadataSubspace,
-                    transaction: transaction
-                )
-                try transaction.setValue(
-                    targetFingerprint.bytes,
-                    for: Self.activeSchemaFingerprintKey(
-                        metadataSubspace: self.metadataSubspace
-                    )
-                )
-                try transaction.setValue(
-                    Tuple(incremented.partialValue).pack(),
-                    for: Self.schemaGenerationKey(
-                        metadataSubspace: self.metadataSubspace
-                    )
-                )
-                return incremented.partialValue
+                // A historical boundary is metadata; the installed runtime belongs to the final target.
+                if !isExecutableTarget { return (state.generation, nil, nil) }
             }
-        let compiledFingerprint = try SchemaManifest(schema: schema)
-            .fingerprint()
-        if targetFingerprint == compiledFingerprint {
-            try publishSchemaGeneration(
-                schema,
-                fingerprint: targetFingerprint,
-                indexPhysicalFingerprint:
-                    preparedGeneration.indexPhysicalFingerprint,
-                executionRuntimeFingerprint:
-                    preparedGeneration.executionRuntimeFingerprint,
+            let catalogState: SQLCatalogStoredState
+            let executableCatalog: SQLCatalogSnapshot?
+            if isExecutableTarget {
+                let snapshot: SQLCatalogSnapshot
+                if let stored = state.sqlCatalog {
+                    snapshot = try stored.reconciledForApplication(physicalSchema: state.schema,
+                        targetPhysicalSchema: candidateSchema, runtimeConfiguration: self.runtimeConfiguration)
+                } else {
+                    snapshot = try SQLCatalogSnapshot(catalog: SQLCatalogSnapshot.derivedCatalog(physicalSchema: candidateSchema),
+                        physicalSchema: candidateSchema, runtimeConfiguration: self.runtimeConfiguration)
+                }
+                executableCatalog = snapshot
+                catalogState = SQLCatalogStoredState(catalog: snapshot.catalog,
+                    physicalSchemaFingerprint: snapshot.physicalSchemaFingerprint,
+                    protectedContracts: snapshot.protectedContracts, digest: snapshot.digest)
+            } else {
+                executableCatalog = nil
+                if let stored = state.sqlCatalog {
+                    catalogState = try stored.reconciledForMigration(physicalSchema: state.schema,
+                        targetPhysicalSchema: candidateSchema)
+                } else {
+                    catalogState = try SQLCatalogStoredState.initialForMigration(physicalSchema: candidateSchema)
+                }
+            }
+            let prepared = try DatabasePreparedSchemaGeneration(schemaFingerprint: fingerprint,
+                runtimeConfiguration: self.runtimeConfiguration,
+                securityConfiguration: self.securityConfiguration,
+                indexPhysicalLayouts: candidate.indexPhysicalLayouts, sqlCatalogDigest: catalogState.digest)
+            if state.sqlCatalog != nil, state.fingerprint == fingerprint,
+                state.executionRuntimeFingerprint == prepared.executionRuntimeFingerprint,
+                state.sqlCatalog?.digest == catalogState.digest {
+                return (state.generation, prepared, executableCatalog)
+            }
+            let generation: UInt64
+            if state.sqlCatalog == nil {
+                generation = 0
+            } else {
+                let next = state.generation.addingReportingOverflow(1)
+                guard !next.overflow else { throw DatabaseSchemaPublicationError.generationOverflow }
+                generation = next.partialValue
+            }
+            try await Self.persistSchemaCatalog(candidateSchema, fingerprint: fingerprint,
+                preparedGeneration: prepared, generation: generation, sqlCatalog: catalogState, registry: registry,
+                mode: state.sqlCatalog == nil ? nil : .allowBreakingChanges(
+                    entityNames: Set(candidateSchema.entities.map { $0.name })),
+                metadataSubspace: self.metadataSubspace, transaction: transaction)
+            return (generation, prepared, executableCatalog)
+        }
+        if isExecutableTarget {
+            guard let prepared = publication.1, let snapshot = publication.2 else {
+                throw DatabaseSchemaPublicationError.corruptedState("the final migration boundary has no executable catalog")
+            }
+            try publishSchemaGeneration(schema, fingerprint: fingerprint,
+                indexPhysicalFingerprint: prepared.indexPhysicalFingerprint,
+                executionRuntimeFingerprint: prepared.executionRuntimeFingerprint,
                 runtimeConfiguration: runtimeConfiguration,
-                indexPhysicalLayouts:
-                    preparedGeneration.indexPhysicalLayouts,
-                generation: nextGeneration
-            )
+                indexPhysicalLayouts: prepared.indexPhysicalLayouts,
+                generation: publication.0, sqlCatalog: snapshot)
         }
     }
 

@@ -312,6 +312,35 @@ package struct FusionCandidateDomain: Sendable {
         ), source: source)
     }
 
+    /// Relational SQL responses may carry an internal identity column absent
+    /// from the admitted candidate projection. Select original entries so
+    /// routing metadata never changes the domain's column contract.
+    static func make(
+        selecting rows: CanonicalRetainedQueryRowView,
+        from source: FusionCandidateDomain,
+        workMeter: DatabaseWorkMeter,
+        stage: DatabaseWorkStage = .bindingCandidate
+    ) throws -> FusionCandidateDomain {
+        guard rows.workMeter === workMeter else {
+            throw DatabaseIntermediateReservationError.workMeterMismatch
+        }
+        let identitySlot = try identitySlot(columns: rows.columns)
+        var primaryKeys = try DatabaseRetainedArrayBuilder<ByteString>(workMeter: workMeter, stage: stage,
+            layout: DatabaseRetainedArrayLayout.forElement(ByteString.self), expectedCount: rows.count)
+        for position in 0..<rows.count {
+            try workMeter.consume(at: stage)
+            try rows.withElement(at: position) { row in
+                try row.validate(columns: rows.columns)
+                let identity = try identity(in: row, slot: identitySlot)
+                let key = try PersistableIdentifierKeyCodec.tuple(forPersistedIdentifier: identity)
+                let footprint = DatabaseIntermediateFootprint(bytes: UInt64(key.packedByteCount))
+                try primaryKeys.append(footprint: footprint) { key.pack() }
+            }
+        }
+        let selected = try primaryKeys.finish().moveToSharedOwnership(at: stage)
+        return try make(selecting: selected, from: source, workMeter: workMeter, stage: stage)
+    }
+
     static func make(
         models: DatabaseRetainedPersistedModels,
         primaryKeys: any DatabaseRetainedPrimaryKeyCollection,

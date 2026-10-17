@@ -1657,3 +1657,143 @@ existing iterative claim walk; the scope owner retains its claim only during
 binding and is never captured by executable plans or runtime factories.
 Verification measures the combined live query/nonrecursive/caller frames
 before executing the unchanged deep regression.
+
+
+### S11 frozen catalog-bound SELECT execution
+
+**Implementation contract; not completion evidence.** S11 implements SELECT
+against typed local catalog declarations. It does not add DDL, DML,
+constraints, transaction-block grammar, or a second physical decoder. The
+[SQLCatalog owner](../SQLCatalog/DESIGN.md) owns namespace lookup and physical
+mapping; this component owns its propagation into binding and row execution.
+Read owns the admitted generation, authority and request lifetime.
+
+```text
+explicit SQL entry + search path + authenticated principal
+  -> withDataOperation / withOperationSchemaLease
+     -> one immutable reference SQLReadResolution under that generation
+     -> Fusion preflight + physical list/field authorization
+     -> source binding: resolved relation + ordered logical/physical columns
+        -> physical entity runtime / index / Fusion candidates
+           -> SQL source alignment using the retained field-number map
+              -> bound logical layout -> selected operators -> result
+```
+
+The present implementation resolves `TableRef.table` directly in
+`executeSingleTableRows`, `materializeUnwindowedTableSourceRows`, index dispatch
+and Fusion projection. `bindCanonicalTableSource` and `tableRelationSchema`
+reject qualified names. `addressingBoundSource` matches slot addresses and can
+represent absent slots with no value index; that operation cannot implement a
+catalog rename. These paths must change as one contract before the S11 markers
+are removed.
+
+| Seam | S11 responsibility |
+|---|---|
+| `CanonicalQueryBindingEnvironment` | Carry Read's explicit optional SQL resolution through every child, CTE, nested query, parameter-only binding and Fusion batch; absence retains physical typed QueryIR/SPARQL behavior. |
+| `CanonicalSourceBindingPlan` | Retain the resolved stable relation identity and ordered logical-column to physical-field-number map with the snapshot owner; reconstruction preserves it. |
+| `bindCanonicalTableSource` / `tableRelationSchema` | Resolve an unqualified visible CTE first; a qualified source always reaches the catalog. Build logical names, order, types and optionality from that exact resolution. |
+| `EntityTableRows` boundary | Apply one SQL source-alignment implementation after physical decoding. Resolve every required physical field by its admitted field number/name, project into logical declaration order, and preserve row annotations, version, presence, payload owners and reservations. |
+| Direct selected-page and ordinary finalization | Both consume aligned rows/schema before `addressingBoundSource`, selected evaluation or finalization. |
+| Table relation producers and joins | Align the table producer once before aliases, joins, lateral scope, CTE/set composition or grouping lineage consume it. |
+| Explicit ordered/non-ordered index and Fusion candidates | Use the same resolved physical entity for executor selection and the same alignment before canonical evaluation; wildcard projection respects the sealed authorized field subset. |
+| Physical predicate/order pushdown | Lower logical column references through the selected map. Only a proven equivalent physical predicate/order may be pushed. An unlowerable expression remains a canonical residual; do not page/limit before its required residual work. |
+
+Catalog lookup uses the normalized identifier bytes already supplied by the
+lexer; QueryExecution neither folds nor reparses schema/relation names. An
+unknown qualified namespace/relation is terminal and cannot fall back to a
+same-named physical entity or CTE. Unqualified CTE visibility retains S08/S10
+lexical rules. Typed QueryIR and graph/SPARQL sources keep their existing
+physical semantics; source kind never enables SQL namespace policy.
+
+Missing namespace, relation, stale generation or a required physical slot is
+a typed failure, preserving its original catalog/runtime cause and deterministic
+source occurrence through `CanonicalSQLBindingFailure` and the existing SQL
+source-position boundary. Required physical slots never become SQL NULL.
+A projected-away unauthorized field is excluded according to sealed Read
+coverage rather than accessed or manufactured. Grouping functional dependency
+continues to require proven complete physical-key lineage under the selected
+logical map; aliases never establish a new key by name alone.
+
+The binding environment carries only the optional `SQLReadResolution` reference,
+not an inline snapshot/policy structure. Retaining the same owner across source
+plan copies preserves the fixed S10 depth-30 and Engine 8MiB stack evidence.
+Prospective binding admission includes the new reference owner, retained resolution values, logical and
+physical names, map capacity and snapshot/owner references before allocation.
+Alignment admits layout, index-map, row aliases and owner-reference capacity
+before materialization and retains the physical input owner. The existing
+stack, work, rows, bytes, deadline, CTE and collection budgets apply. No new
+mutable state or target-conditional isolation is introduced.
+
+| Falsifiable evidence owner | Required behavior |
+|---|---|
+| `SQLRowExecutionTests` / new S11 catalog SELECT cases | Qualified/unqualified search path, authenticated current-user and anonymous skip, absent path schemas, exact quoted UTF-8 identifiers, qualified failure, unqualified-only CTE shadow, duplicate logical relation names in different namespaces. |
+| Public direct/join/index/Fusion execution fixtures | Logical relation and column rename, reordered/subset column declarations, selected-page/finalization parity, joins and wildcard metadata preserve actual physical values; a required missing physical slot fails rather than returns NULL. Physical pushdown/residual parity is observed with predicates, ordering and pagination. |
+| Existing grouping/CTE/collections/graph fixtures | Full-key functional dependency, recursive/sibling scope and physical typed QueryIR/SPARQL behavior remain unchanged. |
+| Binding/resource/retained-page fixtures | New metadata rejects insufficient budget before allocation, owner/meter identity survives retained output and all claims release after success/failure/cancellation. |
+| Prepared/continuation fixtures | Catalog rename, changed target relation, changed search path or generation cannot reuse a prepared binding/token against a different resolved source. Catalog digest participates in the Read-owned runtime fingerprint. |
+
+Verification follows the owning backend harness and the normative
+[Kit S11-C01–C12 acceptance matrix](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s11-frozen-logical-catalog-and-identity).
+C03/C04/C06/C11 own this execution change; C12 owns its integrated proof. These cases establish only their actual target/backend paths; formal
+Native/WASM/Embedded compile/link and runnable target tests remain task-level
+integration evidence.
+
+
+#### S11 exact logical source identity
+
+S11-C01/C02 admit two public identifiers whose Unicode-normalized Swift
+`String` equality agrees while their UTF-8 differs. The catalog's byte identity
+must therefore continue through the complete selected source path. The current
+`CanonicalSourceLayout.matching`, scope-presence lookup, synthesized slot
+Hashable, schema duplicate-scope set, wildcard matching and USING/NATURAL
+coalescing use String equality/sets and can misaddress these admitted columns.
+This is a concrete S11 source-identity defect, not a general Unicode audit.
+
+An internal owner-retaining identifier key uses the existing Kit SQLIdentifier
+pattern: retain String, compare UTF-8 elements, hash count and UTF-8 bytes.
+It adds no byte copy or unsafe borrow. Selected layout slots compare/hash both
+scope and name this way; scope arrays use byte equality, and logical-name
+sets/maps use this key. Schemas compare ordered names with the same identity.
+Original String names remain the published metadata and diagnostics.
+
+| Selected source seam | Required exact identity |
+|---|---|
+| Slot matching, actual-to-bound alignment, presence and wildcard | Scope and column lookup distinguish byte-distinct names in both local and correlated frames; no false ambiguity, missing match or fallback to an outer scope. |
+| Source alias/schema validation and CTE scope | Only byte-identical duplicates are rejected or shadowed; qualified references retain their selected namespace. |
+| USING/NATURAL schema, row merge, join keys and coalesced visibility | Infer/intersect/deduplicate only byte-identical names, preserving both distinct visible columns and actual values. |
+| Authorization source bindings and ordering aliases | Logical qualifier/name maps follow exact identity before lowering to physical field requirements; the physical authorization owner remains unchanged. |
+| Primitive evaluator/pushdown adapters | A String-keyed transient dictionary cannot represent these logical identifiers. SQL evaluation uses selected positional slots, or lowers to an equivalent physical expression before entering a physical adapter; an unrepresentable adapter is not used as a silent fallback. |
+
+Public SQL counterexamples select two byte-distinct normalized-equivalent
+columns with distinct physical values, qualify them through byte-distinct
+aliases, expand each wildcard, and exercise USING/NATURAL joins. They assert
+ordered names by UTF-8 and actual values, not Swift String equality alone.
+Correlated frames and CTE shadowing distinguish both names. Genuine identical
+duplicates still fail as ambiguous; a nonmatching required physical slot still
+fails typed. Existing S03 exact-name, S08 join/outer-presence, S09 grouping and
+S10 depth-30/CTE fixtures remain the bounded regressions. Added identifier keys
+retain existing names under preadmitted metadata owners.
+
+
+S11 physical-path preservation uses `CanonicalBoundExpression.loweredExpression(resolvingColumn:)` only after the existing primitive-pushdown eligibility proof. A selected local ordinal maps through its immutable resolved column to the physical field; checked comparison operands and eligible ORDER keys keep the existing scalar-index, LIMIT/OFFSET and page-window planning. Unlowerable SQL types/operators retain the existing canonical residual and pagination exclusion. Non-scalar index adapters keep the explicit index parameters/candidate limits and receive physically lowered projected/order dependencies with the original logical window; their physical result crosses the same alignment boundary. No unconditional full-scan replacement is installed for ordinary SQL.
+
+
+S11 catalog/resolution failures are localized by the table-source binder that
+performs catalog lookup, retaining that source occurrence and original typed
+cause. The recursive source dispatcher carries the existing read/expression
+failure contract without per-level catalog error temporaries. This preserves
+the existing depth-30 query under the native worker stack and the unchanged
+portable stack/resource budgets. Deferred ORDER output-alias ambiguity retains
+the existing read/expression-evaluation failure envelope and exact ORDER
+occurrence while comparing admitted bound-slot/computed-expression semantics.
+
+
+The invocation's `CanonicalQueryBindingResources` immutable owner retains its
+parameter state, optional SQL resolution and a preadmitted metadata claim. The
+recursive `CanonicalQueryBindingEnvironment` carries one resource-owner
+reference in place of its previous parameter-state reference; SQL policy does
+not add an inline stored slot to every recursive frame. Root construction
+admits the owner before allocation. Child/located-subquery environments reuse
+the same owner, meter and policy without allocation or rebinding. This applies
+identically to Native, WASM and Embedded and preserves existing depth-30
+subqueries, depth-60 joins and unchanged stack/resource limits.

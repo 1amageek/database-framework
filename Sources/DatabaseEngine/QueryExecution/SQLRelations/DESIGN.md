@@ -283,3 +283,6 @@ SEARCH metadata, multiple consumers, early stop, child-close failure,
 cancellation and row/byte/work failure with zero final retention and same-meter
 follow-up. Public recursive SQL binding, authorization, volatile target counts,
 JOIN provenance and complete function composition remain parent test owners.
+
+
+S11 source identity follows [QueryExecution's exact logical identity contract](../DESIGN.md#s11-exact-logical-source-identity). SQLCTEEnvironment consumer lookup and immutable replacement compare UTF-8 bytes, so two normalized-equivalent CTE names keep separate caches and factories. Producer state, lifetime and synchronization remain unchanged.

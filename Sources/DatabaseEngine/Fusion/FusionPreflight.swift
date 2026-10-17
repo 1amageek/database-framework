@@ -12,7 +12,8 @@ enum FusionPreflight {
     static func resolveGraph(
         _ root: SelectQuery,
         context: DatabaseContext,
-        workMeter: DatabaseWorkMeter
+        workMeter: DatabaseWorkMeter,
+        sqlResolution: SQLReadResolution? = nil
     ) throws -> FusionResolvedQueryGraph {
         let policy = try context.readPolicy()
         var listAuthorizationRequirements: [
@@ -36,9 +37,10 @@ enum FusionPreflight {
             workMeter: workMeter
         ) { query in
             featureAuthorizationPlan = featureAuthorizationPlan.merging(
-                additionalIndexAuthorizationPlan(
+                try additionalIndexAuthorizationPlan(
                     for: query,
-                    policy: policy
+                    policy: policy,
+                    sqlResolution: sqlResolution
                 )
             )
             guard case .fusion(let source) = query.accessPath else { return }
@@ -73,16 +75,16 @@ enum FusionPreflight {
                     source: source,
                     listAuthorizationRequirement: try DatabaseReadPolicy
                         .listRequirement(
-                            entityName: tableRef.table,
-                            selectQuery: query, schema: policy.schema
+                            entityName: try sqlResolution?.resolve(tableRef).entity.name ?? tableRef.table,
+                            selectQuery: query, schema: policy.schema, sqlResolution: sqlResolution
                         )
                 )
             }
         } visitTable: { tableRef, query in
             listAuthorizationRequirements.append(
                 try DatabaseReadPolicy.listRequirement(
-                    entityName: tableRef.table,
-                    selectQuery: query, schema: policy.schema
+                    entityName: try sqlResolution?.resolve(tableRef).entity.name ?? tableRef.table,
+                    selectQuery: query, schema: policy.schema, sqlResolution: sqlResolution
                 )
             )
         } visitPolymorphic: { logicalSource, query in
@@ -93,16 +95,17 @@ enum FusionPreflight {
                 listAuthorizationRequirements.append(
                     try DatabaseReadPolicy.listRequirement(
                         entityName: entityName,
-                        selectQuery: query, schema: policy.schema
+                        selectQuery: query, schema: policy.schema, sqlResolution: sqlResolution
                     )
                 )
             }
         }
         let retainedLogicalNodes = try logicalNodes.finish()
             .moveToSharedOwnership(at: .validation)
-        var authorizationPlan = DatabaseFieldReadAuthorizationPlan.make(
+        var authorizationPlan = try DatabaseFieldReadAuthorizationPlan.make(
             query: root,
-            schema: policy.schema
+            schema: policy.schema,
+            sqlResolution: sqlResolution
         ).merging(featureAuthorizationPlan)
         var resolvedNodes = try DatabaseRetainedArrayBuilder<
             FusionResolvedQueryGraph.Node
@@ -115,7 +118,8 @@ enum FusionPreflight {
             expectedCount: retainedLogicalNodes.count
         )
         for logicalNode in retainedLogicalNodes {
-            guard let entity = policy.schema.entity(
+            let resolvedEntity = try sqlResolution?.resolve(logicalNode.tableRef).entity
+            guard let entity = resolvedEntity ?? policy.schema.entity(
                 named: logicalNode.tableRef.table
             ) else {
                 try resolvedNodes.append(
@@ -137,7 +141,8 @@ enum FusionPreflight {
                 source: logicalNode.source,
                 listAuthorizationRequirement:
                     logicalNode.listAuthorizationRequirement,
-                workMeter: workMeter
+                workMeter: workMeter,
+                sqlResolution: sqlResolution
             )
             authorizationPlan = authorizationPlan.merging(
                 plan.authorizationPlan
@@ -164,14 +169,15 @@ enum FusionPreflight {
 
     private static func additionalIndexAuthorizationPlan(
         for query: SelectQuery,
-        policy: DatabaseReadPolicy
-    ) -> DatabaseFieldReadAuthorizationPlan {
+        policy: DatabaseReadPolicy,
+        sqlResolution: SQLReadResolution?
+    ) throws -> DatabaseFieldReadAuthorizationPlan {
         guard case .index(let indexScan) = query.accessPath else {
             return DatabaseFieldReadAuthorizationPlan(fieldsByEntity: [:])
         }
         switch query.source {
         case .table(let tableRef):
-            guard let entity = policy.schema.entity(named: tableRef.table)
+            guard let entity = try sqlResolution?.resolve(tableRef).entity ?? policy.schema.entity(named: tableRef.table)
             else {
                 return DatabaseFieldReadAuthorizationPlan(
                     fieldsByEntity: [:]
@@ -381,7 +387,8 @@ enum FusionPreflight {
         source: FusionSource,
         listAuthorizationRequirement:
             DatabaseListReadAuthorizationRequirement,
-        workMeter: DatabaseWorkMeter
+        workMeter: DatabaseWorkMeter,
+        sqlResolution: SQLReadResolution? = nil
     ) throws -> FusionResolvedPlan {
         do {
             try source.validate()
@@ -419,7 +426,8 @@ enum FusionPreflight {
                     schema: schema,
                     tableRef: tableRef,
                     entity: entity,
-                    workMeter: workMeter
+                    workMeter: workMeter,
+                    sqlResolution: sqlResolution
                 )
                 authorizationPlan = authorizationPlan.merging(
                     resolved.authorizationPlan
@@ -620,7 +628,8 @@ enum FusionPreflight {
         schema: Schema,
         tableRef: TableRef,
         entity: Schema.Entity,
-        workMeter: DatabaseWorkMeter
+        workMeter: DatabaseWorkMeter,
+        sqlResolution: SQLReadResolution?
     ) throws -> (
         input: FusionResolvedPlan.Input,
         authorizationPlan: DatabaseFieldReadAuthorizationPlan
@@ -671,9 +680,10 @@ enum FusionPreflight {
                 pagination: QueryPagination(limit: input.limit.map { .count(.fixed($0), withTies: false) })
             )
             operation = .filter(expression)
-            authorizationPlan = .make(
+            authorizationPlan = try .make(
                 query: query.replacing(projection: []),
-                schema: schema
+                schema: schema,
+                sqlResolution: sqlResolution
             )
         case .order(let keys):
             for key in keys {
@@ -691,9 +701,10 @@ enum FusionPreflight {
                 pagination: QueryPagination(limit: input.limit.map { .count(.fixed($0), withTies: false) })
             )
             operation = .order(keys)
-            authorizationPlan = .make(
+            authorizationPlan = try .make(
                 query: query.replacing(projection: []),
-                schema: schema
+                schema: schema,
+                sqlResolution: sqlResolution
             )
         case .connected(let source):
             let resultFields = DatabaseFieldReadAuthorizationPlan(

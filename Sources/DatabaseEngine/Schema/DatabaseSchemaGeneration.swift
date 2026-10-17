@@ -12,6 +12,7 @@ struct DatabaseSchemaGeneration: Sendable {
     let indexPhysicalFingerprint: ByteString
     let executionRuntimeFingerprint: ByteString
     let schema: Schema
+    let sqlCatalog: SQLCatalogSnapshot
     let runtimeConfiguration: DatabaseRuntimeConfiguration
     let indexPhysicalLayouts: [String: IndexPhysicalLayout]
     /// Layer of every Directory node position `schema` declares.

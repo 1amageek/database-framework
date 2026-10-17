@@ -57,10 +57,8 @@ final class DatabaseSchemaGenerationStore: Sendable {
 
     func publish(_ generation: DatabaseSchemaGeneration) {
         state.withLock { state in
-            precondition(
-                generation.identifier >= state.current.identifier,
-                "Schema generations must not move backwards"
-            )
+            // An idempotent replay can finish after a newer committed publisher.
+            guard generation.identifier >= state.current.identifier else { return }
             if generation.identifier == state.current.identifier {
                 precondition(
                     generation.fingerprint == state.current.fingerprint

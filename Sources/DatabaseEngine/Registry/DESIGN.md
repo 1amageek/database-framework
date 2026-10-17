@@ -189,3 +189,17 @@ Public SQL tests group a statically registered entity by the full identity,
 reject a partial dynamic identity and reject derived-source inference. The
 same tests retain ordinary identity lookup/write behavior. No synchronization
 or platform capability changes; new storage is immutable on every target.
+
+
+### S11 retained candidate identity
+
+For SQL-resolved reads, the shared `canonicalTableRows` producer used by both
+compiled and schema-driven registrations retains the original persisted
+identifier as internal `CanonicalSourceRow` metadata. It borrows the primitive
+value under the existing retained-model payload claim. Authorized field slots and
+`canonicalSourceValues` decoding remain unchanged. QueryExecution may consume
+this identity only for its internal Fusion candidate bridge; final SQL projection
+continues to expose catalog-authorized columns. Missing or null identifiers fail with
+`SchemaDrivenEntityRuntimeError.invalidIdentifier`; the existing candidate
+constructor validates the exact identifier type before routing. This
+adds no scan, authorization transition, mutable state or platform-specific owner.

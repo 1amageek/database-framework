@@ -91,7 +91,14 @@ struct CanonicalBoundExpression: Sendable {
         get throws { try materializing(in: nil) }
     }
 
-    private func materializing(in values: [QueryValue]?) throws -> DatabaseKit.Expression {
+    func loweredExpression(resolvingColumn: @escaping (Int) throws -> DatabaseKit.Expression) throws -> DatabaseKit.Expression {
+        try materializing(in: nil, resolvingColumn: resolvingColumn)
+    }
+
+    private func materializing(in values: [QueryValue]?,
+        resolvingColumn: ((Int) throws -> DatabaseKit.Expression)? = nil
+    ) throws -> DatabaseKit.Expression {
+        if let columnSlot, let resolvingColumn { return try resolvingColumn(columnSlot) }
         if let columnSlot, let values {
             guard values.indices.contains(columnSlot) else {
                 throw DatabaseExpressionEvaluationError.typeMismatch(operation: "bound column slot outside row")
@@ -102,7 +109,7 @@ struct CanonicalBoundExpression: Sendable {
             guard children.indices.contains(index) else {
                 throw DatabaseExpressionEvaluationError.typeMismatch(operation: "bound expression child count")
             }
-            return try children[index].materializing(in: values)
+            return try children[index].materializing(in: values, resolvingColumn: resolvingColumn)
         }
         let result: DatabaseKit.Expression
         switch expression {
