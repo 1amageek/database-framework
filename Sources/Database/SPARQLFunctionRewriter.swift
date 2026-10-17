@@ -260,6 +260,8 @@ internal struct SPARQLFunctionRewriter: Sendable {
                         .namedGraph(_, let pattern),
                         .service(_, let pattern, _):
                     pendingPatterns.append(pattern)
+                case .tableFunction(let source):
+                    pendingExpressions.append(contentsOf: source.function.arguments)
                 case .table, .logical:
                     break
                 }
@@ -497,12 +499,16 @@ internal struct SPARQLFunctionRewriter: Sendable {
         var rewrittenSubqueries: [NamedSubquery] = []
         rewrittenSubqueries.reserveCapacity(query.subqueries?.count ?? 0)
         for (index, subquery) in (query.subqueries ?? []).enumerated() {
+            if subquery.cycle?.markValue != nil { _ = try provenance?.child(.cteCycleMark, index) }
+            if subquery.cycle?.defaultValue != nil { _ = try provenance?.child(.cteCycleDefault, index) }
             rewrittenSubqueries.append(
                 NamedSubquery(
                     name: subquery.name,
                     columns: subquery.columns,
                     query: try await rewrite(subquery.query, provenance: try provenance?.child(.cte, index)),
-                    materialized: subquery.materialized
+                    materialized: subquery.materialized,
+                    search: subquery.search,
+                    cycle: subquery.cycle
                 )
             )
         }
@@ -519,6 +525,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
             quantifier: try await rewriteQuantifier(query.quantifier, provenance: provenance),
             pagination: try await rewritePagination(query.pagination, provenance: provenance),
             subqueries: query.subqueries == nil ? nil : rewrittenSubqueries,
+            withRecursive: query.withRecursive,
             reduced: query.reduced,
             dataset: query.dataset
         )
@@ -526,6 +533,14 @@ internal struct SPARQLFunctionRewriter: Sendable {
 
     private func rewriteSource(_ source: DataSource, provenance: OccurrenceRewrite.Cursor? = nil) async throws -> DataSource {
         switch source {
+        case .tableFunction(let source):
+            var arguments: [DatabaseKit.Expression] = []
+            for (index, argument) in source.function.arguments.enumerated() {
+                arguments.append(try await rewriteExpression(argument, provenance: try provenance?.child(.argument, index)))
+            }
+            return .tableFunction(TableFunctionSource(function: FunctionCall(name: source.function.name,
+                arguments: arguments, distinct: source.function.distinct, schema: source.function.schema,
+                finalArrayIsVariadic: source.function.finalArrayIsVariadic), withOrdinality: source.withOrdinality))
         case .subquery(let query):
             return .subquery(try await rewrite(query, provenance: try provenance?.child(.subquery)))
         case .aliased(let inner, let name, let columns):

@@ -663,13 +663,30 @@ extension SQLTextWriter {
         guard !query.reduced, query.dataset == .implicit else { throw .unsupportedLanguage("SPARQL SELECT metadata") }
         guard query.accessPath == nil else { throw .unsupportedMetadata("Physical access path") }
         if let ctes = query.subqueries, !ctes.isEmpty {
-            try append("WITH ")
+            try append(query.withRecursive ? "WITH RECURSIVE " : "WITH ")
             try list(ctes) { (writer: inout SQLTextWriter, cte: NamedSubquery) throws(SQLSerializationError) -> Void in
                 try writer.identifier(cte.name)
                 if let columns = cte.columns { try writer.append(" ("); try writer.identifiers(columns); try writer.append(")") }
                 try writer.append(" AS ")
                 if let hint = cte.materialized { try writer.append(hint == .materialized ? "MATERIALIZED " : "NOT MATERIALIZED ") }
                 try writer.append("("); try writer.select(cte.query); try writer.append(")")
+                if let search = cte.search {
+                    try writer.append(search.order == .depthFirst ? " SEARCH DEPTH FIRST BY " : " SEARCH BREADTH FIRST BY ")
+                    try writer.identifiers(search.columns)
+                    try writer.append(" SET "); try writer.identifier(search.sequenceColumn)
+                }
+                if let cycle = cte.cycle {
+                    try writer.append(" CYCLE "); try writer.identifiers(cycle.columns)
+                    try writer.append(" SET "); try writer.identifier(cycle.markColumn)
+                    switch (cycle.markValue, cycle.defaultValue) {
+                    case (nil, nil): break
+                    case (.some(let mark), .some(let value)):
+                        try writer.append(" TO "); try writer.cycleConstant(mark)
+                        try writer.append(" DEFAULT "); try writer.cycleConstant(value)
+                    default: throw .invalidStructure("CYCLE requires both mark and default constants")
+                    }
+                    try writer.append(" USING "); try writer.identifier(cycle.pathColumn)
+                }
             }
             try append(" ")
         }
@@ -720,6 +737,56 @@ extension SQLTextWriter {
         try pagination(query.pagination)
     }
 
+    private mutating func cycleConstant(_ value: Literal) throws(SQLSerializationError) {
+        switch value {
+        case .null, .bool, .sqlUnknownString:
+            try literal(value)
+        case .queryValue(let value, .sql(let declared)):
+            try admitQueryValue(value)
+            guard QueryValueValidator.accepts(value, type: .sql(declared)) else {
+                throw .unsupportedMetadata("CYCLE constant declaration is incompatible with its value")
+            }
+            let text: String
+            switch value {
+            case .primitive(.int32(let number)) where declared == .integer && number >= 0:
+                try append(String(number)); return
+            case .primitive(.int64(let number)) where declared == .bigint && number > Int64(Int32.max):
+                try append(String(number)); return
+            case .primitive(.null):
+                throw .unsupportedLiteral("Typed NULL CYCLE constant has no exact SQL constant spelling")
+            case .primitive(.bool(let value)): text = value ? "true" : "false"
+            case .primitive(.int16(let number)): text = String(number)
+            case .primitive(.int32(let number)): text = String(number)
+            case .primitive(.int64(let number)): text = String(number)
+            case .primitive(.float32(let number)): text = String(number)
+            case .primitive(.float64(let number)): text = String(number)
+            case .primitive(.string(let value)): text = value
+            case .primitive(.date(let value)): text = QueryLiteralEncoding.iso8601(value)
+            case .primitive(.uuid(let value)): text = value.description
+            case .numeric(let number):
+                do throws(SQLConstantError) {
+                    text = try SQLConstantSyntax.numericText(number, maximum: limits.maximumRetainedBytes - byteCount)
+                } catch { throw constantError(error) }
+            case .interval(let value): text = SQLConstantSyntax.intervalText(value)
+            default: throw .unsupportedLiteral("CYCLE constant has no exact SQL constant spelling")
+            }
+            let normalized: Literal?
+            do throws(SQLConstantError) {
+                if declared == .date { normalized = try SQLConstantSyntax.cycleDate(text, limits: limits) }
+                else { normalized = try SQLConstantSyntax.normalize(.literal(.sqlUnknownString(text)), as: declared, limits: limits) }
+            } catch {
+                if case .resourceLimit = error { throw constantError(error) }
+                throw .unsupportedLiteral("CYCLE constant has no exact SQL constant spelling")
+            }
+            guard normalized == .queryValue(value, type: .sql(declared)) else {
+                throw .unsupportedLiteral("CYCLE constant has no exact SQL constant spelling")
+            }
+            try type(declared); try append(" "); try string(text)
+        default:
+            throw .unsupportedLiteral("CYCLE constant has no exact SQL constant spelling")
+        }
+    }
+
     private mutating func count(_ count: QueryCount) throws(SQLSerializationError) {
         switch count {
         case .fixed(let value):
@@ -753,6 +820,9 @@ extension SQLTextWriter {
     mutating func source(_ source: DataSource) throws(SQLSerializationError) {
         try enter(); defer { depth -= 1 }
         switch source {
+        case .tableFunction(let value):
+            try expression(.function(value.function))
+            if value.withOrdinality { try append(" WITH ORDINALITY") }
         case .table(let value):
             guard value.alias == nil else { throw .invalidStructure("Table source aliases use DataSource.aliased") }
             try table(value)

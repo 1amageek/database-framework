@@ -87,3 +87,10 @@ grouping and window interpretation to canonical QueryExecution. A path that
 cannot execute those forms rejects them explicitly rather than reducing them
 to expression grouping or omitting window metadata. Existing Fusion behavior
 remains the regression owner for its supported subset.
+
+
+### S10 recursive scope and function-source preflight
+
+[QueryExecution's frozen execution contract](../QueryExecution/DESIGN.md#s10-frozen-recursive-and-function-execution) and [Query carriage](../../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md#s10-frozen-recursive-and-function-source-carriage) refine CTE scope: nonrecursive bodies retain earlier-sibling visibility, while every body in recursive WITH sees all local declarations, including self and forward siblings. Local names shadow inherited/physical entities only in their admitted scope; explicitly qualified physical tables remain physical. Canonical binding alone rejects invalid recursion. Fusion never grants a recursive self-reference physical list authority or drops authorization for genuine physical reads.
+
+Preflight iteratively visits every table-function argument, including its nested queries, under that same lexical scope and existing meter/reservation owner. Function sources themselves require no physical entity lookup. Immutable reconstruction preserves all recursive metadata. Focused Fusion tests distinguish self/forward logical references from same-named entities, retain physical reads, and visit physical subqueries inside function arguments before execution. No mutable-state/isolation/target contract changes.

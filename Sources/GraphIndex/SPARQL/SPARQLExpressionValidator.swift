@@ -336,7 +336,8 @@ private extension SPARQLExpressionValidator {
             tasks: inout [ValidationTask]
         ) throws(SPARQLExpressionCompilationError) {
             guard query.projection == [.wildcard()],
-                  query.subqueries == nil || query.subqueries?.isEmpty == true,
+                  !query.withRecursive,
+              query.subqueries == nil || query.subqueries?.isEmpty == true,
                   query.accessPath == nil,
                   query.groupBy == nil,
                   query.having == nil,

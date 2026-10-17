@@ -5,6 +5,19 @@ import Testing
 
 @Suite("SPARQL expression compilation", .heartbeat)
 struct SPARQLExpressionCompilationTests {
+    @Test("SQL function sources and recursive envelopes fail SPARQL compilation explicitly")
+    func sqlRecursiveFunctionSourceBoundary() throws {
+        let graph = SelectQuery(projection: [.wildcard()], source: .graphPattern(.basic([])))
+        let function = graph.replacing(source: .tableFunction(TableFunctionSource(function: FunctionCall(name: "unnest",
+            arguments: [.array([.literal(.int(1))])]), withOrdinality: true)))
+        #expect(throws: SPARQLSemanticValidationError.unsupportedSQLExpression) { try SPARQLSelectPlanCompiler.compile(function) }
+        #expect(throws: SPARQLSemanticValidationError.unsupportedSQLExpression) { try SPARQLSelectPlanCompiler.compile(graph.replacing(withRecursive: true)) }
+        let cte = NamedSubquery(name: "t", query: graph,
+            cycle: CTECycleClause(columns: ["n"], markColumn: "cyclic", pathColumn: "path"))
+        #expect(throws: SPARQLSemanticValidationError.unsupportedSQLExpression) { try SPARQLSelectPlanCompiler.compile(graph.replacing(subqueries: [cte]).replacing(withRecursive: true)) }
+        _ = try SPARQLSelectPlanCompiler.compile(graph)
+    }
+
     @Test("SQL aggregates, grouping and windows fail every SPARQL expression admission")
     func sqlAggregateAndWindowBoundary() throws {
         let call = SQLAggregateCall(function: .count, arguments: [], filter: .literal(.bool(false)))

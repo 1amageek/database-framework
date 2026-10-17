@@ -91,7 +91,7 @@ public enum SPARQLSelectPlanCompiler {
         inputVariables: Set<String>,
         context: inout SPARQLAlgebraCompilationContext
     ) throws -> SPARQLSelectExecutionPlan {
-        guard query.subqueries == nil || query.subqueries?.isEmpty == true else {
+        guard !query.withRecursive, query.subqueries == nil || query.subqueries?.isEmpty == true else {
             throw SPARQLSelectPlanCompilationError.namedSubqueriesUnsupported
         }
         guard query.accessPath == nil else {

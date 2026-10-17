@@ -87,6 +87,17 @@ public struct SQLTemporalConfiguration: Sendable {
         }
     }
 
+    /// Changes the invocation zone while retaining the admitted provider and bindings.
+    func replacing(timeZone: TimeZone) -> Self {
+        Self(timeZone: timeZone, rulesProvider: rulesProvider, fixedBindings: fixedBindings)
+    }
+
+    private init(timeZone: TimeZone, rulesProvider: (any SQLTimeZoneRulesProvider)?, fixedBindings: ByteString) {
+        self.timeZone = timeZone
+        self.rulesProvider = rulesProvider
+        self.fixedBindings = fixedBindings
+    }
+
     public var retainedByteCount: Int { fixedBindings.count }
 
     public func fixedOffset(

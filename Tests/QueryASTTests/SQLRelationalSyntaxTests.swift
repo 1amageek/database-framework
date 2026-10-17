@@ -236,13 +236,15 @@ struct SQLRelationalSyntaxTests {
         }
     }
 
-    @Test("S08-SYN06 unsupported sources and future capabilities remain explicit failures")
+    @Test("S08-SYN06 unsupported boundaries remain explicit while S10 function sources round trip")
     func explicitUnsupportedBoundaries() throws {
         #expect(throws: SQLSerializationError.unsupportedSource("Empty zero-column VALUES has no exact SQL spelling")) {
             try SQLSerializer().serialize(SelectQuery(projection: [.wildcard()], source: .values([])))
         }
         #expect(throws: SQLSerializationError.self) { try SQLSerializer().serialize(Expression.wholeRow("t")) }
-        #expect(throws: SQLParser.ParseError.self) { try SQLParser().parseSelect("SELECT * FROM unnest(ARRAY[1])") }
+        let function = try roundTrip("SELECT * FROM unnest(ARRAY[1])")
+        #expect(function.source == .tableFunction(TableFunctionSource(function: FunctionCall(name: "unnest",
+            arguments: [.array([.literal(.queryValue(.primitive(.int32(1)), type: .sql(.integer)))])]))))
         #expect(throws: SQLSerializationError.self) {
             try SQLSerializer(limits: QueryStructuralLimits(maximumRetainedBytes: 10)).serialize(SQLParser().parseSelect("SELECT *, t.* FROM t"))
         }

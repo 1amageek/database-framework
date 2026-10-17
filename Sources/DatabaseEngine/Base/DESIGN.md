@@ -435,3 +435,14 @@ cross-member counterexamples that member-local execution cannot satisfy. Existin
 SUM/AVG and Collecting-to-Ready lease/publication regressions remain required.
 Native MultiBase runtime verification proves this scope only; S18 owns final URL
 dependency and exact ordinary-WASM/Embedded compile/link/runtime integration.
+
+
+### S10 source capability boundary
+
+Recursive WITH and general table functions remain outside Composition's
+Base-local relational placement contract. CompositionQueryPlanner rejects
+these source families before member reads; it does not infer placement from
+function arguments or grant a recursive working table member authority.
+Single-Base canonical execution composes the QueryExecution S10 producers
+within the existing admitted session. Existing global grouping/window and
+member-provenance guarantees remain unchanged.

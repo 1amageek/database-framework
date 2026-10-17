@@ -15,6 +15,7 @@ enum SPARQLExistsPatternCompiler {
               query.pagination.limit == nil,
               query.pagination.offset == nil,
               query.quantifier == .all,
+              !query.withRecursive,
               query.subqueries == nil || query.subqueries?.isEmpty == true,
               query.reduced == false,
               query.dataset == .implicit else {

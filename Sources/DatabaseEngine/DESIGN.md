@@ -434,3 +434,8 @@ Mutation retain their authority/lifecycle boundaries. Index plans cannot use
 representation keys as SQL array/JSONB identity without an equivalence proof.
 Module verification must execute the selected public path and affected
 language/security visitors, not infer behavior from new enum cases compiling.
+
+
+### S10 logical recursive scopes in field authorization
+
+[QueryExecution S10](QueryExecution/DESIGN.md#s10-frozen-recursive-and-function-execution) owns recursive/function selection. Field-read authorization consumes WITH-wide logical visibility: recursive sibling names are declared before bodies, self columns derive from the seed plus selected generated names, and nonrecursive scopes retain earlier-only visibility. Logical self references never become same-named physical entity scans. Real physical fields and implicit-lateral function arguments remain subject to the existing scoped field policy. This changes scope classification only; it does not introduce authority, bypass a policy or open another transaction.

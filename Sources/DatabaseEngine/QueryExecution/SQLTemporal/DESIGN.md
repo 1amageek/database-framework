@@ -144,6 +144,8 @@ and FROM operand, AT TIME ZONE, interval field ranges and existing ordinary
 temporal function calls. Lowering must preserve every child occurrence's source
 range and argument order. QueryAST owns the final lowering/serialization choice.
 
+S10 table-function invocations use the internal immutable `SQLTemporalConfiguration.replacing(timeZone:)` copy to select an explicit series zone. The copy retains the same named-zone provider and exact fixed-abbreviation ByteString owner; only the zone selection changes. Argument casts remain owned by the admitted statement environment. This creates no public configuration API or mutable registration.
+
 ## State, Ownership, and Lifecycle
 
 Rules data is immutable configuration state. Query scratch, parsed formats and

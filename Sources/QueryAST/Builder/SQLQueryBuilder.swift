@@ -19,6 +19,7 @@ public struct SQLQueryBuilder: Sendable {
     private var pagination: QueryPagination
     private var quantifier: SelectQuantifier
     private var ctes: [NamedSubquery]?
+    private var recursiveCTEs = false
 
     private static func source(for table: TableRef) -> DataSource {
         guard let alias = table.alias else { return .table(table) }
@@ -509,14 +510,25 @@ extension SQLQueryBuilder {
 extension SQLQueryBuilder {
     /// Add CTE
     public func with(_ name: String, as query: SelectQuery) -> SQLQueryBuilder {
+        with(NamedSubquery(name: name, query: query))
+    }
+
+    /// Add a complete CTE declaration, preserving SEARCH and CYCLE metadata.
+    public func with(_ cte: NamedSubquery) -> SQLQueryBuilder {
         var builder = self
-        let cte = NamedSubquery(name: name, query: query)
         if var existing = builder.ctes {
             existing.append(cte)
             builder.ctes = existing
         } else {
             builder.ctes = [cte]
         }
+        return builder
+    }
+
+    /// Select recursive visibility for the complete WITH clause.
+    public func withRecursive(_ enabled: Bool = true) -> SQLQueryBuilder {
+        var builder = self
+        builder.recursiveCTEs = enabled
         return builder
     }
 }
@@ -536,7 +548,8 @@ extension SQLQueryBuilder {
             orderBy: orderByKeys,
             quantifier: quantifier,
             pagination: pagination,
-            subqueries: ctes
+            subqueries: ctes,
+            withRecursive: recursiveCTEs
         )
     }
 

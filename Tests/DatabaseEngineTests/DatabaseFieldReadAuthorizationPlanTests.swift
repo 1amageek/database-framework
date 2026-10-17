@@ -276,6 +276,41 @@ struct DatabaseFieldReadAuthorizationPlanTests {
         #expect(!plan.fieldsByEntity["Child", default: []].contains("secret"))
     }
 
+    @Test("Recursive self and forward references are logical while physical dependencies remain authorized")
+    func recursiveLogicalAuthority() throws {
+        let schema = try makeSchema()
+        let seed = SelectQuery(projection: [.expression(.literal(.int(1)), alias: "n")], source: .values([[]]))
+        let term = SelectQuery(projection: [.column("n")], source: .table(TableRef("Parent")))
+        let recursive = NamedSubquery(name: "Parent", columns: ["n"],
+            query: SelectQuery(projection: [.wildcard()], source: .setOperation(operator: .union,
+                quantifier: .all, left: seed, right: term)),
+            search: CTESearchClause(order: .depthFirst, columns: ["n"], sequenceColumn: "seq"),
+            cycle: CTECycleClause(columns: ["n"], markColumn: "cyclic", pathColumn: "path"))
+        let forward = NamedSubquery(name: "first", query: SelectQuery(projection: [.wildcard()], source: .table(TableRef("Parent"))))
+        let query = SelectQuery(projection: [.wildcard()], source: .table(TableRef("first")),
+            subqueries: [forward, recursive], withRecursive: true)
+        #expect(DatabaseFieldReadAuthorizationPlan.make(query: query, schema: schema).fieldsByEntity.isEmpty)
+        let physical = NamedSubquery(name: "physical", query: SelectQuery(projection: [.column("secret")],
+            source: .table(TableRef("Child"))))
+        let retained = query.replacing(subqueries: [forward, recursive, physical])
+        #expect(DatabaseFieldReadAuthorizationPlan.make(query: retained, schema: schema).fieldsByEntity == ["Child": ["secret"]])
+        let ordinary = query.replacing(withRecursive: false)
+        #expect(DatabaseFieldReadAuthorizationPlan.make(query: ordinary, schema: schema).fieldsByEntity["Parent"] != nil)
+    }
+
+    @Test("Implicit lateral function arguments authorize preceding physical fields and nested reads")
+    func tableFunctionArgumentAuthority() throws {
+        let schema = try makeSchema()
+        let inner = SelectQuery(projection: [.column("secret")], source: .table(TableRef("Child")))
+        let function = DataSource.aliased(.tableFunction(TableFunctionSource(function: FunctionCall(name: "unnest",
+            arguments: [.array([.col("p", "token"), .subquery(inner)])]), withOrdinality: true)), name: "f")
+        let query = SelectQuery(projection: [.expression(.literal(.int(1)))], source: .join(JoinClause(type: .cross,
+            left: .aliased(.table(TableRef("Parent")), name: "p"), right: function)))
+        let plan = DatabaseFieldReadAuthorizationPlan.make(query: query, schema: schema)
+        #expect(plan.fieldsByEntity["Parent"] == ["token"])
+        #expect(plan.fieldsByEntity["Child"] == ["secret"])
+    }
+
     private func makeSchema() throws -> Schema {
         let parent = try Schema.Entity(
             name: "Parent",

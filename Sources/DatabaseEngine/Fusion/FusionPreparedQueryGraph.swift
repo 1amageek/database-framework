@@ -276,7 +276,8 @@ enum FusionSelectQueryGraphWalker {
             let inheritedScope = stack.scope
             for (index, definition) in definitions.enumerated() {
                 stack.scope = try CommonTableScope(parent: inheritedScope,
-                    definitions: definitions, visibleCount: index, workMeter: stack.workMeter)
+                    definitions: definitions, visibleCount: query.withRecursive ? definitions.count : index,
+                    workMeter: stack.workMeter)
                 try stack.append(.query(definition.query))
             }
             stack.scope = try CommonTableScope(parent: inheritedScope,
@@ -332,6 +333,8 @@ enum FusionSelectQueryGraphWalker {
         to stack: inout WorkStack
     ) throws {
         switch source {
+        case .tableFunction(let source):
+            for expression in source.function.arguments { try stack.append(.expression(expression)) }
         case .table, .logical:
             break
         case .values(let rows):

@@ -126,12 +126,16 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
         ) {
             let inherited = commonTableColumns
             defer { commonTableColumns = inherited }
+            if query.withRecursive {
+                for subquery in query.subqueries ?? [] {
+                    commonTableColumns[subquery.name] = CommonTableColumns(names: subquery.columns)
+                }
+            }
             for subquery in query.subqueries ?? [] {
-                // A CTE sees inherited declarations and its earlier siblings only.
+                // Recursive WITH predeclares every local logical name before physical collection.
                 collect(subquery.query, outerScopes: outerScopes)
-                let names = queryColumnNames(subquery.query, declarations: commonTableColumns)
                 commonTableColumns[subquery.name] = CommonTableColumns(
-                    names: aliasedNames(names, columns: subquery.columns))
+                    names: declarationColumnNames(subquery, recursive: query.withRecursive))
             }
             let commonTableNames = Set(commonTableColumns.keys)
             let bindings = collectBindings(
@@ -201,6 +205,11 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
             outerScopes: [[SourceBinding]]
         ) -> [SourceBinding] {
             switch source {
+            case .tableFunction(let source):
+                for argument in source.function.arguments {
+                    collect(argument, localBindings: [], outerScopes: outerScopes)
+                }
+                return []
             case .table:
                 return collectTableBindings(source, commonTableNames: commonTableNames)
             case .logical:
@@ -230,7 +239,7 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
 
         private mutating func collectTableBindings(_ source: DataSource, commonTableNames: Set<String>) -> [SourceBinding] {
             guard case .table(let table) = source else { preconditionFailure("Expected table source") }
-            guard !commonTableNames.contains(table.table),
+            guard (table.schema != nil || !commonTableNames.contains(table.table)),
                   let entity = schema.entity(named: table.table) else {
                 return []
             }
@@ -301,6 +310,8 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
             )
             let rightOuterScopes: [[SourceBinding]]
             switch join.type {
+            case _ where isFunctionSource(join.right):
+                rightOuterScopes = [leftBindings] + outerScopes
             case .lateral, .leftLateral:
                 rightOuterScopes = [leftBindings] + outerScopes
             default:
@@ -343,6 +354,13 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                         localBindings: bindings,
                         outerScopes: outerScopes
                     )
+                }
+            }
+            // A right function adds no physical lineage and keeps every left ordinal unchanged.
+            if isFunctionSource(join.right), !isNatural(join.type) {
+                switch join.condition {
+                case .using: break
+                default: return bindings
                 }
             }
             guard let leftNames = sourceColumnNames(join.left, bindings: leftBindings),
@@ -748,8 +766,9 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
             bindings: [SourceBinding]
         ) -> [String]? {
             switch source {
+            case .tableFunction: return nil
             case .table(let table):
-                if let declaration = commonTableColumns[table.table] { return declaration.names }
+                if table.schema == nil, let declaration = commonTableColumns[table.table] { return declaration.names }
                 return schema.entity(named: table.table)?.allFields
             case .logical:
                 guard bindings.count == 1, let first = bindings.first else { return nil }
@@ -864,13 +883,35 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
             declarations: [String: CommonTableColumns]) -> [String]? {
             var nested = self
             nested.commonTableColumns = declarations
+            if query.withRecursive {
+                for cte in query.subqueries ?? [] {
+                    nested.commonTableColumns[cte.name] = CommonTableColumns(names: cte.columns)
+                }
+            }
             for cte in query.subqueries ?? [] {
-                let names = nested.queryColumnNames(cte.query, declarations: nested.commonTableColumns)
                 nested.commonTableColumns[cte.name] = CommonTableColumns(
-                    names: aliasedNames(names, columns: cte.columns))
+                    names: nested.declarationColumnNames(cte, recursive: query.withRecursive))
             }
             return nested.projectionColumnNames(query.projection, source: query.source,
                 sourceColumns: nested.sourceColumnNames(query.source, bindings: []))
+        }
+
+        private func declarationColumnNames(_ cte: NamedSubquery, recursive: Bool) -> [String]? {
+            let seed: SelectQuery
+            if recursive, case .setOperation(.union, _, let left, _) = cte.query.source { seed = left }
+            else { seed = cte.query }
+            guard var names = aliasedNames(queryColumnNames(seed, declarations: commonTableColumns), columns: cte.columns) else { return nil }
+            if let search = cte.search { names.append(search.sequenceColumn) }
+            if let cycle = cte.cycle { names.append(cycle.markColumn); names.append(cycle.pathColumn) }
+            return names
+        }
+
+        private func isFunctionSource(_ source: DataSource) -> Bool {
+            switch source {
+            case .tableFunction: return true
+            case .aliased(let source, _, _): return isFunctionSource(source)
+            default: return false
+            }
         }
 
         func isNatural(_ type: JoinType) -> Bool {

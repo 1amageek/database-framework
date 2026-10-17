@@ -649,3 +649,14 @@ grouping; it does not acquire SQL grouping/window syntax.
 These syntax/source tests do not establish result types, aggregate values,
 frame execution, grouping legality or PostgreSQL compatibility. Those witnesses
 belong to Engine and public Database tests under the same frozen S09 contract.
+
+
+### S10 recursive and function-source grammar
+
+[Query carriage](../../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md#s10-frozen-recursive-and-function-source-carriage) fixes all fields; [SQL C01-C12](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s10-frozen-recursion-and-table-functions) fixes meaning. Preserve WITH-wide RECURSIVE rather than discarding it. Each CTE retains optional SEARCH DEPTH/BREADTH FIRST BY keys SET sequence name and CYCLE keys SET mark name [TO constant DEFAULT constant] USING path name. CYCLE values are paired Literal constants, never row expressions or parameter slots; signed constants and incomplete pairs fail grammar. Keys and generated names retain exact folded/quoted identifier identity. Recursive dependency legality remains binding-owned.
+
+FROM function calls retain existing exact FunctionCall names/schema/arguments/VARIADIC plus WITH ORDINALITY; existing aliased source owns all aliases. Explicit LATERAL before a function, including the leading source, normalizes to its implicit function-source semantics. Explicit lateral subqueries retain existing join kinds. Reject ROWS FROM, record column-definition lists and malformed/trailing clauses rather than accepting a prefix. SELECT-list SRF expansion remains outside this surface.
+
+Construction capture visits every function argument through Kit's source occurrence role without duplicate function-expression captures. Existing CTE query paths remain stable; SEARCH/CYCLE constant and identifier occurrences use the Kit-defined distinct roles where present. One request ledger bounds names, lists, constants, arguments and wrapper nodes before growth. Positive parse/serialize/source tests and malformed/limit tests are required before removing the incomplete FROM gate; public execution proves the corresponding runtime path separately.
+
+CYCLE constant parsing consumes [Builder's intrinsic constant profile](../Builder/DESIGN.md#s10-recursive-and-function-source-emission); it does not invoke Engine temporal evaluation or accept an expression in place of a Literal.

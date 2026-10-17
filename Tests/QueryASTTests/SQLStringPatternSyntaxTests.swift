@@ -94,12 +94,11 @@ struct SQLStringPatternSyntaxTests {
         _ = try roundTrip("BYTEA '\\x00' || BYTEA '\\xff'")
     }
 
-    @Test("Deferred relation functions and malformed predicate structure fail explicitly")
+    @Test("Relation function syntax is retained and malformed predicates fail explicitly")
     func deferredAndMalformedSyntax() throws {
         for sql in ["SELECT * FROM regexp_matches(s, p)", "SELECT * FROM regexp_split_to_table(s, p)"] {
-            #expect(throws: SQLParser.ParseError.unsupportedFeature("SQL table functions require S10 relation composition")) {
-                try SQLParser().parseSelect(sql)
-            }
+            let query = try SQLParser().parseSelect(sql)
+            #expect(try SQLParser().parseSelect(SQLSerializer().serialize(query)) == query)
         }
         for sql in ["s SIMILAR p", "s LIKE", "s NOT ILIKE", "SUBSTRING(s FROM)", "POSITION(s IN)", "TRIM(LEADING FROM)"] {
             #expect(throws: SQLParser.ParseError.self) { try expression(sql) }

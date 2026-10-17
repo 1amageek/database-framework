@@ -2,6 +2,19 @@ import DatabaseKit
 import DatabaseTypes
 
 extension SQLConstantSyntax {
+    /// CYCLE marks are immutable constants, so only environment-independent canonical dates normalize here.
+    static func cycleDate(_ text: String, limits: QueryStructuralLimits) throws(SQLConstantError) -> Literal {
+        guard UInt64(text.utf8.count) <= limits.maximumRetainedBytes else {
+            throw .resourceLimit("CYCLE DATE input byte budget exceeded")
+        }
+        guard let date = XSDDateTimeFormat.date(from: text), date.year > 0,
+              QueryLiteralEncoding.iso8601(date) == text,
+              QueryValueValidator.accepts(.primitive(.date(date)), type: .sql(.date)) else {
+            throw .unsupportedConstant("CYCLE DATE requires a canonical positive-year ISO date")
+        }
+        return .queryValue(.primitive(.date(date)), type: .sql(.date))
+    }
+
     static func sqlEraText(_ iso: String) throws(SQLConstantError) -> String {
         let negative = iso.first == "-"
         let digits = negative ? iso.dropFirst() : iso[...]

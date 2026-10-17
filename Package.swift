@@ -145,6 +145,7 @@ let package = Package(
                 "QueryExecution/SQLAggregation/DESIGN.md",
                 "QueryExecution/SQLJSON/DESIGN.md",
                 "QueryExecution/SQLRelations/DESIGN.md",
+                "QueryExecution/SQLTableFunctions/DESIGN.md",
                 "QueryExecution/SQLTemporal/DESIGN.md",
                 "QueryExecution/SQLTemporal/TimeZoneRules/DESIGN.md",
                 "QueryExecution/SQLTemporal/Formatting/DESIGN.md",
@@ -869,7 +870,8 @@ let package = Package(
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
-                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"]))
+                .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
+                .define("SQLITE", .when(platforms: nativeRuntimePlatforms, traits: ["SQLite"]))
             ],
             linkerSettings: foundationDBClientLinkerSettings
         ),

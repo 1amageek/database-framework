@@ -12,7 +12,8 @@ final public output.
 - Child: [SQLTemporal](SQLTemporal/DESIGN.md), the S06 temporal evaluation design; S06 contract and completion are tracked by the workspace progress record.
 - Child: [SQLArray](SQLArray/DESIGN.md), selected array algorithms and bounded row cursors.
 - Child: [SQLJSON](SQLJSON/DESIGN.md), lexical JSON and semantic JSONB algorithms and bounded row cursors.
-- Child: [SQLRelations](SQLRelations/DESIGN.md), S08 demand-driven SELECT producers and execution-local CTE cache lifecycle.
+- Child: [SQLRelations](SQLRelations/DESIGN.md), demand-driven SELECT and recursive producers and execution-local CTE cache lifecycle.
+- Child: [SQLTableFunctions](SQLTableFunctions/DESIGN.md), selected FROM-function cursors, series and ordinality.
 - Child: [SQLAggregation](SQLAggregation/DESIGN.md), S09 selected aggregate transitions and ordered-set/statistical results.
 - Child: [SQLWindows](SQLWindows/DESIGN.md), S09 admitted partitions, peers, frames and window results.
 - Planned S01–S10 SQL execution obligations are recorded below; implementation
@@ -47,7 +48,8 @@ copyable and could escape without their reservation.
 | [SQLTemporal](SQLTemporal/DESIGN.md) | child | Temporal evaluation and explicit clock/zone environment | Owns T07/T08/F07 execution design. | Consumes the explicit operation-owned environment; no ambient clock/zone. |
 | [SQLArray](SQLArray/DESIGN.md) | child | Selected array evaluate/cast/compare and noncopyable row cursor | Implements the array layer over existing selected scalar policy. | Parent owns types, lazy selection and every referenced input claim. |
 | [SQLJSON](SQLJSON/DESIGN.md) | child | JSON conversion/extraction, JSONB compare/edit and noncopyable row cursor | Implements the JSON layer over the existing Kit owners. | Semantic identity is distinct from Kit representation hashing. |
-| [SQLRelations](SQLRelations/DESIGN.md) | child | Demand-driven producer, independent CTE consumers and awaited close | Owns S08 producing state and retained prefixes. | Binding, selected comparison and resource readiness remain with this parent and Read. |
+| [SQLRelations](SQLRelations/DESIGN.md) | child | Demand-driven producer, independent CTE consumers, recursive frontiers and awaited close | Owns producing state and retained prefixes. | Binding, selected comparison and resource readiness remain with this parent and Read. |
+| [SQLTableFunctions](SQLTableFunctions/DESIGN.md) | child | Selected function metadata, one-row cursor demand and ordinality | Owns array/JSON/pattern adapters and series state. | Parent supplies evaluated operands with retained claims and owns lateral scope. |
 | [SQLAggregation](SQLAggregation/DESIGN.md) | child | Scoped selected-input reduction to a retained typed value | Owns ordinary, statistical and ordered-set transitions. | The parent supplies selected evaluation and retains every input owner through the callback scope. |
 | [SQLWindows](SQLWindows/DESIGN.md) | child | Selected partitions/peers/frame execution in original row order | Owns analytic function and aggregate-window evaluation. | It consumes post-HAVING rows and never retains execution callbacks in a final result. |
 
@@ -1571,3 +1573,87 @@ actual public SQL, result metadata, resource ownership and read/publication
 lifecycle evidence. Full FoundationDB, graph-enabled Database portable,
 MultiBase portable and final URL dependency/push integration remain the
 explicitly agreed S18 obligations. Their deferral is not a passed S09 result.
+
+
+## S10 Frozen Recursive and Function Execution
+
+The [SQL S10 authority](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s10-frozen-recursion-and-table-functions) fixes C01-C12 and product differences; [Query carriage](../../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md#s10-frozen-recursive-and-function-source-carriage) fixes the immutable public models. This parent owns selected scope/type/source composition. It composes [SQLRelations](SQLRelations/DESIGN.md) for recursive production and [SQLTableFunctions](SQLTableFunctions/DESIGN.md) for function selection/cursors. Read retains transaction/authority and terminal Ready ownership. No new runtime registry or storage abstraction is introduced.
+
+| Boundary | Input / owner | Guarantee used by this parent |
+|---|---|---|
+| CTE binding | WITH-wide visibility, prior/inherited scopes, seed-selected metadata | Topologically resolve dependencies; a self reference binds to an immutable descriptor with no completed-plan or cache backpointer. Actual physical entities remain authorized. |
+| Recursive selected definition | Seed/term selected plans, selected identity, generated-column specifications | Both sides and all unused definitions are validated before reads. User target evaluation occurs once; internal parent metadata may travel as hidden selected outputs, then is replaced by generated values before public publication. |
+| Recursive producer | Lazy seed/step factories over the existing admitted context, retained frontier view | Implements C03/C04/C10 through the existing SQLRelationProducer requirements; frontier state never uses process recursion or widens session/authority. |
+| Table-function binding | FunctionCall and current lexical/preceding source schema | Select immutable arguments, family, output columns and ordinality before row access. Bind selected scalar built-ins through the same scalar owner; retain scalar SRF rejection outside FROM. |
+| Table-function producer | Selected inputs/leases, admitted temporal environment and meter | Own lower cursor in one invocation actor, emit one retained matching row, and await terminal close. Reuse S05/S07 cursor semantics rather than materializing every result. |
+| Lateral composition | Bound source classification and existing JOIN operator | Direct function sources, including alias wrappers, receive preceding source context implicitly. Explicit lateral subqueries retain their S08 distinction. Right/full illegal lateral dependence is rejected before reads. LEFT lateral preserves absent-row presence and NULL ordinal. |
+
+```text
+logical query -> Fusion/field authorization with recursive logical scopes
+  -> selected CTE dependency order / seed self-schema / term validation
+  -> SELECT invocation -> SQLRelations recursive producer
+       -> selected step with a frontier-only self consumer
+  -> selected function source -> SQLTableFunctions cursor actor
+  -> existing alias / JOIN / selected scalar / grouping / window path
+  -> close owned producers/caches -> Read closure -> Ready
+```
+
+The source plan may hold immutable selected recursive/function metadata only. Runtime factories capture the existing transaction/session, immutable inherited environment and outer values. A step's self consumer captures only that generation's immutable frontier, never the recursive producer/cache; this keeps the owner graph acyclic. Multiple consumers retain the declaring invocation's lazy cache identity and independent offsets. Binding-claim traversal remains the S09 explicit metered worklist and must include newly selected arguments/constant/generated descriptors without recursive plan graph walking.
+
+Recursive generation uses the seed type rather than set common-type widening. Exactness compares SQL meaning, width and modifiers: corresponding native scalar metadata with the same carrier is admitted, and the selected term is normalized back to the immutable seed representation. The contextual-NULL AST helper must stop at the immutable self descriptor instead of following a definition back into itself. FusionPreparedQueryGraph and DatabaseFieldReadAuthorizationPlan use the same recursive/sibling visibility; they must not substitute a same-named physical entity. Composition's existing general-CTE/function capability boundary remains explicit and does not gain a new global placement policy in S10. SQL-only source cases remain explicit SPARQL failures.
+
+SQLRelations owns the recursive actor/gate, frontier/visited/generated-value lifecycle and failure/cleanup. SQLTableFunctions owns selected function-family metadata, lower-cursor adapters, series advancement and one-invocation ordinal state. Each child records its concrete internal seam and same-target state matrix before implementation. Parent source binding/evaluation owns correlation and source error provenance; child algorithms cannot bypass them.
+
+Verification is the fixed S10-C01...C12 matrix, with component lower tests followed by public SQL success/failure/cancel/retained-owner/early-stop fixtures. Existing S08 demand/alias/set/outer-presence and S09 grouping/window/Composition/stack fixtures remain affected regressions. Native and exact formal targets prove their actual source graph, link and runtime. Existing8MiB Engine/default Kit stack and common work/row/byte/deadline budgets remain unchanged; no new recursion count option is guessed. Backend/consumer proof uses a frozen task-local graph until S18 final URL verification. Cleanup preserves final raw artifacts, logs, xcresults, source provenance and required tools/inputs while removing inactive build/cache outputs after local commits.
+
+
+### S10 concrete child seams
+
+`CanonicalBoundCTE` retains its selected seed plan and an optional immutable recursive definition: seed/term query and plan, final output columns, self name, UNION quantifier and `SQLRecursiveGeneratedColumns`. A self binding entry exposes immutable columns/self identity only and cannot reference a completed plan. Rows appends selected hidden parent SEARCH then parent CYCLE-path columns to the term's bound projection after user targets; the public syntax tree stays unchanged. Child publication removes hidden cells and uses the already evaluated user slots.
+
+`SQLRecursiveRowProducer(schema:userColumnCount:unionAll:generated:temporalEnvironment:limits:meter:seedFactory:stepFactory:)` consumes a lazy seed factory and a step factory receiving `SQLRecursiveFrontier`; the latter's `consumer()` captures its immutable frontier only. `SQLRecursiveGeneratedColumns` supplies selected key ordinals/record descriptors, breadth/depth mode and selected cycle/default values. SQLRelations owns all operational mutation.
+
+`CanonicalQueryTypeBinder.bindTableFunction(_:withOrdinality:occurrence:)` returns immutable `CanonicalBoundTableFunction(bound:columns:kind:withOrdinality:)`. Argument occurrences are `.argument` children of the source occurrence. Rows evaluates selected children once for row functions or the scalar bound once, attaches original outer-row payload/layout leases for borrowed values, and calls `makeSQLTableFunctionProducer(schema:selected:operands:temporalEnvironment:workMeter:limits:)` with `[DatabaseContext.ProjectedQueryValue]`. SQLTableFunctions owns cursor/ordinal state; outputs retain no parent transaction/session. Selected output admission uses the bound expression's existing `bindingMetadata` owner, so iterative claim traversal visits `selected.bound` once. An explicit series timezone changes only the admitted local zone and preserves configured fixed bindings/provider/clock authority.
+
+A recursive definition retains the bound CTE prelude declared above its UNION.
+That prelude binds once before seed/term selection, supplies the same frozen
+lexical scope to both plans, and creates one invocation-local runtime cache
+owner shared by seed and every frontier step. The recursive producer wrapper
+awaits its child and every prelude cache on terminal success, failure, early
+stop and cancellation. Prelude factories retain inherited scope only; the
+frontier-only self factory is introduced after prelude construction.
+
+### S10 binding stack ownership
+
+The Native consolidated regression at the unchanged 30-level CTE fixture
+`SQLRowExecutionTests.contextualNullSetColumns` exposed a 14,704-byte
+`bindCanonicalQueryScope` frame in the preserved failing arm64 object.
+Nonrecursive binding must not retain recursive dependency-graph temporaries
+or inline recursive-definition payloads on every nested SELECT frame. The first
+split still retained 2,768-byte dispatcher, 8,576-byte nonrecursive scope and
+5,280-byte query frames per CTE level and exhausted the original stack at the
+leaf. The query entry therefore dispatches directly to a declaration-order
+nonrecursive lane or the recursive topological lane; only the latter owns its
+admitted dependency graph. The wrapper remains for materialized/prelude entry.
+Selected recursive definitions use an immutable reference owner, while working-table
+placeholders retain metadata only. Before class allocation, the binding meter
+admits the stored-field tuple stride plus the two-word instance header rounded
+to the tuple alignment; no tuple value is constructed. This covers the observed
+Native 720-byte allocation with 16-byte alignment, unlike the rejected 712-byte
+field-stride sum. An immutable descriptor lease retains the claim through the
+existing iterative binding-claim walk. Existing nesting, work, memory and target
+stack limits and the original deep fixtures remain unchanged. Actual compiled
+frames and the original failing runtime selector verify this repair.
+
+The R2 object measured `CanonicalBoundCTE` at 560 bytes, its inline
+`NamedSubquery` at 506 bytes and the binding environment at 248 bytes.
+Selected CTE/definition copies in the nonrecursive helper and 264-byte scope
+return-tuple copies in the query caller retained 16,160 bytes per CTE level,
+so removing the wrapper alone was insufficient. Immutable selected-CTE and
+binding-scope reference owners replace these large copied values. Both owners
+admit their ordered stored-field tuple, aligned header and trailing padding
+before allocation. The selected CTE retains its payload claim through the
+existing iterative claim walk; the scope owner retains its claim only during
+binding and is never captured by executable plans or runtime factories.
+Verification measures the combined live query/nonrecursive/caller frames
+before executing the unchanged deep regression.

@@ -9,7 +9,7 @@ enum CompositionSPARQLPlanValidator {
                 "SPARQL Composition SELECT does not accept an index access path"
             )
         }
-        guard query.subqueries == nil else {
+        guard !query.withRecursive, query.subqueries == nil else {
             throw CompositionQueryError.unsupportedPlan(
                 "SPARQL Composition SELECT does not accept WITH bindings"
             )

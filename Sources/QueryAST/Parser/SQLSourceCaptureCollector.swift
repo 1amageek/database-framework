@@ -7,7 +7,7 @@ struct SQLSourceCaptureCollector {
         case identifierOverflow
     }
 
-    private enum Kind { case expression, query, source, dataType, statement, valuesRow, grouping, groupingComponent, groupingSet, windowFunction, windowReference, namedWindow }
+    private enum Kind { case expression, literal, query, source, dataType, statement, valuesRow, grouping, groupingComponent, groupingSet, windowFunction, windowReference, namedWindow }
     private struct Child {
         let field: QueryOccurrenceField
         let index: UInt32?
@@ -43,6 +43,19 @@ struct SQLSourceCaptureCollector {
     mutating func unwrapLastQuery() throws {
         guard let node = pending.popLast(), nodes[node].kind == .query else { throw CaptureError.inconsistentConstruction }
         for edge in nodes[node].edges { pending.append(edges[edge].child) }
+    }
+
+    mutating func unwrapLastExpression() throws -> SQLSourceAnnotation? {
+        guard let node = pending.popLast(), nodes[node].kind == .expression else { throw CaptureError.inconsistentConstruction }
+        for edge in nodes[node].edges { pending.append(edges[edge].child) }
+        return nodes[node].annotation
+    }
+
+    mutating func convertLastExpressionToLiteral() throws {
+        guard let index = pending.last, nodes[index].kind == .expression,
+              nodes[index].edges.isEmpty else { throw CaptureError.inconsistentConstruction }
+        let node = nodes[index]
+        nodes[index] = Node(kind: .literal, annotation: node.annotation, edges: node.edges)
     }
 
     mutating func movePendingToEnd(from start: Int, count: Int) throws {
@@ -225,7 +238,11 @@ struct SQLSourceCaptureCollector {
         ledger: inout QueryStructuralResourceLedger
     ) throws {
         var children: [Child] = []
-        for index in (query.subqueries ?? []).indices { try child(.cte, index: index, kind: .query, into: &children, ledger: &ledger) }
+        for (index, cte) in (query.subqueries ?? []).enumerated() {
+            try child(.cte, index: index, kind: .query, into: &children, ledger: &ledger)
+            if cte.cycle?.markValue != nil { try child(.cteCycleMark, index: index, kind: .literal, into: &children, ledger: &ledger) }
+            if cte.cycle?.defaultValue != nil { try child(.cteCycleDefault, index: index, kind: .literal, into: &children, ledger: &ledger) }
+        }
         for index in query.projection.indices {
             try child(.projection, index: index, into: &children, ledger: &ledger)
         }
@@ -249,6 +266,8 @@ struct SQLSourceCaptureCollector {
     ) throws {
         var children: [Child] = []
         switch source {
+        case .tableFunction(let source):
+            for index in source.function.arguments.indices { try child(.argument, index: index, into: &children, ledger: &ledger) }
         case .subquery:
             try child(.subquery, kind: .query, into: &children, ledger: &ledger)
         case .aliased:

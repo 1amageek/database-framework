@@ -612,3 +612,12 @@ a plausible ordinary function, or silently omit windows. Ordinary SPARQL
 grouping/aggregates preserve their existing behavior and failure propagation.
 S09-SYN01...06 are owned by Parser's evidence table; public Database execution
 provides semantic text-versus-builder witnesses independently of AST equality.
+
+
+### S10 recursive and function-source emission
+
+Consume [Query's frozen fields](../../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md#s10-frozen-recursive-and-function-source-carriage) and [Parser's grammar](../Parser/DESIGN.md#s10-recursive-and-function-source-grammar). Emit WITH RECURSIVE once for the enclosing clause; emit each CTE's SEARCH then CYCLE clauses after its body/materialization spelling. CYCLE TO/DEFAULT use the existing Literal writer and require both constants or neither. Invalid/unrepresentable constant metadata fails typed. Fluent and immutable query copies preserve withRecursive, search and cycle.
+
+Emit function sources through the existing FunctionCall writer, followed by optional WITH ORDINALITY. Aliased source alone emits relation/leading positional column aliases. No explicit-LATERAL bit is synthesized; explicit lateral subqueries retain their current join spelling. Function arguments and constant metadata share existing structural/output admission. SPARQL rejects SQL-only recursive metadata/function sources explicitly. Parse/serialize/parse stability, source-argument correspondence and malformed metadata tests establish carriage, while public Database tests establish execution.
+
+S10 CYCLE text carriage accepts only constants with an exact intrinsic Literal representation. Canonical positive-year ISO DATE uses the existing pure XSD date scanner plus SQL value validation; DateStyle-dependent and relative date input remains a typed unsupported constant. General DATE/TIME/TIMESTAMP lexical evaluation remains Engine-owned. The serializer emits a typed constant only when the same intrinsic adapter reconstructs its exact value and declared type; unsupported temporal forms, typed NULL and other unrepresentable metadata fail instead of producing text that CYCLE cannot parse.

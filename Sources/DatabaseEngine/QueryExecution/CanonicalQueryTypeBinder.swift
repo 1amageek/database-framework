@@ -1083,11 +1083,8 @@ struct CanonicalQueryTypeBinder {
         let name = call.name, args = call.arguments
         let arrayFunctions = ["array_length", "array_lower", "array_upper", "array_ndims", "array_dims", "cardinality", "array_append", "array_prepend", "array_cat", "array_position", "array_positions", "array_remove", "array_replace", "array_to_string", "string_to_array"]
         let jsonFunctions = ["row_to_json", "to_json", "to_jsonb", "array_to_json", "json_build_array", "jsonb_build_array", "json_build_object", "jsonb_build_object", "json_typeof", "jsonb_typeof", "json_array_length", "jsonb_array_length", "json_extract_path", "jsonb_extract_path", "json_extract_path_text", "jsonb_extract_path_text", "jsonb_set", "jsonb_insert", "jsonb_strip_nulls"]
-        if ["unnest", "generate_subscripts", "json_each", "jsonb_each", "json_each_text", "jsonb_each_text", "json_array_elements", "jsonb_array_elements", "json_array_elements_text", "jsonb_array_elements_text", "json_object_keys", "jsonb_object_keys"].contains(name) {
-            // FIXME(INCOMPLETE_IMPLEMENTATION): Public selected scalar invocation reaches
-            // relation functions here. S10 relation composition must consume the
-            // bounded child kernels before public execution can succeed.
-            throw DatabaseExpressionEvaluationError.unsupportedExpression("collection relation function requires S10 composition")
+        if ["generate_series", "unnest", "generate_subscripts", "json_each", "jsonb_each", "json_each_text", "jsonb_each_text", "json_array_elements", "jsonb_array_elements", "json_array_elements_text", "jsonb_array_elements_text", "json_object_keys", "jsonb_object_keys"].contains(name) {
+            throw DatabaseExpressionEvaluationError.unsupportedExpression("set-returning function requires a FROM source")
         }
         guard arrayFunctions.contains(name) || jsonFunctions.contains(name) else { return nil }
         let builders = ["json_build_array", "jsonb_build_array", "json_build_object", "jsonb_build_object"]
@@ -1391,9 +1388,7 @@ struct CanonicalQueryTypeBinder {
     ) throws -> CanonicalBoundExpression? {
         let name = function.name
         if ["regexp_matches", "regexp_split_to_table"].contains(name) {
-            // FIXME(INCOMPLETE_IMPLEMENTATION): SQL scalar and relation callers reach row functions here.
-            // S10 must compose the bounded pattern iterators into declared relations before admission.
-            throw DatabaseExpressionEvaluationError.unsupportedExpression("pattern row function requires relation composition")
+            throw DatabaseExpressionEvaluationError.unsupportedExpression("set-returning function requires a FROM source")
         }
         if name == "concat" || name == "concat_ws" {
             guard !function.arguments.isEmpty else { throw mismatch(name) }
@@ -1904,6 +1899,20 @@ struct CanonicalQueryTypeBinder {
             return first
         }
         throw mismatch("common result type")
+    }
+
+    /// Recursive columns preserve seed meaning and carrier, independent of native/SQL metadata spelling.
+    static func recursiveColumnTypesAgree(_ seed: QueryColumnType, _ term: QueryColumnType) -> Bool {
+        if seed == term { return true }
+        func matches(_ native: QueryColumnType, _ sql: QueryColumnType) -> Bool {
+            guard case .primitive(let kind, false) = native, case .sql(let type) = sql else { return false }
+            switch type {
+            case .boolean, .smallint, .integer, .bigint, .real, .doublePrecision, .text, .blob, .uuid:
+                return primitiveKind(sql) == kind
+            default: return false
+            }
+        }
+        return matches(seed, term) || matches(term, seed)
     }
 
     static func numericAggregateInputType(_ type: QueryColumnType) -> QueryColumnType? {
@@ -3051,5 +3060,121 @@ extension CanonicalQueryTypeBinder {
             case .literal, .currentValue, .wholeRow, .column, .variable, .parameter, .bound: break
             }
         }
+    }
+}
+
+extension CanonicalQueryTypeBinder {
+    func bindTableFunction(_ call: FunctionCall, withOrdinality: Bool,
+        occurrence: QueryOccurrenceID? = nil) throws -> CanonicalBoundTableFunction {
+        var scoped = self
+        if let occurrence { scoped.currentOccurrence = occurrence }
+        scoped.permitsAggregates = false
+        scoped.permitsWindows = false
+        do { return try scoped.selectTableFunction(call, withOrdinality: withOrdinality) }
+        catch let error as QueryValueError { throw scoped.located(error, at: scoped.currentOccurrence) }
+        catch let error as DatabaseExpressionEvaluationError { throw scoped.located(error, at: scoped.currentOccurrence) }
+    }
+
+    private func selectTableFunction(_ call: FunctionCall, withOrdinality: Bool) throws -> CanonicalBoundTableFunction {
+        guard call.schema == nil || call.schema == "pg_catalog", !call.distinct else { throw mismatch("table function modifiers") }
+        let name = call.name, expression = Expression.function(call)
+        let kind: CanonicalBoundTableFunction.Kind
+        let bound: CanonicalBoundExpression
+        let reservation = try workMeter?.reserveIntermediate(bytes: UInt64(MemoryLayout<CanonicalBoundTableFunction>.stride), at: .bindingCandidate)
+        var output: [(String, QueryColumnType, Bool)] = []
+        func column(_ name: String, _ type: QueryColumnType, _ nullable: Bool) throws {
+            try CanonicalBindingStorage.append((name, type, nullable), to: &output, reservation: reservation)
+        }
+        switch name {
+        case "unnest", "generate_subscripts":
+            kind = .array
+            guard !call.finalArrayIsVariadic else { throw mismatch("table function VARIADIC signature") }
+            guard name == "unnest" ? !call.arguments.isEmpty : (2...3).contains(call.arguments.count) else { throw mismatch(name) }
+            var children: [CanonicalBoundExpression] = []
+            for (index, argument) in call.arguments.enumerated() {
+                let child: CanonicalBoundExpression
+                if name == "unnest" || index == 0 {
+                    child = try childBinder(.argument, index).bind(argument)
+                    guard let element = Self.arrayElement(child.type) else { throw mismatch("\(name) requires a typed array") }
+                    if name == "unnest" { try appendTableColumns(name: name, type: element, nullable: true, to: &output, reservation: reservation) }
+                } else {
+                    let target = QueryColumnType.sql(index == 1 ? .integer : .boolean)
+                    child = try coerce(childBinder(.argument, index).bind(argument, contextualType: target), to: target)
+                }
+                children.append(child)
+            }
+            if name == "generate_subscripts" { try column(name, .sql(.integer), false) }
+            bound = node(expression, output.first?.1 ?? .sql(.integer), true, children)
+        case "json_each", "jsonb_each", "json_each_text", "jsonb_each_text",
+             "json_array_elements", "jsonb_array_elements", "json_array_elements_text", "jsonb_array_elements_text",
+             "json_object_keys", "jsonb_object_keys":
+            kind = .json
+            guard !call.finalArrayIsVariadic else { throw mismatch("table function VARIADIC signature") }
+            guard call.arguments.count == 1 else { throw mismatch(name) }
+            let family = QueryColumnType.sql(name.hasPrefix("jsonb") ? .jsonb : .json)
+            let children = try collectionArguments(call.arguments, targets: [family])
+            let text = name.hasSuffix("_text"), keys = name.hasSuffix("object_keys")
+            if name == "json_each" || name == "jsonb_each" || name == "json_each_text" || name == "jsonb_each_text" { try column("key", .sql(.text), false) }
+            try column(keys ? name : "value", text || keys ? .sql(.text) : family, text)
+            bound = node(expression, output.last!.1, text, children)
+        case "regexp_matches", "regexp_split_to_table":
+            kind = name == "regexp_matches" ? .patternMatches : .patternSplit
+            guard !call.finalArrayIsVariadic else { throw mismatch("table function VARIADIC signature") }
+            guard (2...3).contains(call.arguments.count) else { throw mismatch(name) }
+            let children = try collectionArguments(call.arguments, targets: Array(repeating: .sql(.text), count: call.arguments.count))
+            let type = QueryColumnType.sql(name == "regexp_matches" ? .array(.text) : .text)
+            try column(name, type, false)
+            bound = node(expression, type, false, children)
+        case "generate_series":
+            kind = .series
+            guard !call.finalArrayIsVariadic else { throw mismatch("table function VARIADIC signature") }
+            let numeric = DataType.decimal(precision: nil, scale: nil)
+            let timestamp = DataType.timestamp(withTimeZone: false)
+            let aware = DataType.timestamp(withTimeZone: true)
+            let signatures: [[DataType]]
+            switch call.arguments.count {
+            case 2: signatures = [[.integer, .integer], [.bigint, .bigint], [numeric, numeric]]
+            case 3: signatures = [[.integer, .integer, .integer], [.bigint, .bigint, .bigint], [numeric, numeric, numeric], [timestamp, timestamp, .interval()], [aware, aware, .interval()]]
+            case 4: signatures = [[aware, aware, .interval(), .text]]
+            default: throw mismatch(name)
+            }
+            let inputs: [CanonicalBoundExpression?] = try call.arguments.enumerated().map { index, argument in
+                if try isContextualUnknown(argument) { return nil }
+                return try childBinder(.argument, index).bind(argument)
+            }
+            if signatures.count > 1 && inputs.allSatisfy({ $0 == nil }) { throw mismatch("ambiguous function \(name)") }
+            let signature = try selectFunction(signatures, inputs: inputs, name: name)
+            let children = try call.arguments.indices.map { index in
+                let target = QueryColumnType.sql(signature[index])
+                return try coerce(inputs[index] ?? childBinder(.argument, index).bind(call.arguments[index], contextualType: target), to: target)
+            }
+            let type = QueryColumnType.sql(signature[0])
+            try column(name, type, false)
+            bound = node(expression, type, false, children)
+        default:
+            kind = .scalar
+            bound = try bindFunction(call, expression: expression)
+            try appendTableColumns(name: name, type: bound.type, nullable: bound.isNullable, to: &output, reservation: reservation)
+        }
+        var columns: [QueryColumn] = []
+        for (name, type, nullable) in output {
+            try reservation?.reserveAdditional(bytes: UInt64(name.utf8.count), at: .bindingCandidate)
+            try CanonicalBindingStorage.append(QueryColumn(number: ordinal(columns.count), name: name, type: type, isNullable: nullable), to: &columns, reservation: reservation)
+        }
+        if withOrdinality {
+            try reservation?.reserveAdditional(bytes: 10, at: .bindingCandidate)
+            try CanonicalBindingStorage.append(QueryColumn(number: ordinal(columns.count), name: "ordinality", type: .sql(.bigint), isNullable: false), to: &columns, reservation: reservation)
+        }
+        try bindingMetadata.retain(reservation)
+        return CanonicalBoundTableFunction(bound: try finalizing(bound), columns: columns, kind: kind, withOrdinality: withOrdinality)
+    }
+
+    private func appendTableColumns(name: String, type: QueryColumnType, nullable: Bool,
+        to output: inout [(String, QueryColumnType, Bool)], reservation: DatabaseIntermediateReservation?) throws {
+        if case .sql(.composite(let descriptor)) = type {
+            for field in descriptor.columns {
+                try CanonicalBindingStorage.append((field.name, field.type, nullable || field.isNullable), to: &output, reservation: reservation)
+            }
+        } else { try CanonicalBindingStorage.append((name, type, nullable), to: &output, reservation: reservation) }
     }
 }

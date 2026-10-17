@@ -1587,6 +1587,8 @@ final class CanonicalSourceBindingPlan: Sendable {
     fileprivate let schema: CanonicalRelationSchema
     fileprivate let children: [CanonicalSourceBindingPlan]
     fileprivate let queryPlan: CanonicalBoundSelect?
+    fileprivate let recursiveSelf: CanonicalRecursiveSelfBinding?
+    fileprivate let tableFunction: CanonicalBoundTableFunction?
     fileprivate let condition: CanonicalBoundExpression?
     fileprivate let valueBindings: [[CanonicalBoundExpression]]
     fileprivate let query: SelectQuery?
@@ -1597,9 +1599,11 @@ final class CanonicalSourceBindingPlan: Sendable {
 
     fileprivate init(source: DataSource, schema: CanonicalRelationSchema,
         children: [CanonicalSourceBindingPlan] = [], queryPlan: CanonicalBoundSelect? = nil,
+        recursiveSelf: CanonicalRecursiveSelfBinding? = nil, tableFunction: CanonicalBoundTableFunction? = nil,
         condition: CanonicalBoundExpression? = nil, query: SelectQuery? = nil, valueBindings: [[CanonicalBoundExpression]] = [],
         binding: CanonicalQueryBindingEnvironment, namedSubqueries: [NamedSubquery],
         reservation: DatabaseIntermediateReservation, bindingFrames: [CanonicalSourceLayout]? = nil) {
+        self.recursiveSelf = recursiveSelf; self.tableFunction = tableFunction
         self.bindingFrames = bindingFrames ?? [schema.layout]
         self.source = source; self.schema = schema; self.children = children
         self.queryPlan = queryPlan; self.condition = condition; self.query = query; self.valueBindings = valueBindings
@@ -1608,18 +1612,28 @@ final class CanonicalSourceBindingPlan: Sendable {
 
     fileprivate func owning(_ query: SelectQuery) -> CanonicalSourceBindingPlan {
         CanonicalSourceBindingPlan(source: source, schema: schema, children: children,
-            queryPlan: queryPlan, condition: condition, query: query, valueBindings: valueBindings, binding: binding,
+            queryPlan: queryPlan, recursiveSelf: recursiveSelf, tableFunction: tableFunction, condition: condition, query: query, valueBindings: valueBindings, binding: binding,
             namedSubqueries: namedSubqueries, reservation: reservation, bindingFrames: bindingFrames)
     }
 }
 
-fileprivate final class CanonicalNamedBindingScope: Sendable {
+final class CanonicalNamedBindingScope: Sendable {
     private let parent: CanonicalNamedBindingScope?
     private let name: String?
     private let plan: CanonicalBoundSelect?
+    private let recursiveSelf: CanonicalRecursiveSelfBinding?
     init(parent: CanonicalNamedBindingScope? = nil, name: String? = nil,
-         plan: CanonicalBoundSelect? = nil) {
-        self.parent = parent; self.name = name; self.plan = plan
+         plan: CanonicalBoundSelect? = nil, recursiveSelf: CanonicalRecursiveSelfBinding? = nil) {
+        self.parent = parent; self.name = name; self.plan = plan; self.recursiveSelf = recursiveSelf
+    }
+
+    func selfBinding(_ name: String) -> CanonicalRecursiveSelfBinding? {
+        var scope: CanonicalNamedBindingScope? = self
+        while let current = scope {
+            if current.name == name { return current.recursiveSelf }
+            scope = current.parent
+        }
+        return nil
     }
 
     func resolve(_ name: String, workMeter: DatabaseWorkMeter) throws -> CanonicalBoundSelect? {
@@ -1633,7 +1647,7 @@ fileprivate final class CanonicalNamedBindingScope: Sendable {
     }
 }
 
-fileprivate struct CanonicalQueryBindingEnvironment: Sendable {
+struct CanonicalQueryBindingEnvironment: Sendable {
     let parameters: CanonicalParameterBindingState
     let workMeter: DatabaseWorkMeter
     let occurrences: QueryOccurrenceArena?
@@ -2169,7 +2183,7 @@ extension DatabaseContext {
 
     private func mergeNamedSubqueries(
         local: [NamedSubquery],
-        inherited: [NamedSubquery]
+        inherited: [NamedSubquery], withRecursive: Bool = false
     ) throws -> [NamedSubquery] {
         guard Set(local.map { $0.name }).count == local.count else {
             throw CanonicalReadError.unsupportedSelectQuery(
@@ -2181,7 +2195,7 @@ extension DatabaseContext {
         // point an inherited CTE or physical table with the same name remains visible.
         var available = Set(inherited.map { $0.name })
         available.formUnion(localNames.filter { container.schema.entity(named: $0) != nil })
-        for definition in local {
+        for definition in local where !withRecursive {
             let unavailable = referencedTableNames(in: definition.query, among: localNames)
                 .subtracting(available)
             guard unavailable.isEmpty else {
@@ -2359,7 +2373,7 @@ extension DatabaseContext {
         func collect(_ source: DataSource) {
             switch source {
             case .table(let table):
-                if visibleCandidates.contains(table.table) {
+                if table.schema == nil, visibleCandidates.contains(table.table) {
                     names.insert(table.table)
                 }
             case .subquery(let subquery):
@@ -2397,18 +2411,19 @@ extension DatabaseContext {
                     .namedGraph(_, let pattern),
                     .service(_, let pattern, _):
                 collect(pattern)
+            case .tableFunction(let table):
+                table.function.arguments.forEach(collect)
             case .logical:
                 break
             }
         }
 
+        var priorLocalNames = Set<String>()
         for subquery in query.subqueries ?? [] {
-            names.formUnion(
-                referencedTableNames(
-                    in: subquery.query,
-                    among: visibleCandidates
-                )
-            )
+            let shadowed = query.withRecursive ? localNames : priorLocalNames
+            names.formUnion(referencedTableNames(in: subquery.query,
+                among: candidateNames.subtracting(shadowed)))
+            priorLocalNames.insert(subquery.name)
         }
         collect(query.source)
         for item in query.projection { if case .expression(let expression, _) = item { collect(expression) } }
@@ -2417,6 +2432,9 @@ extension DatabaseContext {
         for window in query.windows { canonicalVisitWindowExpressions(window.specification, collect) }
         if let having = query.having { collect(having) }
         for sortKey in query.orderBy ?? [] { collect(sortKey.expression) }
+        if case .distinctOn(let keys) = query.quantifier { keys.forEach(collect) }
+        if case .count(.expression(let value), _) = query.pagination.limit { collect(value) }
+        if case .expression(let value) = query.pagination.offset { collect(value) }
         return names
     }
 
@@ -2837,6 +2855,81 @@ extension DatabaseContext {
             continuation: page.continuation, metadata: [:], affectedRows: nil)
     }
 
+    private func prepareCTEEnvironment(_ definitions: [CanonicalBoundCTE],
+        context: CanonicalQueryEvaluationContext
+    ) async throws -> (environment: SQLCTEEnvironment, caches: [SQLCTECache]) {
+        var environment = context.cteEnvironment
+        var caches: [SQLCTECache] = []
+        let meter = context.options.workMeter
+        do {
+            for definition in definitions {
+                let visible = environment
+                let body = definition.plan
+                let names = try aliasedColumnNames(body.columns.map { $0.name }, overrides: definition.definition.columns)
+                let schema = try CanonicalRelationSchema(unscopedColumns: names, types: body.columns.map { $0.type },
+                    nullability: body.columns.map { $0.isNullable })
+                let childContext = runtimeContext(context, environment: visible)
+                let factory: @Sendable () async throws -> any SQLRelationProducer = { [self] in
+                    if let recursive = definition.recursive {
+                        return try await makeRecursiveProducer(recursive, schema: schema, context: childContext)
+                    }
+                    let producer = try await makeSelectProducer(definition.definition.query, plan: body, context: childContext)
+                    return reframedProducer(producer, schema: schema, meter: meter)
+                }
+                if definition.recursive == nil && definition.definition.materialized == .notMaterialized && !definition.isVolatile {
+                    environment = environment.adding(name: definition.definition.name, factory: factory)
+                } else {
+                    let cache = try SQLCTECache(schema: schema, meter: meter, factory: factory)
+                    environment = environment.adding(name: definition.definition.name, cache: cache)
+                    caches.append(cache)
+                }
+            }
+            return (environment, caches)
+        } catch {
+            let operationError = error
+            var cleanupError: (any Error)?
+            for cache in caches { do { try await cache.close() } catch { if cleanupError == nil { cleanupError = error } } }
+            if let cleanupError { throw SQLRelationCleanupError(operationError: operationError, cleanupError: cleanupError) }
+            throw operationError
+        }
+    }
+
+    private func makeRecursiveProducer(_ recursive: CanonicalBoundRecursiveDefinition,
+        schema: CanonicalRelationSchema, context: CanonicalQueryEvaluationContext
+    ) async throws -> any SQLRelationProducer {
+        let prepared = try await prepareCTEEnvironment(recursive.prelude, context: context)
+        let caches = prepared.caches
+        let meter = context.options.workMeter
+        let visible = prepared.environment
+        let childContext = runtimeContext(context, environment: visible)
+        do {
+            let producer = try SQLRecursiveRowProducer(schema: schema, userColumnCount: recursive.seedPlan.columns.count,
+                unionAll: recursive.unionAll, generated: recursive.generated,
+                temporalEnvironment: childContext.options.temporalEnvironment,
+                limits: CanonicalBindingStorage.limits(meter), meter: meter,
+                seedFactory: { [self] in
+                    try await makeSelectProducer(recursive.seedQuery, plan: recursive.seedPlan, context: childContext)
+                }, stepFactory: { [self] frontier in
+                    let environment = visible.adding(name: recursive.selfName, factory: { frontier.consumer() })
+                    let active = runtimeContext(childContext, environment: environment)
+                    return try await makeSelectProducer(recursive.termQuery, plan: recursive.termPlan, context: active)
+                })
+            return SQLRelationPullProducer(schema: schema, meter: meter,
+                operation: { _ in try await producer.next() }, cleanup: {
+                    var failure: (any Error)?
+                    do { try await producer.close() } catch { failure = error }
+                    for cache in caches { do { try await cache.close() } catch { if failure == nil { failure = error } } }
+                    if let failure { throw failure }
+                })
+        } catch {
+            let operationError = error
+            var cleanupError: (any Error)?
+            for cache in caches { do { try await cache.close() } catch { if cleanupError == nil { cleanupError = error } } }
+            if let cleanupError { throw SQLRelationCleanupError(operationError: operationError, cleanupError: cleanupError) }
+            throw operationError
+        }
+    }
+
     private func makeSelectProducer(_ query: SelectQuery, plan: CanonicalBoundSelect,
         context: CanonicalQueryEvaluationContext
     ) async throws -> any SQLRelationProducer {
@@ -2850,25 +2943,8 @@ extension DatabaseContext {
         var caches: [SQLCTECache] = []
         let meter = context.options.workMeter
         do {
-            for definition in plan.ctes {
-                let visible = environment
-                let body = definition.plan
-                let names = try aliasedColumnNames(body.columns.map { $0.name }, overrides: definition.definition.columns)
-                let schema = try CanonicalRelationSchema(unscopedColumns: names, types: body.columns.map { $0.type },
-                    nullability: body.columns.map { $0.isNullable })
-                let childContext = runtimeContext(context, environment: visible)
-                let factory: @Sendable () async throws -> any SQLRelationProducer = { [self] in
-                    let producer = try await makeSelectProducer(definition.definition.query, plan: body, context: childContext)
-                    return reframedProducer(producer, schema: schema, meter: meter)
-                }
-                if definition.definition.materialized == .notMaterialized && !definition.isVolatile {
-                    environment = environment.adding(name: definition.definition.name, factory: factory)
-                } else {
-                    let cache = try SQLCTECache(schema: schema, meter: meter, factory: factory)
-                    environment = environment.adding(name: definition.definition.name, cache: cache)
-                    caches.append(cache)
-                }
-            }
+            let prepared = try await prepareCTEEnvironment(plan.ctes, context: context)
+            environment = prepared.environment; caches = prepared.caches
             let active = runtimeContext(context, environment: environment)
             let pagination = try await evaluatePagination(plan.pagination, context: active)
             if pagination.limit == 0 {
@@ -2943,6 +3019,44 @@ extension DatabaseContext {
             guard let body = plan.queryPlan else { throw CanonicalReadError.unsupportedSelectQuery("A derived relation has no executable binding") }
             let child = try await makeSelectProducer(query, plan: body, context: context)
             return reframedProducer(child, schema: plan.schema, meter: meter)
+        case .tableFunction:
+            guard let selected = plan.tableFunction else {
+                throw CanonicalReadError.unsupportedSelectQuery("A function source has no selected signature")
+            }
+            let row = try CanonicalRelationSchema().nullRow()
+            let overlayClaim = try meter.reserveIntermediate(bytes: Self.prospectiveSourceCompositionFootprint(
+                row, outer: context.outerRow, workMeter: meter).bytes, at: .expressionEvaluation)
+            defer { overlayClaim.release() }
+            let effective = row.overlaying(outer: context.outerRow)
+            var operands = try SQLArrayBuffer<ProjectedQueryValue>(meter: meter)
+            func append(_ input: CanonicalBoundExpression, to operands: inout SQLArrayBuffer<ProjectedQueryValue>) async throws {
+                let value = try await evaluateBoundValue(input, on: row, effectiveRow: effective,
+                    context: context, workMeter: meter)
+                var leases = try SQLArrayBuffer<DatabaseQueryPayloadLease>(meter: meter)
+                for lease in value.leases { try leases.append(lease) }
+                if value.payloadIsRetained {
+                    for lease in effective.payloadLeases { try leases.append(lease) }
+                    if let outer = context.outerRow {
+                        for lease in outer.layout.payloadLeases { try leases.append(lease) }
+                        if let owner = outer.layout.reservation {
+                            try leases.append(DatabaseQueryPayloadLease(retaining: owner))
+                        }
+                    }
+                }
+                let owned = leases.finish()
+                // The synchronous factory copies these carrier vectors into its own admitted storage.
+                try operands.reservation.absorbAll(from: owned.reservation)
+                try operands.append(ProjectedQueryValue(value: value.value, leases: owned.values,
+                    payloadIsRetained: value.payloadIsRetained))
+            }
+            if selected.kind == .scalar { try await append(selected.bound, to: &operands) }
+            else { for input in selected.bound.children { try await append(input, to: &operands) } }
+            let owned = operands.finish()
+            return try withExtendedLifetime(owned) {
+                try makeSQLTableFunctionProducer(schema: plan.schema, selected: selected, operands: owned.values,
+                    temporalEnvironment: context.options.temporalEnvironment ?? context.fusionSession.temporalEnvironment,
+                    workMeter: meter, limits: CanonicalBindingStorage.limits(meter))
+            }
         case .values:
             let empty = try CanonicalRelationSchema().nullRow()
             return SQLRelationPullProducer(schema: plan.schema, meter: meter) { [self] index in
@@ -2953,8 +3067,11 @@ extension DatabaseContext {
         case .join(let clause):
             let left = try await makeSourceProducer(clause.left, plan: plan.children[0], context: context,
                 authorizationQuery: authorizationQuery, allowsOuterReferences: allowsOuterReferences)
-            let lateral = clause.type == .lateral || clause.type == .leftLateral
-            let type = lateral ? (clause.type == .leftLateral ? JoinType.left : .inner) : naturalJoinBaseType(clause.type)
+            let implicit = canonicalSourceIsImplicitlyLateral(clause.right)
+                && ![.right, .full, .naturalRight, .naturalFull].contains(clause.type)
+            let lateral = clause.type == .lateral || clause.type == .leftLateral || implicit
+            let type = clause.type == .lateral ? JoinType.inner
+                : (clause.type == .leftLateral ? .left : naturalJoinBaseType(clause.type))
             let condition: JoinCondition?
             switch clause.type {
             case .natural, .naturalLeft, .naturalRight, .naturalFull:
@@ -3488,6 +3605,7 @@ extension DatabaseContext {
         }
         func source(_ value: CanonicalSourceBindingPlan) -> Bool {
             if let query = value.queryPlan, selectedPlanIsVolatile(query) { return true }
+            if let function = value.tableFunction, expression(function.bound) { return true }
             if let condition = value.condition, expression(condition) { return true }
             return value.valueBindings.contains { $0.contains(where: expression) }
                 || value.children.contains(where: source)
@@ -3540,7 +3658,7 @@ extension DatabaseContext {
         // Resolving an output alias may produce a computed ORDER expression;
         // it must not replace the requirement already admitted for that request.
         var listAuthorizationRequirement = admittedListAuthorizationRequirement
-        if listAuthorizationRequirement == nil, sourcePlan.queryPlan == nil,
+        if listAuthorizationRequirement == nil, sourcePlan.queryPlan == nil, sourcePlan.recursiveSelf == nil,
            case .table(let table) = selectQuery.source {
             listAuthorizationRequirement = try DatabaseReadPolicy.listRequirement(
                 entityName: table.table, selectQuery: selectQuery, schema: try readPolicy().schema)
@@ -3567,7 +3685,7 @@ extension DatabaseContext {
         default: fixedPagination = true
         }
         let directTable: Bool
-        if case .table = selectQuery.source, sourcePlan.queryPlan == nil,
+        if case .table = selectQuery.source, sourcePlan.queryPlan == nil, sourcePlan.recursiveSelf == nil,
            selectQuery.subqueries == nil, selectQuery.groupBy == nil, selectQuery.having == nil,
            selectQuery.quantifier == .all, !canonicalQueryRequiresWindows(selectQuery), fixedPagination, !selectedPlanIsVolatile(boundPlan),
            !boundPlan.columns.contains(where: { column in
@@ -4576,6 +4694,10 @@ extension DatabaseContext {
     ) async throws -> CanonicalRelation {
         switch source {
         case .table(let tableRef):
+            if tableRef.schema == nil, let consumer = try await cteEnvironment.consumer(named: tableRef.table) {
+                return try await drainSQLProducer(reframedProducer(consumer, schema: sourcePlan.schema,
+                    meter: options.workMeter), meter: options.workMeter)
+            }
             if let named = namedSubqueries.first(where: { $0.name == tableRef.table }) {
                 guard tableRef.partitions.isEmpty else {
                     throw CanonicalReadError.invalidPartition(
@@ -4687,6 +4809,14 @@ extension DatabaseContext {
                 preparedFusionGraph: preparedFusionGraph, fusionSession: fusionSession,
                 authorizationQuery: authorizationQuery, outerRow: outerRow, allowsOuterReferences: allowsOuterReferences)
             return try reframeRelation(relation, to: sourcePlan.schema, workMeter: options.workMeter)
+
+        case .tableFunction:
+            let context = CanonicalQueryEvaluationContext(options: options, transaction: transaction,
+                partitionValues: partitionValues, partitionMode: partitionMode, namedSubqueries: namedSubqueries,
+                queryBinding: queryBinding, cteEnvironment: cteEnvironment, outerRow: outerRow,
+                preparedFusionGraph: preparedFusionGraph, fusionSession: fusionSession)
+            return try await drainSQLProducer(makeSourceProducer(source, plan: sourcePlan, context: context,
+                authorizationQuery: authorizationQuery, allowsOuterReferences: allowsOuterReferences), meter: options.workMeter)
 
         case .values(let rows):
             let schema = sourcePlan.schema
@@ -8781,6 +8911,8 @@ extension DatabaseContext {
                     try push(.source(join.right)); try push(.source(join.left))
                 case .setOperation(_, _, let left, let right):
                     try push(.statement(right)); try push(.statement(left))
+                case .tableFunction(let table):
+                    for argument in table.function.arguments.reversed() { try push(.expression(argument)) }
                 case .values(let rows):
                     for row in rows.reversed() {
                         try addBytes(128)
@@ -8807,7 +8939,13 @@ extension DatabaseContext {
                 for item in value.projection.reversed() {
                     if case .expression(let expression, _) = item { try push(.expression(expression)) }
                 }
-                for definition in (value.subqueries ?? []).reversed() { try push(.statement(definition.query)) }
+                for definition in (value.subqueries ?? []).reversed() {
+                    if let cycle = definition.cycle {
+                        if let value = cycle.markValue { try push(.expression(.literal(value))) }
+                        if let value = cycle.defaultValue { try push(.expression(.literal(value))) }
+                    }
+                    try push(.statement(definition.query))
+                }
                 try push(.source(value.source))
             }
         }
@@ -8843,7 +8981,9 @@ extension DatabaseContext {
         let claim = try canonicalBindingReservation(query, binding: binding)
         var binding = binding
         binding.planReservation = claim
-        let scope = try bindCanonicalQueryScope(query, inherited: inherited, outerSchemas: outerSchemas, binding: binding)
+        let scope = try query.withRecursive
+            ? bindCanonicalRecursiveQueryScope(query, inherited: inherited, outerSchemas: outerSchemas, binding: binding)
+            : bindCanonicalNonrecursiveQueryScope(query, inherited: inherited, outerSchemas: outerSchemas, binding: binding)
         let source = try bindCanonicalSource(query.source, namedSubqueries: scope.named,
             outerSchemas: outerSchemas, binding: scope.scoped.child(.source))
         return try finishCanonicalQueryBinding(query, source: source, namedSubqueries: scope.named,
@@ -8871,25 +9011,391 @@ extension DatabaseContext {
 
     private func bindCanonicalQueryScope(_ query: SelectQuery, inherited: [NamedSubquery],
         outerSchemas: [CanonicalRelationSchema], binding: CanonicalQueryBindingEnvironment
-    ) throws -> (named: [NamedSubquery], scoped: CanonicalQueryBindingEnvironment, ctes: [CanonicalBoundCTE]) {
+    ) throws -> CanonicalQueryBindingScope {
+        if query.withRecursive {
+            return try bindCanonicalRecursiveQueryScope(query, inherited: inherited, outerSchemas: outerSchemas, binding: binding)
+        }
+        return try bindCanonicalNonrecursiveQueryScope(query, inherited: inherited, outerSchemas: outerSchemas, binding: binding)
+    }
+
+    private func bindCanonicalNonrecursiveQueryScope(_ query: SelectQuery, inherited: [NamedSubquery],
+        outerSchemas: [CanonicalRelationSchema], binding: CanonicalQueryBindingEnvironment
+    ) throws -> CanonicalQueryBindingScope {
         let local = query.subqueries ?? []
         let named = try mergeNamedSubqueries(local: local, inherited: inherited)
         var visible = inherited
         var scoped = binding
         var ctes: [CanonicalBoundCTE] = []
-        for (index, definition) in local.enumerated() {
-            let child = scoped.child(.cte, index: UInt32(index))
-            let plan = try bindCanonicalQuery(definition.query, inherited: visible,
-                outerSchemas: outerSchemas, binding: child)
+        for index in local.indices {
+            let definition = local[index]
+            guard definition.search == nil, definition.cycle == nil else {
+                throw CanonicalReadError.unsupportedSelectQuery("SEARCH and CYCLE require a recursive CTE")
+            }
+            let plan = try bindCanonicalQuery(definition.query, inherited: visible, outerSchemas: outerSchemas,
+                binding: scoped.child(.cte, index: UInt32(index)))
             guard definition.columns == nil || (definition.columns?.count ?? 0) <= plan.columns.count else {
                 throw CanonicalReadError.unsupportedSelectQuery("CTE column count differs from its query")
             }
-            ctes.append(CanonicalBoundCTE(identity: index, definition: definition, plan: plan,
-                referenceCount: 1, isVolatile: selectedPlanIsVolatile(plan)))
+            let item = try CanonicalBoundCTE.create(identity: index, definition: definition, plan: plan,
+                referenceCount: 1, isVolatile: selectedPlanIsVolatile(plan), workMeter: binding.workMeter)
+            try CanonicalBindingStorage.append(item, to: &ctes, reservation: binding.planReservation)
             scoped.namedPlans = CanonicalNamedBindingScope(parent: scoped.namedPlans, name: definition.name, plan: plan)
             visible.insert(definition, at: 0)
         }
-        return (named, scoped, ctes)
+        return try CanonicalQueryBindingScope.create(named: named, scoped: scoped, ctes: ctes, workMeter: binding.workMeter)
+    }
+
+    private func bindCanonicalRecursiveQueryScope(_ query: SelectQuery, inherited: [NamedSubquery],
+        outerSchemas: [CanonicalRelationSchema], binding: CanonicalQueryBindingEnvironment
+    ) throws -> CanonicalQueryBindingScope {
+        let local = query.subqueries ?? []
+        let named = try mergeNamedSubqueries(local: local, inherited: inherited, withRecursive: true)
+        var scoped = binding
+        var ctes: [CanonicalBoundCTE] = []
+        let dependencyBytes = try DatabaseIntermediateCollectionMeter.arrayFootprint(count: local.count, element: Int.self)
+            .adding(DatabaseIntermediateCollectionMeter.arrayFootprint(count: local.count, element: Set<String>.self))
+            .adding(DatabaseIntermediateFootprint(bytes: UInt64(local.count) * 128))
+        let dependencyClaim = try binding.workMeter.reserveIntermediate(bytes: dependencyBytes.bytes, at: .bindingCandidate)
+        defer { dependencyClaim.release() }
+        var remaining = Array(local.indices)
+        let names = Set(local.map { $0.name })
+        var dependencies: [Set<String>] = []
+        for definition in local {
+            try binding.workMeter.consume(at: .bindingCandidate)
+            let referenced = referencedTableNames(in: definition.query, among: names)
+            try dependencyClaim.reserveAdditional(bytes: UInt64(referenced.count) * 128, at: .bindingCandidate)
+            try CanonicalBindingStorage.append(referenced, to: &dependencies, reservation: dependencyClaim)
+        }
+        while !remaining.isEmpty {
+            try binding.workMeter.consume(at: .bindingCandidate)
+            var ready: Int?
+            for (candidate, index) in remaining.enumerated() {
+                let work = UInt64(remaining.count).multipliedReportingOverflow(by: UInt64(dependencies[index].count))
+                guard !work.overflow else { throw DatabaseExpressionEvaluationError.numericOverflow }
+                try binding.workMeter.consume(max(1, work.partialValue), at: .bindingCandidate)
+                if dependencies[index].allSatisfy({ dependency in
+                    dependency == local[index].name || !remaining.contains { local[$0].name == dependency }
+                }) { ready = candidate; break }
+            }
+            guard let ready else { throw CanonicalReadError.unsupportedSelectQuery("Mutually recursive CTEs are not supported") }
+            let index = remaining.remove(at: ready)
+            let definition = local[index]
+            let child = scoped.child(.cte, index: UInt32(index))
+            let recursive = dependencies[index].contains(definition.name)
+            let item: CanonicalBoundCTE
+            if recursive {
+                item = try bindCanonicalRecursiveCTE(definition, identity: index, inherited: named,
+                    outerSchemas: outerSchemas, binding: child, declarationBinding: binding)
+            } else {
+                guard definition.search == nil, definition.cycle == nil else {
+                    throw CanonicalReadError.unsupportedSelectQuery("SEARCH and CYCLE require a recursive CTE")
+                }
+                let plan = try bindCanonicalQuery(definition.query, inherited: named,
+                    outerSchemas: outerSchemas, binding: child)
+                guard definition.columns == nil || (definition.columns?.count ?? 0) <= plan.columns.count else {
+                    throw CanonicalReadError.unsupportedSelectQuery("CTE column count differs from its query")
+                }
+                item = try CanonicalBoundCTE.create(identity: index, definition: definition, plan: plan,
+                    referenceCount: 1, isVolatile: selectedPlanIsVolatile(plan), workMeter: binding.workMeter)
+            }
+            try CanonicalBindingStorage.append(item, to: &ctes, reservation: binding.planReservation)
+            scoped.namedPlans = CanonicalNamedBindingScope(parent: scoped.namedPlans, name: definition.name, plan: item.plan)
+            // The final selected recursive output schema is represented by the definition's plan.
+        }
+        return try CanonicalQueryBindingScope.create(named: named, scoped: scoped, ctes: ctes, workMeter: binding.workMeter)
+    }
+
+    private func bindCanonicalRecursiveCTE(_ definition: NamedSubquery, identity: Int,
+        inherited: [NamedSubquery], outerSchemas: [CanonicalRelationSchema], binding: CanonicalQueryBindingEnvironment,
+        declarationBinding: CanonicalQueryBindingEnvironment
+    ) throws -> CanonicalBoundCTE {
+        let query = definition.query
+        guard case .setOperation(.union, let quantifier, let seedQuery, let termQuery) = query.source,
+              query.projection == [.wildcard()], query.filter == nil, query.groupBy == nil,
+              query.having == nil, query.orderBy == nil, query.pagination == QueryPagination() else {
+            throw CanonicalReadError.unsupportedSelectQuery("A recursive CTE requires a seed UNION a recursive term")
+        }
+        guard !referencedTableNames(in: seedQuery, among: [definition.name]).contains(definition.name) else {
+            throw CanonicalReadError.unsupportedSelectQuery("A recursive reference is not allowed in its seed")
+        }
+        try validateCanonicalRecursiveTerm(termQuery, name: definition.name, workMeter: binding.workMeter)
+        let prelude = try bindCanonicalQueryScope(query, inherited: inherited, outerSchemas: outerSchemas, binding: binding)
+        let seedBinding = prelude.scoped.child(.source).child(.setLeft)
+        let seed = try bindCanonicalQuery(seedQuery, inherited: prelude.named,
+            outerSchemas: outerSchemas, binding: seedBinding)
+        let names = try aliasedColumnNames(seed.columns.map { $0.name }, overrides: definition.columns)
+        var columns: [QueryColumn] = []
+        for index in seed.columns.indices {
+            let column = seed.columns[index]
+            try CanonicalBindingStorage.append(try QueryColumn(number: UInt32(index + 1), name: names[index],
+                type: column.type, isNullable: true), to: &columns, reservation: binding.planReservation)
+        }
+        let generated = try bindCanonicalRecursiveGenerated(definition, columns: &columns, binding: binding,
+            declarationBinding: declarationBinding, identity: identity)
+        let placeholder = CanonicalRecursiveSelfBinding(name: definition.name, columns: columns)
+        var termBinding = prelude.scoped.child(.source).child(.setRight)
+        termBinding.namedPlans = CanonicalNamedBindingScope(parent: prelude.scoped.namedPlans,
+            name: definition.name, recursiveSelf: placeholder)
+        var term = try bindCanonicalQuery(termQuery, inherited: prelude.named,
+            outerSchemas: outerSchemas, binding: termBinding)
+        guard term.columns.count == seed.columns.count else {
+            throw CanonicalReadError.unsupportedSelectQuery("Recursive term arity differs from the seed")
+        }
+        for index in seed.columns.indices {
+            guard CanonicalQueryTypeBinder.recursiveColumnTypesAgree(seed.columns[index].type, term.columns[index].type) else {
+                throw DatabaseExpressionEvaluationError.typeMismatch(operation: "recursive term must preserve its seed column type")
+            }
+        }
+        if seed.columns.indices.contains(where: { seed.columns[$0].type != term.columns[$0].type }) {
+            let binder = try typeBinder(schema: CanonicalRelationSchema(), namedSubqueries: prelude.named,
+                queryBinding: termBinding, outerSchemas: outerSchemas)
+            var columns: [QueryColumn] = []
+            var projection: [CanonicalBoundExpression] = []
+            for index in seed.columns.indices {
+                try CanonicalBindingStorage.append(try binder.bindSourceValue(term.projection[index], to: seed.columns[index].type),
+                    to: &projection, reservation: binding.planReservation)
+                try CanonicalBindingStorage.append(try QueryColumn(number: term.columns[index].number,
+                    name: term.columns[index].name, type: seed.columns[index].type, isNullable: term.columns[index].isNullable),
+                    to: &columns, reservation: binding.planReservation)
+            }
+            term = CanonicalBoundSelect(columns: columns, projection: projection, filter: term.filter,
+                groupBy: term.groupBy, having: term.having, orderBy: term.orderBy, sourcePlan: term.sourcePlan,
+                distinctOn: term.distinctOn, pagination: term.pagination, ctes: term.ctes,
+                metadataLease: term.metadataLease, bindingMetadata: term.bindingMetadata, grouping: term.grouping, windows: term.windows)
+        }
+        let selectedTerm = try appendCanonicalRecursiveParentColumns(term, generated: generated.configuration,
+            selfName: definition.name, userColumnCount: seed.columns.count, binding: binding)
+        let descriptorClaim = try binding.workMeter.reserveIntermediate(
+            bytes: CanonicalBoundRecursiveDefinition.storageByteCount, at: .bindingCandidate)
+        let recursive = CanonicalBoundRecursiveDefinition(prelude: prelude.ctes, seedQuery: seedQuery, seedPlan: seed,
+            termQuery: termQuery, termPlan: selectedTerm, columns: columns, selfName: definition.name,
+            unionAll: quantifier == .all, generated: generated.configuration, metadataLeases: generated.leases,
+            metadataLease: DatabaseQueryPayloadLease(retaining: descriptorClaim))
+        let output = CanonicalBoundSelect(columns: columns, projection: seed.projection, filter: seed.filter,
+            groupBy: seed.groupBy, having: seed.having, orderBy: seed.orderBy, sourcePlan: seed.sourcePlan,
+            distinctOn: seed.distinctOn, pagination: seed.pagination, ctes: seed.ctes,
+            metadataLease: seed.metadataLease, bindingMetadata: seed.bindingMetadata, grouping: seed.grouping, windows: seed.windows)
+        return try CanonicalBoundCTE.create(identity: identity, definition: definition, plan: output,
+            referenceCount: 1, isVolatile: selectedPlanIsVolatile(seed) || selectedPlanIsVolatile(term),
+            recursive: recursive, workMeter: binding.workMeter)
+    }
+
+    private func validateCanonicalRecursiveTerm(_ query: SelectQuery, name: String, workMeter: DatabaseWorkMeter) throws {
+        guard !canonicalQueryRequiresAggregation(query) else {
+            throw CanonicalReadError.unsupportedSelectQuery("Aggregates and grouping are not allowed in a recursive term")
+        }
+        var count = 0
+        func nested(_ child: SelectQuery) throws {
+            if referencedTableNames(in: child, among: [name]).contains(name) {
+                throw CanonicalReadError.unsupportedSelectQuery("A recursive reference is not allowed in a subquery")
+            }
+        }
+        func expression(_ value: Expression) throws {
+            try workMeter.consume(at: .bindingCandidate)
+            switch value {
+            case .subquery(let child), .arraySubquery(let child), .exists(let child): try nested(child)
+            case .inSubquery(let lhs, let child): try expression(lhs); try nested(child)
+            case .quantifiedComparison(let lhs, _, _, .subquery(let child)): try expression(lhs); try nested(child)
+            default:
+                var failure: (any Error)?
+                canonicalVisitScalarChildren(value) { child in
+                    guard failure == nil else { return }
+                    do { try expression(child) } catch { failure = error }
+                }
+                if let failure { throw failure }
+            }
+        }
+        func source(_ value: DataSource, nullable: Bool = false) throws {
+            try workMeter.consume(at: .bindingCandidate)
+            switch value {
+            case .table(let table) where table.schema == nil && table.table == name:
+                guard !nullable else { throw CanonicalReadError.unsupportedSelectQuery("A recursive reference is not allowed on a nullable join side") }
+                count += 1
+            case .aliased(let child, _, _): try source(child, nullable: nullable)
+            case .join(let join):
+                try source(join.left, nullable: nullable || [.right, .full, .naturalRight, .naturalFull].contains(join.type))
+                try source(join.right, nullable: nullable || [.left, .leftLateral, .full, .naturalLeft, .naturalFull].contains(join.type))
+                if case .on(let value) = join.condition { try expression(value) }
+            case .subquery(let child): try nested(child)
+            case .setOperation(_, _, let lhs, let rhs): try nested(lhs); try nested(rhs)
+            case .tableFunction(let table): for value in table.function.arguments { try expression(value) }
+            case .values(let rows): for row in rows { for value in row { try expression(value) } }
+            default: break
+            }
+        }
+        for child in query.subqueries ?? [] { try nested(child.query) }
+        try source(query.source)
+        for item in query.projection { if case .expression(let value, _) = item { try expression(value) } }
+        if let filter = query.filter { try expression(filter) }
+        for key in query.orderBy ?? [] { try expression(key.expression) }
+        for window in query.windows { try canonicalVisitWindowExpressions(window.specification, expression) }
+        if case .distinctOn(let keys) = query.quantifier { for key in keys { try expression(key) } }
+        if case .count(.expression(let value), _) = query.pagination.limit { try expression(value) }
+        if case .expression(let value) = query.pagination.offset { try expression(value) }
+        guard count == 1 else { throw CanonicalReadError.unsupportedSelectQuery("A recursive term requires exactly one working-table reference") }
+    }
+
+    private func bindCanonicalRecursiveGenerated(_ definition: NamedSubquery, columns: inout [QueryColumn],
+        binding: CanonicalQueryBindingEnvironment, declarationBinding: CanonicalQueryBindingEnvironment, identity: Int
+    ) throws -> (configuration: SQLRecursiveGeneratedColumns?, leases: [DatabaseQueryPayloadLease]) {
+        let userColumns = columns
+        let binder = try typeBinder(schema: CanonicalRelationSchema(), namedSubqueries: [], queryBinding: binding)
+        var leases: [DatabaseQueryPayloadLease] = []
+        var search: SQLRecursiveGeneratedColumns.Search?
+        var cycle: SQLRecursiveGeneratedColumns.Cycle?
+        func keys(_ names: [String]) throws -> [Int] {
+            guard !names.isEmpty, Set(names).count == names.count else {
+                throw CanonicalReadError.unsupportedSelectQuery("Recursive generated keys must be unique and nonempty")
+            }
+            var slots: [Int] = []
+            for name in names {
+                let matches = userColumns.indices.filter { userColumns[$0].name == name }
+                guard matches.count == 1, let slot = matches.first else {
+                    throw CanonicalReadError.unsupportedSelectQuery("A recursive generated key is missing or ambiguous")
+                }
+                try binder.requireSQLComparison(userColumns[slot].type, operation: "recursive generated key")
+                try CanonicalBindingStorage.append(slot, to: &slots, reservation: binding.planReservation)
+            }
+            return slots
+        }
+        func record(_ slots: [Int], breadth: Bool) throws -> QueryCompositeType {
+            var fields: [QueryColumn] = []
+            if breadth { try CanonicalBindingStorage.append(try QueryColumn(number: 1, name: "f1", type: .sql(.bigint), isNullable: false),
+                to: &fields, reservation: binding.planReservation) }
+            for slot in slots {
+                let index = fields.count + 1
+                try CanonicalBindingStorage.append(try QueryColumn(number: UInt32(index), name: "f\(index)",
+                    type: userColumns[slot].type, isNullable: true), to: &fields, reservation: binding.planReservation)
+            }
+            let selected = try CanonicalBindingStorage.composite(columns: fields, workMeter: binding.workMeter)
+            if let lease = selected.lease { try CanonicalBindingStorage.append(lease, to: &leases, reservation: binding.planReservation) }
+            return selected.type
+        }
+        func append(_ name: String, type: QueryColumnType, nullable: Bool = false) throws {
+            guard !name.isEmpty, !columns.contains(where: { $0.name == name }) else {
+                throw CanonicalReadError.unsupportedSelectQuery("Recursive generated column names must be unique")
+            }
+            try CanonicalBindingStorage.append(try QueryColumn(number: UInt32(columns.count + 1), name: name,
+                type: type, isNullable: nullable), to: &columns, reservation: binding.planReservation)
+        }
+        if let clause = definition.search {
+            let slots = try keys(clause.columns)
+            let breadth = clause.order == .breadthFirst
+            let type = try record(slots, breadth: breadth)
+            search = .init(keySlots: slots, recordType: type, breadthFirst: breadth)
+            try append(clause.sequenceColumn, type: breadth ? .sql(.composite(type)) : .sql(.array(.composite(type))))
+        }
+        if let clause = definition.cycle {
+            guard (clause.markValue == nil) == (clause.defaultValue == nil) else {
+                throw CanonicalReadError.unsupportedSelectQuery("CYCLE requires both mark and default constants")
+            }
+            let slots = try keys(clause.columns)
+            let type = try record(slots, breadth: false)
+            let mark = clause.markValue ?? .bool(true)
+            let fallback = clause.defaultValue ?? .bool(false)
+            let selected = try binder.bindProjection([.expression(.literal(mark)), .expression(.literal(fallback))])
+            var known: [QueryColumnType] = []
+            func isUnknown(_ literal: Literal) -> Bool {
+                if literal.isNull { return true }
+                if case .sqlUnknownString = literal { return true }
+                return false
+            }
+            if !isUnknown(mark) { known.append(selected.columns[0].type) }
+            if !isUnknown(fallback) { known.append(selected.columns[1].type) }
+            let markType = try binder.commonSourceType(known)
+            try binder.requireSQLComparison(markType, operation: "CYCLE mark")
+            func constant(_ literal: Literal, position: QueryOccurrenceField) throws -> QueryValue {
+                let value = try binder.bindSourceValue(.literal(literal), to: markType,
+                    occurrence: declarationBinding.child(position, index: UInt32(identity)).occurrence)
+                func evaluate(_ selected: CanonicalBoundExpression) throws -> QueryValue {
+                    if case .literal(let literal) = selected.expression {
+                        let result: QueryValue
+                        if case .queryValue(let value, _) = literal { result = value }
+                        else { result = .primitive(try literal.toFieldValue()) }
+                        return try CanonicalQueryTypeBinder.normalize(result, to: selected.type)
+                    }
+                    guard selected.children.count == 1 else {
+                        throw DatabaseExpressionEvaluationError.typeMismatch(operation: "CYCLE constant")
+                    }
+                    let child = try evaluate(selected.children[0])
+                    let result = try CanonicalSQLScalarCast.alignSource(child, from: selected.children[0].type,
+                        to: selected.type, temporalEnvironment: inheritedSQLTemporalEnvironment,
+                        workMeter: binding.workMeter, limits: CanonicalBindingStorage.limits(binding.workMeter))
+                    if let lease = result.lease { try CanonicalBindingStorage.append(lease, to: &leases, reservation: binding.planReservation) }
+                    return result.value
+                }
+                let result = try evaluate(value)
+                let claim = try binding.workMeter.reserveIntermediate(bytes: CanonicalRelationalFootprintMeter.valueFootprint(
+                    of: result, workMeter: binding.workMeter, stage: .bindingCandidate).bytes, at: .bindingCandidate)
+                try CanonicalBindingStorage.append(DatabaseQueryPayloadLease(retaining: claim), to: &leases, reservation: binding.planReservation)
+                return result
+            }
+            let cycleValue = try constant(mark, position: .cteCycleMark)
+            let defaultValue = try constant(fallback, position: .cteCycleDefault)
+            cycle = .init(keySlots: slots, recordType: type, markType: markType,
+                cycleValue: cycleValue, defaultValue: defaultValue)
+            try append(clause.markColumn, type: markType, nullable: cycleValue.isNull || defaultValue.isNull)
+            try append(clause.pathColumn, type: .sql(.array(.composite(type))))
+        }
+        return (search == nil && cycle == nil ? nil : SQLRecursiveGeneratedColumns(search: search, cycle: cycle), leases)
+    }
+
+    private func appendCanonicalRecursiveParentColumns(_ term: CanonicalBoundSelect,
+        generated: SQLRecursiveGeneratedColumns?, selfName: String, userColumnCount: Int,
+        binding: CanonicalQueryBindingEnvironment
+    ) throws -> CanonicalBoundSelect {
+        guard let generated, let source = term.sourcePlan else { return term }
+        func selfSlots(_ value: CanonicalSourceBindingPlan) throws -> [Int]? {
+            if value.recursiveSelf?.name == selfName { return value.schema.layout.visibleSlots }
+            for child in value.children {
+                guard let slots = try selfSlots(child) else { continue }
+                if case .aliased = value.source {
+                    return try slots.map { slot in
+                        var visible = slot
+                        if !child.schema.layout.visibleSlots.contains(visible) {
+                            let address = child.schema.layout.slots[slot]
+                            guard child.schema.coalescedColumns.contains(address.name) else {
+                                throw CanonicalReadError.unsupportedSelectQuery("Recursive parent metadata is hidden by its source alias")
+                            }
+                            // USING's merged visible cell preserves the non-nullable recursive side.
+                            visible = try child.schema.resolve(ColumnRef(column: address.name))
+                        }
+                        guard let ordinal = child.schema.layout.visibleSlots.firstIndex(of: visible),
+                              value.schema.layout.visibleSlots.indices.contains(ordinal) else {
+                            throw CanonicalReadError.unsupportedSelectQuery("Recursive parent metadata is hidden by its source alias")
+                        }
+                        return value.schema.layout.visibleSlots[ordinal]
+                    }
+                }
+                return try slots.map { slot in
+                    let address = child.schema.layout.slots[slot]
+                    return try value.schema.resolve(ColumnRef(table: address.scope, column: address.name))
+                }
+            }
+            return nil
+        }
+        guard let slots = try selfSlots(source) else {
+            throw CanonicalReadError.unsupportedSelectQuery("Recursive term has no selected working-table input")
+        }
+        var columns = term.columns
+        var projection = term.projection
+        func append(_ ordinal: Int) throws {
+            guard slots.indices.contains(ordinal), let type = source.schema.slotTypes[slots[ordinal]] else {
+                throw CanonicalReadError.unsupportedSelectQuery("Recursive parent metadata has no selected type")
+            }
+            let address = source.schema.layout.slots[slots[ordinal]]
+            let cell = CanonicalBoundExpression(expression: .column(ColumnRef(table: address.scope, column: address.name)),
+                type: type, isNullable: true, columnSlot: slots[ordinal])
+            try CanonicalBindingStorage.append(cell, to: &projection, reservation: binding.planReservation)
+            try CanonicalBindingStorage.append(try QueryColumn(number: UInt32(columns.count + 1), name: "", type: type,
+                isNullable: true), to: &columns, reservation: binding.planReservation)
+        }
+        if generated.search != nil { try append(userColumnCount) }
+        if generated.cycle != nil { try append(userColumnCount + (generated.search == nil ? 0 : 1) + 1) }
+        return CanonicalBoundSelect(columns: columns, projection: projection, filter: term.filter,
+            groupBy: term.groupBy, having: term.having, orderBy: term.orderBy, sourcePlan: source,
+            distinctOn: term.distinctOn, pagination: term.pagination, ctes: term.ctes,
+            metadataLease: term.metadataLease, bindingMetadata: term.bindingMetadata, grouping: term.grouping, windows: term.windows)
     }
 
     private func finishCanonicalQueryBinding(_ query: SelectQuery, source: CanonicalSourceBindingPlan,
@@ -9173,7 +9679,7 @@ extension DatabaseContext {
     ) throws -> CanonicalBoundSelect {
         try validateCanonicalGroupedBinding(resolved, plan: plan, source: source, binding: binding)
         let owned = CanonicalSourceBindingPlan(source: source.source, schema: source.schema,
-            children: source.children, queryPlan: source.queryPlan, condition: source.condition,
+            children: source.children, queryPlan: source.queryPlan, recursiveSelf: source.recursiveSelf, tableFunction: source.tableFunction, condition: source.condition,
             query: resolved, valueBindings: source.valueBindings, binding: scopedBinding,
             namedSubqueries: namedSubqueries, reservation: reservation,
             bindingFrames: [source.schema.layout] + outerSchemas.map { $0.layout })
@@ -9447,6 +9953,17 @@ extension DatabaseContext {
             case .subquery:
                 return try bindCanonicalSubquerySource(source, namedSubqueries: namedSubqueries,
                     outerSchemas: outerSchemas, binding: binding, reservation: claim)
+            case .tableFunction(let function):
+                let empty = try CanonicalRelationSchema()
+                let binder = try typeBinder(schema: empty, namedSubqueries: namedSubqueries,
+                    queryBinding: binding, outerSchemas: outerSchemas)
+                let selected = try binder.bindTableFunction(function.function,
+                    withOrdinality: function.withOrdinality, occurrence: binding.occurrence)
+                let schema = try CanonicalRelationSchema(scopes: [CanonicalRelationScope(name: function.function.name,
+                    columns: selected.columns.map { $0.name }, types: selected.columns.map { .some($0.type) },
+                    nullability: selected.columns.map { $0.isNullable })])
+                return try admittedCanonicalSource(source, schema: schema, tableFunction: selected,
+                    namedSubqueries: namedSubqueries, outerSchemas: outerSchemas, binding: binding, reservation: claim)
             case .values:
                 return try bindCanonicalValuesSource(source, namedSubqueries: namedSubqueries,
                     outerSchemas: outerSchemas, binding: binding, reservation: claim)
@@ -9472,6 +9989,7 @@ extension DatabaseContext {
 
     private func admittedCanonicalSource(_ source: DataSource, schema: CanonicalRelationSchema,
         children: [CanonicalSourceBindingPlan] = [], queryPlan: CanonicalBoundSelect? = nil,
+        recursiveSelf: CanonicalRecursiveSelfBinding? = nil, tableFunction: CanonicalBoundTableFunction? = nil,
         condition: CanonicalBoundExpression? = nil, valueBindings: [[CanonicalBoundExpression]] = [],
         namedSubqueries: [NamedSubquery], outerSchemas: [CanonicalRelationSchema],
         binding: CanonicalQueryBindingEnvironment, reservation claim: DatabaseIntermediateReservation
@@ -9479,7 +9997,7 @@ extension DatabaseContext {
         try claim.reserveAdditional(bytes: UInt64(schema.layout.slots.count) * 512
             + UInt64(valueBindings.reduce(0) { $0 + $1.count }) * 1024, at: .bindingCandidate)
         return CanonicalSourceBindingPlan(source: source, schema: schema, children: children,
-            queryPlan: queryPlan, condition: condition, valueBindings: valueBindings, binding: binding,
+            queryPlan: queryPlan, recursiveSelf: recursiveSelf, tableFunction: tableFunction, condition: condition, valueBindings: valueBindings, binding: binding,
             namedSubqueries: namedSubqueries, reservation: claim,
             bindingFrames: [schema.layout] + outerSchemas.map { $0.layout })
     }
@@ -9522,6 +10040,18 @@ extension DatabaseContext {
         // The selected source binder rejects qualified names before reads; completion requires catalog-backed schema lookup.
         guard table.schema == nil else {
             throw CanonicalReadError.unsupportedSource("SQL schema-qualified relation lookup requires S11")
+        }
+        if binding.namedPlans.selfBinding(table.table) != nil || namedSubqueries.contains(where: { $0.name == table.table }) {
+            guard table.partitions.isEmpty else {
+                throw CanonicalReadError.invalidPartition(entity: table.table, reason: "common table expressions cannot have storage partitions")
+            }
+        }
+        if let placeholder = binding.namedPlans.selfBinding(table.table) {
+            schema = try CanonicalRelationSchema(scopes: [CanonicalRelationScope(name: table.table,
+                columns: placeholder.columns.map { $0.name }, types: placeholder.columns.map { .some($0.type) },
+                nullability: placeholder.columns.map { $0.isNullable })])
+            return try admittedCanonicalSource(source, schema: schema, recursiveSelf: placeholder,
+                namedSubqueries: namedSubqueries, outerSchemas: outerSchemas, binding: binding, reservation: claim)
         }
         if let named = namedSubqueries.first(where: { $0.name == table.table }) {
             guard let plan = try binding.namedPlans.resolve(named.name, workMeter: binding.workMeter) else {
@@ -9591,6 +10121,14 @@ extension DatabaseContext {
             outerSchemas: outerSchemas, binding: binding, reservation: claim)
     }
 
+    private func canonicalSourceIsImplicitlyLateral(_ source: DataSource) -> Bool {
+        switch source {
+        case .tableFunction: return true
+        case .aliased(let child, _, _): return canonicalSourceIsImplicitlyLateral(child)
+        default: return false
+        }
+    }
+
     private func bindCanonicalJoinSource(_ source: DataSource,
         namedSubqueries: [NamedSubquery], outerSchemas: [CanonicalRelationSchema],
         binding: CanonicalQueryBindingEnvironment, reservation claim: DatabaseIntermediateReservation
@@ -9601,9 +10139,9 @@ extension DatabaseContext {
         try validateJoinDeclaration(join)
         let left = try bindCanonicalSource(join.left, namedSubqueries: namedSubqueries,
             outerSchemas: outerSchemas, binding: binding.child(.joinLeft))
-        let lateral = join.type == .lateral || join.type == .leftLateral
+        let lateral = join.type == .lateral || join.type == .leftLateral || canonicalSourceIsImplicitlyLateral(join.right)
         let right = try bindCanonicalSource(join.right, namedSubqueries: namedSubqueries,
-            outerSchemas: lateral ? [left.schema] + outerSchemas : outerSchemas, binding: binding.child(.joinRight))
+            outerSchemas: lateral && ![.right, .full, .naturalRight, .naturalFull].contains(join.type) ? [left.schema] + outerSchemas : outerSchemas, binding: binding.child(.joinRight))
         return try finishCanonicalJoinSource(source, join: join, left: left, right: right,
             namedSubqueries: namedSubqueries, outerSchemas: outerSchemas, binding: binding, reservation: claim)
     }
@@ -9667,8 +10205,8 @@ extension DatabaseContext {
         let binder = try typeBinder(schema: CanonicalRelationSchema(), namedSubqueries: namedSubqueries, queryBinding: binding)
         let types = try lhs.columns.indices.map { index -> QueryColumnType in
             var inputs: [QueryColumnType] = []
-            if !queryColumnIsContextualNull(left, ordinal: index, namedSubqueries: namedSubqueries) { inputs.append(lhs.columns[index].type) }
-            if !queryColumnIsContextualNull(right, ordinal: index, namedSubqueries: namedSubqueries) { inputs.append(rhs.columns[index].type) }
+            if !queryColumnIsContextualNull(left, ordinal: index, namedSubqueries: namedSubqueries, queryBinding: binding) { inputs.append(lhs.columns[index].type) }
+            if !queryColumnIsContextualNull(right, ordinal: index, namedSubqueries: namedSubqueries, queryBinding: binding) { inputs.append(rhs.columns[index].type) }
             let type = try binder.commonSourceType(inputs)
             if quantifier == .distinct || operation != .union { try binder.requireSQLComparison(type, operation: "set operation") }
             return type
@@ -9734,6 +10272,7 @@ extension DatabaseContext {
         workMeter: DatabaseWorkMeter) throws -> [DatabaseQueryPayloadLease] {
         enum Visit {
             case selected(CanonicalBoundSelect)
+            case cte(CanonicalBoundCTE)
             case source(CanonicalSourceBindingPlan)
             case expression(CanonicalBoundExpression)
             case window(CanonicalBoundWindowDefinition)
@@ -9777,17 +10316,27 @@ extension DatabaseContext {
                 }
                 if let condition = value.condition { try push(.expression(condition)) }
                 if let nested = value.queryPlan { try push(.selected(nested)) }
+                if let function = value.tableFunction { try push(.expression(function.bound)) }
             case .window(let value):
                 if let cell = value.frame?.endOffset { try push(.expression(cell)) }
                 if let cell = value.frame?.startOffset { try push(.expression(cell)) }
                 for key in value.orderBy.reversed() { try push(.expression(key.expression)) }
                 for cell in value.partitionBy.reversed() { try push(.expression(cell)) }
+            case .cte(let definition):
+                try keep(definition.metadataLease)
+                try push(.selected(definition.plan))
+                if let recursive = definition.recursive {
+                    try keep(recursive.metadataLease)
+                    for lease in recursive.metadataLeases { try keep(lease) }
+                    try push(.selected(recursive.seedPlan)); try push(.selected(recursive.termPlan))
+                    for item in recursive.prelude.reversed() { try push(.cte(item)) }
+                }
             case .selected(let value):
                 guard visitedPlans.insert(ObjectIdentifier(value)).inserted else { continue }
                 try storage.reserveAdditional(bytes: 64, at: .bindingCandidate)
                 try keep(value.metadataLease); try keep(value.bindingMetadata?.payloadLease)
                 try keep(value.grouping?.metadataLease)
-                for definition in value.ctes.reversed() { try push(.selected(definition.plan)) }
+                for definition in value.ctes.reversed() { try push(.cte(definition)) }
                 if let root = value.sourcePlan { try push(.source(root)) }
                 if case .expression(let cell) = value.pagination.limit { try push(.expression(cell)) }
                 if case .expression(let cell) = value.pagination.offset { try push(.expression(cell)) }
@@ -10142,7 +10691,7 @@ extension DatabaseContext {
                 guard let type = schema.layout.types[slot] else {
                     throw CanonicalReadError.unsupportedSelectQuery("Set operation column has no declared type")
                 }
-                if !sourceColumnIsContextualNull(source, ordinal: ordinal, namedSubqueries: namedSubqueries) {
+                if !sourceColumnIsContextualNull(source, ordinal: ordinal, namedSubqueries: namedSubqueries, queryBinding: queryBinding) {
                     types[ordinal].append(type)
                 }
                 nullability[ordinal] = nullability[ordinal] || schema.layout.nullability[slot]
@@ -10165,12 +10714,13 @@ extension DatabaseContext {
     ) -> Bool {
         switch source {
         case .values(let rows): return !rows.isEmpty && rows.allSatisfy { $0.indices.contains(ordinal) && expressionIsContextualNull($0[ordinal]) }
-        case .subquery(let query): return queryColumnIsContextualNull(query, ordinal: ordinal, namedSubqueries: namedSubqueries)
-        case .aliased(let nested, _, _): return sourceColumnIsContextualNull(nested, ordinal: ordinal, namedSubqueries: namedSubqueries)
-        case .setOperation(_, _, let left, let right): return queryColumnIsContextualNull(left, ordinal: ordinal, namedSubqueries: namedSubqueries) && queryColumnIsContextualNull(right, ordinal: ordinal, namedSubqueries: namedSubqueries)
+        case .subquery(let query): return queryColumnIsContextualNull(query, ordinal: ordinal, namedSubqueries: namedSubqueries, queryBinding: queryBinding)
+        case .aliased(let nested, _, _): return sourceColumnIsContextualNull(nested, ordinal: ordinal, namedSubqueries: namedSubqueries, queryBinding: queryBinding)
+        case .setOperation(_, _, let left, let right): return queryColumnIsContextualNull(left, ordinal: ordinal, namedSubqueries: namedSubqueries, queryBinding: queryBinding) && queryColumnIsContextualNull(right, ordinal: ordinal, namedSubqueries: namedSubqueries, queryBinding: queryBinding)
         case .table(let table):
+            if queryBinding?.namedPlans.selfBinding(table.table) != nil { return false }
             guard let cte = namedSubqueries.first(where: { $0.name == table.table }) else { return false }
-            return queryColumnIsContextualNull(cte.query, ordinal: ordinal, namedSubqueries: namedSubqueries)
+            return queryColumnIsContextualNull(cte.query, ordinal: ordinal, namedSubqueries: namedSubqueries, queryBinding: queryBinding)
         default: return false
         }
     }
@@ -10178,7 +10728,7 @@ extension DatabaseContext {
     private func queryColumnIsContextualNull(_ query: SelectQuery, ordinal: Int,
         namedSubqueries: [NamedSubquery], queryBinding: CanonicalQueryBindingEnvironment? = nil
     ) -> Bool {
-        if query.projection == [.wildcard()] { return sourceColumnIsContextualNull(query.source, ordinal: ordinal, namedSubqueries: namedSubqueries) }
+        if query.projection == [.wildcard()] { return sourceColumnIsContextualNull(query.source, ordinal: ordinal, namedSubqueries: namedSubqueries, queryBinding: queryBinding) }
         guard query.projection.indices.contains(ordinal), case .expression(let expression, _) = query.projection[ordinal] else { return false }
         return expressionIsContextualNull(expression)
     }

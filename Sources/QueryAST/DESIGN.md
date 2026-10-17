@@ -184,3 +184,15 @@ Engine owns grouping expansion, aggregate legality/results, named inheritance,
 partition peers, frame bounds and evaluation. SQL-only additions remain typed
 SPARQL failures. S09-SYN01...06 plus public execution evidence close adaptation;
 syntax acceptance alone does not close SQL Q11/Q14 or F11–F13.
+
+
+### S10 recursive and function-source adaptation
+
+Consume the [frozen Query carriage](../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md#s10-frozen-recursive-and-function-source-carriage) through [Parser](Parser/DESIGN.md#s10-recursive-and-function-source-grammar) and [Builder](Builder/DESIGN.md#s10-recursive-and-function-source-emission). WITH-wide recursive visibility, SEARCH/CYCLE metadata and function arguments/ordinality remain immutable semantic input. This module owns complete grammar, canonical text and exact source occurrences; QueryExecution owns scope/type selection and iteration. SQL-only sources remain explicit SPARQL failures. Syntax tests and public execution tests are separate proof subjects until both complete.
+
+| S10 state | Native / ordinary WASM / Embedded storage and isolation | Access / release |
+|---|---|---|
+| Parser, source collector and value builder | Invocation-local parser state or owned value state on all targets | Synchronous owner methods; no shared escape; invocation end releases contents |
+| SPARQL rewrite provenance / cumulative structure count | Existing `Mutex<State>` / `Mutex<UInt64>` on all targets | Existing `withLock` entry points; no I/O or callback inside lock; rewritten immutable output owns transferred values |
+
+S10 introduces no target-dependent state or conformance branch. Native and formal-target runtime witnesses retain their own proof subjects; syntax parsing alone does not establish portable runtime behavior.

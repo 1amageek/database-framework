@@ -3,7 +3,7 @@
 ## Purpose and Scope
 
 This planned QueryExecution child owns demand-driven SELECT production and
-nonrecursive CTE execution-local materialization. It is not implementation or
+nonrecursive CTE execution-local materialization and recursive working-frontier production. It is not implementation or
 verification evidence. Parent: [QueryExecution](../DESIGN.md#s08-frozen-relational-execution).
 Children: none. Its implementation belongs in this directory; no package,
 module, generic visitor framework or storage abstraction is introduced.
@@ -209,3 +209,77 @@ regressions; declarations, cache-only tests and compile-only portable results
 are not the demand/evaluation proof. Changes to the producer contract require
 rechecking parent binding/evaluation and Read's closure ordering; physical
 backend behavior stays within its existing owner.
+
+
+## S10 Recursive Working Frontier
+
+The [parent S10](../DESIGN.md#s10-frozen-recursive-and-function-execution)
+consumes the [SQL C03/C04/C10 contract](../../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s10-frozen-recursion-and-table-functions).
+The following selected internal seam is shared with the parent Rows binder.
+It is planned behavior until the corresponding behavioral evidence exists.
+
+| Seam | Selected contract |
+|---|---|
+| `SQLRecursiveRowProducer` | Receives final output schema, user target count, UNION quantifier, optional generated-column specifications, temporal environment, value limits, the existing meter, lazy seed factory and a step factory accepting `SQLRecursiveFrontier`. It emits exactly one matching retained row per pull. |
+| `SQLRecursiveFrontier` | Immutable private retained row owner plus final self schema and meter. `consumer()` returns an independent cursor capturing only this frontier. It cannot reach the recursive producer, CTE cache, bound plan or session. |
+| `SQLRecursiveGeneratedColumns.Search` | Selected user key ordinals, anonymous key-record descriptor, and breadth/depth mode. Binder supplies final generated output types. |
+| `SQLRecursiveGeneratedColumns.Cycle` | Selected user key ordinals, anonymous key-record descriptor, selected comparable mark type and cast cycle/default constants. |
+| Seed / term child output | Seed emits exactly the user targets. Term emits user targets followed by hidden parent SEARCH value when selected, then hidden parent CYCLE path when selected. Rows binds those hidden source slots before runtime and preserves the self source alias through joins. |
+| Generated publication | Reuses the already evaluated user key slots. Appends SEARCH then CYCLE mark/path and discards hidden parent cells. The output schema contains only user and generated columns. |
+
+```text
+CTE cache -> recursive actor + serial gate
+  -> lazy seed child -> generated row -> UNION visited -> accepted output
+                                                    -> expandable next frontier
+  -> seed EOF -> await close seed -> immutable frontier
+  -> lazy step child(frontier consumer only)
+       -> selected user targets + selected hidden parent metadata
+       -> generated row -> UNION visited -> accepted output + next frontier
+  -> step EOF -> await close step -> replace frontier -> next iteration
+  -> empty frontier / early close / failure -> await child close -> release owners
+```
+
+Each iteration consumes the common work meter before child construction. Every
+candidate, selected identity comparison, key/path membership and generated
+construction also consumes that meter; there is no independent iteration cap.
+UNION identity includes every final output slot, including generated values,
+and uses the selected SQL equality/hash contract with NULL-safe row identity.
+UNION ALL preserves multiplicity. The existing CTE cache remains the sole
+multiple-consumer prefix owner, including early-LIMIT stop/resume behavior.
+
+Depth SEARCH appends a selected key record to its parent's record array.
+Breadth SEARCH emits an anonymous record containing bigint depth followed by
+selected key cells, starting at zero. Anonymous fields are `f1` onward. CYCLE
+appends the selected key record, uses NULL-safe record identity for membership,
+and emits both repeated-key and ordinary rows. Only rows for which selected
+SQL `mark <> cycleValue` evaluates true enter the expansion frontier; NULL or
+equal default/cycle marks may therefore stop after the seed. Generated columns
+remain visible to the recursive term through the immutable self schema.
+
+Generated values use the existing flat selected value construction owner.
+Copying the complete parent path into each independent output is required by
+the existing flat immutable SQL value representation; it is admitted and
+metered before construction, rather than represented by an operational parent
+backpointer. Frontier retained-array capacity/row claims, visited identities,
+path cells, generated descriptors and output claims are admitted before state
+mutation/publication. Failed growth cannot publish the candidate.
+
+| Logical state | Native / WASM / Embedded storage | Isolation and entry points | Release |
+|---|---|---|---|
+| phase / child / failure | Same recursive actor stored properties | Same serial gate around next/close across suspension | Detach terminal child, await close, then release owners |
+| pending frontier / visited identity | Same actor-confined retained builder and SQL identity set | Mutated only while the gate is held | Clear at EOF/close/failure |
+| current frontier | Same immutable retained owner | Independent frontier-only consumer actor | Child close precedes final frontier release |
+| generated descriptors/constants | Same immutable selected configuration | Synchronous selected adapter inside gated advance | Output retains values/descriptors/claims only |
+
+No target conditional removes synchronization, Sendable or owner retention.
+Cleanup runs despite cancellation and awaits every owned child before releasing
+frontier/visited/generated state. Secondary cleanup failures preserve the
+original operation error. Cooperative yields around owned pulls and child close
+retain the existing formal-target stack contract.
+
+Lower `DatabaseEngineTests/S10RecursiveProducerTests` owns iteration order,
+UNION/ALL, repeated NULL cycle keys, default/custom/NULL mark admission,
+SEARCH metadata, multiple consumers, early stop, child-close failure,
+cancellation and row/byte/work failure with zero final retention and same-meter
+follow-up. Public recursive SQL binding, authorization, volatile target counts,
+JOIN provenance and complete function composition remain parent test owners.

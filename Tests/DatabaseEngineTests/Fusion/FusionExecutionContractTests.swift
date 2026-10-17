@@ -2166,6 +2166,32 @@ struct FusionExecutionContractTests {
             security: .testingDisabled)
     }
 
+    @Test("Fusion preflight distinguishes recursive logical names and visits function argument reads")
+    func recursiveAndFunctionSourceScope() throws {
+        let seed = SelectQuery(projection: [.expression(.literal(.int(1)), alias: "n")], source: .values([[]]))
+        let selfQuery = SelectQuery(projection: [.column("n")], source: .table(TableRef("same")))
+        let definitions = [
+            NamedSubquery(name: "first", query: selfQuery),
+            NamedSubquery(name: "same", columns: ["n"], query: SelectQuery(projection: [.wildcard()],
+                source: .setOperation(operator: .union, quantifier: .all, left: seed, right: selfQuery))),
+        ]
+        let nested = SelectQuery(projection: [.column("value")], source: .table(TableRef("physical")))
+        let source = DataSource.tableFunction(TableFunctionSource(function: FunctionCall(name: "unnest",
+            arguments: [.arraySubquery(nested)])))
+        let root = SelectQuery(projection: [.wildcard()], source: source,
+            subqueries: definitions, withRecursive: true)
+        func physicalSources(_ query: SelectQuery) throws -> [String] {
+            var names: [String] = []
+            try FusionSelectQueryGraphWalker.forEachQuery(in: query, workMeter: makeMeter(), { _ in },
+                visitTable: { table, _ in names.append(table.table) }, visitPolymorphic: { _, _ in })
+            return names.sorted()
+        }
+        #expect(try physicalSources(root) == ["physical"])
+        #expect(try physicalSources(root.replacing(withRecursive: false)) == ["physical", "same", "same"])
+        let qualified = root.replacing(source: .table(TableRef(schema: "public", table: "same")))
+        #expect(try physicalSources(qualified) == ["same"])
+    }
+
     private func makeMeter(
         maximumIntermediateBytes: UInt64 = 1_000_000
     ) -> DatabaseWorkMeter {

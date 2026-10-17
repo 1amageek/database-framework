@@ -233,7 +233,7 @@ public enum SPARQLQueryLevelPlanCompiler {
                 subqueryInputPolicy: .isolated,
                 inputVariables: inputVariables
             )
-        case .table, .logical, .subquery, .join, .values, .graphTable,
+        case .table, .tableFunction, .logical, .subquery, .join, .values, .graphTable,
              .service, .aliased, .setOperation:
             throw SPARQLSelectPlanCompilationError.unsupportedSource
         #if DATABASE_MULTI_BASE

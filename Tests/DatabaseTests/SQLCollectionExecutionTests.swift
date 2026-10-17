@@ -263,7 +263,7 @@ struct SQLCollectionExecutionTests {
         #expect(direct.rows.map(\.values) == emitted.rows.map(\.values))
     }
 
-    @Test("Composite JSON and ARRAY subqueries compose while table functions remain S10", .timeLimit(.minutes(2)))
+    @Test("Composite JSON, ARRAY subqueries and FROM functions compose", .timeLimit(.minutes(2)))
     func stageGates() async throws {
         let container = try await makeContainer()
         defer { await container.shutdown() }
@@ -280,8 +280,10 @@ struct SQLCollectionExecutionTests {
             Issue.record("Expected ARRAY subquery output"); return
         }
         #expect(Array(value.elements) == [.primitive(.int32(1))])
-        do { _ = try await context.executeSQL("SELECT * FROM unnest(ARRAY[1,2])"); Issue.record("Expected table function gate") }
-        catch SQLParser.ParseError.unsupportedFeature(let reason) { #expect(reason.contains("S10")) }
+        let rows = try await context.executeSQL("SELECT * FROM unnest(ARRAY[1,2])")
+        #expect(rows.columns.map(\.name) == ["unnest"])
+        #expect(rows.columns.map(\.type) == [.sql(.integer)])
+        #expect(rows.rows.map(\.values) == [[.primitive(.int32(1))], [.primitive(.int32(2))]])
     }
 
     @Test("Binding checks collection types and hidden branches before empty source execution", .timeLimit(.minutes(2)))

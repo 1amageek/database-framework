@@ -104,7 +104,7 @@ struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
     }
 
     private func validate(_ selectQuery: SelectQuery) throws {
-        guard selectQuery.subqueries == nil
+        guard !selectQuery.withRecursive, selectQuery.subqueries == nil
                 || selectQuery.subqueries?.isEmpty == true else {
             throw CanonicalReadError.unsupportedSelectQuery(
                 "SPARQL canonical execution does not yet support WITH bindings"

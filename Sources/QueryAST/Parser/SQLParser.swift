@@ -1019,7 +1019,7 @@ extension SQLParser {
         if let limitCapture, case .count(.expression, _) = limit {
             try sourceCapture?.movePendingToEnd(from: limitCapture, count: 1)
         }
-        if let ctes { query = query.replacing(subqueries: ctes) }
+        if let ctes { query = query.replacing(subqueries: ctes.definitions).replacing(withRecursive: ctes.recursive) }
         if let order { query = query.replacing(orderBy: order) }
         if limit != nil || offset != nil { query = query.replacing(pagination: QueryPagination(limit: limit, offset: offset)) }
         return try makeStructuralNode(query, at: queryStart)
@@ -1139,12 +1139,12 @@ extension SQLParser {
         return try makeStructuralNode(.values(rows), at: start)
     }
 
-    private func parseWithClause() throws -> [NamedSubquery] {
+    private func parseWithClause() throws -> (definitions: [NamedSubquery], recursive: Bool) {
         try expect("WITH")
 
         // RECURSIVE is contextual here so unrelated identifiers retain their
         // ordinary SQL name semantics.
-        _ = consumeContextualWord("RECURSIVE")
+        let recursive = consumeContextualWord("RECURSIVE")
 
         var subqueries: [NamedSubquery] = []
         var first = true
@@ -1198,6 +1198,35 @@ extension SQLParser {
             try expect("(")
             let query = try parseSelectQuery()
             try expect(")")
+            var search: CTESearchClause?
+            if consumeContextualWord("SEARCH") {
+                let order: CTESearchOrder
+                if consumeContextualWord("DEPTH") { order = .depthFirst }
+                else { try expectContextualWord("BREADTH"); order = .breadthFirst }
+                try expectContextualWord("FIRST")
+                try expect("BY")
+                let keys = try parseCTEKeys()
+                try expectContextualWord("SET")
+                let sequence = try parseRequiredIdentifier("SEARCH sequence column")
+                search = try makeStructuralNode(CTESearchClause(order: order, columns: keys, sequenceColumn: sequence))
+            }
+            var cycle: CTECycleClause?
+            if consumeContextualWord("CYCLE") {
+                let keys = try parseCTEKeys()
+                try expectContextualWord("SET")
+                let mark = try parseRequiredIdentifier("CYCLE mark column")
+                var markValue: Literal?
+                var defaultValue: Literal?
+                if consumeContextualWord("TO") {
+                    markValue = try parseCTECycleConstant()
+                    try expect("DEFAULT")
+                    defaultValue = try parseCTECycleConstant()
+                }
+                try expect("USING")
+                let path = try parseRequiredIdentifier("CYCLE path column")
+                cycle = try makeStructuralNode(CTECycleClause(columns: keys, markColumn: mark,
+                    pathColumn: path, markValue: markValue, defaultValue: defaultValue))
+            }
 
             try admitCollectionElement()
             subqueries.append(
@@ -1206,13 +1235,55 @@ extension SQLParser {
                         name: name,
                         columns: columnList,
                         query: query,
-                        materialized: materialized
+                        materialized: materialized,
+                        search: search,
+                        cycle: cycle
                     )
                 )
             )
         }
 
-        return subqueries
+        return (subqueries, recursive)
+    }
+
+    private func parseCTEKeys() throws -> [String] {
+        var keys: [String] = []
+        repeat {
+            if !keys.isEmpty { advance() }
+            try admitCollectionElement()
+            keys.append(try parseRequiredIdentifier("CTE key column"))
+        } while isSymbol(",")
+        return keys
+    }
+
+    private func parseCTECycleConstant() throws -> Literal {
+        let start = tokenStart
+        let accepted: Bool
+        switch currentToken {
+        case .number, .string, .keyword("TRUE"), .keyword("FALSE"), .keyword("NULL"): accepted = true
+        default:
+            accepted = !tokenIsQuoted && labelText.map { Self.literalTypeWords.contains(asciiUppercase($0)) } == true
+        }
+        guard accepted else {
+            throw ParseError.invalidSyntax(message: "CYCLE mark and default require SQL constants", position: start)
+        }
+        let expression = try parsePrimaryExpression()
+        let literal: Literal
+        if case .literal(let value) = expression {
+            literal = value
+        } else if case .cast(.literal(.sqlUnknownString(let text)), targetType: .date) = expression {
+            do {
+                literal = try SQLConstantSyntax.cycleDate(text, limits: constantLimits(reservingNodes: 3))
+            } catch let error as SQLConstantError {
+                throw ParseError.literalError(message: error.description, position: start)
+            }
+            _ = sourceCapture?.discardLastExpression()
+            _ = try makeLiteralExpression(literal, at: start)
+        } else {
+            throw ParseError.unsupportedFeature("CYCLE constant has no intrinsic literal representation")
+        }
+        try sourceCapture?.convertLastExpressionToLiteral()
+        return literal
     }
 
     private func parseProjection() throws -> [ProjectionItem] {
@@ -1248,7 +1319,7 @@ extension SQLParser {
             let lateral = isKeyword("LATERAL")
             if lateral { advance() }
             let right = try parseJoinedSource()
-            source = try makeStructuralNode(.join(JoinClause(type: lateral ? .lateral : .cross, left: source, right: right)))
+            source = try makeStructuralNode(.join(JoinClause(type: lateral && !isFunctionSource(right) ? .lateral : .cross, left: source, right: right)))
         }
         return source
     }
@@ -1277,6 +1348,10 @@ extension SQLParser {
                 advance()
             }
             let right = try parseTableRef()
+            if isFunctionSource(right) {
+                if joinType == .lateral { joinType = crossJoin ? .cross : .inner }
+                if joinType == .leftLateral { joinType = .left }
+            }
             var condition: JoinCondition?
 
             if case .keyword("ON") = currentToken {
@@ -1349,14 +1424,27 @@ extension SQLParser {
 
     private func parseTableRef() throws -> DataSource {
         let start = tokenStart
-        let identifierEnd = tokenEnd
-        // FIXME(INCOMPLETE_IMPLEMENTATION): Public FROM table functions are not relation sources yet.
-        // SQL admission reaches this branch; S10 must prove typed row composition and execution.
-        if let name = labelText, peekNextToken() == .symbol("("), asciiUppercase(name) != "GRAPH_TABLE" {
-            throw ParseError.unsupportedFeature("SQL table functions require S10 relation composition")
-        }
+        var identifierEnd = tokenEnd
+        let explicitLateral = isKeyword("LATERAL")
+        if explicitLateral { advance(); identifierEnd = tokenEnd }
         let source: DataSource
-        if isKeyword("GRAPH_TABLE"), peekNextToken() == .symbol("(") {
+        let functionName = labelText
+        let functionCall = functionName != nil && (peekNextToken() == .symbol("(")
+            || peekNextToken() == .symbol(".") && peekNextToken(3) == .symbol("("))
+        if functionCall, let functionName, asciiUppercase(functionName) != "GRAPH_TABLE" {
+            let functionStart = tokenStart
+            let expression = try parseIdentifierExpression(functionName)
+            guard case .function(let function) = expression else {
+                throw ParseError.unsupportedFeature("FROM requires an ordinary function call")
+            }
+            let functionCapture = try sourceCapture?.unwrapLastExpression()
+            let ordinality: Bool
+            if isKeyword("WITH") { advance(); try expectContextualWord("ORDINALITY"); ordinality = true }
+            else { ordinality = false }
+            source = try makeStructuralNode(.tableFunction(TableFunctionSource(function: function,
+                withOrdinality: ordinality)), at: functionCapture?.range.start ?? functionStart,
+                identifierEnd: functionCapture?.identifierRange?.end ?? identifierEnd)
+        } else if isKeyword("GRAPH_TABLE"), peekNextToken() == .symbol("(") {
             let savedCapture = sourceCapture
             sourceCapture = nil
             do { source = try parseGraphTable() }
@@ -1393,6 +1481,9 @@ extension SQLParser {
             let table = try parseNamedTableReference(allowsImplicitAlias: false, allowsExplicitAlias: false)
             source = try makeStructuralNode(.table(table), at: start, identifierEnd: identifierEnd)
         }
+        if explicitLateral, !isFunctionSource(source) {
+            throw ParseError.unsupportedFeature("Leading LATERAL requires a function source")
+        }
         let explicitAlias = isKeyword("AS")
         if explicitAlias { advance() }
         guard explicitAlias || identifierText != nil else { return source }
@@ -1410,6 +1501,12 @@ extension SQLParser {
             columns = names
         }
         return try makeStructuralNode(.aliased(source, name: name, columns: columns), at: start)
+    }
+
+    private func isFunctionSource(_ source: DataSource) -> Bool {
+        if case .tableFunction = source { return true }
+        if case .aliased(let source, _, _) = source { return isFunctionSource(source) }
+        return false
     }
 
     private func parseNamedTableReference(

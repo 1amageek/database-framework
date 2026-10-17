@@ -1133,7 +1133,7 @@ public struct CompositionQueryPlanner: Sendable {
             return containsBaseQualifier(source)
         case .setOperation(_, _, let left, let right):
             return containsBaseQualifier(left.source) || containsBaseQualifier(right.source)
-        case .table, .logical, .values, .graphTable, .graphPattern,
+        case .table, .logical, .values, .tableFunction, .graphTable, .graphPattern,
              .namedGraph, .service:
             return false
         }
@@ -2001,7 +2001,7 @@ public struct CompositionQueryPlanner: Sendable {
         // FIXME(INCOMPLETE_IMPLEMENTATION): Composition's relational entry
         // rejects these source families before member reads. Global operand
         // placement, CTE scope and lineage need behavioral proof before support.
-        case .subquery, .values, .graphTable, .graphPattern, .namedGraph,
+        case .subquery, .values, .tableFunction, .graphTable, .graphPattern, .namedGraph,
              .service, .setOperation:
             return false
         }
@@ -2015,7 +2015,7 @@ public struct CompositionQueryPlanner: Sendable {
             return source.kindIdentifier == LogicalSourceKind.polymorphic
         case .aliased(let nested, _, _):
             return isVectorSource(nested)
-        case .join, .base, .subquery, .values, .graphTable, .graphPattern,
+        case .join, .base, .subquery, .values, .tableFunction, .graphTable, .graphPattern,
              .namedGraph, .service, .setOperation:
             return false
         }

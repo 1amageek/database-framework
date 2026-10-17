@@ -242,3 +242,8 @@ grouping witnesses preserve the existing graph contract. The modified rewriters,
 validators and compiler use task-local state on every target and add no isolation
 or conditional-conformance branch. Runtime verification remains required; SQL
 execution remains QueryExecution-owned.
+
+
+### S10 SQL relation boundary
+
+Consume [Query's frozen recursive/function carriers](../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md#s10-frozen-recursive-and-function-source-carriage). Graph SPARQL validation/compilation rejects table-function sources and recursive SEARCH/CYCLE metadata through typed unsupported-language errors. No SQL cursor, recursion, function result expansion or generated column semantics enter graph execution. Existing query rewrites preserve withRecursive and each CTE's search/cycle metadata even when later applicability rejects them. SQL source child arguments remain traversable by shared rewrites. SPARQLExpressionCompilationTests owns explicit rejection and existing graph-subquery regressions; all traversal state remains invocation-local on every target.
