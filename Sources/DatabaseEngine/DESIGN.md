@@ -14,6 +14,10 @@ S11 additionally composes [SQLCatalog](SQLCatalog/DESIGN.md) for logical SQL
 identity and [Schema](Schema/DESIGN.md) for aggregate generation persistence,
 publication and restoration.
 
+S13 additionally composes [SQLConstraints](SQLConstraints/DESIGN.md) for row policies
+and integrity timing, and [SQLSequences](SQLSequences/DESIGN.md) for durable
+nonrollback sequence requests. Their component designs own the detailed contracts.
+
 S12 composes [SQLBlock](SQLBlock/DESIGN.md) with
 [Transaction](Transaction/DESIGN.md) for ordered semantic requests and joined
 physical/logical checkpoint restoration. Its concrete failure policy and
@@ -452,3 +456,14 @@ language/security visitors, not infer behavior from new enum cases compiling.
 ### S10 logical recursive scopes in field authorization
 
 [QueryExecution S10](QueryExecution/DESIGN.md#s10-frozen-recursive-and-function-execution) owns recursive/function selection. Field-read authorization consumes WITH-wide logical visibility: recursive sibling names are declared before bodies, self columns derive from the seed plus selected generated names, and nonrecursive scopes retain earlier-only visibility. Logical self references never become same-named physical entity scans. Real physical fields and implicit-lateral function arguments remain subject to the existing scoped field policy. This changes scope classification only; it does not introduce authority, bypass a policy or open another transaction.
+
+### S13 sequence composition
+
+[SQLSequences](SQLSequences/DESIGN.md) owns nonrollback allocator cells, durable
+request recovery and CURRVAL/LASTVAL. [SQLBlock](SQLBlock/DESIGN.md#s13-sequence-replay-and-constraint-controls)
+composes its private allocation demand only after a data attempt has rolled back
+and authoritatively closed; no nested transaction or savepoint release pretends
+to be independent durability. The same injected engine and selected Partition
+lease own allocator transactions. Ordinary and portable targets retain the same
+actor synchronization and Sendable contracts. SQL checkpoint state remains
+Transaction-owned; irreversible consumption remains sequence-owned.

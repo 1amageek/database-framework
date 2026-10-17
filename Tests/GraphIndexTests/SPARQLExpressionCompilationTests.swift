@@ -137,7 +137,7 @@ struct SPARQLExpressionCompilationTests {
             .collectionOperation(.contains, left: .col("unread"), right: .col("unreadRight")),
         ]
         let variadic = Expression.function(FunctionCall(name: "CONCAT", arguments: [.col("unread")], finalArrayIsVariadic: true))
-        for (expression, reason) in collectionExpressions.map({ ($0, "SQL collection expression") }) + [(variadic, "SQL VARIADIC")] {
+        for (expression, reason) in collectionExpressions.map({ ($0, "SQL collection expression") }) + [(variadic, "SQL VARIADIC"), (.defaultValue, "SQL DEFAULT")] {
             #expect(throws: SPARQLExpressionCompilationError.unsupportedExpression(reason)) {
                 try SPARQLExpressionValidator.validate(expression)
             }

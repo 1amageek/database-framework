@@ -1092,7 +1092,7 @@ private func preadmitExpressionPayload(
     }
 
     switch expression {
-    case .currentValue, .literal, .column, .variable, .parameter, .bound,
+    case .defaultValue, .currentValue, .literal, .column, .variable, .parameter, .bound,
             .aggregate, .subquery, .arraySubquery, .wholeRow, .exists:
         break
     case .grouping, .window:
@@ -1577,7 +1577,7 @@ private func canonicalExpressionContainsAggregate(
         return canonicalExpressionContainsAggregate(subject)
             || canonicalExpressionContainsAggregate(predicate)
             || canonicalExpressionContainsAggregate(object)
-    case .wholeRow, .arraySubquery, .currentValue, .literal, .column, .variable, .parameter, .bound, .subquery,
+    case .defaultValue, .wholeRow, .arraySubquery, .currentValue, .literal, .column, .variable, .parameter, .bound, .subquery,
             .exists:
         return false
     }
@@ -1978,7 +1978,7 @@ extension DatabaseContext {
             guard let selected else {
                 let field = relation.columns.first { CanonicalSourceName.equal($0.declaration.name, column.name) }
                 throw SQLReadResolutionError.missingPhysicalColumn(entity: relation.entity.name,
-                    field: field?.field.name ?? column.name)
+                    field: field?.field?.name ?? column.name)
             }
             try CanonicalBindingStorage.append(selected, to: &projection, reservation: claim)
         }
@@ -2025,10 +2025,9 @@ extension DatabaseContext {
             }
             let columns: [QueryColumn]
             if let relation {
-                columns = try relation.columns.filter { allowed.contains($0.field.name) }.enumerated().map { index, column in
+                columns = try relation.columns.filter { $0.field.map { allowed.contains($0.name) } ?? true }.enumerated().map { index, column in
                     try QueryColumn(number: UInt32(index + 1), name: column.declaration.name,
-                        type: column.field.queryType ?? .primitive(column.field.type, isArray: column.field.isArray),
-                        isNullable: column.field.isOptional)
+                        type: column.type, isNullable: column.isNullable)
                 }
             } else {
                 columns = try entity.fields.filter { allowed.contains($0.name) }.enumerated().map { index, field in
@@ -2117,7 +2116,7 @@ extension DatabaseContext {
             at: .bindingCandidate
         )
         let decoded = CanonicalRelation(schema: schema, rows: sourceRows)
-        let aligned = try alignCatalogSource(decoded, table: tableRef, resolution: internalOptions.sqlResolution,
+        let aligned = try await alignCatalogSource(decoded, table: tableRef, resolution: internalOptions.sqlResolution,
             workMeter: internalOptions.workMeter, authorization: authorization)
         let authorizedSession = try session.authorizedSession(authorization)
         let evaluation = CanonicalQueryEvaluationContext(
@@ -2304,11 +2303,14 @@ extension DatabaseContext {
         _ selectQuery: SelectQuery,
         execution: ReadExecutionContext,
         session: DatabaseReadSession,
-        parameters: [QueryParameter]
+        parameters: [QueryParameter],
+        occurrences: QueryOccurrenceArena? = nil,
+        occurrence: QueryOccurrenceID? = nil
     ) async throws -> SQLBlockCollectedRows {
         do {
             let collecting = try await querySessionBoundRetainedUnmapped(selectQuery,
-                execution: execution, graphPartitions: FieldObject(), session: session, parameters: parameters)
+                execution: execution, graphPartitions: FieldObject(), session: session, parameters: parameters,
+                occurrences: occurrences, occurrence: occurrence)
             return SQLBlockCollectedRows(consume collecting)
         } catch {
             throw sanitizedFusionExecutionError(error)
@@ -2539,7 +2541,7 @@ extension DatabaseContext {
                         among: visibleCandidates
                     )
                 )
-            case .wholeRow, .currentValue, .literal, .column, .variable, .parameter, .bound:
+            case .defaultValue, .wholeRow, .currentValue, .literal, .column, .variable, .parameter, .bound:
                 break
             }
         }
@@ -3823,7 +3825,7 @@ extension DatabaseContext {
     private func selectedPlanIsVolatile(_ plan: CanonicalBoundSelect) -> Bool {
         func expression(_ value: CanonicalBoundExpression) -> Bool {
             if case .function(let call) = value.expression,
-               call.name.lowercased() == "clock_timestamp" { return true }
+               ["clock_timestamp", "nextval", "currval", "lastval", "setval"].contains(call.name.lowercased()) { return true }
             if let nested = value.subqueryBinding, selectedPlanIsVolatile(nested) { return true }
             return value.children.contains(where: expression)
         }
@@ -4376,7 +4378,7 @@ extension DatabaseContext {
         let decoded = CanonicalRelation(schema: admittedSchema.retaining(layout: layout), rows: canonicalRows)
         let aligned: CanonicalRelation
         if case .table(let table) = selectQuery.source {
-            aligned = try alignCatalogSource(decoded, table: table, resolution: options.sqlResolution, workMeter: workMeter, authorization: evaluationContext.fusionSession.transaction.authorization)
+            aligned = try await alignCatalogSource(decoded, table: table, resolution: options.sqlResolution, workMeter: workMeter, authorization: evaluationContext.fusionSession.transaction.authorization)
         } else { aligned = decoded }
         let hasExplicitOrder = selectQuery.orderBy?.isEmpty == false
         return try await finalizeRelationalRows(
@@ -4576,7 +4578,10 @@ extension DatabaseContext {
                       let column = relation.columns.first(where: { CanonicalSourceName.equal($0.declaration.name, source[slot].name) }) else {
                     throw SQLReadResolutionError.missingPhysicalColumn(entity: relation.entity.name, field: "selected slot")
                 }
-                return .column(ColumnRef(table: tableRef.effectiveName, column: column.field.name))
+                guard let field = column.field else {
+                    throw CanonicalReadError.unsupportedSelectQuery("A virtual column cannot select a physical access key")
+                }
+                return .column(ColumnRef(table: tableRef.effectiveName, column: field.name))
             }
         }
         let selectedPagination: SQLResolvedPagination?
@@ -4597,8 +4602,16 @@ extension DatabaseContext {
             }
             selectedPagination = try await evaluatePagination(boundPlan.pagination, context: evaluationContext)
         } else { selectedPagination = nil }
+        func referencesStoredColumns(_ value: CanonicalBoundExpression) -> Bool {
+            if let slot = value.columnSlot, let resolved {
+                guard let source = boundPlan.sourcePlan?.schema.layout.slots, source.indices.contains(slot),
+                      let column = resolved.columns.first(where: { CanonicalSourceName.equal($0.declaration.name, source[slot].name) }),
+                      column.field != nil else { return false }
+            }
+            return value.children.allSatisfy(referencesStoredColumns)
+        }
         let physicalFilter: Expression?
-        if let bound = boundPlan.filter {
+        if let bound = boundPlan.filter, referencesStoredColumns(bound) {
             if let converted = try primitiveBoundPredicate(bound, resolvingColumn: physicalColumn) { physicalFilter = converted }
             else if let original = selectQuery.filter, try permitsPrimitivePushdown(bound, original: original) {
                 if let physicalColumn { physicalFilter = try bound.loweredExpression(resolvingColumn: physicalColumn) }
@@ -4608,7 +4621,8 @@ extension DatabaseContext {
         let filterEquivalent = selectQuery.filter == nil || physicalFilter != nil
         let orderEquivalent = try (selectQuery.orderBy ?? []).enumerated().allSatisfy { index, key in
             guard boundPlan.orderBy.indices.contains(index) else { return false }
-            return try permitsPrimitivePushdown(boundPlan.orderBy[index].expression, original: key.expression)
+            return try referencesStoredColumns(boundPlan.orderBy[index].expression)
+                && permitsPrimitivePushdown(boundPlan.orderBy[index].expression, original: key.expression)
         }
         let permitsPushdown = filterEquivalent && orderEquivalent
         // Filter eligibility is independent of ORDER eligibility. A checked
@@ -4658,7 +4672,7 @@ extension DatabaseContext {
         let decoded = CanonicalRelation(schema: physicalSchema, rows: pushdown.rows, schemaLayout: pushdown.sourceLayout)
         let aligned: CanonicalRelation
         do {
-            aligned = try alignCatalogSource(decoded, table: tableRef, resolution: options.sqlResolution,
+            aligned = try await alignCatalogSource(decoded, table: tableRef, resolution: options.sqlResolution,
                 workMeter: options.workMeter, authorization: transaction.authorization,
                 assigningCandidateOrdinals: retainingFusionPhysicalRows)
         } catch let failure as SQLReadResolutionError {
@@ -4757,7 +4771,17 @@ extension DatabaseContext {
                   }) else {
                 throw SQLReadResolutionError.missingPhysicalColumn(entity: relation.entity.name, field: "selected slot")
             }
-            return .column(ColumnRef(table: table.effectiveName, column: column.field.name))
+            guard let field = column.field else {
+                throw CanonicalReadError.unsupportedSelectQuery("A virtual column cannot select a physical access key")
+            }
+            return .column(ColumnRef(table: table.effectiveName, column: field.name))
+        }
+        if relation.columns.contains(where: { $0.field == nil }) {
+            // Index rows retain physical field names. Logical generated cells are
+            // constructed once at source alignment before residual operators.
+            return query.replacing(source: .table(try physicalTableReference(table, resolution: resolution)))
+                .replacing(projection: [.wildcard()]).replacing(filter: nil).replacing(orderBy: nil)
+                .replacing(pagination: QueryPagination())
         }
         let projection = try plan.projection.enumerated().map { index, expression in
             ProjectionItem(try expression.loweredExpression(resolvingColumn: lower),
@@ -4883,7 +4907,7 @@ extension DatabaseContext {
         }
         let relation = CanonicalRelation(schema: try admittedRelationSchema(for: rows.sourceLayout),
                                  rows: rows.rows, schemaLayout: rows.sourceLayout)
-        return try alignCatalogSource(relation, table: tableRef,
+        return try await alignCatalogSource(relation, table: tableRef,
             resolution: options.sqlResolution, workMeter: options.workMeter, authorization: transaction.authorization)
     }
 
@@ -6856,7 +6880,8 @@ extension DatabaseContext {
     /// remain the same selected path used by SELECT.
     static func evaluateCanonicalScalar(
         _ bound: CanonicalBoundExpression, on row: CanonicalSourceRow,
-        temporalEnvironment: SQLTemporalEnvironment? = nil, workMeter: DatabaseWorkMeter
+        temporalEnvironment: SQLTemporalEnvironment? = nil, session: SQLSessionBinding? = nil,
+        workMeter: DatabaseWorkMeter
     ) async throws -> (value: QueryValue, leases: [DatabaseQueryPayloadLease]) {
         guard row.layout.reservation.map({ $0.workMeter === workMeter }) ?? true,
               row.layout.payloadLeases.allSatisfy({ $0.workMeter === workMeter }),
@@ -6873,7 +6898,16 @@ extension DatabaseContext {
         guard !requiresRelation(bound) else {
             throw DatabaseExpressionEvaluationError.unsupportedExpression("scalar execution requires a context-free expression")
         }
-        let result = try await evaluateSelectedValue(bound, on: row, context: nil, databaseContext: nil, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
+        let result: ProjectedQueryValue
+        if let session {
+            result = try await ActiveSQLSession.$binding.withValue(session) {
+                try await evaluateSelectedValue(bound, on: row, context: nil, databaseContext: nil,
+                    temporalEnvironment: temporalEnvironment, workMeter: workMeter)
+            }
+        } else {
+            result = try await evaluateSelectedValue(bound, on: row, context: nil, databaseContext: nil,
+                temporalEnvironment: temporalEnvironment, workMeter: workMeter)
+        }
         return (result.value, result.leases)
     }
 
@@ -7072,6 +7106,8 @@ extension DatabaseContext {
         }
         #endif
         switch bound.expression {
+        case .defaultValue:
+            throw DatabaseExpressionEvaluationError.unsupportedExpression("DEFAULT requires a selected mutation column")
         case .truthTest(_, let target, let negated):
             let value = try await child(0).value
             let matches: Bool
@@ -7405,6 +7441,27 @@ extension DatabaseContext {
             var values: [ProjectedQueryValue] = []
             values.reserveCapacity(bound.children.count)
             for index in bound.children.indices { values.append(try await child(index)) }
+            if case .function(let function) = bound.expression {
+                let names = ["NEXTVAL", "CURRVAL", "LASTVAL", "SETVAL", "CURRENT_SCHEMA", "CURRENT_SCHEMAS",
+                    "CURRENT_DATABASE", "CURRENT_USER", "SESSION_USER"]
+                if names.contains(function.name.uppercased()) {
+                    let arguments = try values.map { cell -> FieldValue in
+                        guard case .primitive(let value) = cell.value else {
+                            throw DatabaseExpressionEvaluationError.typeMismatch(operation: function.name)
+                        }
+                        return value
+                    }
+                    if let value = try await SQLSequenceRuntime.evaluate(function.name, arguments: arguments, occurrence: bound.expression) {
+                        return try normalized(ProjectedQueryValue(value: .primitive(value), leases: [], payloadIsRetained: false))
+                    }
+                    if let result = try SQLSessionRuntime.evaluate(function.name, arguments: arguments,
+                        resolution: context?.options.sqlResolution, databaseName: databaseContext?.inheritedSQLDatabaseName,
+                        workMeter: workMeter) {
+                        return try normalized(ProjectedQueryValue(value: result.value,
+                            leases: result.lease.map { [$0] } ?? [], payloadIsRetained: result.lease != nil))
+                    }
+                }
+            }
             return try await evaluateBoundKernel(bound, children: values, on: effectiveRow, context: context, temporalEnvironment: temporalEnvironment, workMeter: workMeter, groupingNulls: group != nil)
         }
         } catch let cause as SQLTimeZoneError {
@@ -9242,7 +9299,7 @@ extension DatabaseContext {
                     try push(.statement(nested)); try push(.expression(child))
                 case .triple(let subject, let predicate, let object):
                     try push(.expression(object)); try push(.expression(predicate)); try push(.expression(subject))
-                case .wholeRow, .currentValue, .literal, .column, .variable, .parameter, .bound: break
+                case .defaultValue, .wholeRow, .currentValue, .literal, .column, .variable, .parameter, .bound: break
                 }
             case .source(let value):
                 switch value {
@@ -10078,7 +10135,7 @@ extension DatabaseContext {
                     for field in fields {
                         let logical: String
                         if let relation = value.sqlRelation {
-                            guard let column = relation.columns.first(where: { CanonicalSourceName.equal($0.field.name, field) }) else { return nil }
+                            guard let column = relation.columns.first(where: { ($0.field.map { CanonicalSourceName.equal($0.name, field) } ?? false) }) else { return nil }
                             logical = column.declaration.name
                         } else { logical = field }
                         let matches = value.schema.layout.matching(ColumnRef(table: table.effectiveName, column: logical))
@@ -10833,8 +10890,8 @@ extension DatabaseContext {
             return try CanonicalRelationSchema(scopes: [CanonicalRelationScope(
                 name: tableRef.effectiveName,
                 columns: resolved.columns.map { $0.declaration.name },
-                types: resolved.columns.map { .some($0.field.queryType ?? .primitive($0.field.type, isArray: $0.field.isArray)) },
-                nullability: resolved.columns.map { $0.field.isOptional })])
+                types: resolved.columns.map { .some($0.type) },
+                nullability: resolved.columns.map { $0.isNullable })])
         }
         guard tableRef.schema == nil else {
             throw CanonicalReadError.unsupportedSource("SQL schema-qualified relation lookup is not available")

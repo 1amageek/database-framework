@@ -45,6 +45,15 @@ Core logical operation: capture transaction instant outside retry
 
 ## Contracts and Invariants
 
+Mutating attempts check Schema's durable minimum SQL writer generation in the
+owning transaction before final validation. Trusted catalog staging checks the
+original admitted lease before its first candidate, then uses only its current
+checkpoint-owned candidate as an allowance for its own floor writes. Physical
+rollback and candidate rollback therefore restore the same admission boundary.
+[Schema](../Schema/DESIGN.md) owns the floor and atomic retained-root publication
+contract; foreign data-domain attempts never read control-domain keys.
+
+
 - A production attempt receives the same logical transaction instant as every
   retry of that operation. Nested bindings and read attenuation copy it.
 - Direct SPI construction represents a new caller-owned logical attempt and
@@ -414,3 +423,30 @@ synchronization behavior. The existing lifecycle/journal/clock tests remain
 regression owners. StorageKit conformance and each selected production backend
 must additionally exercise the physical journal; an InMemory-only result does
 not close S12's backend evidence.
+
+## S13 SQL Constraint Composition
+
+[SQLConstraints](../SQLConstraints/DESIGN.md) owns SQL binding and validation semantics. Transaction owns attempt-local timing modes and pending state, checkpoint restoration, non-snapshot retained scans, referential actions through its existing persistence path and final validation against its retained schema lease. Mutation applies SQL expression defaults and identity before model adaptation and recomputes stored generated columns before prepared changes are applied; raw model writes preserve their canonical adaptation contract and enforce SQL invariants. SQL default expressions remain independent of FieldSchema.defaultValue.
+
+The S13 row-policy boundary is the canonical prepared write, before physical publication: CHECK executes once for that row with its admitted statement clock/session. Final validation owns keys and references, not re-evaluation of successful row policies. Catalog staging compares old and candidate obligations and validates only added/changed contracts against existing rows; unrelated sequence changes preserve pending deferred checks. A referential action that relocates physical identity dispatches one logical UPDATE after both physical steps, preserving downstream ON UPDATE meaning.
+
+Identity relocation requires an absent destination through the existing
+`.notExists` write precondition. An occupied destination throws the typed
+precondition failure through the enclosing operation, so the transaction owner
+rolls back the parent update, source removal and derived effects together.
+Same-identity actions retain `.none` for their in-place update. The
+`S13SQLCascadeCollisionTests.cascadingIdentityCollisionRollsBackAllRows` test
+owns the MATCH SIMPLE composite-FK collision counterexample, including a
+valid destination row with a NULL FK column and a distinct retained payload.
+`S13SQLConstraintExecutionTests.cascadingIdentityRelocationPreservesUpdateMeaning`
+owns empty-destination relocation and downstream UPDATE propagation.
+
+### Internal statement mutation versions
+
+After a successful statement apply, Transaction supplies only the current
+version digest for each requested identity from its authoritative mutation
+journal. The operation-ID check and actor isolation remain mandatory; the
+method exposes no model or read capability. This derived write result does
+not require entity GET authority. Journal rollback restores the model used
+for the digest together with all other effects. Ordinary reads retain their
+existing entity and field policy checks.

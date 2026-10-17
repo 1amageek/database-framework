@@ -46,6 +46,8 @@ extension DBContainer {
                         destinationPlacement.domainID
                     )
                 }
+                try await self.requireSQLIntegrityPlacement(in: destinationDomain,
+                    transaction: transaction.storageAccess)
                 guard current.placementID != destinationPlacementID else {
                     throw DatabaseBaseCatalogError
                         .placementAlreadySelected(destinationPlacementID)

@@ -95,7 +95,7 @@ struct SQLBlockExecutionTests {
         }
     }
 
-    @Test("Logical catalog aliases fail explicitly and missing names never use physical fallback")
+    @Test("Logical catalog aliases preserve the physical write and missing names never use physical fallback")
     func catalogMappingAdmission() async throws {
         let container = try await makeContainer()
         defer { await container.shutdown() }
@@ -103,18 +103,18 @@ struct SQLBlockExecutionTests {
         let relation = try #require(old.relations.first)
         let renamed = try SQLRelation(id: relation.id, namespaceID: relation.namespaceID,
             name: "renamed", entityName: relation.entityName, columns: relation.columns,
-            primaryKeyColumnIDs: relation.primaryKeyColumnIDs)
+            primaryKeyColumnIDs: relation.primaryKeyColumnIDs,
+            primaryKeyConstraint: relation.primaryKeyConstraint, constraints: relation.constraints)
         _ = try await container.publishSQLCatalog(SQLCatalog(namespaces: old.namespaces, relations: [renamed]),
             expectedGeneration: container.schemaGeneration, idempotencyKey: "block-catalog",
             authorization: TestBaseEnvironment.authorization)
         let context = container.testBaseContext()
-        await #expect(throws: SQLBlockExecutionError.unsupportedMutationMapping("renamed")) {
-            try await context.executeStatement(insert("one", "alias", table: "renamed"), options: options())
-        }
+        let result = try await context.executeStatement(insert("one", "alias", table: "renamed"), options: options())
+        expectCommand(result, .insert, 1)
         await #expect(throws: SQLCatalogBindingError.missingRelation(namespace: nil, name: "BlockItem")) {
             try await context.executeStatement(insert("one", "physical"), options: options())
         }
-        #expect(try await context.model(for: "one", as: BlockItem.self) == nil)
+        #expect(try await context.model(for: "one", as: BlockItem.self)?.title == "alias")
     }
 
     @Test("Parameters and cumulative output budgets reject a block without partial effects")
@@ -150,7 +150,8 @@ struct SQLBlockExecutionTests {
         let row = try await context.executeStatement(parse("SELECT title FROM public.\"BlockItem\""), options: options())
         #expect(try rows(row).rows.first?.values == [.primitive(.string("single"))])
         // FIXME(INCOMPLETE_IMPLEMENTATION): S14 must implement RETURNING before this public semantic statement can succeed.
-        await #expect(throws: SQLBlockExecutionError.unsupportedStatement) {
+        await #expect(throws: DatabaseEntityStatementMutationError.unsupportedStatement(
+            "DELETE RETURNING is not representable by mutation effects")) {
             try await context.executeStatement(parse("DELETE FROM \"BlockItem\" RETURNING id"), options: options())
         }
         #expect(try await context.model(for: "one", as: BlockItem.self)?.title == "single")

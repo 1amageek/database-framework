@@ -33,6 +33,7 @@ extension DBContainer {
                 configuration: .batch,
                 clock: monotonicClock
             ) { transaction in
+                try await self.requireSQLIntegrityPlacement(in: domain, transaction: transaction)
                 if let existing = try await self.baseCatalog.load(
                     id,
                     transaction: transaction

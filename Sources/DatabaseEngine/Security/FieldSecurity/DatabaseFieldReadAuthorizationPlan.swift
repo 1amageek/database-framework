@@ -112,8 +112,18 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
     private struct SourceBinding {
         struct Field: Sendable {
             let visibleName: String
-            let entityFieldName: String
+            let entityFieldNames: [String]
             let outputOrdinal: Int
+
+            init(visibleName: String, entityFieldName: String, outputOrdinal: Int) {
+                self.init(visibleName: visibleName, entityFieldNames: [entityFieldName], outputOrdinal: outputOrdinal)
+            }
+
+            init(visibleName: String, entityFieldNames: [String], outputOrdinal: Int) {
+                self.visibleName = visibleName
+                self.entityFieldNames = entityFieldNames
+                self.outputOrdinal = outputOrdinal
+            }
         }
 
         let entity: Schema.Entity
@@ -132,8 +142,8 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
             }
         }
 
-        func entityFieldName(for visibleName: String) -> String? {
-            fields.first { CanonicalSourceName.equal($0.visibleName, visibleName) }?.entityFieldName
+        func entityFieldNames(for visibleName: String) -> [String] {
+            fields.filter { CanonicalSourceName.equal($0.visibleName, visibleName) }.flatMap { $0.entityFieldNames }
         }
     }
 
@@ -311,9 +321,29 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                 do {
                     let relation = try sqlResolution.resolve(table)
                     entity = relation.entity
-                    fields = relation.columns.enumerated().map { ordinal, column in
-                        SourceBinding.Field(visibleName: column.declaration.name,
-                            entityFieldName: column.field.name, outputOrdinal: ordinal)
+                    fields = try relation.columns.enumerated().map { ordinal, column in
+                        let dependencies: [String]
+                        if let field = column.field { dependencies = [field.name] }
+                        else if case .generated(let expression) = column.declaration.policy {
+                            let bound = try SQLConstraintCompiler.bindGenerated(expression, column: column.declaration,
+                                relation: relation.declaration, physicalSchema: schema)
+                            var names = Set<String>()
+                            func collectDependencies(_ value: CanonicalBoundExpression) throws {
+                                if let slot = value.columnSlot {
+                                    guard relation.columns.indices.contains(slot), let field = relation.columns[slot].field else {
+                                        throw SQLReadResolutionError.missingPhysicalColumn(entity: entity.name, field: column.declaration.name)
+                                    }
+                                    names.insert(field.name)
+                                }
+                                for child in value.children { try collectDependencies(child) }
+                            }
+                            try collectDependencies(bound)
+                            dependencies = names.sorted()
+                        } else {
+                            throw SQLReadResolutionError.missingPhysicalColumn(entity: entity.name, field: column.declaration.name)
+                        }
+                        return SourceBinding.Field(visibleName: column.declaration.name,
+                            entityFieldNames: dependencies, outputOrdinal: ordinal)
                     }
                 } catch {
                     if resolutionFailure == nil { resolutionFailure = error }
@@ -474,7 +504,7 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                     if let columns, field.outputOrdinal < columns.count { visibleName = columns[field.outputOrdinal] }
                     else { visibleName = field.visibleName }
                     return SourceBinding.Field(visibleName: visibleName,
-                        entityFieldName: field.entityFieldName, outputOrdinal: field.outputOrdinal)
+                        entityFieldNames: field.entityFieldNames, outputOrdinal: field.outputOrdinal)
                 })
             }
         }
@@ -517,7 +547,7 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
             for binding in matchingBindings(qualifier: qualifier,
                 localBindings: localBindings, outerScopes: outerScopes) {
                 fieldsByEntity[binding.entity.name, default: []].formUnion(
-                    binding.fields.lazy.map { $0.entityFieldName })
+                    binding.fields.lazy.flatMap { $0.entityFieldNames })
             }
         }
 
@@ -537,8 +567,8 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                     else { return [] }
                     let fields: [String]
                     if collectingOrdering {
-                        fields = binding.fields.filter { CanonicalSourceName.equal($0.visibleName, column.column) }.map { $0.entityFieldName }
-                    } else { fields = binding.entityFieldName(for: column.column).map { [$0] } ?? [] }
+                        fields = binding.fields.filter { CanonicalSourceName.equal($0.visibleName, column.column) }.flatMap { $0.entityFieldNames }
+                    } else { fields = binding.entityFieldNames(for: column.column) }
                     return fields.map { ResolvedFieldBinding(entity: binding.entity, entityFieldName: $0) }
                 }
                 if !matches.isEmpty { return matches }
@@ -561,7 +591,7 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
         }
 
         mutating func includeVisibleFields(_ binding: SourceBinding) {
-            fieldsByEntity[binding.entity.name, default: []].formUnion(binding.fields.map { $0.entityFieldName })
+            fieldsByEntity[binding.entity.name, default: []].formUnion(binding.fields.flatMap { $0.entityFieldNames })
         }
 
         mutating func includeAll(_ entity: Schema.Entity) {
@@ -749,7 +779,7 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                     query,
                     outerScopes: [localBindings] + outerScopes
                 )
-            case .literal, .currentValue, .variable, .parameter, .bound:
+            case .defaultValue, .literal, .currentValue, .variable, .parameter, .bound:
                 break
             }
         }
@@ -919,7 +949,7 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                     fields: binding.fields.map { field in
                         let ordinal = ordinals[field.outputOrdinal]
                         return SourceBinding.Field(visibleName: names[ordinal],
-                            entityFieldName: field.entityFieldName, outputOrdinal: ordinal)
+                            entityFieldNames: field.entityFieldNames, outputOrdinal: ordinal)
                     })
             }
         }

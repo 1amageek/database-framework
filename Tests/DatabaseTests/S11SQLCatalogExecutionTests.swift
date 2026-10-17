@@ -215,15 +215,37 @@ struct S11SQLCatalogExecutionTests {
         for (index, key) in keys.enumerated() {
             let catalog = try SQLCatalog(namespaces: namespaces, relations: [SQLRelation(id: "keyed", namespaceID: "public",
                 name: "keyed", entityName: "S11PhysicalA", columns: columns, primaryKeyColumnIDs: key)])
+            if index == 1 {
+                let generation = container.schemaGeneration
+                await #expect(throws: SQLConstraintError.violation(relation: "keyed", constraint: "keyed_pkey")) {
+                    try await publish(catalog, in: container, key: "key-\(index)")
+                }
+                #expect(container.schemaGeneration == generation)
+                let replacement = try PersistedModel(entity: "S11PhysicalA", fields: [
+                    PersistableField(number: 1, name: "id", value: .string("b")),
+                    PersistableField(number: 2, name: "code", value: .string("other")),
+                    PersistableField(number: 3, name: "region", value: .string("east")),
+                    PersistableField(number: 4, name: "score", value: .int64(20))])
+                try await container.testBaseContext().withTransaction(configuration: .batch) { transaction in
+                    try await transaction.savePersistedModel(replacement, precondition: .exists)
+                }
+            }
             try await publish(catalog, in: container, key: "key-\(index)")
             #expect(container.sqlCatalog.relations[0].primaryKeyColumnIDs == key)
             let context = container.testBaseContext()
-            #expect(try await values(context, "SELECT * FROM keyed") == [
-                [.primitive(.string("same")), .primitive(.string("east"))],
-                [.primitive(.string("same")), .primitive(.string("east"))]])
-            #expect(try await values(context, "SELECT DISTINCT * FROM keyed") == [
-                [.primitive(.string("same")), .primitive(.string("east"))]])
+            let expected: [[QueryValue]] = [
+                [.primitive(.string(index == 0 ? "same" : "other")), .primitive(.string("east"))],
+                [.primitive(.string("same")), .primitive(.string("east"))]]
+            #expect(try await values(context, "SELECT * FROM keyed ORDER BY code") == expected)
+            #expect(try await values(context, "SELECT DISTINCT * FROM keyed ORDER BY code")
+                == (index == 0 ? [expected[0]] : expected))
+            await #expect(throws: SQLBindingSourceFailure.self) {
+                try await context.executeSQL("SELECT id FROM keyed")
+            }
         }
+        let physical = try await container.testBaseContext().query(SelectQuery(projection: [.column("id")],
+            source: .table(TableRef("S11PhysicalA")), orderBy: [SortKey(.column(ColumnRef("id")))]))
+        #expect(physical.rows.map(\.values) == [[.primitive(.string("a"))], [.primitive(.string("b"))]])
     }
 
     @Test("Byte-distinct normalized-equivalent columns remain distinct in projections and wildcards")
@@ -406,8 +428,9 @@ struct S11SQLCatalogExecutionTests {
         let renamed = try SQLRelation(id: old.id, namespaceID: old.namespaceID, name: "documents", entityName: old.entityName,
             columns: old.columns.map { column in
                 try SQLColumn(id: column.id, name: column.name == "secret" ? "public_name" : column.name,
-                    fieldNumber: column.fieldNumber)
-            }, primaryKeyColumnIDs: old.primaryKeyColumnIDs)
+                    backing: column.backing, policy: column.policy)
+            }, primaryKeyColumnIDs: old.primaryKeyColumnIDs,
+            primaryKeyConstraint: old.primaryKeyConstraint, constraints: old.constraints)
         try await publish(SQLCatalog(namespaces: container.sqlCatalog.namespaces, relations: [renamed]),
             in: container, key: "security")
         let reader = container.testBaseContext(authorization: authorization(roles: ["reader"]))
@@ -427,8 +450,9 @@ struct S11SQLCatalogExecutionTests {
         let exact = try SQLRelation(id: renamed.id, namespaceID: renamed.namespaceID, name: renamed.name,
             entityName: renamed.entityName, columns: renamed.columns.map { column in
                 let name = column.fieldNumber == 2 ? "é" : column.fieldNumber == 3 ? "e\u{0301}" : column.name
-                return try SQLColumn(id: column.id, name: name, fieldNumber: column.fieldNumber)
-            }, primaryKeyColumnIDs: renamed.primaryKeyColumnIDs)
+                return try SQLColumn(id: column.id, name: name, backing: column.backing, policy: column.policy)
+            }, primaryKeyColumnIDs: renamed.primaryKeyColumnIDs,
+            primaryKeyConstraint: renamed.primaryKeyConstraint, constraints: renamed.constraints)
         try await publish(SQLCatalog(namespaces: container.sqlCatalog.namespaces, relations: [exact]),
             in: container, key: "security-exact")
         #expect(try await values(reader, "SELECT \"é\".\"é\" FROM documents \"é\" CROSS JOIN documents \"e\u{0301}\"")

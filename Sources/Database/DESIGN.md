@@ -453,3 +453,16 @@ concurrent catalog publication and typed cross-session generation mismatch. Publ
 SQL tests cover located qualified failures and stale continuation rejection;
 existing meter, literal, graph parent-transaction and typed-output behavior
 remain regressions. S11 does not add DDL, DML, constraints or SQL blocks.
+
+
+### S13 text sequence effects
+
+The SELECT text facade classifies sequence functions with the Engine-owned bounded
+expression walker. An effectful SELECT enters the same single-statement SQLBlock
+orchestrator as semantic requests, preserving the facade's work meter, absolute
+deadline and captured temporal scope. It returns rows only after data closure,
+nonrollback allocation and mandatory recovery closure. Session-only functions keep
+the existing read path. Sequence requests use the profile's serializable collecting
+block contract; an external page or continuation is rejected before effects because
+its lifetime cannot preserve this request-local effect history. Pure SELECT paging
+is unchanged. General text DML/DDL and remote dispatch keep their later sprint owners.

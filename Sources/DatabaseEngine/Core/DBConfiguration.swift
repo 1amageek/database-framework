@@ -24,6 +24,9 @@ public struct DBConfiguration: Sendable {
     /// Configuration name (optional, for debugging)
     public let name: String?
 
+    /// Explicit SQL identity returned by CURRENT_DATABASE; nil has no implicit name.
+    public let sqlDatabaseName: String?
+
     #if DATABASE_MULTI_BASE
     /// Single-use lifecycle that owns every injected storage domain.
     private let storageTopologyLifecycle: DatabaseStorageTopologyLifecycle
@@ -77,11 +80,13 @@ public struct DBConfiguration: Sendable {
         monotonicClock: any StorageMonotonicClock,
         wallClock: any WallClock,
         sqlTemporal: SQLTemporalConfiguration = .utc,
+        sqlDatabaseName: String? = nil,
         itemStorage: ItemStorageConfiguration = .v1,
         logging: DatabaseLoggingConfiguration = .disabled,
         metrics: DatabaseMetricsConfiguration = .disabled
     ) {
         self.name = name
+        self.sqlDatabaseName = sqlDatabaseName
         self.storageTopologyLifecycle = DatabaseStorageTopologyLifecycle(
             topology: storageTopology
         )
@@ -101,6 +106,7 @@ public struct DBConfiguration: Sendable {
         monotonicClock: any StorageMonotonicClock,
         wallClock: any WallClock,
         sqlTemporal: SQLTemporalConfiguration = .utc,
+        sqlDatabaseName: String? = nil,
         testingBaseID: Base.ID,
         testingPrincipal: Principal,
         itemStorage: ItemStorageConfiguration = .v1,
@@ -108,6 +114,7 @@ public struct DBConfiguration: Sendable {
         metrics: DatabaseMetricsConfiguration = .disabled
     ) {
         self.name = name
+        self.sqlDatabaseName = sqlDatabaseName
         self.storageTopologyLifecycle = DatabaseStorageTopologyLifecycle(
             topology: storageTopology
         )
@@ -156,6 +163,7 @@ public struct DBConfiguration: Sendable {
         monotonicClock: any StorageMonotonicClock,
         wallClock: any WallClock,
         sqlTemporal: SQLTemporalConfiguration = .utc,
+        sqlDatabaseName: String? = nil,
         itemStorage: ItemStorageConfiguration = .v1,
         logging: DatabaseLoggingConfiguration = .disabled,
         metrics: DatabaseMetricsConfiguration = .disabled
@@ -165,6 +173,7 @@ public struct DBConfiguration: Sendable {
             throw .emptyRootPathComponent(index: index)
         }
         self.name = name
+        self.sqlDatabaseName = sqlDatabaseName
         self.storageLifecycle = DatabaseStorageLifecycle(
             storageEngine: storageEngine
         )

@@ -92,7 +92,7 @@ extension CanonicalBoundKey {
         case (.currentValue(let lhs, let lp), .currentValue(let rhs, let rp)): return lhs == rhs && lp == rp
         case (.function(let lhs), .function(let rhs)):
             // Separate volatile occurrences cannot share a prefix merely because their syntax matches.
-            if lhs.schema == nil && lhs.name == "clock_timestamp" { return false }
+            if lhs.schema == nil && ["clock_timestamp", "nextval", "currval", "lastval", "setval"].contains(lhs.name.lowercased()) { return false }
             return try sameName(lhs.name, rhs.name, workMeter: workMeter)
                 && sameOptionalName(lhs.schema, rhs.schema, workMeter: workMeter)
                 && lhs.distinct == rhs.distinct && lhs.finalArrayIsVariadic == rhs.finalArrayIsVariadic

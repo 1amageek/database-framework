@@ -6,6 +6,9 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
     private let container: DBContainer
     private let limits: DatabaseEntityMutationLimits
     private var temporalEnvironment: SQLTemporalEnvironment?
+    private var sqlCatalog: SQLCatalog?
+    private var sqlSchema: Schema?
+    private var sqlSession: SQLSessionBinding?
 
     public init(
         container: DBContainer,
@@ -25,8 +28,34 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
     ) async throws -> [EntityMutationEffect] {
         var statement = self
         statement.temporalEnvironment = temporalEnvironment ?? transaction.makeSQLTemporalEnvironment()
-        return try await statement.executeStatement(statement: statementInput, preconditions: preconditions,
-            transaction: transaction, workMeter: workMeter)
+        let (catalog, schema) = try await transaction.sqlPolicyCatalog()
+        statement.sqlCatalog = catalog
+        statement.sqlSchema = schema
+        let temporal = SQLTemporalStatementBinding(container: container, environment: statement.temporalEnvironment!)
+        return try await ActiveSQLTemporalStatement.$binding.withValue(temporal) { [statement] in
+            try await statement.executeStatement(statement: statementInput, preconditions: preconditions,
+                transaction: transaction, workMeter: workMeter)
+        }
+    }
+
+    package func executeSQL(
+        _ input: QueryStatement, searchPath: SQLSearchPath,
+        preconditions: [EntityMutationPrecondition] = [], transaction: DatabaseTransaction,
+        workMeter: DatabaseWorkMeter, temporalEnvironment: SQLTemporalEnvironment? = nil
+    ) async throws -> [EntityMutationEffect] {
+        var statement = self
+        statement.temporalEnvironment = temporalEnvironment ?? transaction.makeSQLTemporalEnvironment()
+        let (catalog, schema) = try await transaction.sqlPolicyCatalog()
+        statement.sqlCatalog = catalog
+        statement.sqlSchema = schema
+        statement.sqlSession = try await transaction.makeSQLSessionBinding(searchPath: searchPath, workMeter: workMeter)
+        let temporal = SQLTemporalStatementBinding(container: container, environment: statement.temporalEnvironment!)
+        return try await ActiveSQLTemporalStatement.$binding.withValue(temporal) { [statement] in
+            try await ActiveSQLSession.$binding.withValue(statement.sqlSession) { [statement] in
+                try await statement.executeStatement(statement: input, preconditions: preconditions,
+                    transaction: transaction, workMeter: workMeter)
+            }
+        }
     }
 
     private func executeStatement(
@@ -128,13 +157,26 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
         let insertBinder = try assignmentBinder(entity: entity, table: query.target, includingColumns: false, workMeter: workMeter)
         let preparedRows = try rows.map { row -> [PreparedAssignment] in
             if row.isEmpty, case .defaultValues = query.source { return [] }
-            guard row.count == columns.count else {
+            guard row.count == columns.count || (query.columns == nil && sqlSession != nil && row.count < columns.count) else {
                 throw DatabaseEntityStatementMutationError.unsupportedStatement(
                     "INSERT row has \(row.count) values for \(columns.count) columns"
                 )
             }
-            return try zip(columns, row).map { schema, expression in
-                try prepareAssignment(schema: schema, expression: expression, entity: entity, binder: insertBinder)
+            return try zip(columns, row).compactMap { target, expression in
+                if case .defaultValue = expression { return nil }
+                guard let schema = target.field else {
+                    throw SQLConstraintError.generatedAssignment(relation: entity.relation!.id, column: target.column!.name)
+                }
+                if let column = target.column {
+                    if case .generated = column.policy { throw SQLConstraintError.generatedAssignment(relation: entity.relation!.id, column: column.name) }
+                    if case .identity(let identity) = column.policy {
+                        if query.overriding == .userValue { return nil }
+                        if identity.generation == .always && query.overriding != .systemValue {
+                            throw SQLConstraintError.identityAssignment(relation: entity.relation!.id, column: column.name)
+                        }
+                    }
+                }
+                return try prepareAssignment(schema: schema, expression: expression, entity: entity, binder: insertBinder)
             }
         }
         let emptyAssignmentRow = CanonicalSourceRow(values: [], layout: CanonicalSourceLayout(slots: []))
@@ -161,7 +203,7 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
             if row.isEmpty, case .defaultValues = query.source {
                 suppliedFields = FieldObject()
             } else {
-                guard row.count == columns.count else {
+                guard row.count == columns.count || (query.columns == nil && sqlSession != nil && row.count < columns.count) else {
                     throw DatabaseEntityStatementMutationError.unsupportedStatement(
                         "INSERT row has \(row.count) values for \(columns.count) columns"
                     )
@@ -180,9 +222,9 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
                 suppliedFields = try FieldObject(consume suppliedEntries)
             }
 
-            let candidate = try entity.runtime.persistedModel(
-                from: suppliedFields
-            )
+            let policyFields = try await applyingInsertPolicies(to: suppliedFields, entity: entity,
+                payloads: &payloads, workMeter: workMeter)
+            let candidate = try entity.runtime.persistedModel(from: policyFields)
             let candidateFields = try DatabaseEntityProjection.fieldObject(
                 for: candidate
             )
@@ -461,13 +503,15 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
     }
 
     private func resolve(_ table: TableRef) throws -> ResolvedEntity {
-        guard table.schema == nil else {
+        let selected = try sqlSession?.resolution.resolve(table)
+        guard selected != nil || table.schema == nil else {
             throw DatabaseEntityStatementMutationError.unsupportedStatement(
                 "compiled entities do not use SQL schema qualifiers"
             )
         }
-        guard let entity = container.schema.entities.first(where: {
-            $0.name == table.table
+        let physicalName = selected?.entity.name ?? table.table
+        guard let entity = (sqlSchema ?? container.schema).entities.first(where: {
+            SQLConstraintCompiler.same($0.name, physicalName)
         }) else {
             throw DatabaseEntityMutationError.unknownEntity(table.table)
         }
@@ -502,31 +546,38 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
             name: entity.name,
             runtime: runtime,
             fields: entity.fields,
-            partition: partition
+            partition: partition,
+            relation: selected?.declaration ?? sqlCatalog?.relations.first(where: { SQLConstraintCompiler.same($0.entityName, entity.name) })
         )
     }
 
-    private func insertColumns(
-        _ names: [String]?,
-        entity: ResolvedEntity
-    ) throws -> [FieldSchema] {
-        let ordered = entity.fields.sorted { $0.fieldNumber < $1.fieldNumber }
+    private struct InsertColumn: Sendable {
+        let field: FieldSchema?
+        let column: SQLColumn?
+    }
+
+    private func insertColumns(_ names: [String]?, entity: ResolvedEntity) throws -> [InsertColumn] {
+        let ordered: [InsertColumn]
+        if let relation = entity.relation, sqlSession != nil {
+            ordered = relation.columns.map { column in
+                InsertColumn(field: column.fieldNumber.flatMap { number in entity.fields.first { $0.fieldNumber == number } }, column: column)
+            }
+        } else {
+            ordered = entity.fields.sorted { $0.fieldNumber < $1.fieldNumber }.map { InsertColumn(field: $0, column: policyColumn($0, entity: entity)) }
+        }
         guard let names else { return ordered }
-        var seen = Set<String>()
+        var seen = Set<SQLCatalogName>()
         return try names.map { name in
-            guard seen.insert(name).inserted else {
-                throw DatabaseEntityMutationError.invalidCompiledSchema(
-                    entity: entity.name,
-                    reason: "INSERT column '\(name)' is duplicated"
-                )
+            guard seen.insert(SQLCatalogName(name)).inserted else {
+                throw DatabaseEntityMutationError.invalidCompiledSchema(entity: entity.name, reason: "INSERT column is duplicated")
             }
-            guard let field = entity.fields.first(where: { $0.name == name }) else {
-                throw DatabaseEntityMutationError.invalidCompiledSchema(
-                    entity: entity.name,
-                    reason: "INSERT column '\(name)' is not compiled"
-                )
+            guard let target = ordered.first(where: {
+                let targetName = sqlSession == nil ? $0.field?.name : $0.column?.name
+                return targetName.map { SQLConstraintCompiler.same($0, name) } ?? false
+            }) else {
+                throw DatabaseEntityMutationError.invalidCompiledSchema(entity: entity.name, reason: "INSERT column is not declared")
             }
-            return field
+            return target
         }
     }
 
@@ -546,19 +597,24 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
             fields: evaluationFields,
             workMeter: workMeter
         )
-        let row = try assignmentRow(fields: fields, entity: entity, table: table, workMeter: workMeter)
+        let row = try await assignmentRow(fields: fields, entity: entity, table: table, workMeter: workMeter)
         // A selected column may borrow its source claim; keep that owner through destination admission.
         for lease in row.payloadLeases {
             try payloads.append(footprint: DatabaseIntermediateFootprint(), make: { lease })
         }
         for assignment in assignments {
+            if case .defaultValue = assignment.expression {
+                if let column = policyColumn(assignment.schema, entity: entity), case .generated = column.policy { continue }
+                byName[assignment.schema.name] = try await policyDefault(field: assignment.schema, entity: entity,
+                    payloads: &payloads, workMeter: workMeter)
+                continue
+            }
             byName[assignment.schema.name] = try await evaluateAssignment(
                 assignment, evaluator: evaluator, row: row, payloads: &payloads, workMeter: workMeter
             )
         }
-        return try FieldObject(
-            byName.map { (key: $0.key, value: $0.value) }
-        )
+        return try await applyingGenerated(to: FieldObject(byName.map { (key: $0.key, value: $0.value) }),
+            entity: entity, payloads: &payloads, workMeter: workMeter)
     }
 
     private func evaluationFields(
@@ -586,14 +642,17 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
         entity: ResolvedEntity, table: TableRef, includingColumns: Bool,
         workMeter: DatabaseWorkMeter
     ) throws -> CanonicalQueryTypeBinder {
+        if includingColumns, sqlSession != nil, let relation = entity.relation, let schema = sqlSchema {
+            return try SQLConstraintCompiler.binder(relation: relation, physicalSchema: schema, workMeter: workMeter, tableAlias: table.alias)
+        }
         let fields = includingColumns ? entity.fields : []
         let columns = try fields.map { field in
-            try QueryColumn(number: fieldNumber(field, entity: entity.name), name: field.name,
+            try QueryColumn(number: fieldNumber(field, entity: entity.name), name: logicalName(field, entity: entity),
                 type: field.queryType ?? .primitive(field.type, isArray: field.isArray), isNullable: field.isOptional)
         }
         return CanonicalQueryTypeBinder(columns: columns, resolveColumn: { reference in
             guard reference.table == nil || reference.table == table.table || reference.table == table.alias,
-                  let slot = fields.firstIndex(where: { $0.name == reference.column }) else {
+                  let slot = fields.firstIndex(where: { SQLConstraintCompiler.same(logicalName($0, entity: entity), reference.column) }) else {
                 throw DatabaseExpressionEvaluationError.typeMismatch(operation: "mutation source column")
             }
             return slot
@@ -605,14 +664,12 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
         binder: CanonicalQueryTypeBinder
     ) throws -> PreparedAssignment {
         _ = try fieldNumber(schema, entity: entity.name)
+        if case .defaultValue = expression { return PreparedAssignment(schema: schema, expression: expression, bound: nil) }
         try binder.requireScalarPhase(expression)
         let type = schema.queryType ?? .primitive(schema.type, isArray: schema.isArray)
         let selected: Bool
         switch type {
-        case .sql(.text), .sql(.char), .sql(.varchar), .sql(.blob), .sql(.binary), .sql(.varbinary),
-             .sql(.uuid), .sql(.boolean), .sql(.smallint), .sql(.integer), .sql(.bigint),
-             .sql(.real), .sql(.doublePrecision), .sql(.decimal),
-             .sql(.date), .sql(.time), .sql(.timestamp), .sql(.interval): selected = true
+        case .sql: selected = true
         case .primitive(let kind, false):
             switch kind {
             case .string, .bytes, .uuid, .bool, .int8, .int16, .int32, .int64, .uint8, .uint16,
@@ -631,14 +688,31 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
     ) throws -> [PreparedAssignment] {
         let binder = try assignmentBinder(entity: entity, table: table, includingColumns: true, workMeter: workMeter)
         var seen = Set<String>()
-        return try assignments.map { assignment in
+        return try assignments.compactMap { assignment in
             guard seen.insert(assignment.column).inserted else {
                 throw DatabaseEntityStatementMutationError.unsupportedStatement(
                     "column '\(assignment.column)' is assigned more than once")
             }
-            guard let schema = entity.fields.first(where: { $0.name == assignment.column }) else {
+            let target = entity.relation?.columns.first(where: { SQLConstraintCompiler.same($0.name, assignment.column) })
+            if sqlSession != nil, let target, case .virtual = target.backing {
+                guard case .defaultValue = assignment.value else { throw SQLConstraintError.generatedAssignment(relation: entity.relation!.id, column: target.name) }
+                return nil
+            }
+            guard let schema = entity.fields.first(where: {
+                if sqlSession != nil && policyColumn($0, entity: entity) == nil { return false }
+                return SQLConstraintCompiler.same(logicalName($0, entity: entity), assignment.column)
+            }) else {
                 throw DatabaseEntityMutationError.invalidCompiledSchema(entity: entity.name,
                     reason: "assignment column '\(assignment.column)' is not compiled")
+            }
+            if let column = policyColumn(schema, entity: entity) {
+                switch column.policy {
+                case .generated:
+                    guard case .defaultValue = assignment.value else { throw SQLConstraintError.generatedAssignment(relation: entity.relation!.id, column: column.name) }
+                case .identity(let identity) where identity.generation == .always:
+                    guard case .defaultValue = assignment.value else { throw SQLConstraintError.identityAssignment(relation: entity.relation!.id, column: column.name) }
+                default: break
+                }
             }
             return try prepareAssignment(schema: schema, expression: assignment.value, entity: entity, binder: binder)
         }
@@ -656,8 +730,8 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
         _ filter: CanonicalBoundExpression, fields: FieldObject, entity: ResolvedEntity,
         table: TableRef, workMeter: DatabaseWorkMeter
     ) async throws -> Bool {
-        let row = try assignmentRow(fields: fields, entity: entity, table: table, workMeter: workMeter)
-        let result = try await DatabaseContext.evaluateCanonicalScalar(filter, on: row, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
+        let row = try await assignmentRow(fields: fields, entity: entity, table: table, workMeter: workMeter)
+        let result = try await DatabaseContext.evaluateCanonicalScalar(filter, on: row, temporalEnvironment: temporalEnvironment, session: sqlSession, workMeter: workMeter)
         return try withExtendedLifetime(result.leases) {
             switch result.value {
             case .primitive(.bool(let value)): return value
@@ -674,7 +748,11 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
 
     private func assignmentRow(
         fields: FieldObject, entity: ResolvedEntity, table: TableRef, workMeter: DatabaseWorkMeter
-    ) throws -> CanonicalSourceRow {
+    ) async throws -> CanonicalSourceRow {
+        if sqlSession != nil, let relation = entity.relation, let schema = sqlSchema {
+            return try await SQLConstraintRows.row(fields: fields, relation: relation, physicalSchema: schema,
+                environment: temporalEnvironment!, workMeter: workMeter)
+        }
         let layoutFootprint = try CanonicalRelationalFootprintMeter.sourceLayoutFootprint(
             fieldNames: entity.fields.lazy.map { $0.name }, sourceName: table.table,
             workMeter: workMeter, stage: .mutationPlanning)
@@ -711,7 +789,7 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
         payloads: inout DatabaseRetainedArrayBuilder<DatabaseQueryPayloadLease>, workMeter: DatabaseWorkMeter
     ) async throws -> FieldValue {
         guard let bound = assignment.bound else { return try evaluator.evaluate(assignment.expression) }
-        let result = try await DatabaseContext.evaluateCanonicalScalar(bound, on: row, temporalEnvironment: temporalEnvironment, workMeter: workMeter)
+        let result = try await DatabaseContext.evaluateCanonicalScalar(bound, on: row, temporalEnvironment: temporalEnvironment, session: sqlSession, workMeter: workMeter)
         for lease in result.leases {
             guard lease.workMeter === workMeter else { throw DatabaseIntermediateReservationError.workMeterMismatch }
             try payloads.append(footprint: DatabaseIntermediateFootprint(), make: { lease })
@@ -755,5 +833,71 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
         let runtime: EntityRuntimeRegistration
         let fields: [FieldSchema]
         let partition: AnyDirectoryPath?
+        let relation: SQLRelation?
+    }
+}
+
+extension DatabaseEntityStatementMutationExecutor {
+    private func policyColumn(_ field: FieldSchema, entity: ResolvedEntity) -> SQLColumn? {
+        entity.relation?.columns.first { $0.fieldNumber == field.fieldNumber }
+    }
+
+    private func logicalName(_ field: FieldSchema, entity: ResolvedEntity) -> String {
+        sqlSession == nil ? field.name : (policyColumn(field, entity: entity)?.name ?? field.name)
+    }
+
+    private func policyDefault(field: FieldSchema, entity: ResolvedEntity,
+        payloads: inout DatabaseRetainedArrayBuilder<DatabaseQueryPayloadLease>, workMeter: DatabaseWorkMeter) async throws -> FieldValue {
+        guard let column = policyColumn(field, entity: entity) else { return sqlSession == nil ? (field.defaultValue ?? .null) : .null }
+        let expression: Expression
+        switch column.policy {
+        case .input(let declared):
+            guard let declared else { return sqlSession == nil ? (field.defaultValue ?? .null) : .null }
+            expression = declared
+        case .identity(let identity):
+            let relation = entity.relation!
+            let occurrence = "\(relation.id.utf8.count):\(relation.id)\(column.id.utf8.count):\(column.id)"
+            expression = .literal(.int(try await SQLSequenceRuntime.nextValue(sequenceID: identity.sequenceID, occurrence: occurrence)))
+        case .generated: return .null
+        }
+        let binder = try assignmentBinder(entity: entity, table: TableRef(table: entity.name), includingColumns: false, workMeter: workMeter)
+        let assignment = try prepareAssignment(schema: field, expression: expression, entity: entity, binder: binder)
+        let row = CanonicalSourceRow(values: [], layout: CanonicalSourceLayout(slots: []))
+        let snapshot = try sqlSession?.resolution.snapshot ?? SQLSequenceRuntime.request?.context.readPolicy().sqlCatalog
+        let bindings = entity.relation.flatMap { relation in
+            snapshot?.sequenceDefaultBindings(relationID: relation.id, columnID: column.id)
+        }
+        return try await SQLSequenceRuntime.$defaultBindings.withValue(bindings) {
+            try await evaluateAssignment(assignment, evaluator: DatabaseExpressionEvaluator(fields: [:], workMeter: workMeter),
+                row: row, payloads: &payloads, workMeter: workMeter)
+        }
+    }
+
+    private func applyingInsertPolicies(to supplied: FieldObject, entity: ResolvedEntity,
+        payloads: inout DatabaseRetainedArrayBuilder<DatabaseQueryPayloadLease>, workMeter: DatabaseWorkMeter) async throws -> FieldObject {
+        guard entity.relation != nil else { return supplied }
+        var fields = supplied.fields
+        for field in entity.fields where supplied[field.name] == nil {
+            if let column = policyColumn(field, entity: entity), case .generated = column.policy { continue }
+            let value = try await policyDefault(field: field, entity: entity, payloads: &payloads, workMeter: workMeter)
+            fields.append((key: field.name, value: value))
+        }
+        return try await applyingGenerated(to: FieldObject(consume fields), entity: entity,
+            payloads: &payloads, workMeter: workMeter)
+    }
+
+    private func applyingGenerated(to fields: FieldObject, entity: ResolvedEntity,
+        payloads: inout DatabaseRetainedArrayBuilder<DatabaseQueryPayloadLease>, workMeter: DatabaseWorkMeter) async throws -> FieldObject {
+        guard let relation = entity.relation, let schema = sqlSchema,
+              relation.columns.contains(where: { if case .generated = $0.policy { return true }; return false }) else { return fields }
+        let row = try await SQLConstraintRows.row(fields: fields, relation: relation, physicalSchema: schema,
+            environment: temporalEnvironment!, workMeter: workMeter, recomputingStored: true)
+        for lease in row.payloadLeases {
+            try payloads.append(footprint: DatabaseIntermediateFootprint(), make: { lease })
+        }
+        let encoded = try SQLConstraintRows.fields(row, relation: relation, physicalSchema: schema,
+            preserving: fields, workMeter: workMeter)
+        for lease in encoded.leases { try payloads.append(footprint: DatabaseIntermediateFootprint(), make: { lease }) }
+        return encoded.fields
     }
 }

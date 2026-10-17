@@ -42,6 +42,17 @@ Composition lease + operation schema lease
 
 ## Contracts and Invariants
 
+Before provisioning a foreign-domain root or preparing a move to one, the
+control transaction reads the durable SQL catalog without snapshot semantics.
+If an SQL writer floor has been published and the current catalog owns
+primary keys, constraints, or stored generated/identity obligations, the operation rejects `StorageError.unsupportedOperation` for the unavailable atomic transaction-domain capability before
+creating lifecycle records or data-root side effects. [Schema](../Schema/DESIGN.md)
+owns the integrity classification and writer-generation floor. This read
+conflicts with concurrent catalog publication; removing all current obligations
+allows foreign-domain placement again. No control key is read through a foreign
+data transaction.
+
+
 - Every member output is bound before the first row fetch or began event.
   Column order, type, nullability and labels must agree across members.
 - Every continuation page must match that schema, including empty pages.

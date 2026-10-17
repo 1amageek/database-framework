@@ -797,6 +797,8 @@ struct CanonicalQueryTypeBinder {
             }
             if child.type == type, type != .sql(.char(length: nil)), Self.temporalType(type) == nil { return child }
             return node(expression, type, child.isNullable, [child])
+        case .defaultValue:
+            throw DatabaseExpressionEvaluationError.unsupportedExpression("DEFAULT requires an admitted mutation position")
         case .function(let function):
             return try bindFunction(function, expression: expression)
         case .aggregate(let aggregate):
@@ -1324,6 +1326,7 @@ struct CanonicalQueryTypeBinder {
         }
         if let selected = try bindCollectionFunction(function, expression: expression) { return selected }
         guard !function.finalArrayIsVariadic else { throw mismatch("unsupported VARIADIC signature") }
+        if let selected = try bindSessionFunction(function, expression: expression) { return selected }
         if let selected = try bindTemporalFunction(function, expression: expression) { return selected }
         if let selected = try bindScalarFunction(function, expression: expression) { return selected }
         if name == "width_bucket", function.arguments.count == 2 {
@@ -1370,6 +1373,35 @@ struct CanonicalQueryTypeBinder {
         if ["scale", "min_scale", "width_bucket"].contains(name) { result = .sql(.integer) }
         else { result = .sql(selected.first ?? .doublePrecision) }
         return node(expression, result, children.contains { $0.isNullable }, children)
+    }
+
+    private func bindSessionFunction(
+        _ function: FunctionCall, expression: DatabaseKit.Expression
+    ) throws -> CanonicalBoundExpression? {
+        let signatures: [[DataType]]
+        let result: QueryColumnType
+        switch function.name {
+        case "nextval", "currval": signatures = [[.text]]; result = .sql(.bigint)
+        case "lastval": signatures = [[]]; result = .sql(.bigint)
+        case "setval": signatures = [[.text, .bigint], [.text, .bigint, .boolean]]; result = .sql(.bigint)
+        case "current_schema", "current_database", "current_user", "session_user":
+            signatures = [[]]; result = .sql(.text)
+        case "current_schemas": signatures = [[.boolean]]; result = .sql(.array(.text))
+        default: return nil
+        }
+        let candidates = signatures.filter { $0.count == function.arguments.count }
+        guard !candidates.isEmpty else { throw mismatch(function.name) }
+        let inputs: [CanonicalBoundExpression?] = try function.arguments.enumerated().map { index, argument in
+            if try isContextualUnknown(argument) { return nil }
+            return try childBinder(.argument, index).bind(argument)
+        }
+        let signature = try selectFunction(candidates, inputs: inputs, name: function.name)
+        let children = try function.arguments.indices.map { index in
+            let target = QueryColumnType.sql(signature[index])
+            let input = try inputs[index] ?? childBinder(.argument, index).bind(function.arguments[index], contextualType: target)
+            return try coerce(input, to: target)
+        }
+        return node(expression, result, function.name == "current_schema" || children.contains { $0.isNullable }, children)
     }
 
     private func selectedText(_ expression: DatabaseKit.Expression, binder: Self) throws -> CanonicalBoundExpression {
@@ -3062,7 +3094,7 @@ extension CanonicalQueryTypeBinder {
             case .subquery, .arraySubquery, .exists:
                 // A child SELECT owns its own aggregate and analytic phase.
                 break
-            case .literal, .currentValue, .wholeRow, .column, .variable, .parameter, .bound: break
+            case .defaultValue, .literal, .currentValue, .wholeRow, .column, .variable, .parameter, .bound: break
             }
         }
     }

@@ -206,7 +206,8 @@ struct S11SchemaGenerationPublicationTests {
         let original = try #require(catalog.relations.first)
         return try SQLCatalog(namespaces: catalog.namespaces, relations: [SQLRelation(
             id: original.id, namespaceID: original.namespaceID, name: name, entityName: original.entityName,
-            columns: original.columns, primaryKeyColumnIDs: original.primaryKeyColumnIDs)])
+            columns: original.columns, primaryKeyColumnIDs: original.primaryKeyColumnIDs,
+            primaryKeyConstraint: original.primaryKeyConstraint, constraints: original.constraints)])
     }
 
     private func globalEngine(_ container: DBContainer) -> any StorageEngine {

@@ -32,6 +32,8 @@ package struct DatabaseExpressionEvaluator: Sendable {
             throw DatabaseExpressionEvaluationError.unsupportedExpression("SQL ARRAY/ROW constructor")
         case .arrayAccess, .collectionOperation, .collate, .arraySubquery, .wholeRow, .field, .fieldExpansion:
             throw DatabaseExpressionEvaluationError.unsupportedExpression("SQL collection expression requires selected SQL execution")
+        case .defaultValue:
+            throw DatabaseExpressionEvaluationError.unsupportedExpression("SQL DEFAULT requires mutation policy")
         case .currentValue:
             throw DatabaseExpressionEvaluationError.missingTemporalEnvironment
         case .concatenate:

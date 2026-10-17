@@ -160,3 +160,25 @@ transaction actor independently of attenuating data access. A callback admitted 
 read access therefore preserves read-only storage and Directory enforcement
 while the actor can restore its own logical/physical checkpoint. No raw
 checkpoint or transaction lifecycle authority escapes through read wrappers.
+
+
+### S13 explicit SQL database identity
+
+DBConfiguration.sqlDatabaseName is an optional immutable SQL-facing name supplied
+by application composition. It is distinct from the debugging-only configuration
+name and the physical databaseRootPath. QueryExecution consumes it for
+CURRENT_DATABASE and reports typed absence for nil/empty values. The value neither
+selects nor authorizes a storage root. All configuration initializers preserve it
+with the same semantics on default and MultiBase compositions. No mutable state,
+second lifecycle or backend-specific isolation is added.
+
+### S13 sequence request admission
+
+DBContainer retains one SQLSequenceCoordinator actor for FIFO SQL request
+admission through allocator replay and mandatory recovery close. The same actor
+and Sendable contract exist on Native, WASM and Embedded. SQLBlock's outer
+withDataOperation scope retains the selected schema/Base root across every data
+attempt and independent allocator transaction. Its collecting box leaves that
+scope before the final Ready transition; no transaction, schema/Base request
+lease or sequence recovery operation survives public promotion. SQLSequences
+owns queue cancellation/deadline behavior and durable allocator semantics.

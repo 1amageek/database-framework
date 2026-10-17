@@ -159,17 +159,11 @@ UPDATE and DELETE, with their existing supported expression and conflict
 behavior. RETURNING, INSERT SELECT, UPDATE FROM, DELETE USING, complete SQL
 constraint/default/identity semantics and DDL remain their S13-S15 gates.
 
-Before invoking the existing physical mutation executor, resolve the logical
-target through the admitted S11 SQL catalog and search path. S12 admits only
-static-model mappings whose relation/entity and every visible column/physical
-field have exact UTF-8 identity and compatible declared types. The explicit
-namespace may be removed only after that successful logical resolution.
-Catalog aliases, renamed columns, schema-driven mutation backing and mappings
-requiring expression rewriting fail with typed unsupported capability before
-effects. An unknown logical name is a binding failure; it cannot fall back to
-a matching physical entity. This subset is not complete S14 SQL mutation
-support. Per-step shape/capability checks precede its first effect, while the
-request transaction guarantees rollback if later admission or evaluation fails.
+The S13 policy-aware mutation entry resolves the logical target through the
+admitted SQL catalog/search path, applies column policies, and maps to physical
+fields under the attempt schema lease. SQLCatalog owns compiled-model protection;
+this orchestrator does not duplicate it with S12's former exact-name mapping gate.
+RETURNING, INSERT SELECT, UPDATE FROM and DELETE USING retain S14 ownership.
 
 ### Named checkpoint semantics
 
@@ -313,3 +307,54 @@ Changes to block input/command meaning recheck Kit. Changes to checkpoint
 barriers recheck Transaction, Read, StorageKit and schema staging. Changes to
 retained output recheck QueryExecution and Database adaptation. New grammar or
 remote operations are separate S16/S17 work, not implicit S12 completion.
+
+## S13 Sequence Replay and Constraint Controls
+
+The S13 semantic steps extend the S12 subset with SET CONSTRAINTS and sequence
+CREATE/ALTER/DROP. SQLSequences owns durable allocator state and request history.
+SQLBlock captures its request before data retries, binds it to selected/default/
+identity evaluation and obtains the container's FIFO permit through mandatory
+recovery close. SELECT containing NEXTVAL or SETVAL requires write access; the
+existing bounded query walker visits every nested expression before admission.
+Sequence administration requires administer access. Authority for allocator
+transactions includes the selected Partition lease and MultiBase write grant.
+
+A private allocation demand aborts the data attempt. Only the exact unwrapped
+demand returned after successful rollback/close starts an independent allocator
+transaction on the same injected engine. Its atomic value/recovery marker is
+cached, and the block is replayed with the same meter, deadline and temporal
+timeline. This is an outer control transition, separate from StorageError retry
+and its maximum-attempt policy. Cleanup failures and commit-unknown stay terminal.
+No result escapes until data commit/close and recovery-marker cleanup both close.
+
+CREATE and ALTER RESTART stage an incarnation head in the data transaction.
+Independent consumption addresses that incarnation; rollback leaves unreachable
+allocation gaps and preserves the previously committed head. Thus RESTART is
+transactional while NEXTVAL/SETVAL consumption in an active incarnation remains
+nonrollback. Request history survives savepoint rollback and is reconstructed
+from cached effects on whole-attempt replay. Explicit rewind and CYCLE may
+intentionally duplicate values; automatic attempts and restart never do so.
+
+| State | Native / WASM / Embedded | Owner and close |
+|---|---|---|
+| Request permit and waiters | Same actor | Container; release after terminal recovery close |
+| Effect cache, CURRVAL/LASTVAL | Same actor | Request; never checkpoint-restored |
+| Recovery/allocation cells | Same Partition-leased runner | Commit/close before replay |
+
+SQLSequenceExecutionTests owns semantic sequence and transaction rollback cases;
+SQLBlock lifecycle tests continue to own aggregate readiness and first-error
+failure. No PostgreSQL concurrency or uncertain crash-outcome parity is claimed.
+
+The outer request captures one transaction instant before replay and retains the
+selected data-root/schema scope across allocator calls. Its callback returns the
+collecting box. Final cancellation admission and Ready construction occur only
+after that complete scope has returned and released its request leases. A
+package-only entry accepts the facade's exact existing meter and absolute
+deadline, so parsing and sequence execution do not acquire independent budgets.
+
+The internal single-text-statement entry retains an optional immutable occurrence
+arena/root through binding and selected evaluation. Source metadata is valid only
+for exactly one statement and must be supplied as a complete pair. The public
+semantic block entry has no synthetic source map. Every SQL statement binds an
+admitted session scope for the complete mutation, including constraint and FK
+DEFAULT evaluation; assignment completion does not end that session scope.

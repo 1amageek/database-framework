@@ -44,7 +44,11 @@ struct SQLParserLexicalTests {
         let typeFunctions = "AUTHORIZATION BINARY COLLATION CONCURRENTLY CROSS CURRENT_SCHEMA FREEZE FULL ILIKE INNER IS ISNULL JOIN LEFT LIKE NATURAL NOTNULL OUTER OVERLAPS RIGHT SIMILAR TABLESAMPLE VERBOSE".split(separator: " ")
         for keyword in typeFunctions {
             let name = keyword.lowercased()
-            #expect(throws: SQLParser.ParseError.self) { _ = try SQLParser().parseSelect("SELECT " + name) }
+            if keyword == "CURRENT_SCHEMA" {
+                #expect(try expressions("SELECT " + name) == [.function(FunctionCall(name: name, arguments: []))])
+            } else {
+                #expect(throws: SQLParser.ParseError.self) { _ = try SQLParser().parseSelect("SELECT " + name) }
+            }
             #expect(throws: SQLParser.ParseError.self) { _ = try SQLParser().parseSelect("SELECT id FROM " + name) }
             #expect(try expressions("SELECT t." + name + " FROM t") == [.column(ColumnRef(table: "t", column: name))])
         }

@@ -2046,6 +2046,21 @@ extension SQLParser {
         if !tokenIsQuoted, let word = labelText {
             let upper = asciiUppercase(word)
             let next = peekNextToken()
+            if upper == "DEFAULT" {
+                advance()
+                return try makeStructuralNode(.defaultValue, at: primaryStart)
+            }
+            if ["CURRENT_USER", "SESSION_USER", "CURRENT_SCHEMA", "CURRENT_ROLE", "CURRENT_CATALOG"].contains(upper), next != .symbol("(") {
+                let identifierEnd = tokenEnd
+                advance()
+                let name: String
+                switch upper {
+                case "CURRENT_ROLE": name = "current_user"
+                case "CURRENT_CATALOG": name = "current_database"
+                default: name = word.lowercased()
+                }
+                return try makeStructuralNode(.function(FunctionCall(name: name, arguments: [])), at: primaryStart, identifierEnd: identifierEnd)
+            }
             if let kind = Self.currentValueKind(upper) {
                 let identifierEnd = tokenEnd
                 advance()
@@ -2955,6 +2970,14 @@ extension SQLParser {
             columns = nil
         }
 
+        let overriding: SQLIdentityOverride?
+        if consumeContextualWord("OVERRIDING") {
+            if consumeContextualWord("SYSTEM") { overriding = .systemValue }
+            else if consumeContextualWord("USER") { overriding = .userValue }
+            else { throw ParseError.unexpectedToken(expected: "SYSTEM or USER", found: tokenDescription(currentToken), position: tokenStart) }
+            try expectContextualWord("VALUE")
+        } else { overriding = nil }
+
         let source: InsertSource
         if isKeyword("VALUES") {
             advance()
@@ -3038,7 +3061,8 @@ extension SQLParser {
                 columns: columns,
                 source: source,
                 onConflict: onConflict,
-                returning: returning
+                returning: returning,
+                overriding: overriding
             )
         )
     }

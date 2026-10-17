@@ -10,6 +10,9 @@ struct DatabaseExpressionEvaluatorTests {
     @Test("Only literal NULL casts bypass deferred temporal precision conversion")
     func deferredSQLSemanticsFailEvaluation() throws {
         let evaluator = DatabaseExpressionEvaluator(fields: ["missing": .null])
+        #expect(throws: DatabaseExpressionEvaluationError.unsupportedExpression("SQL DEFAULT requires mutation policy")) {
+            try evaluator.evaluate(.defaultValue)
+        }
         for expression: Expression in [.array([]), .row([.null])] {
             #expect(throws: DatabaseExpressionEvaluationError.unsupportedExpression("SQL ARRAY/ROW constructor")) {
                 try evaluator.evaluate(expression)

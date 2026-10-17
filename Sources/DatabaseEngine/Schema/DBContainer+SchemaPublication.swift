@@ -104,7 +104,8 @@ extension DBContainer {
             expectedFingerprint: lease.fingerprint, expectedGeneration: expectedGeneration,
             idempotencyKey: idempotencyKey, authorization: authorization,
             runtimeConfiguration: lease.runtimeConfiguration, preparedGeneration: prepared,
-            publishedLease: lease, sqlCatalog: snapshot, requiresIdleSchemaTransition: true)
+            publishedLease: lease, sqlCatalog: snapshot, requiresIdleSchemaTransition: true,
+            validatesExistingSQLData: true)
     }
 
     func stageSQLCatalog(
@@ -150,11 +151,22 @@ extension DBContainer {
         try await databaseGrantStore.require(.administer,
             authorization: authorization, transaction: transaction)
         #endif
+        let validatesIntegrity = Self.changesSQLIntegrity(from: sourceLease.sqlCatalog.catalog, to: catalog)
+        let validateExistingData: (@Sendable () async throws -> Void)?
+        if validatesIntegrity {
+            validateExistingData = {
+                try await self.validateSQLPublication(snapshot, sourceLease: sourceLease,
+                    authorization: authorization, transaction: transaction, workMeter: workMeter)
+            }
+        } else {
+            validateExistingData = nil
+        }
         let outcome = try await writeSchemaAggregate(sourceLease.schema,
             fingerprint: sourceLease.fingerprint, expectedFingerprint: sourceLease.fingerprint,
             expectedGeneration: expectedGeneration, idempotencyKey: idempotencyKey,
             preparedGeneration: prepared, publishedLease: sourceLease, sqlCatalog: snapshot,
-            requiresIdleSchemaTransition: true, registry: registry, transaction: transaction)
+            requiresIdleSchemaTransition: true, registry: registry, transaction: transaction,
+            advancesSQLWriterGeneration: validatesIntegrity, validateExistingData: validateExistingData)
         guard outcome.shouldPublishGeneration else {
             return DatabaseSchemaStagingOutcome(publication: outcome.publication, state: nil)
         }
@@ -205,7 +217,8 @@ extension DBContainer {
         preparedGeneration: DatabasePreparedSchemaGeneration,
         publishedLease: DatabaseSchemaLease,
         sqlCatalog: SQLCatalogSnapshot,
-        requiresIdleSchemaTransition: Bool
+        requiresIdleSchemaTransition: Bool,
+        validatesExistingSQLData: Bool = false
     ) async throws -> DatabaseSchemaPublicationResult {
         guard !idempotencyKey.isEmpty else { throw DatabaseSchemaPublicationError.invalidIdempotencyKey }
         guard try SchemaManifest(schema: schema).fingerprint() == targetFingerprint else {
@@ -221,27 +234,32 @@ extension DBContainer {
         let executor = transactionExecutor
         #endif
         let registry = SchemaRegistry(database: schemaEngine, root: schemaRoot, clock: monotonicClock)
+        let validationMeter = validatesExistingSQLData
+            ? DatabaseWorkMeter(budget: ExecutionBudget(), monotonicClock: monotonicClock) : nil
         let outcome = try await executor.withTransaction(configuration: .batch,
             clock: monotonicClock, executionDeadline: nil) { transaction in
             #if DATABASE_MULTI_BASE
             try await self.databaseGrantStore.require(.administer,
                 authorization: authorization, transaction: transaction)
             #endif
-            let databaseTransaction = DatabaseTransaction(storageAccess: transaction, container: self,
-                readPolicy: DatabaseReadPolicy(schemaLease: publishedLease, authorization: authorization))
-            do {
-                let outcome = try await self.writeSchemaAggregate(schema,
-                    fingerprint: targetFingerprint, expectedFingerprint: expectedFingerprint,
-                    expectedGeneration: expectedGeneration, idempotencyKey: idempotencyKey,
-                    preparedGeneration: preparedGeneration, publishedLease: publishedLease,
-                    sqlCatalog: sqlCatalog, requiresIdleSchemaTransition: requiresIdleSchemaTransition,
-                    registry: registry, transaction: transaction)
-                try await databaseTransaction.prepareForCommit()
-                return outcome
-            } catch {
-                await databaseTransaction.invalidate()
-                throw error
+            let validatesIntegrity = validatesExistingSQLData
+                && Self.changesSQLIntegrity(from: publishedLease.sqlCatalog.catalog, to: sqlCatalog.catalog)
+            let validateExistingData: (@Sendable () async throws -> Void)?
+            if validatesIntegrity, let validationMeter {
+                validateExistingData = {
+                    try await self.validateSQLPublication(sqlCatalog, sourceLease: publishedLease,
+                        authorization: authorization, transaction: transaction, workMeter: validationMeter)
+                }
+            } else {
+                validateExistingData = nil
             }
+            return try await self.writeSchemaAggregate(schema,
+                fingerprint: targetFingerprint, expectedFingerprint: expectedFingerprint,
+                expectedGeneration: expectedGeneration, idempotencyKey: idempotencyKey,
+                preparedGeneration: preparedGeneration, publishedLease: publishedLease,
+                sqlCatalog: sqlCatalog, requiresIdleSchemaTransition: requiresIdleSchemaTransition,
+                registry: registry, transaction: transaction,
+                advancesSQLWriterGeneration: validatesIntegrity, validateExistingData: validateExistingData)
         }
         if outcome.shouldPublishGeneration {
             try publishSchemaGeneration(schema, fingerprint: outcome.publication.fingerprint,
@@ -265,7 +283,9 @@ extension DBContainer {
         sqlCatalog: SQLCatalogSnapshot,
         requiresIdleSchemaTransition: Bool,
         registry: SchemaRegistry,
-        transaction: any TransactionAccess
+        transaction: any TransactionAccess,
+        advancesSQLWriterGeneration: Bool = false,
+        validateExistingData: (@Sendable () async throws -> Void)? = nil
     ) async throws -> SchemaPublicationTransactionOutcome {
         let state = try await Self.loadSchemaCatalog(registry: registry,
             metadataSubspace: self.metadataSubspace, transaction: transaction)
@@ -311,6 +331,11 @@ extension DBContainer {
         }
         let next = actualGeneration.addingReportingOverflow(1)
         guard !next.overflow else { throw DatabaseSchemaPublicationError.generationOverflow }
+        try await validateExistingData?()
+        if advancesSQLWriterGeneration {
+            try transaction.setValue(Tuple(next.partialValue).pack(),
+                for: Self.sqlWriterGenerationKey(metadataSubspace: metadataSubspace))
+        }
         try await Self.persistSchemaCatalog(schema, fingerprint: targetFingerprint,
             preparedGeneration: preparedGeneration, generation: next.partialValue,
             sqlCatalog: sqlCatalog, registry: registry, mode: .strict, metadataSubspace: self.metadataSubspace,

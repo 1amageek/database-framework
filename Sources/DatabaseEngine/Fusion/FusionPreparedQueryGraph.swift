@@ -135,7 +135,8 @@ enum FusionSelectQueryGraphWalker {
         workMeter: DatabaseWorkMeter,
         _ visit: (SelectQuery) throws -> Void,
         visitTable: (TableRef, SelectQuery) throws -> Void,
-        visitPolymorphic: (LogicalSourceRef, SelectQuery) throws -> Void
+        visitPolymorphic: (LogicalSourceRef, SelectQuery) throws -> Void,
+        visitExpression: (Expression) throws -> Void = { _ in }
     ) throws {
         var stack = try WorkStack(
             root: .query(root),
@@ -168,6 +169,7 @@ enum FusionSelectQueryGraphWalker {
             case .pattern(let pattern):
                 try appendChildren(of: pattern, to: &stack)
             case .expression(let expression):
+                try visitExpression(expression)
                 try appendChildren(of: expression, to: &stack)
             case .aggregate(let aggregate):
                 try appendChildren(of: aggregate, to: &stack)
@@ -446,7 +448,7 @@ enum FusionSelectQueryGraphWalker {
         to stack: inout WorkStack
     ) throws {
         switch expression {
-        case .literal, .currentValue, .column, .variable, .parameter, .bound, .wholeRow:
+        case .defaultValue, .literal, .currentValue, .column, .variable, .parameter, .bound, .wholeRow:
             break
         case .collectionOperation(_, let lhs, let rhs),
              .add(let lhs, let rhs), .subtract(let lhs, let rhs),

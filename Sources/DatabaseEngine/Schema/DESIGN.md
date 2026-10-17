@@ -11,8 +11,11 @@ SQL-to-physical binding checks.
 
 S11 changes the publication aggregate. S12 adds trusted transaction-owned
 candidate staging and checkpoint restoration. SQL text DDL execution belongs
-to S15; block sequencing belongs to its execution owner. Constraint enforcement
-and SQL DML remain outside this component.
+to S15; block sequencing belongs to its execution owner. Constraint evaluation and SQL DML remain outside this component. S13 extends
+the catalog aggregate with declarative constraints, defaults, stored/virtual
+generation, identity, and namespace-owned sequences. Those values participate
+in catalog digest and immutable generation identity; ordinary physical schema
+fingerprints and stored row fields retain their separate contracts.
 `Schema`, `SchemaManifest`, DatabaseWire, and schema JSON retain their existing
 physical-schema contracts.
 
@@ -193,6 +196,44 @@ complete aggregate. An older successful request remains an old result and
 cannot roll the current aggregate backward. Same-key/different-catalog
 requests fail with the existing typed idempotency error.
 
+### Integrity publication across retained roots
+
+An integrity-changing catalog publication validates every active and retired
+retained Base in the aggregate's own transaction. A serializable Base catalog
+range read conflicts with concurrent provisioning, retirement, movement, and
+deletion. Tombstones contain no retained rows; intermediate lifecycle states
+reject with `transitionInProgress`. Each scan acquires the existing counted
+schema-maintenance lease, requires the caller's persisted exact-Base
+`administer` Grant, leases the actual Tenant Partition in that transaction,
+and binds both the Base root and the transaction execution context before
+reading rows. Integrity publication rejects `StorageError.unsupportedOperation` for the unavailable atomic transaction-domain capability
+when a retained root has another transaction domain, before aggregate or writer
+floor writes. The default single-root path uses the same validation boundary.
+
+```text
+owning transaction -> non-snapshot Base enumeration -> same-domain admission
+  -> each retained Base: maintenance lease + Partition authority + bound scan
+  -> catalog + minimum writer generation + idempotency -> one commit
+```
+
+The durable minimum SQL writer generation advances only for integrity changes
+(constraints, primary-key meaning, or generated/identity policies). Renames,
+sequence declarations, and input defaults do not advance it. Mutating attempts
+read that floor without snapshot semantics in their own transaction and reject
+an older admitted schema generation. They never read control keys from a foreign
+data domain. Trusted staging checks the attempt's original generation before
+constructing a candidate; its own checkpoint-aware candidate permits its own
+floor advance at commit. Rollback restores both the physical floor write and
+the candidate allowance. A candidate cannot retroactively admit a stale writer.
+
+| Invariant | Behavioral evidence |
+|---|---|
+| All retained rows share one validation/publication commit | `S13SQLMultiBasePublicationTests` second-root rejection and successful publication |
+| Rejected publication changes neither catalog nor writer floor | Failed publication followed by old-generation mutation |
+| New integrity rules reject stale writers | Retained original lease mutation after publication |
+| Harmless rename retains old meaning | Old-lease mutation after rename |
+| Foreign roots are never scanned through control storage | Explicit cross-domain rejection |
+
 ### S12 transaction-owned candidate contract
 
 The S12 trusted staging seam accepts a catalog-only declaration plus the outer
@@ -306,7 +347,11 @@ Catalog-only publication validates both the active persisted protection and
 the target runtime's compiled witness. It may rename logical namespace,
 relation, or column names without changing stable IDs or physical mappings.
 It may not remove or retarget a compiled relation, change column IDs/mappings,
-or alter field, identity, index, Directory, or security contracts. Restoring
+or alter field, identity, index, Directory, security, or protected SQL
+policy/constraint contracts. It may add SQL-only virtual generated columns when
+all existing physical bindings and protected declarations remain unchanged. A
+virtual column has no physical field or serialized value. Initial explicit
+application SQL metadata is authoritative, including for compiled protection. Restoring
 with a schema-driven runtime factory preserves the protection embedded in the
 persisted snapshot; absence of a newly compiled witness does not downgrade it.
 
@@ -373,6 +418,25 @@ mismatch are typed failures. There is no schema-derived fallback for an
 existing but invalid aggregate. SQLCatalog owns catalog admission
 bounds; aggregate persistence preserves those bounds without materializing
 additional copies beyond the persistence boundary.
+
+Catalog-only direct publication validates existing rows using a DatabaseTransaction
+facade over the exact admitted aggregate storage transaction, the held published
+schema lease, and the caller's real authorization. The optional validation hook
+runs after idempotency replay and CAS/transition checks and before aggregate
+persistence. It forces all candidate constraints, including initially deferred
+ones. Failure preserves the previous durable catalog and generation. The facade
+owns no independent storage transaction, commit, or cancel operation. One default
+ExecutionBudget meter is retained outside the storage retry loop, so retries do
+not reset consumed work or the operation deadline. Physical-schema publication
+continues to use its separate application/migration validation contract.
+
+```text
+same aggregate transaction
+  -> Grant / idempotency / transition / CAS checks
+  -> candidate SQL constraints against existing rows
+  -> persist complete aggregate + idempotency result
+  -> authoritative commit -> generation publication
+```
 
 CAS, idempotency lookup, Grant checks, transition checks, and aggregate writes
 share one transaction. Cancellation or commit failure does not replace the

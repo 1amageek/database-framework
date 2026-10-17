@@ -46,11 +46,12 @@ package final class DatabaseRetainedPersistedModels:
             withExtendedLifetime(payloadLease) {}
         }
 
-        package func withModel<Failure: Error>(
+        func withModel<Failure: Error>(
+            isolation actor: isolated (any Actor)? = #isolation,
             _ body: (borrowing PersistedModel) async throws(Failure) -> Void
         ) async throws(Failure) {
+            defer { withExtendedLifetime(payloadLease) {} }
             try await body(model)
-            withExtendedLifetime(payloadLease) {}
         }
 
         /// Borrows one vector field without exposing the Copyable model or

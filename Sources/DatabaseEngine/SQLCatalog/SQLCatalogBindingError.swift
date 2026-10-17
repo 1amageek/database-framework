@@ -14,5 +14,9 @@ public enum SQLCatalogBindingError: Error, Sendable, Equatable {
     case protectedColumnRemoved(relation: String, column: String)
     case protectedPrimaryKeyChanged(String)
     case primaryKeyColumnRemoved(relation: String, column: String)
+    case protectedConstraintsChanged(String)
+    case protectedColumnPolicyChanged(relation: String, column: String)
+    case protectedColumnAdded(relation: String, column: String)
+    case protectedSequenceChanged(String)
     case missingCatalog
 }

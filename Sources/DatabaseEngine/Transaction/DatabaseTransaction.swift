@@ -20,6 +20,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
     private enum MutationSource: Sendable, Equatable {
         case requested
         case derived
+        case sqlAction
     }
 
     nonisolated package let storageAccess: any TransactionAccess
@@ -43,11 +44,19 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
     private var scheduledWrites = EntityReferenceSet()
     private var activeMutationIdentities = EntityReferenceSet()
     private var mutationJournal = TransactionMutationJournal()
+    private var sqlConstraintModes: [SQLCatalogName: Bool] = [:]
+    private var sqlConstraintModeReservation: DatabaseIntermediateReservation?
+    private var sqlConstraintsPending = false
+    private var sqlConstraintMeter: DatabaseWorkMeter?
+
 
     private struct CheckpointRecord: Sendable {
         let checkpoint: DatabaseTransactionCheckpoint
         let undoPosition: Int
         let schema: DatabaseSchemaStagingState?
+        let sqlModes: [SQLCatalogName: Bool]
+        let sqlModeReservation: DatabaseIntermediateReservation?
+        let sqlPending: Bool
     }
     private struct ReadScopeRecord: Sendable {
         let scope: DatabaseTransactionCheckpointScope
@@ -117,7 +126,10 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
     }
 
     package nonisolated func makeSQLTemporalEnvironment() -> SQLTemporalEnvironment {
-        SQLTemporalEnvironment(
+        if let binding = ActiveSQLTemporalStatement.binding, binding.container === container {
+            return binding.environment
+        }
+        return SQLTemporalEnvironment(
             transactionInstant: transactionInstant,
             statementInstant: container.wallClock.now,
             wallClock: container.wallClock,
@@ -591,6 +603,16 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
         return try mutationJournal.mapPersistedEffects(transform)
     }
 
+    package func currentMutationVersion(for identity: EntityReference, within operationID: UInt64) throws -> ByteString? {
+        do {
+            try ensureActive(operationID, permitsMutation: false)
+            return try mutationJournal.currentVersion(for: identity)
+        } catch {
+            recordCheckpointFailure(error)
+            throw error
+        }
+    }
+
     package func fetchPersistedModel(
         identifiedBy identity: EntityReference,
         within operationID: UInt64
@@ -731,12 +753,16 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
         let validationGate = TransactionOperationGate()
         self.validationGate = validationGate
         let context = PersistableValidationContext(
-            schema: container.schema,
+            schema: readPolicy.schemaLease.schema,
             transaction: self,
             operationID: operationID,
             operationGate: validationGate
         )
         do {
+            if mutationJournal.persistedEffectCount > 0 {
+                try await container.requireSQLWriterGeneration(readPolicy.schemaLease.generation, transaction: storageAccess)
+            }
+            try await validateSQLConstraints(forceDeferred: true)
             if let retainedModels = try mutationJournal.retainedCurrentModels() {
                 try await retainedModels.withElements { models in
                     try await mutationMaintenanceService.validateFinalState(
@@ -757,12 +783,18 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
             self.validationGate = nil
             mutationJournal.removeAll()
             clearCheckpointRecords()
+            sqlConstraintModes.removeAll()
+            sqlConstraintModeReservation = nil
+            sqlConstraintMeter = nil
             state = .closed
         } catch {
             await context.closeAndWait()
             self.validationGate = nil
             mutationJournal.removeAll()
             clearCheckpointRecords()
+            sqlConstraintModes.removeAll()
+            sqlConstraintModeReservation = nil
+            sqlConstraintMeter = nil
             state = .closed
             throw error
         }
@@ -777,6 +809,9 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
         mutationJournal.removeAll()
         clearCheckpointRecords()
         schemaStagingState = nil
+        sqlConstraintModes.removeAll()
+        sqlConstraintModeReservation = nil
+        sqlConstraintMeter = nil
     }
 
     // MARK: - Persistence pipeline
@@ -836,7 +871,8 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
         _ model: PersistedModel,
         precondition: WritePrecondition,
         operationID: UInt64,
-        source: MutationSource
+        source: MutationSource,
+        dispatchSQLActions: Bool = true
     ) async throws {
         if source == .derived,
            scheduledDeletions.contains(identity) {
@@ -855,16 +891,25 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
         let store = try await container.store(
             for: resolved.entity,
             path: resolved.partition,
+            readPolicy: readPolicy,
             transaction: storageAccess
         )
+        let integrityAuthorization = source == .sqlAction ? SQLReferentialActionAuthorization(owner: self,
+            operationID: operationID, identity: identity, schemaLease: readPolicy.schemaLease) : nil
         let preparedWrite = try await store.prepareSave(
             model,
             identity: identity,
             precondition: precondition,
             transaction: storageAccess,
-            workMeter: mutationJournal.workMeter
+            workMeter: mutationJournal.workMeter ?? (source == .sqlAction ? sqlMeter() : nil),
+            integrityAuthorization: integrityAuthorization
         )
         defer { preparedWrite.transientReservation?.release() }
+        if let relation = readPolicy.sqlCatalog.catalog.relations.first(where: {
+            SQLConstraintCompiler.same($0.entityName, preparedWrite.result.canonicalModel.entity)
+        }) {
+            try await validateSQLRowPolicies(preparedWrite.result.canonicalModel, relation: relation, meter: sqlMeter())
+        }
         try updateMutationJournal(
             identity: identity,
             previousModel: preparedWrite.result.previousCanonicalModel,
@@ -894,6 +939,12 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
             throw error
         }
         try ensureActive(operationID, permitsMutation: true)
+        try await validateSQLConstraints(forceDeferred: false, rowBoundary: true)
+        activeMutationIdentities.remove(identity)
+        if dispatchSQLActions {
+            try await applySQLReferentialActions(oldModel: preparedWrite.result.previousCanonicalModel,
+                newModel: preparedWrite.result.canonicalModel, operationID: operationID)
+        }
     }
 
     private func remove(
@@ -901,7 +952,8 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
         _ model: PersistedModel,
         precondition: WritePrecondition,
         operationID: UInt64,
-        source: MutationSource
+        source: MutationSource,
+        dispatchSQLActions: Bool = true
     ) async throws {
         if source == .derived,
            scheduledWrites.contains(identity),
@@ -921,14 +973,18 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
         let store = try await container.store(
             for: resolved.entity,
             path: resolved.partition,
+            readPolicy: readPolicy,
             transaction: storageAccess
         )
+        let integrityAuthorization = source == .sqlAction ? SQLReferentialActionAuthorization(owner: self,
+            operationID: operationID, identity: identity, schemaLease: readPolicy.schemaLease) : nil
         guard let preparedDelete = try await store.prepareDelete(
             model,
             identity: identity,
             precondition: precondition,
             transaction: storageAccess,
-            workMeter: mutationJournal.workMeter
+            workMeter: mutationJournal.workMeter ?? (source == .sqlAction ? sqlMeter() : nil),
+            integrityAuthorization: integrityAuthorization
         ) else {
             return
         }
@@ -963,6 +1019,11 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
             throw error
         }
         try ensureActive(operationID, permitsMutation: true)
+        activeMutationIdentities.remove(identity)
+        if dispatchSQLActions {
+            try await applySQLReferentialActions(oldModel: preparedDelete.persistedModel,
+                newModel: nil, operationID: operationID)
+        }
     }
 
     private func updateMutationJournal(
@@ -970,6 +1031,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
         previousModel: PersistedModel?,
         currentModel: PersistedModel?
     ) throws {
+        sqlConstraintsPending = true
         try mutationJournal.record(
             identity: identity,
             previousModel: previousModel,
@@ -1163,7 +1225,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
         offset: Int,
         entity: String,
         runtime: EntityRuntimeRegistration,
-        readPolicy: DatabaseReadPolicy,
+        readPolicy: DatabaseReadPolicy?,
         authorizedFields: Set<String>?,
         workMeter: DatabaseWorkMeter
     ) async throws -> DatabaseRetainedPersistedModels {
@@ -1200,7 +1262,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
                 stage: .storageRow
             )
             try retained.withModel { model in
-                try readPolicy.authorizeGet(model, fields: authorizedFields)
+                try readPolicy?.authorizeGet(model, fields: authorizedFields)
             }
             try workMeter.checkpoint(at: .storageRow)
             let admission = try models.prepareAppend(
@@ -1476,7 +1538,8 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
             checkpointRecordCapacity = growth.capacity
             let checkpoint = DatabaseTransactionCheckpoint(physical: try await checkpoints.createCheckpoint())
             checkpointRecords.append(CheckpointRecord(checkpoint: checkpoint,
-                undoPosition: mutationJournal.checkpointPosition(), schema: schemaStagingState))
+                undoPosition: mutationJournal.checkpointPosition(), schema: schemaStagingState,
+                sqlModes: sqlConstraintModes, sqlModeReservation: sqlConstraintModeReservation, sqlPending: sqlConstraintsPending))
             return checkpoint
         }
     }
@@ -1494,6 +1557,9 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
             try await checkpoints.rollback(to: checkpoint.physical)
             mutationJournal.rollback(to: record.undoPosition)
             schemaStagingState = record.schema
+            sqlConstraintModes = record.sqlModes
+            sqlConstraintModeReservation = record.sqlModeReservation
+            sqlConstraintsPending = record.sqlPending
             if let lease = record.schema?.lease ?? checkpointInitialLease {
                 readPolicy = DatabaseReadPolicy(schemaLease: lease, authorization: readPolicy.authorization)
             }
@@ -1568,6 +1634,9 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
         idempotencyKey: String) async throws -> DatabaseSchemaPublicationResult {
         try await performOperation { _ in
             guard let workMeter = checkpointWorkMeter else { throw DatabaseTransactionCheckpointError.unavailable }
+            let originalLease = checkpointInitialLease ?? readPolicy.schemaLease.publicationSource ?? readPolicy.schemaLease
+            try await container.requireSQLWriterGeneration(schemaStagingState?.lease.generation ?? originalLease.generation,
+                transaction: storageAccess)
             let outcome = try await container.stageSQLCatalog(catalog,
                 expectedGeneration: expectedGeneration, idempotencyKey: idempotencyKey,
                 authorization: readPolicy.authorization, sourceLease: readPolicy.schemaLease,
@@ -1575,6 +1644,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
             if let candidate = outcome.state {
                 schemaStagingState = candidate
                 readPolicy = DatabaseReadPolicy(schemaLease: candidate.lease, authorization: readPolicy.authorization)
+                sqlConstraintsPending = true
             }
             return outcome.publication
         }
@@ -1631,6 +1701,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
                 scheduledWrites.removeAll(keepingCapacity: true)
             }
             let value = try await operation(issuedOperationID)
+            try await validateSQLConstraints(forceDeferred: false)
             guard state == .executing(issuedOperationID) else {
                 throw lifecycleError(for: state)
             }
@@ -1827,7 +1898,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
         partition: AnyDirectoryPath?
     ) {
         let runtime = try entityRuntime(named: identity.entity)
-        guard let entity = container.schema.entity(named: identity.entity) else {
+        guard let entity = readPolicy.schema.entity(named: identity.entity) else {
             throw DatabaseTransactionError.invalidIdentity(
                 entity: identity.entity,
                 reason: "entity is not present in the schema"
@@ -1884,4 +1955,477 @@ public enum DatabaseTransactionError: Error, Sendable, Equatable {
     case persistedModelNotFound(EntityReference)
     case duplicateMutation(EntityReference)
     case conflictingDerivedMutation(EntityReference)
+}
+
+
+extension DatabaseTransaction {
+    private func sqlMeter() -> DatabaseWorkMeter {
+        if let meter = mutationJournal.workMeter ?? checkpointWorkMeter ?? sqlConstraintMeter { return meter }
+        let meter = DatabaseWorkMeter(unbounded: ExecutionBudget(timeoutMilliseconds: UInt32.max))
+        sqlConstraintMeter = meter
+        return meter
+    }
+
+    package func sqlPolicyCatalog() throws -> (SQLCatalog, Schema) {
+        guard state != .closed && state != .failed else { throw lifecycleError(for: state) }
+        return (readPolicy.schemaLease.sqlCatalog.catalog, readPolicy.schemaLease.schema)
+    }
+
+    package func setSQLConstraintsDeferred(_ deferred: Bool, names: [String]?) async throws {
+        try await performOperation { _ in
+            let catalog = readPolicy.schemaLease.sqlCatalog.catalog
+            let meter = sqlMeter()
+            var metadataBytes: UInt64 = 256
+            for relation in catalog.relations {
+                for attribute in relation.constraints.map({ $0.attributes }) + (relation.primaryKeyConstraint.map { [$0] } ?? []) {
+                    metadataBytes = try DatabaseIntermediateFootprint(bytes: metadataBytes).adding(DatabaseIntermediateFootprint(bytes:
+                        256 + UInt64(relation.id.utf8.count + attribute.id.utf8.count + attribute.name.utf8.count))).bytes
+                }
+            }
+            let scratch = try meter.reserveIntermediate(bytes: metadataBytes, at: .mutationPlanning)
+            defer { scratch.release() }
+            var selected: [(SQLRelation, SQLConstraintAttributes)] = []
+            for relation in catalog.relations {
+                let attributes = relation.constraints.map({ $0.attributes }) + (relation.primaryKeyConstraint.map { [$0] } ?? [])
+                for attribute in attributes where names == nil || names!.contains(where: { SQLConstraintCompiler.same($0, attribute.name) }) {
+                    if names == nil, case .immediate = attribute.timing { continue }
+                    selected.append((relation, attribute))
+                }
+            }
+            for name in names ?? [] where !selected.contains(where: { SQLConstraintCompiler.same($0.1.name, name) }) {
+                throw SQLConstraintError.unknownConstraint(name)
+            }
+            for (_, attribute) in selected {
+                if case .immediate = attribute.timing { throw SQLConstraintError.notDeferrable(attribute.name) }
+            }
+            if !deferred {
+                try await validateSQLConstraints(forceDeferred: false, forced: selected.map { constraintKey(relation: $0.0.id, constraint: $0.1.id) })
+            }
+            // Reserve the replacement dictionary before COW can allocate. A
+            // checkpoint retains the prior dictionary and its original claim.
+            let claim = try meter.reserveIntermediate(bytes: metadataBytes, at: .mutationPlanning)
+            var replacement = sqlConstraintModes
+            for (relation, attribute) in selected {
+                replacement[constraintKey(relation: relation.id, constraint: attribute.id)] = deferred
+            }
+            sqlConstraintModes = replacement
+            sqlConstraintModeReservation = claim
+        }
+    }
+
+    private func constraintKey(relation: String, constraint: String) -> SQLCatalogName {
+        SQLCatalogName("\(relation.utf8.count):\(relation)\(constraint)")
+    }
+
+    private func sqlIsDeferred(_ attributes: SQLConstraintAttributes, relation: SQLRelation) -> Bool {
+        if let mode = sqlConstraintModes[constraintKey(relation: relation.id, constraint: attributes.id)] { return mode }
+        if case .deferrable(let initiallyDeferred) = attributes.timing { return initiallyDeferred }
+        return false
+    }
+
+    private func requiresSQLValidation(_ relation: SQLRelation, schema: Schema) -> Bool {
+        if !relation.constraints.isEmpty { return true }
+        if relation.columns.contains(where: { if case .input(nil) = $0.policy { return false }; return true }) { return true }
+        guard let ids = relation.primaryKeyColumnIDs else { return false }
+        guard ids.count == 1,
+              let column = relation.columns.first(where: { SQLConstraintCompiler.same($0.id, ids[0]) }),
+              case .field(let number) = column.backing,
+              let entity = schema.entities.first(where: { SQLConstraintCompiler.same($0.name, relation.entityName) }),
+              let field = entity.fields.first(where: { $0.fieldNumber == number }),
+              SQLConstraintCompiler.same(field.name, "id"), !field.isOptional,
+              relation.primaryKeyConstraint?.timing == .immediate else { return true }
+        return false
+    }
+
+    /// Integrity scans borrow only the admitted attempt's root and schema.
+    /// They expose no rows or read capability to a caller and never apply user
+    /// row filtering, which could hide a conflicting key or referenced row.
+    private func sqlIntegrityRows(_ relation: SQLRelation, meter: DatabaseWorkMeter) async throws -> DatabaseRetainedPersistedModels {
+        let runtime = try entityRuntime(named: relation.entityName)
+        var output = try DatabaseRetainedArrayBuilder<DatabaseRetainedPersistedModels.Entry?>(
+            workMeter: meter, stage: .storageRow,
+            layout: DatabaseRetainedArrayLayout.forElement(DatabaseRetainedPersistedModels.Entry?.self))
+        var continuation: ByteString?
+        repeat {
+            try meter.consume(at: .storageRow)
+            let paths: [AnyDirectoryPath?]
+            if runtime.entity.hasDynamicDirectory {
+                let page = try await container.partitionCatalogPage(entity: runtime.entity,
+                    directoryLayers: readPolicy.schemaLease.directoryLayers,
+                    continuation: continuation, limit: 1, transaction: storageAccess)
+                paths = try page.entries.map { try AnyDirectoryPath(entity: runtime.entity, partitions: $0.partitions) }
+                continuation = page.continuation
+            } else {
+                paths = [nil]
+                continuation = nil
+            }
+            for path in paths {
+                guard let subspaces = try await openSubspaces(for: runtime.entity, partition: path) else { continue }
+                let (begin, end) = subspaces.items.subspace(relation.entityName).range()
+                let storage = container.itemStorageFactory.make(transaction: storageAccess, blobsSubspace: subspaces.blobs)
+                let rows = try await Self.consumePersistedModels(storage: storage, begin: begin, end: end,
+                    startingAfter: nil, scanLimit: Int.max, expectedCount: 0, offset: 0,
+                    entity: relation.entityName, runtime: runtime, readPolicy: nil, authorizedFields: nil, workMeter: meter)
+                for entry in rows {
+                    try output.append(footprint: DatabaseIntermediateFootprint(rows: 1), make: { entry })
+                }
+            }
+        } while continuation != nil
+        return try DatabaseRetainedPersistedModels(buffer: output.finish())
+    }
+
+    private func sqlRow(_ model: borrowing PersistedModel, relation: SQLRelation, meter: DatabaseWorkMeter,
+        recomputingStored: Bool = false) async throws -> CanonicalSourceRow {
+        try await SQLConstraintRows.row(fields: DatabaseEntityProjection.fieldObject(for: model), relation: relation,
+            physicalSchema: readPolicy.schemaLease.schema, environment: makeSQLTemporalEnvironment(),
+            workMeter: meter, recomputingStored: recomputingStored)
+    }
+
+    private func validateSQLConstraints(forceDeferred: Bool, forced: [SQLCatalogName] = [], rowBoundary: Bool = false,
+        catalogOverride: SQLCatalogSnapshot? = nil, requireValidation: Bool = false,
+        admissionAgainst previousCatalog: SQLCatalog? = nil) async throws {
+        guard sqlConstraintsPending || requireValidation else { return }
+        let lease = readPolicy.schemaLease
+        let catalog = (catalogOverride ?? lease.sqlCatalog).catalog
+        let meter = sqlMeter()
+        let environment = makeSQLTemporalEnvironment()
+        for relation in catalog.relations where requiresSQLValidation(relation, schema: lease.schema) {
+            let previousRelation = previousCatalog?.relations.first { SQLConstraintCompiler.same($0.id, relation.id) }
+            let rows = try await sqlIntegrityRows(relation, meter: meter)
+            var constraints = relation.constraints
+            if let columns = relation.primaryKeyColumnIDs, let attributes = relation.primaryKeyConstraint {
+                constraints.insert(try SQLConstraint(attributes: attributes, kind: .unique(columnIDs: columns, nulls: .notDistinct)), at: 0)
+            }
+            for constraint in constraints {
+                let primary = relation.primaryKeyConstraint.map { SQLConstraintCompiler.same($0.id, constraint.id) } ?? false
+                if let previousRelation {
+                    if primary {
+                        if previousRelation.primaryKeyColumnIDs?.map(SQLCatalogName.init) == relation.primaryKeyColumnIDs?.map(SQLCatalogName.init) && previousRelation.primaryKeyConstraint == relation.primaryKeyConstraint { continue }
+                    } else if previousRelation.constraints.contains(constraint) { continue }
+                }
+                if !requireValidation {
+                    switch constraint.kind { case .check, .notNull: continue; default: break }
+                }
+                let deferred = sqlIsDeferred(constraint.attributes, relation: relation)
+                let onlyPrimaryNulls: Bool
+                if rowBoundary {
+                    switch constraint.kind {
+                    case .foreignKey: continue
+                    case .unique:
+                        if case .deferrable = constraint.timing {
+                            if !primary { continue }
+                            onlyPrimaryNulls = true
+                        } else { onlyPrimaryNulls = false }
+                    default: onlyPrimaryNulls = false
+                    }
+                } else { onlyPrimaryNulls = false }
+                if !rowBoundary && deferred && !forceDeferred && !forced.contains(constraintKey(relation: relation.id, constraint: constraint.id)) { continue }
+                let check: CanonicalBoundExpression?
+                if case .check(let expression) = constraint.kind {
+                    check = try SQLConstraintCompiler.binder(relation: relation, physicalSchema: lease.schema, workMeter: meter)
+                        .bindPredicate(expression)
+                } else { check = nil }
+                for index in rows.indices {
+                    guard let entry = rows[index] else { continue }
+                    try await entry.withModel { model in
+                        let row = try await sqlRow(model, relation: relation, meter: meter)
+                        switch constraint.kind {
+                        case .notNull(let id):
+                            if SQLConstraintRows.nullCount(row, ids: [id], relation: relation) != 0 { throw SQLConstraintError.violation(relation: relation.id, constraint: constraint.name) }
+                        case .check:
+                            guard let check else {
+                                throw SQLConstraintError.invalidDeclaration(relation: relation.id, reason: "CHECK binding is missing")
+                            }
+                            let value = try await DatabaseContext.evaluateCanonicalScalar(check, on: row,
+                                temporalEnvironment: environment, session: try sqlPolicySession(meter: meter), workMeter: meter)
+                            if case .primitive(.bool(false)) = value.value { throw SQLConstraintError.violation(relation: relation.id, constraint: constraint.name) }
+                        case .unique(let ids, let nulls):
+                            let count = SQLConstraintRows.nullCount(row, ids: ids, relation: relation)
+                            if primary && count != 0 { throw SQLConstraintError.violation(relation: relation.id, constraint: constraint.name) }
+                            if onlyPrimaryNulls { return }
+                            if count != 0 && nulls == .distinct { return }
+                            let key = try SQLConstraintRows.key(row, ids: ids, relation: relation, environment: environment, workMeter: meter)
+                            for otherIndex in rows.indices where otherIndex < index {
+                                guard let other = rows[otherIndex] else { continue }
+                                try await other.withModel { otherModel in
+                                    let otherRow = try await sqlRow(otherModel, relation: relation, meter: meter)
+                                    if nulls == .distinct && SQLConstraintRows.nullCount(otherRow, ids: ids, relation: relation) != 0 { return }
+                                    let otherKey = try SQLConstraintRows.key(otherRow, ids: ids, relation: relation, environment: environment, workMeter: meter)
+                                    if try SQLConstraintRows.equal(key, otherKey, workMeter: meter) {
+                                        throw SQLConstraintError.violation(relation: relation.id, constraint: constraint.name)
+                                    }
+                                }
+                            }
+                        case .foreignKey(let foreign):
+                            let nullCount = SQLConstraintRows.nullCount(row, ids: foreign.columnIDs, relation: relation)
+                            if nullCount > 0 {
+                                if foreign.match == .simple || nullCount == foreign.columnIDs.count { return }
+                                throw SQLConstraintError.violation(relation: relation.id, constraint: constraint.name)
+                            }
+                            guard let target = catalog.relations.first(where: { SQLConstraintCompiler.same($0.id, foreign.referencedRelationID) }),
+                                  let targetIDs = foreign.referencedColumnIDs ?? target.primaryKeyColumnIDs else {
+                                throw SQLConstraintError.invalidDeclaration(relation: relation.id, reason: "foreign key target is missing")
+                            }
+                            let key = try SQLConstraintRows.key(row, ids: foreign.columnIDs, relation: relation, environment: environment, workMeter: meter)
+                            let targetRows = try await sqlIntegrityRows(target, meter: meter)
+                            var found = false
+                            for targetEntry in targetRows {
+                                guard let targetEntry else { continue }
+                                try await targetEntry.withModel { targetModel in
+                                    let targetRow = try await sqlRow(targetModel, relation: target, meter: meter)
+                                    let targetKey = try SQLConstraintRows.key(targetRow, ids: targetIDs, relation: target, environment: environment, workMeter: meter)
+                                    if try SQLConstraintRows.equal(key, targetKey, workMeter: meter) { found = true }
+                                }
+                                if found { break }
+                            }
+                            if !found { throw SQLConstraintError.violation(relation: relation.id, constraint: constraint.name) }
+                        }
+                    }
+                }
+            }
+            if requireValidation {
+                for entry in rows {
+                    guard let entry else { continue }
+                    try await entry.withModel { model in
+                        try await validateSQLRowPolicies(model, relation: relation, meter: meter,
+                            previousRelation: previousRelation, checks: false)
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+extension DatabaseTransaction {
+    private func applySQLReferentialActions(oldModel: PersistedModel?, newModel: PersistedModel?, operationID: UInt64) async throws {
+        guard let oldModel else { return }
+        let lease = readPolicy.schemaLease
+        let catalog = lease.sqlCatalog.catalog
+        guard let target = catalog.relations.first(where: { SQLConstraintCompiler.same($0.entityName, oldModel.entity) }) else { return }
+        let meter = sqlMeter()
+        let environment = makeSQLTemporalEnvironment()
+        for source in catalog.relations {
+            for constraint in source.constraints {
+                guard case .foreignKey(let foreign) = constraint.kind,
+                      SQLConstraintCompiler.same(foreign.referencedRelationID, target.id),
+                      let targetIDs = foreign.referencedColumnIDs ?? target.primaryKeyColumnIDs else { continue }
+                try meter.consume(at: .mutationPlanning)
+                let oldRow = try await sqlRow(oldModel, relation: target, meter: meter)
+                let oldKey = try SQLConstraintRows.key(oldRow, ids: targetIDs, relation: target, environment: environment, workMeter: meter)
+                var newRow: CanonicalSourceRow?
+                if let newModel {
+                    let row = try await sqlRow(newModel, relation: target, meter: meter)
+                    let key = try SQLConstraintRows.key(row, ids: targetIDs, relation: target, environment: environment, workMeter: meter)
+                    if try SQLConstraintRows.equal(oldKey, key, workMeter: meter) { continue }
+                    newRow = row
+                }
+                let action = newModel == nil ? foreign.onDelete : foreign.onUpdate
+                if action == .noAction { continue }
+                let rows = try await sqlIntegrityRows(source, meter: meter)
+                for entry in rows {
+                    guard let entry else { continue }
+                    try await entry.withModel { model in
+                        let row = try await sqlRow(model, relation: source, meter: meter)
+                        if SQLConstraintRows.nullCount(row, ids: foreign.columnIDs, relation: source) > 0 { return }
+                        let key = try SQLConstraintRows.key(row, ids: foreign.columnIDs, relation: source, environment: environment, workMeter: meter)
+                        guard try SQLConstraintRows.equal(key, oldKey, workMeter: meter) else { return }
+                        if action == .restrict { throw SQLConstraintError.violation(relation: source.id, constraint: constraint.name) }
+                        let runtime = try entityRuntime(named: source.entityName)
+                        let identity = try runtime.identity(for: copy model)
+                        if action == .cascade, newModel == nil {
+                            try await remove(identity: identity, copy model, precondition: .none, operationID: operationID, source: .sqlAction)
+                            return
+                        }
+                        var actionPayloads = try DatabaseRetainedArrayBuilder<DatabaseQueryPayloadLease>(workMeter: meter,
+                            stage: .mutationPlanning, layout: DatabaseRetainedArrayLayout.forElement(DatabaseQueryPayloadLease.self))
+                        let fieldMetadata = try DatabaseIntermediateFootprint(bytes: UInt64(MemoryLayout<(String, FieldValue)>.stride))
+                            .multiplied(by: UInt64(source.columns.count + runtime.entity.fields.count))
+                        let fieldClaim = try meter.reserveIntermediate(bytes: fieldMetadata.bytes, at: .mutationPlanning)
+                        try actionPayloads.append(footprint: DatabaseIntermediateFootprint(), make: { DatabaseQueryPayloadLease(retaining: fieldClaim) })
+                        let existingFields = try DatabaseEntityProjection.fieldObject(for: model)
+                        var fields = existingFields.fields
+                        let selected = newModel == nil ? (foreign.onDeleteColumnIDs ?? foreign.columnIDs) : foreign.columnIDs
+                        for id in selected {
+                            guard let slot = source.columns.firstIndex(where: { SQLConstraintCompiler.same($0.id, id) }),
+                                  case .field(let number) = source.columns[slot].backing,
+                                  let field = runtime.entity.fields.first(where: { $0.fieldNumber == number }) else {
+                                throw SQLConstraintError.invalidDeclaration(relation: source.id, reason: "referential action requires a physical column")
+                            }
+                            let value: QueryValue
+                            if action == .cascade, let newRow,
+                               let position = foreign.columnIDs.firstIndex(where: { SQLConstraintCompiler.same($0, id) }),
+                               let targetSlot = target.columns.firstIndex(where: { SQLConstraintCompiler.same($0.id, targetIDs[position]) }) {
+                                value = newRow.values[targetSlot]
+                            } else if action == .setDefault, case .input(let expression) = source.columns[slot].policy, let expression {
+                                let binder = try SQLConstraintCompiler.binder(relation: source, physicalSchema: lease.schema, workMeter: meter)
+                                let bound = try binder.bindScalarAssignment(expression, to: SQLConstraintCompiler.columnType(source.columns[slot], relation: source, physicalSchema: lease.schema))
+                                let bindings = lease.sqlCatalog.sequenceDefaultBindings(relationID: source.id,
+                                    columnID: source.columns[slot].id)
+                                let result = try await SQLSequenceRuntime.$defaultBindings.withValue(bindings) {
+                                    try await DatabaseContext.evaluateCanonicalScalar(bound, on: row,
+                                        temporalEnvironment: environment, session: try sqlPolicySession(meter: meter), workMeter: meter)
+                                }
+                                for lease in result.leases { try actionPayloads.append(footprint: DatabaseIntermediateFootprint(), make: { lease }) }
+                                value = result.value
+                            } else { value = .primitive(.null) }
+                            let stored: FieldValue
+                            if let type = field.queryType {
+                                let maximum = try DatabaseEntityMutationFootprintMeter.encodedValueFootprint(value, type: type, workMeter: meter)
+                                let encoded = try DatabaseQueryScopedFieldValue.producing(maximumFootprint: maximum, workMeter: meter, stage: .mutationPlanning) {
+                                    try QueryFieldStorageAdapter.encode(value, type: type, limits: SQLConstraintRows.limits(meter))
+                                }
+                                if let reservation = encoded.retainedReservation {
+                                    try actionPayloads.append(footprint: DatabaseIntermediateFootprint(), make: { DatabaseQueryPayloadLease(retaining: reservation) })
+                                }
+                                stored = encoded.withValue { copy $0 }
+                            } else if case .primitive(let scalar) = value { stored = scalar }
+                            else { throw QueryValueError.incompatibleType }
+                            fields.removeAll { SQLConstraintCompiler.same($0.key, field.name) }
+                            fields.append((key: field.name, value: stored))
+                        }
+                        let actionOwner = try actionPayloads.finish().moveToSharedOwnership(at: .mutationPlanning)
+                        defer { withExtendedLifetime(actionOwner) {} }
+                        let changed = try FieldObject(consume fields)
+                        let generated = try await SQLConstraintRows.row(fields: changed, relation: source, physicalSchema: lease.schema,
+                            environment: environment, workMeter: meter, recomputingStored: true)
+                        defer { withExtendedLifetime(generated) {} }
+                        let finalFields = try SQLConstraintRows.fields(generated, relation: source, physicalSchema: lease.schema,
+                            preserving: changed, workMeter: meter)
+                        defer { withExtendedLifetime(finalFields) {} }
+                        let updated = try runtime.persistedModel(from: finalFields.fields)
+                        let updatedIdentity = try runtime.identity(for: updated)
+                        if updatedIdentity != identity {
+                            try await remove(identity: identity, copy model, precondition: .none, operationID: operationID,
+                                source: .sqlAction, dispatchSQLActions: false)
+                            try await persist(identity: updatedIdentity, updated, precondition: .notExists, operationID: operationID,
+                                source: .sqlAction, dispatchSQLActions: false)
+                            try await applySQLReferentialActions(oldModel: copy model, newModel: updated, operationID: operationID)
+                        } else {
+                            try await persist(identity: updatedIdentity, updated, precondition: .none, operationID: operationID, source: .sqlAction)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+extension DatabaseTransaction {
+    package func makeSQLSessionBinding(searchPath: SQLSearchPath, workMeter: DatabaseWorkMeter) throws -> SQLSessionBinding {
+        guard state != .closed && state != .failed else { throw lifecycleError(for: state) }
+        return SQLSessionBinding(resolution: try SQLReadResolution.make(policy: readPolicy, searchPath: searchPath, workMeter: workMeter),
+            databaseName: container.configuration.sqlDatabaseName)
+    }
+}
+
+
+extension DatabaseTransaction {
+    /// Validates an immutable catalog candidate against the same admitted raw
+    /// storage transaction before its metadata can be published.
+    func validateSQLCatalog(_ snapshot: SQLCatalogSnapshot, workMeter: DatabaseWorkMeter) async throws {
+        try await performOperation { _ in
+            let previousMeter = sqlConstraintMeter
+            sqlConstraintMeter = workMeter
+            defer { sqlConstraintMeter = previousMeter }
+            try await validateSQLConstraints(forceDeferred: true, catalogOverride: snapshot, requireValidation: true,
+                admissionAgainst: readPolicy.sqlCatalog.catalog)
+        }
+    }
+}
+
+
+/// An unforgeable-in-public-code capability for one matched referential action.
+struct SQLReferentialActionAuthorization: Sendable {
+    private let owner: DatabaseTransaction
+    private let operationID: UInt64
+    private let identity: EntityReference
+    private let schemaLease: DatabaseSchemaLease
+
+    fileprivate init(owner: DatabaseTransaction, operationID: UInt64,
+        identity: EntityReference, schemaLease: DatabaseSchemaLease) {
+        self.owner = owner
+        self.operationID = operationID
+        self.identity = identity
+        self.schemaLease = schemaLease
+    }
+
+    func validate(identity: EntityReference, schemaLease: DatabaseSchemaLease) async throws {
+        guard self.identity == identity, self.schemaLease === schemaLease else {
+            throw DatabaseTransactionError.invalidOperationContext
+        }
+        try await owner.validateSQLReferentialAction(operationID: operationID, schemaLease: schemaLease)
+    }
+}
+
+extension DatabaseTransaction {
+    fileprivate func validateSQLReferentialAction(operationID: UInt64, schemaLease: DatabaseSchemaLease) throws {
+        try ensureActive(operationID, permitsMutation: true)
+        guard readPolicy.schemaLease === schemaLease else { throw DatabaseTransactionError.invalidOperationContext }
+    }
+}
+
+
+extension DatabaseTransaction {
+    private func sqlPolicySession(meter: DatabaseWorkMeter) throws -> SQLSessionBinding {
+        let searchPath: SQLSearchPath
+        if let inherited = ActiveSQLSession.binding,
+           inherited.resolution.policy.authorization == readPolicy.authorization,
+           let active = ActiveDatabaseTransactionContext.binding, active.container === container,
+           active.databaseTransaction === self {
+            searchPath = inherited.resolution.searchPath
+        } else { searchPath = .default }
+        return try makeSQLSessionBinding(searchPath: searchPath, workMeter: meter)
+    }
+
+    private func validateSQLRowPolicies(_ model: borrowing PersistedModel, relation: SQLRelation,
+        meter: DatabaseWorkMeter, previousRelation: SQLRelation? = nil, checks: Bool = true) async throws {
+        let hasRowChecks = checks && relation.constraints.contains {
+            switch $0.kind { case .notNull, .check: return true; default: return false }
+        }
+        let hasColumnPolicies = relation.columns.contains { column in
+            if previousRelation?.columns.contains(column) == true { return false }
+            switch column.policy { case .generated, .identity: return true; case .input: return false }
+        }
+        guard hasRowChecks || hasColumnPolicies else { return }
+        let environment = makeSQLTemporalEnvironment()
+        let row = try await sqlRow(model, relation: relation, meter: meter)
+        if hasRowChecks {
+            let binder = try SQLConstraintCompiler.binder(relation: relation, physicalSchema: readPolicy.schema, workMeter: meter)
+            for constraint in relation.constraints {
+                switch constraint.kind {
+                case .notNull(let id):
+                    if SQLConstraintRows.nullCount(row, ids: [id], relation: relation) != 0 {
+                        throw SQLConstraintError.violation(relation: relation.id, constraint: constraint.name)
+                    }
+                case .check(let expression):
+                    let result = try await DatabaseContext.evaluateCanonicalScalar(binder.bindPredicate(expression), on: row,
+                        temporalEnvironment: environment, session: try sqlPolicySession(meter: meter), workMeter: meter)
+                    if case .primitive(.bool(false)) = result.value {
+                        throw SQLConstraintError.violation(relation: relation.id, constraint: constraint.name)
+                    }
+                default: break
+                }
+            }
+        }
+        guard hasColumnPolicies else { return }
+        let expected = try await sqlRow(model, relation: relation, meter: meter, recomputingStored: true)
+        for (slot, column) in relation.columns.enumerated() {
+            if previousRelation?.columns.contains(column) == true { continue }
+            if case .identity = column.policy, row.values[slot].isNull {
+                throw SQLConstraintError.violation(relation: relation.id, constraint: column.name)
+            }
+            guard case .generated = column.policy, case .field = column.backing,
+                  let type = row.layout.types[slot] else { continue }
+            let matches: Bool
+            if row.values[slot].isNull || expected.values[slot].isNull {
+                matches = row.values[slot].isNull && expected.values[slot].isNull
+            } else {
+                matches = try CanonicalSQLValueSemantics.compareValues(row.values[slot], expected.values[slot],
+                    leftType: type, rightType: type, environment: environment, workMeter: meter) == .equal
+            }
+            if !matches { throw SQLConstraintError.violation(relation: relation.id, constraint: column.name) }
+        }
+    }
 }

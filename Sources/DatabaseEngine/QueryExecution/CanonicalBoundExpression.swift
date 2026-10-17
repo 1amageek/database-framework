@@ -228,6 +228,8 @@ struct CanonicalBoundExpression: Sendable {
                 lowered = try .arrayAgg(argument(), orderBy: keys, distinct: distinct)
             }
             result = .aggregate(lowered)
+        case .defaultValue:
+            throw DatabaseExpressionEvaluationError.unsupportedExpression("DEFAULT requires a selected mutation column")
         case .currentValue, .subquery, .exists, .literal, .parameter, .column,
 .arraySubquery, .wholeRow, .variable, .bound, .regex, .triple, .isTriple, .subject, .predicate, .object:
             result = expression

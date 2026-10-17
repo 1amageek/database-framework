@@ -621,3 +621,11 @@ Consume [Query's frozen fields](../../../../database-kit/Sources/DatabaseKit/Que
 Emit function sources through the existing FunctionCall writer, followed by optional WITH ORDINALITY. Aliased source alone emits relation/leading positional column aliases. No explicit-LATERAL bit is synthesized; explicit lateral subqueries retain their current join spelling. Function arguments and constant metadata share existing structural/output admission. SPARQL rejects SQL-only recursive metadata/function sources explicitly. Parse/serialize/parse stability, source-argument correspondence and malformed metadata tests establish carriage, while public Database tests establish execution.
 
 S10 CYCLE text carriage accepts only constants with an exact intrinsic Literal representation. Canonical positive-year ISO DATE uses the existing pure XSD date scanner plus SQL value validation; DateStyle-dependent and relative date input remains a typed unsupported constant. General DATE/TIME/TIMESTAMP lexical evaluation remains Engine-owned. The serializer emits a typed constant only when the same intrinsic adapter reconstructs its exact value and declared type; unsupported temporal forms, typed NULL and other unrepresentable metadata fail instead of producing text that CYCLE cannot parse.
+
+
+### S13 policy serialization
+
+The canonical serializer emits the dedicated DEFAULT marker and INSERT identity
+OVERRIDING policy without converting either into an ordinary function. Session
+function spellings remain semantic built-in calls. Parser round trips preserve
+all policy values; unsupported representations fail explicitly.

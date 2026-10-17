@@ -438,7 +438,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
                     }
                 }
 
-            case .literal, .currentValue, .column, .variable, .parameter, .bound, .wholeRow:
+            case .defaultValue, .literal, .currentValue, .column, .variable, .parameter, .bound, .wholeRow:
                 break
             }
         }
@@ -1042,7 +1042,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
             return .aggregate(try await rewriteAggregate(aggregate, provenance: provenance))
 
         // Terminal cases - no recursion needed
-        case .literal, .currentValue, .column, .variable, .parameter, .bound:
+        case .defaultValue, .literal, .currentValue, .column, .variable, .parameter, .bound:
             return expr
 
         case .triple(let subject, let predicate, let object):

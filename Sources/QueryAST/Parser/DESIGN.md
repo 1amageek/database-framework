@@ -660,3 +660,16 @@ FROM function calls retain existing exact FunctionCall names/schema/arguments/VA
 Construction capture visits every function argument through Kit's source occurrence role without duplicate function-expression captures. Existing CTE query paths remain stable; SEARCH/CYCLE constant and identifier occurrences use the Kit-defined distinct roles where present. One request ledger bounds names, lists, constants, arguments and wrapper nodes before growth. Positive parse/serialize/source tests and malformed/limit tests are required before removing the incomplete FROM gate; public execution proves the corresponding runtime path separately.
 
 CYCLE constant parsing consumes [Builder's intrinsic constant profile](../Builder/DESIGN.md#s10-recursive-and-function-source-emission); it does not invoke Engine temporal evaluation or accept an expression in place of a Literal.
+
+
+### S13 mutation and session expression syntax
+
+The parser preserves DEFAULT as the dedicated mutation-policy expression and
+INSERT OVERRIDING SYSTEM VALUE / OVERRIDING USER VALUE as its semantic identity
+policy. Ordinary scalar binding rejects DEFAULT outside an admitted mutation
+position. Bare CURRENT_USER, SESSION_USER and CURRENT_SCHEMA adapt to their
+zero-argument built-in function calls while CURRENT_SCHEMA() remains valid.
+General sequence/constraint DDL and textual transaction controls retain the S15
+and S16 ownership boundary; S13 semantic block steps do not claim that grammar.
+Round-trip tests verify the new syntax, strict malformed/trailing input rejection
+and the existing structural/source-location budgets.

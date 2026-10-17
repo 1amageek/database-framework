@@ -110,7 +110,8 @@ struct S12SchemaStagingSQLiteTests {
         let relation = try #require(catalog.relations.first)
         return try SQLCatalog(namespaces: catalog.namespaces, relations: [SQLRelation(
             id: relation.id, namespaceID: relation.namespaceID, name: name, entityName: relation.entityName,
-            columns: relation.columns, primaryKeyColumnIDs: relation.primaryKeyColumnIDs)])
+            columns: relation.columns, primaryKeyColumnIDs: relation.primaryKeyColumnIDs,
+            primaryKeyConstraint: relation.primaryKeyConstraint, constraints: relation.constraints)])
     }
 
     private func limits() throws -> TransactionCheckpointLimits {

@@ -40,9 +40,9 @@ struct S11SQLCatalogRestorationTests {
                 #expect(old.rows.map(\.values) == [[.primitive(.string("compiled-value"))]])
                 return result
             }
-            let before = try await first.testBaseContext().executeSQL("SELECT * FROM reports.entries")
+            let before = try await first.testBaseContext().executeSQL("SELECT * FROM reports.entries ORDER BY area")
             #expect(before.columns.map(\.name) == ["area", "label"])
-            #expect(before.rows.map(\.values) == duplicateVisibleRows)
+            #expect(before.rows.map(\.values) == compositeVisibleRows)
             await first.shutdown()
         } catch {
             await first.shutdown()
@@ -60,19 +60,21 @@ struct S11SQLCatalogRestorationTests {
         #expect(dynamic.columns.map(\.fieldNumber) == [3, 2])
         #expect(dynamic.primaryKeyColumnIDs == ["field:3", "field:2"])
         let context = reopened.testBaseContext()
-        let rows = try await context.executeSQL("SELECT * FROM reports.entries")
+        let rows = try await context.executeSQL("SELECT * FROM reports.entries ORDER BY area")
         #expect(rows.columns.map(\.name) == ["area", "label"])
-        #expect(rows.rows.map(\.values) == duplicateVisibleRows)
-        let distinct = try await context.executeSQL("SELECT DISTINCT * FROM reports.entries")
-        #expect(distinct.rows.map(\.values) == [duplicateVisibleRows[0]])
+        #expect(rows.rows.map(\.values) == compositeVisibleRows)
+        let labels = try await context.executeSQL("SELECT label FROM reports.entries ORDER BY area")
+        #expect(labels.rows.map(\.values) == [[.primitive(.string("same"))], [.primitive(.string("same"))]])
+        let distinct = try await context.executeSQL("SELECT DISTINCT label FROM reports.entries")
+        #expect(distinct.rows.map(\.values) == [[.primitive(.string("same"))]])
         let compiled = try await context.executeSQL("SELECT content FROM reports.documents")
         #expect(compiled.rows.map(\.values) == [[.primitive(.string("compiled-value"))]])
         await #expect(throws: SQLBindingSourceFailure.self) {
             try await context.executeSQL("SELECT id FROM reports.entries")
         }
         let physical = try await context.query(SelectQuery(projection: [.column("id")],
-            source: .table(TableRef("S11RestoredDynamic"))))
-        #expect(physical.rows.count == 2)
+            source: .table(TableRef("S11RestoredDynamic")), orderBy: [SortKey(.column(ColumnRef("id")))]))
+        #expect(physical.rows.map(\.values) == [[.primitive(.string("first"))], [.primitive(.string("second"))]])
         let third = try await context.executeSQL("SELECT content FROM reports.documents")
         #expect(third.rows == compiled.rows)
     }
@@ -106,9 +108,10 @@ struct S11SQLCatalogRestorationTests {
         let secondColumn = try #require(protected.columns.last)
         let retargeted = try SQLRelation(id: protected.id, namespaceID: protected.namespaceID, name: protected.name,
             entityName: protected.entityName, columns: [
-                SQLColumn(id: firstColumn.id, name: firstColumn.name, fieldNumber: secondColumn.fieldNumber),
-                SQLColumn(id: secondColumn.id, name: secondColumn.name, fieldNumber: firstColumn.fieldNumber)],
-            primaryKeyColumnIDs: protected.primaryKeyColumnIDs)
+                SQLColumn(id: firstColumn.id, name: firstColumn.name, backing: secondColumn.backing, policy: secondColumn.policy),
+                SQLColumn(id: secondColumn.id, name: secondColumn.name, backing: firstColumn.backing, policy: firstColumn.policy)],
+            primaryKeyColumnIDs: protected.primaryKeyColumnIDs,
+            primaryKeyConstraint: protected.primaryKeyConstraint, constraints: protected.constraints)
         await #expect(throws: SQLCatalogBindingError.columnRetargeted(relation: protected.id, column: firstColumn.id)) {
             try await reopened.publishSQLCatalog(SQLCatalog(namespaces: catalog.namespaces, relations: [retargeted, dynamic]),
                 expectedGeneration: generation, idempotencyKey: "retarget-protected", authorization: TestBaseEnvironment.authorization)
@@ -125,9 +128,9 @@ struct S11SQLCatalogRestorationTests {
         #expect(response.rows.map(\.values) == [[.primitive(.string("compiled-value"))]])
     }
 
-    private var duplicateVisibleRows: [[QueryValue]] {
+    private var compositeVisibleRows: [[QueryValue]] {
         [[.primitive(.string("east")), .primitive(.string("same"))],
-            [.primitive(.string("east")), .primitive(.string("same"))]]
+            [.primitive(.string("west")), .primitive(.string("same"))]]
     }
 
     private func openInitial(_ database: SQLiteTestDatabase) async throws -> DBContainer {
@@ -157,8 +160,9 @@ struct S11SQLCatalogRestorationTests {
                 return try SQLRelation(id: relation.id, namespaceID: "reports", name: "documents", entityName: relation.entityName,
                     columns: relation.columns.map { column in
                         try SQLColumn(id: column.id, name: column.name == "value" ? "content" : column.name,
-                            fieldNumber: column.fieldNumber)
-                    }, primaryKeyColumnIDs: relation.primaryKeyColumnIDs)
+                            backing: column.backing, policy: column.policy)
+                    }, primaryKeyColumnIDs: relation.primaryKeyColumnIDs,
+                    primaryKeyConstraint: relation.primaryKeyConstraint, constraints: relation.constraints)
             }
             return try SQLRelation(id: relation.id, namespaceID: "reports", name: "entries", entityName: relation.entityName,
                 columns: [SQLColumn(id: "field:3", name: "area", fieldNumber: 3),
@@ -175,7 +179,7 @@ struct S11SQLCatalogRestorationTests {
             try PersistedModel(entity: "S11RestoredDynamic", fields: [
                 PersistableField(number: 1, name: "id", value: .string(id)),
                 PersistableField(number: 2, name: "code", value: .string("same")),
-                PersistableField(number: 3, name: "region", value: .string("east"))])
+                PersistableField(number: 3, name: "region", value: .string(id == "first" ? "east" : "west"))])
         }
         try await context.withTransaction(configuration: .batch) { transaction in
             for row in rows { try await transaction.savePersistedModel(row, precondition: .notExists) }

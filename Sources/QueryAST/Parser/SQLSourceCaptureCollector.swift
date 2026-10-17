@@ -150,7 +150,7 @@ struct SQLSourceCaptureCollector {
     ) throws {
         var children: [Child] = []
         switch expression {
-        case .literal, .currentValue, .column, .variable, .parameter, .bound, .wholeRow: break
+        case .defaultValue, .literal, .currentValue, .column, .variable, .parameter, .bound, .wholeRow: break
         case .collate, .field, .fieldExpansion:
             try child(.operand, index: 0, into: &children, ledger: &ledger)
         case .add, .subtract, .multiply, .divide, .modulo, .equal, .notEqual,

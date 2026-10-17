@@ -12,6 +12,7 @@ final class SQLCatalogSnapshot: Sendable {
     private let relationsByNamespace: [SQLCatalogName: [SQLCatalogName: SQLCatalogResolvedRelation]]
     private let relationsByID: [SQLCatalogName: SQLCatalogResolvedRelation]
     private let physicalSchema: Schema
+    private let sequenceDefaults: [SQLCatalogName: [SQLCatalogName: SQLSequenceDefaultBindings]]
 
     init(
         catalog: SQLCatalog,
@@ -60,10 +61,18 @@ final class SQLCatalogSnapshot: Sendable {
             columns.reserveCapacity(relation.columns.count)
             let fieldsByNumber = entity.fieldMapByNumber
             for column in relation.columns {
-                guard let field = fieldsByNumber[column.fieldNumber] else {
-                    throw SQLCatalogBindingError.missingField(entity: entity.name, number: column.fieldNumber)
+                switch column.backing {
+                case .field(let number):
+                    guard let field = fieldsByNumber[number] else {
+                        throw SQLCatalogBindingError.missingField(entity: entity.name, number: number)
+                    }
+                    columns.append(SQLCatalogResolvedColumn(declaration: column, field: field,
+                        type: field.queryType ?? .primitive(field.type, isArray: field.isArray),
+                        isNullable: field.isOptional))
+                case .virtual(let type):
+                    columns.append(SQLCatalogResolvedColumn(declaration: column, field: nil,
+                        type: type, isNullable: true))
                 }
-                columns.append(SQLCatalogResolvedColumn(declaration: column, field: field))
             }
             let resolved = SQLCatalogResolvedRelation(declaration: relation, entity: entity, columns: columns)
             let key = SQLCatalogName(relation.id)
@@ -86,6 +95,17 @@ final class SQLCatalogSnapshot: Sendable {
         for protection in protectedContracts where byID[SQLCatalogName(protection.relationID)] == nil {
             throw SQLCatalogBindingError.protectedRelationRemoved(protection.relationID)
         }
+        try SQLConstraintCompiler.validate(catalog: catalog, physicalSchema: physicalSchema)
+        var sequenceDefaults: [SQLCatalogName: [SQLCatalogName: SQLSequenceDefaultBindings]] = [:]
+        for relation in catalog.relations {
+            for column in relation.columns {
+                if case .input(let expression) = column.policy, let expression {
+                    sequenceDefaults[SQLCatalogName(relation.id), default: [:]][SQLCatalogName(column.id)] =
+                        try SQLSequenceDefaultBindings.compile(expression, column: column,
+                            relation: relation, catalog: catalog, physicalSchema: physicalSchema)
+                }
+            }
+        }
         let protections = protectionByID.values.sorted {
             $0.relationID.utf8.lexicographicallyPrecedes($1.relationID.utf8)
         }
@@ -103,6 +123,11 @@ final class SQLCatalogSnapshot: Sendable {
         self.relationsByNamespace = byNamespace
         self.relationsByID = byID
         self.physicalSchema = physicalSchema
+        self.sequenceDefaults = sequenceDefaults
+    }
+
+    func sequenceDefaultBindings(relationID: String, columnID: String) -> SQLSequenceDefaultBindings? {
+        sequenceDefaults[SQLCatalogName(relationID)]?[SQLCatalogName(columnID)]
     }
 
     func resolveRelation(name: String, namespace: String?, searchPath: SQLSearchPath,
@@ -159,12 +184,52 @@ final class SQLCatalogSnapshot: Sendable {
                     }
                     continue
                 }
-                guard newColumn.fieldNumber == column.fieldNumber else {
+                if column.policy == newColumn.policy,
+                    sequenceDefaultBindings(relationID: old.id, columnID: column.id)
+                        != candidate.sequenceDefaultBindings(relationID: old.id, columnID: column.id) {
+                    throw SQLConstraintError.invalidDeclaration(relation: old.id,
+                        reason: "unchanged default cannot retarget a sequence identity")
+                }
+                guard newColumn.backing == column.backing else {
                     throw SQLCatalogBindingError.columnRetargeted(relation: old.id, column: column.id)
                 }
             }
-            if isProtected, !Self.equalKey(old.primaryKeyColumnIDs, replacement.primaryKeyColumnIDs) {
-                throw SQLCatalogBindingError.protectedPrimaryKeyChanged(old.id)
+            if isProtected {
+                guard Self.equalKey(old.primaryKeyColumnIDs, replacement.primaryKeyColumnIDs),
+                    old.primaryKeyConstraint == replacement.primaryKeyConstraint else {
+                    throw SQLCatalogBindingError.protectedPrimaryKeyChanged(old.id)
+                }
+                guard old.constraints == replacement.constraints else {
+                    throw SQLCatalogBindingError.protectedConstraintsChanged(old.id)
+                }
+                for column in old.columns {
+                    guard let replacement = newColumns[SQLCatalogName(column.id)],
+                        column.policy == replacement.policy else {
+                        throw SQLCatalogBindingError.protectedColumnPolicyChanged(relation: old.id, column: column.id)
+                    }
+                }
+                for column in replacement.columns where !old.columns.contains(where: {
+                    SQLCatalogName($0.id) == SQLCatalogName(column.id)
+                }) {
+                    guard case .virtual = column.backing else {
+                        throw SQLCatalogBindingError.protectedColumnAdded(relation: old.id, column: column.id)
+                    }
+                }
+            }
+        }
+        for sequence in self.catalog.sequences {
+            let referencedByProtected = self.catalog.relations.contains { relation in
+                protectedContracts.contains { SQLCatalogName($0.relationID) == SQLCatalogName(relation.id) }
+                    && (relation.columns.contains { column in
+                        if case .identity(let identity) = column.policy {
+                            return SQLCatalogName(identity.sequenceID) == SQLCatalogName(sequence.id)
+                        }
+                        return false
+                    } || sequence.ownedBy.map { SQLCatalogName($0.relationID) == SQLCatalogName(relation.id) } == true)
+            }
+            if referencedByProtected,
+                !candidate.catalog.sequences.contains(where: { $0 == sequence }) {
+                throw SQLCatalogBindingError.protectedSequenceChanged(sequence.id)
             }
         }
         return candidate

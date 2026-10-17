@@ -52,11 +52,14 @@ struct SQLCatalogStoredState: Sendable {
             })
             for column in old.columns {
                 if let newColumn = newColumns[SQLCatalogName(column.id)] {
-                    guard newColumn.fieldNumber == column.fieldNumber else {
+                    guard newColumn.backing == column.backing else {
                         throw SQLCatalogBindingError.columnRetargeted(relation: old.id, column: column.id)
                     }
-                } else if protectedIDs.contains(id),
-                    targetEntities[SQLCatalogName(old.entityName)]?.fieldMapByNumber[column.fieldNumber] != nil {
+                } else if protectedIDs.contains(id) {
+                    if let number = column.fieldNumber,
+                        targetEntities[SQLCatalogName(old.entityName)]?.fieldMapByNumber[number] == nil {
+                        continue
+                    }
                     throw SQLCatalogBindingError.protectedColumnRemoved(relation: old.id, column: column.id)
                 }
             }
@@ -95,8 +98,10 @@ struct SQLCatalogStoredState: Sendable {
             guard let entity = entities[SQLCatalogName(relation.entityName)] else {
                 throw SQLCatalogBindingError.missingEntity(relation.entityName)
             }
-            for column in relation.columns where entity.fieldMapByNumber[column.fieldNumber] == nil {
-                throw SQLCatalogBindingError.missingField(entity: entity.name, number: column.fieldNumber)
+            for column in relation.columns {
+                if let number = column.fieldNumber, entity.fieldMapByNumber[number] == nil {
+                    throw SQLCatalogBindingError.missingField(entity: entity.name, number: number)
+                }
             }
         }
         var protectedIDs: Set<SQLCatalogName> = []
@@ -152,6 +157,7 @@ struct SQLCatalogStoredState: Sendable {
         let fingerprint = try SchemaManifest(schema: physicalSchema).fingerprint()
         try SQLCatalogCodec.admit(catalog, fingerprint: fingerprint,
             protectedContracts: protectedContracts, limits: .default)
+        try SQLConstraintCompiler.validate(catalog: catalog, physicalSchema: physicalSchema)
         let bytes = try SQLCatalogCodec.canonicalBytes(catalog, fingerprint: fingerprint,
             protectedContracts: protectedContracts)
         var accumulator = SHA256Accumulator()
@@ -175,7 +181,10 @@ struct SQLCatalogStoredState: Sendable {
             guard let entity = targetEntities[SQLCatalogName(old.entityName)] else { continue }
             let previousFields = previousEntities[SQLCatalogName(old.entityName)]?.fields ?? []
             let numbers = Set(entity.fields.map { $0.fieldNumber })
-            var columns = old.columns.filter { numbers.contains($0.fieldNumber) }
+            var columns = old.columns.filter { column in
+                guard let number = column.fieldNumber else { return true }
+                return numbers.contains(number)
+            }
             if let key = old.primaryKeyColumnIDs {
                 for id in key where !columns.contains(where: { SQLCatalogName($0.id) == SQLCatalogName(id) }) {
                     throw SQLCatalogBindingError.primaryKeyColumnRemoved(relation: old.id, column: id)
@@ -187,7 +196,8 @@ struct SQLCatalogStoredState: Sendable {
                     name: field.name, fieldNumber: field.fieldNumber))
             }
             relations.append(try SQLRelation(id: old.id, namespaceID: old.namespaceID, name: old.name,
-                entityName: old.entityName, columns: columns, primaryKeyColumnIDs: old.primaryKeyColumnIDs))
+                entityName: old.entityName, columns: columns, primaryKeyColumnIDs: old.primaryKeyColumnIDs,
+                primaryKeyConstraint: old.primaryKeyConstraint, constraints: old.constraints))
         }
         for entity in targetPhysicalSchema.entities where previousEntities[SQLCatalogName(entity.name)] == nil {
             let publicNamespace: SQLNamespace
@@ -200,8 +210,9 @@ struct SQLCatalogStoredState: Sendable {
             let derived = try SQLCatalogSnapshot.derivedRelation(entity, namespaceID: publicNamespace.id)
             relations.append(try SQLRelation(id: SQLCatalogSnapshot.availableID(derived.id, used: relations.map { $0.id }),
                 namespaceID: derived.namespaceID, name: derived.name, entityName: derived.entityName,
-                columns: derived.columns, primaryKeyColumnIDs: derived.primaryKeyColumnIDs))
+                columns: derived.columns, primaryKeyColumnIDs: derived.primaryKeyColumnIDs,
+                primaryKeyConstraint: derived.primaryKeyConstraint, constraints: derived.constraints))
         }
-        return try SQLCatalog(namespaces: namespaces, relations: relations)
+        return try SQLCatalog(namespaces: namespaces, relations: relations, sequences: catalog.sequences)
     }
 }

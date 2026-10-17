@@ -243,6 +243,8 @@ struct SPARQLExpressionProgram: Sendable {
             throw SPARQLExpressionCompilationError.unsupportedExpression("SQL grouping or window expression")
         case .arrayAccess, .collectionOperation, .collate, .arraySubquery, .wholeRow, .field, .fieldExpansion:
             throw SPARQLExpressionCompilationError.unsupportedExpression("SQL collection expression")
+        case .defaultValue:
+            throw SPARQLExpressionCompilationError.unsupportedExpression("SQL DEFAULT")
         case .currentValue:
             throw SPARQLExpressionCompilationError.unsupportedExpression("SQL current value")
         case .concatenate:

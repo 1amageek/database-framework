@@ -20,7 +20,7 @@ struct S11SQLCatalogTests {
         let relation = try fixture.snapshot.resolveRelation(name: "Item", namespace: nil,
             searchPath: .default, currentUser: nil)
         #expect(relation.entity.name == "Item")
-        #expect(relation.columns.map(\.field.name) == ["id", "value"])
+        #expect(relation.columns.compactMap { $0.field?.name } == ["id", "value"])
         #expect(relation.columns.map(\.declaration.fieldNumber) == [1, 2])
         #expect(relation.declaration.primaryKeyColumnIDs == ["field:1"])
         #expect(relation.entity.directoryComponents == [.staticPath("s11-items")])
@@ -133,8 +133,9 @@ struct S11SQLCatalogTests {
         #expect(throws: SQLCatalogBindingError.digestMismatch) { _ = try SQLCatalogCodec.decode(ByteString(bytes)) }
         let unknown = try StorageFrameEncoder.encode { writer throws(StorageFrameError) in
             writer.writeUInt32(0x434C_5153)
-            writer.writeUInt16(1)
+            writer.writeUInt16(2)
             try writer.writeBytes(snapshot.physicalSchemaFingerprint.bytes)
+            try writer.writeCount(0)
             try writer.writeCount(0)
             try writer.writeCount(0)
             try writer.writeCount(1)
@@ -203,8 +204,9 @@ struct S11SQLCatalogTests {
         let relation = try #require(restored.catalog.relations.first)
         let renamed = try SQLRelation(id: relation.id, namespaceID: "renamed", name: "renamed",
             entityName: relation.entityName, columns: relation.columns.map {
-                try SQLColumn(id: $0.id, name: "renamed_\($0.fieldNumber)", fieldNumber: $0.fieldNumber)
-            }, primaryKeyColumnIDs: relation.primaryKeyColumnIDs)
+                try SQLColumn(id: $0.id, name: "renamed_\($0.id)", backing: $0.backing, policy: $0.policy)
+            }, primaryKeyColumnIDs: relation.primaryKeyColumnIDs,
+            primaryKeyConstraint: relation.primaryKeyConstraint, constraints: relation.constraints)
         let candidate = try SQLCatalog(namespaces: [SQLNamespace(id: "renamed", name: "renamed")], relations: [renamed])
         let replacement = try restored.replacingCatalog(candidate, physicalSchema: fixture.schema,
             runtimeConfiguration: dynamic)
@@ -222,7 +224,7 @@ struct S11SQLCatalogTests {
                 columns: Array(columns.dropLast()), primaryKeyColumnIDs: nil),
             SQLRelation(id: old.id, namespaceID: old.namespaceID, name: old.name, entityName: old.entityName,
                 columns: columns.reversed().enumerated().map { index, column in
-                    try SQLColumn(id: columns[index].id, name: column.name, fieldNumber: column.fieldNumber)
+                    try SQLColumn(id: columns[index].id, name: column.name, backing: column.backing, policy: column.policy)
                 }, primaryKeyColumnIDs: old.primaryKeyColumnIDs),
             SQLRelation(id: old.id, namespaceID: old.namespaceID, name: old.name, entityName: old.entityName,
                 columns: columns, primaryKeyColumnIDs: nil)]

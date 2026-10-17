@@ -391,6 +391,7 @@ extension SQLTextWriter {
             }
             try append(keyword)
             if let precision { try append("(\(precision))") }
+        case .defaultValue: try append("DEFAULT")
         case .literal(let value): try literal(value)
         case .array(let values): try append("ARRAY["); try list(values) { (writer: inout SQLTextWriter, value: Expression) throws(SQLSerializationError) -> Void in try writer.expression(value) }; try append("]")
         case .row(let values): try append("ROW("); try list(values) { (writer: inout SQLTextWriter, value: Expression) throws(SQLSerializationError) -> Void in try writer.expression(value) }; try append(")")
@@ -906,6 +907,9 @@ extension SQLTextWriter {
         case .insert(let query):
             try append("INSERT INTO "); try table(query.target)
             if let columns = query.columns { try append(" ("); try identifiers(columns); try append(")") }
+            if let overriding = query.overriding {
+                try append(overriding == .systemValue ? " OVERRIDING SYSTEM VALUE" : " OVERRIDING USER VALUE")
+            }
             switch query.source {
             case .defaultValues: try append(" DEFAULT VALUES")
             case .select(let query): try append(" "); try select(query)

@@ -64,7 +64,7 @@ validation, maintenance and checkpoint undo. The package-only
 distinct requested identities, whose uniqueness is already established by
 preparation. It determines INSERT/UPDATE/DELETE meaning from the immediately
 preceding state, applies those mutations through the existing transaction
-owner, then obtains post-apply versions only for those identities. Derived
+owner, then obtains post-apply version digests only for those identities through Transaction's operation-scoped journal lookup. Computing this write outcome does not fetch rows through a user read capability or require GET permission. Derived
 relationship work does not add SQL affected rows. Later journal coalescing or
 rollback does not rewrite an earlier statement outcome.
 
@@ -227,3 +227,13 @@ transaction or publication authority.
 | S06-M04 | Temporal predicates, interval-equivalent values and TIMETZ offset ties select the same rows as public SELECT. |
 | S06-M05 | A later invalid zone/range or unrepresentable primitive destination leaves all stored rows unchanged; subsequent valid work succeeds with temporary retained rows/bytes zero. |
 | S06-M06 | Exact and one-past payload admission, cancellation and destination handoff preserve meter identity and last-owner release. |
+
+## S13 SQL Constraint Composition
+
+[SQLConstraints](../SQLConstraints/DESIGN.md) owns SQL binding and validation semantics. Transaction owns attempt-local timing modes and pending state, checkpoint restoration, non-snapshot retained scans, referential actions through its existing persistence path and final validation against its retained schema lease. Mutation applies SQL expression defaults and identity before model adaptation and recomputes stored generated columns before prepared changes are applied; raw model writes preserve their canonical adaptation contract and enforce SQL invariants. SQL default expressions remain independent of FieldSchema.defaultValue.
+
+### Referential action authorization
+
+Only Transaction constructs SQLReferentialActionAuthorization after matching an actual referencing row against a declared foreign key's old target key. The token retains the exact attempt owner, operation identifier, identity and schema lease. DatabaseDataStore validates that token before bypassing caller entity/field write policy for this one integrity action. Storage authority, Directory root and partition, preconditions, model canonicalization, index maintenance and transaction final validation remain unchanged. No public mutation API issues or accepts the token; hidden row values never leave the private integrity path. Ordinary saves and deletes pass no token and retain normal policy enforcement.
+
+SQL policy execution binds the immutable admitted session and explicit statement temporal environment around the entire mutation operation. Transaction row CHECK and cascading defaults inherit that same scope, including direct statement-executor callers. The scope confers no additional storage or identity authority.

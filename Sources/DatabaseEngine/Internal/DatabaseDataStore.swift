@@ -2408,8 +2408,10 @@ package final class DatabaseDataStore: DataStore, Sendable {
         identity: EntityReference,
         precondition: WritePrecondition,
         transaction: any TransactionAccess,
-        workMeter: DatabaseWorkMeter?
+        workMeter: DatabaseWorkMeter?,
+        integrityAuthorization: SQLReferentialActionAuthorization? = nil
     ) async throws -> PersistablePreparedWrite {
+        try await integrityAuthorization?.validate(identity: identity, schemaLease: readPolicy.schemaLease)
         let persistableType = model.entity
         let runtime = try runtime(for: persistableType)
         let canonicalModel = try runtime.canonicalized(model)
@@ -2439,16 +2441,15 @@ package final class DatabaseDataStore: DataStore, Sendable {
                 previousCanonicalModel
             )
             oldCanonicalModel = persistedPreviousModel
-            try readPolicy.withAuthorization {
-                try securityDelegate?.evaluateUpdate(
-                    persistedPreviousModel,
-                    newResource: canonicalModel
-                )
+            if integrityAuthorization == nil {
+                try readPolicy.withAuthorization {
+                    try securityDelegate?.evaluateUpdate(persistedPreviousModel, newResource: canonicalModel)
+                }
             }
             existingRowPresent = true
         } else {
-            try readPolicy.withAuthorization {
-                try securityDelegate?.evaluateCreate(canonicalModel)
+            if integrityAuthorization == nil {
+                try readPolicy.withAuthorization { try securityDelegate?.evaluateCreate(canonicalModel) }
             }
             existingRowPresent = false
         }
@@ -2589,8 +2590,10 @@ package final class DatabaseDataStore: DataStore, Sendable {
         identity: EntityReference,
         precondition: WritePrecondition,
         transaction: any TransactionAccess,
-        workMeter: DatabaseWorkMeter?
+        workMeter: DatabaseWorkMeter?,
+        integrityAuthorization: SQLReferentialActionAuthorization? = nil
     ) async throws -> PersistablePreparedDelete? {
+        try await integrityAuthorization?.validate(identity: identity, schemaLease: readPolicy.schemaLease)
         let persistableType = model.entity
         let runtime = try runtime(for: persistableType)
         let idTuple = try PersistableIdentifierKeyCodec.tuple(
@@ -2622,8 +2625,8 @@ package final class DatabaseDataStore: DataStore, Sendable {
             currentVersion: try Self.entityVersionDigest(for: persistedModel),
             identity: identity
         )
-        try readPolicy.withAuthorization {
-            try securityDelegate?.evaluateDelete(persistedModel)
+        if integrityAuthorization == nil {
+            try readPolicy.withAuthorization { try securityDelegate?.evaluateDelete(persistedModel) }
         }
         let transientReservation: DatabaseIntermediateReservation?
         if let workMeter {

@@ -387,12 +387,12 @@ public struct DatabaseEntityMutationExecutor: Sendable {
             if kind == .delete {
                 version = nil
             } else {
-                try workMeter.consume(at: .storageRow)
-                guard let model = try await transaction.fetchPersistedModel(
-                    identifiedBy: change.identity, within: operationID) else {
+                try workMeter.consume(at: .validation)
+                guard let current = try await transaction.currentMutationVersion(
+                    for: change.identity, within: operationID) else {
                     throw DatabaseEntityMutationError.entityNotFound(change.identity)
                 }
-                version = try entityVersion(model)
+                version = current
             }
             let footprint = try DatabaseEntityMutationFootprintMeter.footprint(
                 of: change.identity, workMeter: workMeter).adding(

@@ -1823,3 +1823,82 @@ admits the owner before allocation. Child/located-subquery environments reuse
 the same owner, meter and policy without allocation or rebinding. This applies
 identically to Native, WASM and Embedded and preserves existing depth-30
 subqueries, depth-60 joins and unchanged stack/resource limits.
+
+
+## S13 Selected Column Policies and Session Effects
+
+[SQLConstraints](../SQLConstraints/DESIGN.md) owns expression admission, stored
+column computation and integrity timing. [SQLSequences](../SQLSequences/DESIGN.md)
+owns sequence effects and durable allocation. This component consumes those
+contracts at its existing selected scalar and physical-to-logical row boundaries.
+
+```text
+admitted physical row -> physical dependency authorization
+  -> stored logical slots + computed virtual slots -> relational operators
+selected function -> typed argument binding -> admitted session or sequence effect
+  -> retained typed value -> existing selected result normalization
+```
+
+True virtual columns have no physical field number. Their effective type comes
+from the catalog declaration; generated expressions are admitted immutable,
+current-row expressions without other generated-column dependencies. The sole
+catalog alignment boundary evaluates them before filtering, grouping, ordering,
+whole-row construction or projection. Physical pushdown uses stored columns only;
+a virtual predicate remains residual and cannot narrow an index scan or page
+before its canonical evaluation. Authorization admits every physical dependency
+without exposing those dependencies as additional public result columns.
+
+NEXTVAL, CURRVAL, LASTVAL and SETVAL use the exact request effect channel supplied
+by SQLSequences. Full semantic expression identity and the request's dynamic
+ordinal identify calls; process-random hashes alone cannot identify an allocation.
+The asynchronous selected evaluator propagates allocation demand to the block
+owner without converting it to a public SQL error or invoking pure scalar fallback.
+Defaults share this evaluator and receive an admitted immutable SQLSessionBinding.
+DEFAULT is a mutation-policy marker and is rejected in ordinary scalar binding.
+
+CURRENT_SCHEMA and CURRENT_SCHEMAS consume the admitted catalog/search path and
+captured principal; missing path entries are skipped and duplicate namespaces
+appear once in explicit search-path order, including pg_catalog when explicitly
+named or expanded from the principal. CURRENT_SCHEMAS(TRUE) prepends an implicit
+pg_catalog only when the effective explicit path does not already contain it;
+CURRENT_SCHEMAS(FALSE) and CURRENT_SCHEMA retain explicit entries and order.
+CURRENT_USER and SESSION_USER consume the same authenticated
+principal because the profile has no role-switch operation. Anonymous calls fail
+explicitly. CURRENT_DATABASE consumes only DBConfiguration.sqlDatabaseName; an
+absent or empty explicit identity fails, and debugging names or physical Directory
+paths are never substituted. These values grant no storage authority.
+
+SQLSessionBinding and selected row builders are immutable/request-local. Native,
+ordinary WASM and Embedded use the same TaskLocal binding and existing metered
+owners; no mutable target-specific session store is introduced. Schema-name arrays
+and returned strings reserve retained footprints before output construction.
+Session/sequence function signatures reject malformed arity, modifiers or types
+before any effect. New tests exercise virtual projection/filter/order/whole rows,
+physical dependency authorization, typed session absence, exact namespace ordering
+and effect invocation through the selected evaluator. Existing relational and
+portable lanes remain regression evidence for the unchanged retained row contract.
+`S13SQLReviewScalarSessionTests` executes the public SQL facade with explicit and
+current-user-expanded pg_catalog entries and verifies identical explicit priority
+for both CURRENT_SCHEMAS boolean variants and CURRENT_SCHEMA.
+
+Function parameters use implicit signature resolution, including contextual unknown
+literals. Assignment-only numeric narrowing is not a function conversion: SETVAL
+rejects a decimal argument before effects unless the caller explicitly casts it.
+The text sequence path retains its original occurrence arena/root through the
+single-statement collector, so binding and runtime failures keep their decisive
+UTF-8 source position. Semantic block entries without source metadata keep nil
+positions rather than fabricating them.
+
+### Internal asynchronous integrity borrow
+
+`DatabaseRetainedPersistedModels.Entry` supplies an internal asynchronous
+`withModel(isolation:_:)` scope to DatabaseEngine's transaction-owned integrity
+execution. Its `isolated (any Actor)? = #isolation` parameter preserves the
+caller's actor while the body suspends, so transaction state and its non-Sendable
+expression binder remain under the same isolation. The immutable entry retains
+its payload lease until the scope finishes or throws. The body returns no model,
+array or value, and the async overload is not exposed across target/package
+boundaries. This does not widen the package's retained-row output contract or
+introduce a target-specific synchronization path. The existing SQL constraint
+execution regressions exercise nested unique/FK row borrows and cascading writes;
+actual compile and behavior evidence belongs to the task's focused harness.

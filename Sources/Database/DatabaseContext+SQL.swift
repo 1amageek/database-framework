@@ -27,6 +27,9 @@ extension DatabaseContext {
             budget: options.budget,
             monotonicClock: container.monotonicClock
         )
+        let deadline = TransactionExecutionDeadline(
+            instant: container.monotonicClock.now.advanced(by: .milliseconds(Int64(options.budget.timeoutMilliseconds))),
+            timeoutMilliseconds: options.budget.timeoutMilliseconds)
         let parser = SQLParser(structuralLimits: structuralLimits)
         let parsed = try parser.parseWithSource(sql)
         let parsedStatement = parsed.statement
@@ -49,6 +52,30 @@ extension DatabaseContext {
         ).withSQLResolution(try makeSQLReadResolution(searchPath: searchPath, workMeter: workMeter))
         let response: QueryResponse
         do {
+            if try SQLSequenceEffectAnalysis.containsSequence(parsedStatement, workMeter: workMeter) {
+                guard options.pageSize == nil, options.continuation == nil else {
+                    throw SQLExecutionError.unsupportedStatement("Sequence effects require an unpaged collecting request")
+                }
+                let checkpointLimits = try TransactionCheckpointLimits(
+                    maximumEntries: max(1, Int(clamping: options.budget.maximumWorkUnits)),
+                    maximumDepth: max(1, Int(clamping: structuralLimits.maximumNestingDepth)),
+                    maximumRetainedBytes: max(1, Int(clamping: options.budget.maximumIntermediateBytes)),
+                    maximumWorkUnits: max(1, Int(clamping: options.budget.maximumWorkUnits)),
+                    maximumReadPageRows: max(1, Int(clamping: options.budget.maximumRows)))
+                let blockOptions = SQLBlockExecutionOptions(checkpointLimits: checkpointLimits,
+                    budget: options.budget, structuralLimits: structuralLimits, searchPath: searchPath)
+                let block = try SQLBlock(steps: [.statement(parsedStatement)], limits: structuralLimits)
+                let result = try await withSQLTemporalStatement(environment: temporalEnvironment) {
+                    try await SQLBlockExecutor(context: self).execute(block, parameters: parameters,
+                        options: blockOptions, workMeter: workMeter, executionDeadline: deadline,
+                        occurrences: parsed.occurrences, occurrence: parsed.root)
+                }
+                guard result.results.count == 1, case .rows(let rows) = result.results[0] else {
+                    throw SQLExecutionError.unsupportedStatement("SELECT sequence execution returned no row result")
+                }
+                // SQLBlock has already recorded and admitted this final output once.
+                return rows
+            }
             response = try await withSQLTemporalStatement(environment: temporalEnvironment) {
                 try await executeSQLSelect(
                     selectQuery,
