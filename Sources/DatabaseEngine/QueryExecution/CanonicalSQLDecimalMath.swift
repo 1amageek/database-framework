@@ -95,6 +95,13 @@ enum CanonicalSQLDecimalMath {
         }
     }
 
+    /// Aggregate finalization preserves widened variance until its final rounding.
+    static func aggregateSquareRoot(_ input: CanonicalSQLDecimalWorkspaceValue,
+        scale: Int32) throws -> CanonicalSQLDecimalWorkspaceValue {
+        guard input.sign >= 0 else { throw DatabaseExpressionEvaluationError.numericDomain(operation: "SQRT") }
+        return try squareRoot(input, scale: scale)
+    }
+
     private static func squareRoot(_ input: Wide, scale: Int32) throws -> Wide {
         guard !input.isZero else { return input }
         let meter = input.workMeter

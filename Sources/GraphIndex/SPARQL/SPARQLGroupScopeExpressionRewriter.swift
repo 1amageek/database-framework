@@ -15,6 +15,10 @@ struct SPARQLGroupScopeExpressionRewriter {
         aggregateRewriter: inout SPARQLAggregateRewriter
     ) throws -> Expression {
         switch expression {
+        case .aggregate(.sql):
+            throw SPARQLExpressionCompilationError.unsupportedExpression("SQL aggregate")
+        case .grouping, .window:
+            throw SPARQLExpressionCompilationError.unsupportedExpression("SQL grouping or window expression")
         case .arrayAccess, .collectionOperation, .collate, .arraySubquery, .wholeRow, .field, .fieldExpansion:
             throw SPARQLExpressionCompilationError.unsupportedExpression("SQL collection expression")
         case .function(let call) where call.finalArrayIsVariadic:
@@ -28,6 +32,8 @@ struct SPARQLGroupScopeExpressionRewriter {
 
         switch expression {
         // SQL conditionals and quantified predicates have no RDF interpretation.
+        case .grouping, .window:
+            throw SPARQLExpressionCompilationError.unsupportedExpression("SQL grouping or window expression")
         case .arrayAccess, .collectionOperation, .collate, .arraySubquery, .wholeRow, .field, .fieldExpansion:
             throw SPARQLExpressionCompilationError.unsupportedExpression("SQL collection expression")
         case .currentValue:

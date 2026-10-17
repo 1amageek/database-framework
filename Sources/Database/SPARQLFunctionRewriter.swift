@@ -209,9 +209,12 @@ internal struct SPARQLFunctionRewriter: Sendable {
                 if let filter = nestedQuery.filter {
                     pendingExpressions.append(filter)
                 }
-                pendingExpressions.append(
-                    contentsOf: nestedQuery.groupBy ?? []
-                )
+                for grouping in nestedQuery.groupBy ?? [] {
+                    appendGroupingExpressions(grouping, to: &pendingExpressions)
+                }
+                for window in nestedQuery.windows {
+                    appendWindowExpressions(window.specification, to: &pendingExpressions)
+                }
                 if let having = nestedQuery.having {
                     pendingExpressions.append(having)
                 }
@@ -282,6 +285,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
                     pendingExpressions.append(contentsOf: expressions)
                     for aggregate in aggregates {
                         switch aggregate.aggregate {
+                        case .sql(let call): appendAggregateExpressions(call, to: &pendingExpressions)
                         case .count(let value, _):
                             if let value { pendingExpressions.append(value) }
                         case .sum(let value, _), .avg(let value, _),
@@ -391,7 +395,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
                     pendingExpressions.append(elseResult)
                 }
 
-            case .coalesce(let expressions), .array(let expressions), .row(let expressions), .greatest(let expressions), .least(let expressions):
+            case .coalesce(let expressions), .array(let expressions), .row(let expressions), .greatest(let expressions), .least(let expressions), .grouping(let expressions):
                 pendingExpressions.append(contentsOf: expressions)
 
             case .triple(let subject, let predicate, let object):
@@ -402,8 +406,17 @@ internal struct SPARQLFunctionRewriter: Sendable {
             case .subquery(let subquery), .exists(let subquery), .arraySubquery(let subquery):
                 pendingQueries.append(subquery)
 
+            case .window(let call):
+                switch call.function {
+                case .aggregate(let aggregate): appendAggregateExpressions(aggregate, to: &pendingExpressions)
+                case .analytic(_, let arguments): pendingExpressions.append(contentsOf: arguments)
+                }
+                if case .specification(let specification) = call.reference {
+                    appendWindowExpressions(specification, to: &pendingExpressions)
+                }
             case .aggregate(let aggregate):
                 switch aggregate {
+                case .sql(let call): appendAggregateExpressions(call, to: &pendingExpressions)
                 case .count(let value, _):
                     if let value { pendingExpressions.append(value) }
                 case .sum(let value, _),
@@ -499,8 +512,9 @@ internal struct SPARQLFunctionRewriter: Sendable {
             source: try await rewriteSource(query.source, provenance: try provenance?.child(.source)),
             accessPath: query.accessPath,
             filter: rewrittenFilter,
-            groupBy: try await rewriteOptionalExpressions(query.groupBy, provenance: provenance, field: .groupBy),
+            groupBy: try await rewriteGroupingList(query.groupBy, provenance: provenance),
             having: try await rewriteOptionalExpression(query.having, provenance: try provenance?.child(.having)),
+            windows: try await rewriteNamedWindows(query.windows, provenance: provenance),
             orderBy: try await rewriteOptionalSortKeys(query.orderBy, provenance: provenance, field: .orderBy),
             quantifier: try await rewriteQuantifier(query.quantifier, provenance: provenance),
             pagination: try await rewritePagination(query.pagination, provenance: provenance),
@@ -982,6 +996,33 @@ internal struct SPARQLFunctionRewriter: Sendable {
             }
             return .function(FunctionCall(name: call.name, arguments: rewrittenArgs, distinct: call.distinct, schema: call.schema, finalArrayIsVariadic: call.finalArrayIsVariadic))
 
+        case .grouping(let expressions):
+            var rewritten: [Expression] = []
+            for (index, expression) in expressions.enumerated() {
+                rewritten.append(try await rewriteExpression(expression, provenance: try provenance?.child(.argument, index)))
+            }
+            return .grouping(rewritten)
+        case .window(let call):
+            let functionProvenance = try provenance?.child(.windowFunction)
+            let function: WindowFunction
+            switch call.function {
+            case .aggregate(let aggregate):
+                function = .aggregate(try await rewriteSQLAggregate(aggregate, provenance: functionProvenance))
+            case .analytic(let name, let arguments):
+                var rewritten: [Expression] = []
+                for (index, argument) in arguments.enumerated() {
+                    rewritten.append(try await rewriteExpression(argument, provenance: try functionProvenance?.child(.argument, index)))
+                }
+                function = .analytic(name, arguments: rewritten)
+            }
+            let referenceProvenance = try provenance?.child(.windowReference)
+            let reference: WindowReference
+            switch call.reference {
+            case .named: reference = call.reference
+            case .specification(let specification):
+                reference = .specification(try await rewriteWindowSpecification(specification, provenance: referenceProvenance))
+            }
+            return .window(WindowCall(function: function, reference: reference))
         case .aggregate(let aggregate):
             return .aggregate(try await rewriteAggregate(aggregate, provenance: provenance))
 
@@ -1018,6 +1059,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
         provenance: OccurrenceRewrite.Cursor? = nil
     ) async throws -> AggregateFunction {
         switch aggregate {
+        case .sql(let call): return .sql(try await rewriteSQLAggregate(call, provenance: provenance))
         case .count(let expression, let distinct):
             return .count(
                 try await rewriteOptionalExpression(expression, provenance: try provenance?.child(.aggregateArgument)),
@@ -1051,6 +1093,122 @@ internal struct SPARQLFunctionRewriter: Sendable {
                 orderBy: try await rewriteOptionalSortKeys(orderBy, provenance: provenance),
                 distinct: distinct
             )
+        }
+    }
+
+    private static func appendAggregateExpressions(_ call: SQLAggregateCall, to expressions: inout [Expression]) {
+        expressions.append(contentsOf: call.arguments)
+        for key in call.orderBy { expressions.append(key.expression) }
+        if let filter = call.filter { expressions.append(filter) }
+        for key in call.withinGroup ?? [] { expressions.append(key.expression) }
+    }
+
+    private static func appendGroupingExpressions(_ grouping: GroupingElement, to expressions: inout [Expression]) {
+        var pending = [grouping]
+        while let element = pending.popLast() {
+            switch element {
+            case .expression(let expression): expressions.append(expression)
+            case .rollup(let components), .cube(let components):
+                for component in components { expressions.append(contentsOf: component) }
+            case .groupingSets(let sets):
+                for set in sets { pending.append(contentsOf: set) }
+            }
+        }
+    }
+
+    private static func appendWindowExpressions(_ specification: WindowSpecification, to expressions: inout [Expression]) {
+        expressions.append(contentsOf: specification.partitionBy)
+        for key in specification.orderBy { expressions.append(key.expression) }
+        if let frame = specification.frame {
+            for bound in [frame.start, frame.end] {
+                switch bound {
+                case .preceding(let expression), .following(let expression): expressions.append(expression)
+                default: break
+                }
+            }
+        }
+    }
+
+    private func rewriteSQLAggregate(_ call: SQLAggregateCall, provenance: OccurrenceRewrite.Cursor?) async throws -> SQLAggregateCall {
+        var arguments: [Expression] = []
+        for (index, expression) in call.arguments.enumerated() {
+            arguments.append(try await rewriteExpression(expression, provenance: try provenance?.child(.aggregateArgument, index)))
+        }
+        return SQLAggregateCall(function: call.function, arguments: arguments, distinct: call.distinct,
+            orderBy: try await rewriteOptionalSortKeys(call.orderBy, provenance: provenance, field: .aggregateOrderBy) ?? [],
+            filter: try await rewriteOptionalExpression(call.filter, provenance: try provenance?.child(.aggregateFilter)),
+            withinGroup: try await rewriteOptionalSortKeys(call.withinGroup, provenance: provenance, field: .aggregateWithinGroup), schema: call.schema)
+    }
+
+    private func rewriteGroupingList(_ elements: [GroupingElement]?, provenance: OccurrenceRewrite.Cursor?) async throws -> [GroupingElement]? {
+        guard let elements else { return nil }
+        var rewritten: [GroupingElement] = []
+        for (index, element) in elements.enumerated() {
+            rewritten.append(try await rewriteGrouping(element, provenance: try provenance?.child(.groupBy, index)))
+        }
+        return rewritten
+    }
+
+    private func rewriteGrouping(_ element: GroupingElement, provenance: OccurrenceRewrite.Cursor?) async throws -> GroupingElement {
+        switch element {
+        case .expression(let expression):
+            return .expression(try await rewriteExpression(expression, provenance: try provenance?.child(.operand)))
+        case .rollup(let components), .cube(let components):
+            var rewritten: [[Expression]] = []
+            for (index, component) in components.enumerated() {
+                let child = try provenance?.child(.groupingComponent, index)
+                var expressions: [Expression] = []
+                for (ordinal, expression) in component.enumerated() {
+                    expressions.append(try await rewriteExpression(expression, provenance: try child?.child(.argument, ordinal)))
+                }
+                rewritten.append(expressions)
+            }
+            if case .rollup = element { return .rollup(rewritten) }
+            return .cube(rewritten)
+        case .groupingSets(let sets):
+            var rewritten: [[GroupingElement]] = []
+            for (index, set) in sets.enumerated() {
+                let child = try provenance?.child(.groupingSet, index)
+                var elements: [GroupingElement] = []
+                for (ordinal, element) in set.enumerated() {
+                    elements.append(try await rewriteGrouping(element, provenance: try child?.child(.groupingElement, ordinal)))
+                }
+                rewritten.append(elements)
+            }
+            return .groupingSets(rewritten)
+        }
+    }
+
+    private func rewriteNamedWindows(_ windows: [NamedWindow], provenance: OccurrenceRewrite.Cursor?) async throws -> [NamedWindow] {
+        var rewritten: [NamedWindow] = []
+        for (index, window) in windows.enumerated() {
+            let child = try provenance?.child(.namedWindow, index)
+            rewritten.append(NamedWindow(name: window.name, specification: try await rewriteWindowSpecification(
+                window.specification, provenance: try child?.child(.windowReference))))
+        }
+        return rewritten
+    }
+
+    private func rewriteWindowSpecification(_ specification: WindowSpecification, provenance: OccurrenceRewrite.Cursor?) async throws -> WindowSpecification {
+        var partition: [Expression] = []
+        for (index, expression) in specification.partitionBy.enumerated() {
+            partition.append(try await rewriteExpression(expression, provenance: try provenance?.child(.windowPartitionBy, index)))
+        }
+        let frame: WindowFrame?
+        if let original = specification.frame {
+            frame = WindowFrame(mode: original.mode,
+                start: try await rewriteFrameBound(original.start, provenance: try provenance?.child(.windowFrameStart)),
+                end: try await rewriteFrameBound(original.end, provenance: try provenance?.child(.windowFrameEnd)), exclusion: original.exclusion)
+        } else { frame = nil }
+        return WindowSpecification(inheritedName: specification.inheritedName, partitionBy: partition,
+            orderBy: try await rewriteOptionalSortKeys(specification.orderBy, provenance: provenance, field: .windowOrderBy) ?? [], frame: frame)
+    }
+
+    private func rewriteFrameBound(_ bound: WindowFrameBound, provenance: OccurrenceRewrite.Cursor?) async throws -> WindowFrameBound {
+        switch bound {
+        case .preceding(let expression): return .preceding(try await rewriteExpression(expression, provenance: provenance))
+        case .following(let expression): return .following(try await rewriteExpression(expression, provenance: provenance))
+        default: return bound
         }
     }
 

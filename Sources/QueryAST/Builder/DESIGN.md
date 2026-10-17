@@ -563,3 +563,52 @@ The Parser case table owns their identifiers and reference-observation links;
 do not duplicate the oracle as another contract. S07 ROW/ARRAY gates are
 replaced only by those implemented paths and their runtime evidence, while
 unrelated S07 intrinsic constant capability and S10 public SRF gates remain.
+
+
+### S09 grouping, aggregate and window emission
+
+**PLANNED; not implementation or verification evidence.** Consume Kit's
+canonical S09 declarations and [Parser's shared grammar](../Parser/DESIGN.md#s09-grouping-aggregate-and-window-grammar).
+One SQLTextWriter emits every SQL aggregate through SQLAggregateCall; retained
+SPARQL aggregate variants and the GROUP_CONCAT extension keep their language
+meaning. Existing SQLQueryBuilder aggregate conveniences migrate to .sql.
+
+GroupingElement emission preserves ordered grouping expressions, empty grouping
+sets, ROLLUP/CUBE compound units and nested GROUPING SETS without expansion or
+deduplication. Existing fluent expression groupBy wraps expressions explicitly;
+a semantic grouping-element overload admits the new forms without a second
+query model. Query rebuilds preserve windows as well as all preexisting fields.
+An explicitly empty groupBy emits GROUP BY () rather than disappearing. Nested
+single grouping-set operations emit bare ROLLUP/CUBE/GROUPING SETS terms;
+parenthesized members contain scalar expressions. Semantic set members mixing
+nested operations with sibling expressions, empty ROLLUP/CUBE lists/units and
+empty outer GROUPING SETS have no direct grammar-preserving spelling and return
+typed unsupported metadata without expanding or changing the represented sets.
+
+SQL aggregate output preserves exact optional schema and closed canonical name,
+all argument expressions, DISTINCT, internal ORDER BY, WITHIN GROUP and FILTER.
+STRING_AGG's delimiter is emitted as its second expression. COUNT's valid
+zero-argument form emits star. Malformed intrinsic representation fails typed;
+execution-specific type, scope and modifier legality remains Engine-owned.
+GROUPING emits each argument. WindowCall emits its analytic or aggregate call
+followed by OVER. Direct named references emit OVER name; specifications always
+emit parentheses, preserving OVER (name) inheritance. WINDOW definitions emit
+after HAVING and before outer ORDER BY, with exact definition names and no
+inlining, default-frame synthesis or peer computation.
+
+Frames emit the represented ROWS/RANGE/GROUPS mode using BETWEEN for both
+canonical bounds, each
+offset expression and EXCLUDE mode. Parentheses around offsets preserve their
+expression boundaries. Every aggregate argument/filter/sort, grouping child,
+partition/sort/frame child and named definition enters structural, parameter
+and retained-output accounting. Nested calls share one bounded text owner and
+admit punctuation/name growth before mutation. SQLTextWriter never evaluates
+offsets, filters, ordering, aggregates or window inheritance.
+
+SPARQL generation explicitly rejects SQL-only aggregate calls, GROUPING,
+non-expression grouping elements, windows and WINDOW metadata through its typed
+language failure path. It must not flatten grouping sets, drop modifiers, emit
+a plausible ordinary function, or silently omit windows. Ordinary SPARQL
+grouping/aggregates preserve their existing behavior and failure propagation.
+S09-SYN01...06 are owned by Parser's evidence table; public Database execution
+provides semantic text-versus-builder witnesses independently of AST equality.

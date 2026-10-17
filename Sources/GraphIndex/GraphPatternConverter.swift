@@ -698,6 +698,8 @@ public struct GraphPatternConverter: Sendable {
         )
         let alias = "?\(binding.variable)"
         switch binding.aggregate {
+        case .sql:
+            throw SPARQLExpressionCompilationError.unsupportedExpression("SQL aggregate")
         case .count(let expr, let distinct):
             return .count(
                 expression: try expr.map {

@@ -136,7 +136,8 @@ struct SQLSourceAnnotationTests {
         let sql = "SELECT 7 GROUP BY (-1), CAST(1 AS INTEGER) ORDER BY (2), 1::BIGINT"
         let parsed = try SQLParser().parseSelectWithSource(sql)
         let group = try child(parsed.occurrences, parsed.root, .groupBy, 0)
-        let groupCast = try child(parsed.occurrences, parsed.root, .groupBy, 1)
+        let groupWrapper = try child(parsed.occurrences, parsed.root, .groupBy, 1)
+        let groupCast = try child(parsed.occurrences, groupWrapper, .operand)
         let order = try child(parsed.occurrences, parsed.root, .orderBy, 0)
         let orderCast = try child(parsed.occurrences, parsed.root, .orderBy, 1)
         #expect(text(sql, try #require(parsed.sourceMap[group]).range) == "(-1)")
@@ -150,6 +151,6 @@ struct SQLSourceAnnotationTests {
         }
         #expect(text(sql, try #require(parsed.sourceMap[groupCast]).range) == "CAST(1 AS INTEGER)")
         #expect(text(sql, try #require(parsed.sourceMap[orderCast]).range) == "1::BIGINT")
-        #expect(parsed.occurrences.count == 12)
+        #expect(parsed.occurrences.count == 14)
     }
 }

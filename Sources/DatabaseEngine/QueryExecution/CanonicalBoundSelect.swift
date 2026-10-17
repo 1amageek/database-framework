@@ -6,6 +6,8 @@ final class CanonicalBoundSelect: Sendable {
     let projection: [CanonicalBoundExpression]
     let filter: CanonicalBoundExpression?
     let groupBy: [CanonicalBoundExpression]
+    let grouping: CanonicalBoundGrouping?
+    let windows: [CanonicalBoundWindowDefinition]
     let having: CanonicalBoundExpression?
     let orderBy: [CanonicalBoundKey]
     let distinctOn: [CanonicalBoundKey]
@@ -22,13 +24,16 @@ final class CanonicalBoundSelect: Sendable {
          distinctOn: [CanonicalBoundKey] = [],
          pagination: CanonicalBoundPagination = CanonicalBoundPagination(),
          ctes: [CanonicalBoundCTE] = [], metadataLease: DatabaseQueryPayloadLease? = nil,
-         bindingMetadata: CanonicalBindingMetadata? = nil) {
+         bindingMetadata: CanonicalBindingMetadata? = nil,
+         grouping: CanonicalBoundGrouping? = nil, windows: [CanonicalBoundWindowDefinition] = []) {
         self.metadataLease = metadataLease
         self.bindingMetadata = bindingMetadata
         self.columns = columns
         self.projection = projection
         self.filter = filter
         self.groupBy = groupBy
+        self.grouping = grouping
+        self.windows = windows
         self.having = having
         self.orderBy = orderBy
         self.distinctOn = distinctOn
@@ -41,6 +46,7 @@ final class CanonicalBoundSelect: Sendable {
         CanonicalBoundSelect(columns: columns, projection: projection, filter: filter,
                              groupBy: groupBy, having: having, orderBy: orderBy,
                              sourcePlan: sourcePlan, distinctOn: distinctOn,
-                             pagination: pagination, ctes: ctes, metadataLease: metadataLease, bindingMetadata: bindingMetadata)
+                             pagination: pagination, ctes: ctes, metadataLease: metadataLease, bindingMetadata: bindingMetadata,
+                             grouping: grouping, windows: windows)
     }
 }

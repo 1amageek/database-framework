@@ -131,6 +131,29 @@ struct DatabaseStatementAssignmentTests {
         await #expect(throws: DatabaseExpressionEvaluationError.self) {
             try await execute(update(.literal(.bool(true))), container: container)
         }
+        let analytic = Expression.window(WindowCall(function: .analytic(.rowNumber, arguments: []),
+            reference: .specification(WindowSpecification())))
+        for invalid: Expression in [.aggregate(.sql(SQLAggregateCall(function: .sum, arguments: [.int(1)]))),
+            analytic, .grouping([.int(1)])] {
+            let rejectedMeter = meter()
+            await #expect(throws: DatabaseExpressionEvaluationError.self) {
+                try await execute(update(invalid), container: container, workMeter: rejectedMeter)
+            }
+            #expect(rejectedMeter.retainedIntermediateBytes == 0)
+        }
+        let generic = try await makeContainer(fieldType: .object, queryType: nil)
+        defer { await generic.shutdown() }
+        for invalid: Expression in [analytic, .coalesce([.null, analytic]),
+            .aggregate(.sql(SQLAggregateCall(function: .sum, arguments: [.int(1)]))), .grouping([.int(1)])] {
+            let rejectedMeter = meter()
+            await #expect(throws: DatabaseExpressionEvaluationError.self) {
+                try await execute(update(invalid), container: generic, workMeter: rejectedMeter)
+            }
+            #expect(rejectedMeter.retainedIntermediateBytes == 0)
+        }
+        let object = FieldValue.object(try FieldObject([("value", .int64(1))]))
+        _ = try await execute(insert("object", .literal(.queryValue(.primitive(object), type: .primitive(.object)))), container: generic)
+        #expect(try await title("object", container: generic) == object)
         let lexical = Expression.literal(.queryValue(.primitive(.string("1.2300")), type: .sql(.text)))
         _ = try await execute(insert("numeric", .cast(lexical, targetType: .decimal(precision: nil, scale: nil))), container: container)
         let encoded = try #require(try await title("numeric", container: container))

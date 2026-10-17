@@ -158,7 +158,7 @@ public struct CompositionQueryPlanner: Sendable {
     private enum AggregateState: Sendable {
         case count(Int64)
         case numeric(DatabaseNumericAggregateAccumulator)
-        case extremum(DatabaseQueryScopedFieldValue?)
+        case extremum(CompositionAggregateExtremum?)
     }
 
     private struct MergeHeap {
@@ -271,7 +271,7 @@ public struct CompositionQueryPlanner: Sendable {
         try Self.validatePageSize(options.pageSize)
         let memberExecutor = RelationalMemberQueryExecutor(parameters: options.parameters)
         let crossBaseJoin = try Self.crossBaseJoinPlan(query)
-        try Self.validateCommon(query)
+        try Self.validateCommon(query, allowsGlobalGrouping: true)
         try memberExecutor.validate(query)
         if crossBaseJoin != nil {
             var visitedRoot = false
@@ -416,9 +416,19 @@ public struct CompositionQueryPlanner: Sendable {
             )
             guard try await emit(.began(metadata)) else { return }
 
+            var aggregates = memberExecutor is RelationalMemberQueryExecutor
+                ? try Self.streamingAggregateProjection(query)
+                : try Self.aggregateProjection(query.projection)
+            if let streaming = aggregates, memberExecutor is RelationalMemberQueryExecutor,
+               streaming.descriptors.indices.contains(where: { index in
+                   switch (streaming.descriptors[index].kind, columns[index].type) {
+                   case (.sum, .sql(.interval)), (.average, .sql(.interval)): true
+                   default: false
+                   }
+               }) { aggregates = nil }
             if memberExecutor is RelationalMemberQueryExecutor,
                crossBaseJoin == nil, query.accessPath == nil,
-               try Self.aggregateProjection(query.projection) == nil {
+               aggregates == nil {
                 try await executeSelectedRows(query, options: options, source: source,
                     snapshot: snapshot, workMeter: workMeter, emit: emit)
                 return
@@ -440,7 +450,7 @@ public struct CompositionQueryPlanner: Sendable {
 
             let windowPagination: SQLResolvedPagination?
             if memberExecutor is RelationalMemberQueryExecutor,
-               try Self.aggregateProjection(query.projection) != nil {
+               aggregates != nil {
                 guard let first = snapshot.members.first else { throw CompositionQueryError.workspaceCorrupted }
                 windowPagination = try await source.withMemberReadSession(first, in: snapshot, workMeter: workMeter) { session in
                     try await session.resolveCompositionPagination(query, parameters: options.parameters,
@@ -454,7 +464,7 @@ public struct CompositionQueryPlanner: Sendable {
                     remainingLimit: pagination.limit == 0 ? 0 : nil)
             } else { window = try Self.emissionWindow(query) }
             if !window.isExhausted,
-               let aggregates = try Self.aggregateProjection(query.projection) {
+               let aggregates {
                 let row = try await executeAggregates(
                     query,
                     aggregates: aggregates,
@@ -636,7 +646,8 @@ public struct CompositionQueryPlanner: Sendable {
         for index in 0..<result.count {
             var shouldContinue = true
             try await result.withElement(at: index) { row in
-                shouldContinue = try await emit(.row(lineage.result(row, retaining: result.originPayloadLeases)))
+                shouldContinue = try await emit(.row(lineage.result(row, retaining: result.originPayloadLeases,
+                    allowingEmptyAggregate: canonicalQueryRequiresAggregation(query))))
             }
             if !shouldContinue { return }
         }
@@ -659,10 +670,8 @@ public struct CompositionQueryPlanner: Sendable {
         switch value {
         case .primitive(let primitive): return primitive
         case .numeric(let numeric): return .decimal(numeric.value)
-        // FIXME(INCOMPLETE_IMPLEMENTATION): Global Composition MIN/MAX still
-        // consume primitive extrema. Rich values fail until S09 retains the
-        // selected typed extrema. Feature-owned raw ordering also rejects them;
-        // selected SQL sorting uses CanonicalSQLValueSemantics instead.
+        // Feature-owned raw ordering retains its primitive contract; selected
+        // SQL sorting and extrema use CanonicalSQLValueSemantics.
         case .json, .jsonb, .array, .composite, .interval, .time, .timeWithTimeZone,
              .dateInfinity, .timestampInfinity, .intervalInfinity:
             throw CompositionQueryError.unsupportedPlan("this operation does not support rich query values")
@@ -710,9 +719,7 @@ public struct CompositionQueryPlanner: Sendable {
                 "the relational source cannot be proven Base-local"
             )
         }
-        let aggregateProjection = try Self.aggregateProjection(
-            query.projection
-        )
+        let aggregateProjection = try Self.streamingAggregateProjection(query)
         if vectorScan != nil {
             guard aggregateProjection == nil,
                   query.quantifier == .all,
@@ -725,7 +732,7 @@ public struct CompositionQueryPlanner: Sendable {
         }
     }
 
-    private static func validateCommon(_ query: SelectQuery) throws {
+    private static func validateCommon(_ query: SelectQuery, allowsGlobalGrouping: Bool = false) throws {
         // FIXME(INCOMPLETE_IMPLEMENTATION): Composition's current production
         // planner admits Base-local table/JOIN inputs, not general CTE sources.
         // Global CTE demand, scope and lineage must be proven before admission.
@@ -734,7 +741,7 @@ public struct CompositionQueryPlanner: Sendable {
                 "subqueries cannot be proven Base-local"
             )
         }
-        guard query.groupBy == nil, query.having == nil else {
+        guard allowsGlobalGrouping || (query.groupBy == nil && query.having == nil && query.windows.isEmpty) else {
             throw CompositionQueryError.unsupportedPlan(
                 "grouped aggregation is not yet a decomposable Composition plan"
             )
@@ -1598,6 +1605,8 @@ public struct CompositionQueryPlanner: Sendable {
                             value,
                             descriptor: descriptor,
                             state: &states[index],
+                            selectedType: descriptor.operandSlot.map { localColumns[$0].type },
+                            temporalEnvironment: options.readContext.temporalEnvironment,
                             workMeter: workMeter
                         )
                     }
@@ -1645,6 +1654,8 @@ public struct CompositionQueryPlanner: Sendable {
         _ value: QueryValue,
         descriptor: AggregateDescriptor,
         state: inout AggregateState,
+        selectedType: QueryColumnType?,
+        temporalEnvironment: SQLTemporalEnvironment?,
         workMeter: DatabaseWorkMeter
     ) throws {
         switch (descriptor.kind, state) {
@@ -1665,53 +1676,18 @@ public struct CompositionQueryPlanner: Sendable {
         case (.minimum, .extremum(let current)),
              (.maximum, .extremum(let current)):
             guard !value.isNull else { return }
-            let value = try Self.comparablePrimitive(value)
-            guard let current else {
-                state = .extremum(
-                    try DatabaseQueryScopedFieldValue.retaining(
-                        value,
-                        workMeter: workMeter,
-                        stage: .aggregateInput
-                    )
-                )
-                return
+            guard let selectedType else {
+                throw CompositionQueryError.aggregateFailure("MIN/MAX has no selected operand type")
             }
-            let comparison = try current.withValue { currentValue in
-                if value.isNumeric && currentValue.isNumeric {
-                    guard let numericComparison =
-                        RelationalValueIdentity.compareNumeric(
-                            value,
-                            currentValue
-                        ) else {
-                        throw CompositionQueryError.aggregateFailure(
-                            "MIN/MAX values contain a non-finite numeric value"
-                        )
-                    }
-                    if numericComparison < 0 {
-                        return QueryComparison.lessThan
-                    } else if numericComparison > 0 {
-                        return QueryComparison.greaterThan
-                    }
-                    return QueryComparison.equal
-                }
-                guard let fieldComparison = value.compare(to: currentValue)
-                else {
-                    throw CompositionQueryError.aggregateFailure(
-                        "MIN/MAX values are not mutually comparable"
-                    )
-                }
-                return fieldComparison
+            if let current {
+                let comparison = try CanonicalSQLValueSemantics.compareValues(value, current.value,
+                    leftType: selectedType, rightType: current.type,
+                    environment: temporalEnvironment, workMeter: workMeter)
+                guard descriptor.kind.isMinimum ? comparison == .lessThan : comparison == .greaterThan else { return }
             }
-            if descriptor.kind.isMinimum
-                ? comparison == .lessThan
-                : comparison == .greaterThan {
-                let replacement = try DatabaseQueryScopedFieldValue.retaining(
-                    value,
-                    workMeter: workMeter,
-                    stage: .aggregateInput
-                )
-                state = .extremum(replacement)
-            }
+            // Admission succeeds while the old immutable claim is still live.
+            state = .extremum(try CompositionAggregateExtremum.retaining(value,
+                type: selectedType, workMeter: workMeter))
         default:
             throw CompositionQueryError.aggregateFailure(
                 "aggregate state does not match its plan"
@@ -1743,7 +1719,7 @@ public struct CompositionQueryPlanner: Sendable {
             }
         case (.minimum, .extremum(let value)),
              (.maximum, .extremum(let value)):
-            return .primitive(value?.withValue { copy $0 } ?? .null)
+            return value?.value ?? .primitive(.null)
         default:
             throw CompositionQueryError.aggregateFailure(
                 "aggregate state does not match its plan"
@@ -1898,8 +1874,16 @@ public struct CompositionQueryPlanner: Sendable {
         return lhs.sequence < rhs.sequence
     }
 
+    private static func streamingAggregateProjection(_ query: SelectQuery) throws -> (
+        descriptors: [AggregateDescriptor], localProjection: [ProjectionItem]
+    )? {
+        guard query.groupBy == nil, query.having == nil, query.windows.isEmpty,
+              query.projection.allSatisfy({ if case .expression(.aggregate, _) = $0 { true } else { false } }) else { return nil }
+        return try aggregateProjection(query.projection, allowsGlobalFallback: true)
+    }
+
     private static func aggregateProjection(
-        _ projection: [ProjectionItem]
+        _ projection: [ProjectionItem], allowsGlobalFallback: Bool = false
     ) throws -> (
         descriptors: [AggregateDescriptor],
         localProjection: [ProjectionItem]
@@ -1932,6 +1916,27 @@ public struct CompositionQueryPlanner: Sendable {
             let kind: AggregateKind
             let expression: Expression?
             switch aggregate {
+            case .sql(let call):
+                guard allowsGlobalFallback else {
+                    throw CompositionQueryError.unsupportedPlan("SQL aggregate requires relational execution")
+                }
+                guard !call.distinct, call.orderBy.isEmpty, call.filter == nil,
+                      call.withinGroup == nil else { return nil }
+                switch call.function {
+                case .count where call.arguments.isEmpty:
+                    kind = .countAll; expression = nil
+                case .count where call.arguments.count == 1:
+                    kind = .countValue; expression = call.arguments[0]
+                case .sum where call.arguments.count == 1:
+                    kind = .sum; expression = call.arguments[0]
+                case .avg where call.arguments.count == 1:
+                    kind = .average; expression = call.arguments[0]
+                case .min where call.arguments.count == 1:
+                    kind = .minimum; expression = call.arguments[0]
+                case .max where call.arguments.count == 1:
+                    kind = .maximum; expression = call.arguments[0]
+                default: return nil
+                }
             case .count(let value, distinct: false):
                 kind = value == nil ? .countAll : .countValue
                 expression = value
@@ -1949,6 +1954,7 @@ public struct CompositionQueryPlanner: Sendable {
                 expression = value
             case .count(_, distinct: true), .sum(_, distinct: true),
                  .avg(_, distinct: true), .groupConcat, .sample, .arrayAgg:
+                if allowsGlobalFallback { return nil }
                 throw CompositionQueryError.unsupportedPlan(
                         "this aggregate is not decomposable across Base boundaries"
                     )

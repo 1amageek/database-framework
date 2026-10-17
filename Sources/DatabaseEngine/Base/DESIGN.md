@@ -173,8 +173,8 @@ S06's global Composition merger retains its primitive/numeric capability.
 Its rich temporal ORDER BY and MIN/MAX branches currently fail explicitly;
 member-local selected SQL uses the full S06 temporal owner. The S08 contract
 below replaces global sorting's primitive-only branch after behavioral proof.
-The retained rich MIN/MAX transition remains S09 and its callable incomplete
-marker remains until that separate contract is implemented and verified.
+The S09 contract below replaces the retained rich MIN/MAX transition after
+its focused behavioral and lifetime evidence is complete.
 
 ### S08 selected relational merge contract
 
@@ -370,3 +370,68 @@ All execution remains behind the non-default MultiBase trait; AllRuntimeFeatures
 does not enable it. Native MultiBase behavior is S08 evidence; the final URL
 dependency and ordinary-WASM/Embedded integrated matrix remains S18, with no
 portable completion inferred from a native run.
+
+
+### S09 selected aggregate and global placement contract
+
+Base owns streaming Composition transitions only for plain COUNT, SUM, AVG,
+MIN and MAX over admitted Base-local inputs. The SQL aggregate declaration,
+selected overload and result/operand types remain QueryExecution contracts.
+SQL aggregate calls with DISTINCT, FILTER, ordered inputs, GROUPING, HAVING,
+GROUP BY/grouping sets or window evaluation execute once through the canonical
+pipeline over the merged retained source relation. Member-local windows and
+member-local grouping cannot substitute for that global operation. Feature
+executors retain their existing explicit rejection of unsupported grouping.
+
+```text
+plain selected MIN/MAX operand + selected operand type
+    -> compare through CanonicalSQLValueSemantics + captured temporal environment
+        -> pre-admit complete replacement value/type footprint
+            -> immutable QueryValue + type + request claim
+                -> admitted final row -> release transition claim
+complete grouping / aggregate modifiers / windows
+    -> admitted merged source + lineage -> canonical global pipeline
+        -> final retained rows + merged contributor lineage -> Ready
+```
+
+| State | Owner and lifetime | Admission and release |
+|---|---|---|
+| Extremum | One immutable Base transition containing the original QueryValue and selected operand type; retains neither prepared member row nor page. | Measure the complete value and selected descriptor owner and reserve before copying into the transition. Keep the old claim live until replacement admission succeeds; release once after replacement, failure, cancellation or final row promotion. |
+| Numeric SUM/AVG | Existing DatabaseNumericAggregateAccumulator and its dynamic math claims. | Preserve existing widening, displayScale, budget and final overflow behavior. SQL algebra migration changes carriage only. |
+| Global grouping/window input | Existing canonical relation builder and producer payload leases. | Admit every source/lineage destination before retention; lower canonical operators own their own grouping, aggregate and window state. |
+| Global output lineage | Base lineage annotations and immutable contributor lease. | QueryExecution merges annotations for grouped rows. Empty scalar aggregate receives all admitted Composition contributors under Base-owned admission. No Domain/session escapes into Ready. |
+
+Global result provenance does not select evaluation authority. A grouped result
+may merge contributors from several Bases, and an empty group has no source
+annotation. Group keys, aggregate transitions, analytic results and other
+non-reading selected computations consume the global retained relation/context;
+they do not select a member from that output contributor set. Required nested
+source reads within an aggregate argument retain the underlying input row's
+single-member lineage and dispatch through its already-admitted session. A
+nested read at an inherently multi-origin or source-free group scope requires
+an explicit authority contract and otherwise fails with a typed capability
+error. No first-member or fabricated single-origin fallback is permitted.
+The global output retains merged contributor provenance separately from any
+single-row source authority used by a required nested read.
+
+MIN/MAX comparison delegates numeric, CHAR, JSONB, array, composite and finite/
+infinite temporal ordering to CanonicalSQLValueSemantics.compareValues using
+options.readContext.temporalEnvironment. NULL operands do not replace state;
+SQL-equivalent operands keep the first value and its original numeric displayScale.
+JSON or other unsupported selected comparisons fail during binding even for
+empty input. Raw feature-owned extrema retain their language-qualified primitive
+contract and do not infer SQL semantics from the carrier.
+
+The transition is task-local immutable Sendable state on Native, ordinary WASM
+and Embedded. Its reservation uses the existing synchronized work-meter owner;
+no target conditional weakens storage, isolation or Sendable contracts.
+
+CompositionQueryExecutorTests owns rich MIN/MAX replacement across member/page
+boundaries, exact numeric scale, temporal infinity, CHAR, JSONB/array/composite
+comparison, all-NULL input and static comparison failure. Exact/one-byte-short
+admission, work/cancellation failure, final alias retention/release and a subsequent
+valid operation prove transition cleanup. Global grouping/window tests require
+cross-member counterexamples that member-local execution cannot satisfy. Existing
+SUM/AVG and Collecting-to-Ready lease/publication regressions remain required.
+Native MultiBase runtime verification proves this scope only; S18 owns final URL
+dependency and exact ordinary-WASM/Embedded compile/link/runtime integration.

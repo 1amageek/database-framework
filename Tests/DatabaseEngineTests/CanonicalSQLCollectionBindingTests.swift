@@ -146,7 +146,7 @@ struct CanonicalSQLCollectionBindingTests {
                 SelectQuery(projection: [ProjectionItem(.col("value"))],
             source: source,
             quantifier: .distinct),
-                SelectQuery(projection: [.wildcard()], source: source, groupBy: [.col("value")]),
+                SelectQuery(projection: [.wildcard()], source: source, groupBy: [.expression(.col("value"))]),
                 SelectQuery(projection: [.wildcard()], source: source, orderBy: [SortKey(.col("value"))]),
                 SelectQuery(projection: [ProjectionItem(.aggregate(.count(.col("value"), distinct: true)))], source: source),
                 SelectQuery(projection: [ProjectionItem(.aggregate(.min(.col("value"))))], source: source)] {

@@ -72,7 +72,7 @@ struct SQLBindingSyntaxTests {
             "SELECT 1 GROUP BY 1, 0, -1, (2), +3, -(-4), 2147483648 ORDER BY 1, 0, -1, (2), +3, -(-4), 2147483648"
         )
         let expected: [Expression] = [1, 0, -1, 2, 3, 4, 2147483648].map { .literal(.int($0)) }
-        #expect(query.groupBy == expected)
+        #expect(query.groupBy == expected.map(GroupingElement.expression))
         #expect(query.orderBy?.map(\.expression) == expected)
         #expect(query.projection == [
             ProjectionItem(.literal(.queryValue(.primitive(.int32(1)), type: .sql(.integer))))
@@ -88,10 +88,10 @@ struct SQLBindingSyntaxTests {
             .cast(.literal(.sqlUnknownString("1")), targetType: .integer),
             .add(integer, integer),
         ]
-        #expect(constants.groupBy == expectedConstants)
+        #expect(constants.groupBy == expectedConstants.map(GroupingElement.expression))
         #expect(constants.orderBy?.map(\.expression) == expectedConstants)
         let nested = try SQLParser().parseSelect("SELECT ARRAY_AGG(1 ORDER BY 1) ORDER BY (SELECT CAST(1 AS INTEGER))")
-        #expect(nested.projection == [ProjectionItem(.aggregate(.arrayAgg(integer, orderBy: [SortKey(integer)], distinct: false)))])
+        #expect(nested.projection == [ProjectionItem(.aggregate(.sql(SQLAggregateCall(function: .arrayAgg, arguments: [integer], orderBy: [SortKey(integer)]))))])
         guard case .subquery(let inner) = try #require(nested.orderBy?.first?.expression) else {
             Issue.record("Expected nested SELECT")
             return

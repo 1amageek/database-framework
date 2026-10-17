@@ -48,8 +48,9 @@ ASTs. Set-source text grammar and nonsingleton VALUES sources remain S08 work;
 S02 parsing or serialization never claims their runtime implementation.
 
 Generic function syntax preserves its exact semantic name and DISTINCT flag.
-Quoted calls remain generic even when their name matches a grammar form;
-unquoted COALESCE/NULLIF use their dedicated expression cases. A qualified
+Quoted conditional-syntax names remain generic; S09 canonical lowercase
+aggregate/analytic catalog names use their dedicated call representation even
+when quoted. Unquoted COALESCE/NULLIF use dedicated expression cases. A qualified
 wildcard projection maps to the existing `Projection.allFrom` case. Type-modifier
 range failures retain the offending number token's original UTF-8 start before
 advancing. These are syntax and value-carriage obligations, not evidence of
@@ -560,3 +561,91 @@ supersede only their identified ambiguous cells.
 | S08-SYN04 / QC05–06 | Expression/parameter/ALL/NULL pagination, omitted FETCH count, WITH TIES and explicit NULL CAST retain meaning and provenance; CTE columns/hints survive all entry points and enclosing rebuilds. |
 | S08-SYN05 / QC07 | Repeated equal children in mixed wildcard/VALUES/set/CTE/argument-star/pagination trees have unique canonical addresses and exact UTF-8 ranges; exact/one-past cumulative budgets and parser reuse fail or succeed at the selected boundary. |
 | S08-SYN06 / QC08 | Builder emission and parser round trips preserve representable composite metadata and all query fields; unrepresentable literal/type metadata fails typed. Replace VALUES/set/ARRAY syntax gates only with their positive and failure evidence, preserving S10/S11 boundaries. |
+
+
+### S09 grouping, aggregate and window grammar
+
+**PLANNED; not implementation or verification evidence.** Consume the single
+Kit-owned S09 grouping, SQL aggregate, analytic and window declaration model.
+No parser-only aggregate tags or window evaluator are introduced. The accepted
+function inventory remains [SQL F11–F13](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md).
+
+```text
+SQL tokens -> grouping / aggregate / OVER / WINDOW grammar
+    -> canonical Kit declarations + construction-order source occurrences
+        -> structural validation -> Engine binding and execution
+```
+
+GROUP BY is an ordered list of GroupingElement, distinct from an absent clause.
+A scalar grouping expression remains one expression. An implicit parenthesized
+comma row in ordinary GROUP BY normalizes to one grouping set of its component
+expressions; explicit ROW retains one composite key. Empty parentheses denote
+the empty grouping set. ROLLUP and CUBE retain each parenthesized compound unit
+as an ordered expression list. GROUPING SETS retains ordered element lists,
+including empty sets and nested ROLLUP/CUBE/GROUPING SETS. Comma composition is
+retained rather than expanded by the parser, so execution owns cross products,
+duplicate grouping sets and GROUPING bit identity. Integer output references
+retain the existing GROUP BY reference-versus-explicit-CAST distinction.
+Every ordinary, ROLLUP/CUBE unit and GROUPING SETS expression member first
+consumes the complete scalar expression, including operators outside initial
+parentheses. Only an implicit whole-expression tuple becomes compound grouping
+keys; explicit ROW remains composite. This follows the
+[PostgreSQL 18 SELECT grammar](https://www.postgresql.org/docs/18/sql-select.html).
+
+Resolve only the closed SQL aggregate names and F13 analytic names to their
+canonical nodes. Unquoted names fold through the lexer; exact quoted lower-case
+catalog names and exact pg_catalog qualification select those same functions.
+Analytic calls admit an absent or exact pg_catalog schema and canonicalize
+that built-in identity; their closed declaration has no independent schema.
+Other analytic schemas fail typed before execution. Other quoted terminal
+spelling remains ordinary FunctionCall identity.
+Recognized terminal names retain any exact schema in SQLAggregateCall; binding
+alone admits an absent or pg_catalog schema and rejects unavailable catalogs. Every SQL aggregate producer uses AggregateFunction.sql
+with SQLAggregateCall argument expressions, DISTINCT, internal ORDER BY, FILTER,
+WITHIN GROUP ordering and schema. COUNT(*) is the explicit zero-argument count
+form; other stars and DISTINCT star fail. STRING_AGG retains its delimiter as
+an expression, including parameters and columns. GROUP_CONCAT remains the
+separate existing product extension. Aggregate argument arity/type/modifier
+legality remains binding-owned; grammar never discards supplied modifiers.
+
+FILTER (WHERE expression) follows the aggregate and optional WITHIN GROUP
+(ORDER BY ...); OVER follows FILTER. Internal ORDER BY is preserved for every
+SQL aggregate. GROUPING has a dedicated ordered-expression node. F13 analytic
+calls and ordinary aggregate OVER use WindowCall, preserving analytic argument
+order, optional defaults and aggregate filter/order children. Ordered-set
+window legality is a binding failure rather than a parser approximation.
+
+OVER name is a direct named reference. OVER (...) is a specification, including
+OVER (name), which copies/inherits that definition. WINDOW name AS (...) is a
+definition and never canonicalizes those distinct uses together. Specifications
+retain optional inherited name, PARTITION BY, ORDER BY and explicit frame.
+Frames retain ROWS/RANGE/GROUPS; single-bound syntax normalizes its end to
+CURRENT ROW, while BETWEEN retains both bounds. Bounds are
+UNBOUNDED/CURRENT ROW/expression PRECEDING/FOLLOWING and EXCLUDE CURRENT ROW,
+GROUP, TIES or NO OTHERS. Offsets remain expression nodes. An omitted frame remains absent metadata; explicit EXCLUDE NO OTHERS
+normalizes to the same noOthers value as omission. Parser does not compute
+frame bounds or peers.
+
+WINDOW definitions occur after HAVING and before query-level ORDER BY.
+Construction capture uses Kit's occurrence fields and ordered grouping/window
+wrapper nodes, retaining each repeated argument, grouping unit, filter, sort,
+partition and frame-offset source separately. Named definitions have their
+original UTF-8 ranges. Calls with OVER capture one window expression containing
+the exact aggregate/analytic children, without orphan aggregate captures.
+Every wrapper, child edge, retained name, list and recursion level is admitted
+under the same request ledger before growth. No nested frame/query resets it.
+SPARQL input continues producing its own aggregates and ordinary expression
+grouping; it does not acquire SQL grouping/window syntax.
+
+| Case | Falsifiable local evidence |
+|---|---|
+| S09-SYN01 | Empty, compound and nested grouping elements, duplicates and ordinary output references stabilize under repeated parse/serialize/parse. |
+| S09-SYN02 | Every F11/F12 name retains full arguments/schema/DISTINCT/order/FILTER/WITHIN GROUP; malformed stars, delimiters and trailing clauses fail. |
+| S09-SYN03 | Every F13 name and aggregate OVER retain arguments; direct named reference differs from copied specification and WINDOW definition. |
+| S09-SYN04 | Every frame mode/bound/exclusion, offset expression and implicit-default absence stabilizes; malformed syntax fails at its token. |
+| S09-SYN05 | Repeated equal grouping/window/filter/order/offset children have unique canonical source addresses and exact UTF-8 ranges; parser reuse and exact/one-past limits preserve failure contracts. |
+| S09-SYN06 | Fluent construction and SPARQL preservation/rejection match Builder's contract; SQL serialization budgets include all new children. |
+
+These syntax/source tests do not establish result types, aggregate values,
+frame execution, grouping legality or PostgreSQL compatibility. Those witnesses
+belong to Engine and public Database tests under the same frozen S09 contract.

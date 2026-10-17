@@ -633,7 +633,7 @@ extension SPARQLQueryBuilder {
             projection: projection,
             source: .graphPattern(finalPattern),
             filter: nil,  // Filters are embedded in the pattern
-            groupBy: groupByExprs.isEmpty ? nil : groupByExprs,
+            groupBy: groupByExprs.isEmpty ? nil : groupByExprs.map(GroupingElement.expression),
             having: havingExpr,
             orderBy: orderByKeys,
             quantifier: quantifier,

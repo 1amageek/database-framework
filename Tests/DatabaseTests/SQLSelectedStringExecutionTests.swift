@@ -183,7 +183,7 @@ struct SQLSelectedStringExecutionTests {
         let count = Expression.aggregate(.count(nil, distinct: false))
         let groups = try await context.query(SelectQuery(projection: [ProjectionItem(count)],
             source: source,
-            groupBy: [.col("c")],
+            groupBy: [.expression(.col("c"))],
             orderBy: [SortKey(count, direction: .descending)]))
         #expect(groups.rows.map(\.values) == [[.primitive(.int64(2))], [.primitive(.int64(1))]])
         let aggregate = try await context.query(SelectQuery(projection: [

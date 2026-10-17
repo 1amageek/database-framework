@@ -110,6 +110,8 @@ enum FusionSelectQueryGraphWalker {
                 try appendChildren(of: nested, to: &stack)
             case .aggregate(let aggregate):
                 try appendChildren(of: aggregate, to: &stack)
+            case .grouping(let grouping):
+                try appendChildren(of: grouping, to: &stack)
             }
         }
         return false
@@ -156,6 +158,8 @@ enum FusionSelectQueryGraphWalker {
                 try appendChildren(of: expression, to: &stack)
             case .aggregate(let aggregate):
                 try appendChildren(of: aggregate, to: &stack)
+            case .grouping(let grouping):
+                try appendChildren(of: grouping, to: &stack)
             }
         }
     }
@@ -167,6 +171,7 @@ enum FusionSelectQueryGraphWalker {
         case pattern(GraphPattern)
         case expression(Expression)
         case aggregate(AggregateFunction)
+        case grouping(GroupingElement)
     }
 
     private final class CommonTableScope: Sendable {
@@ -293,9 +298,10 @@ enum FusionSelectQueryGraphWalker {
         if let filter = query.filter {
             try stack.append(.expression(filter))
         }
-        for expression in query.groupBy ?? [] {
-            try stack.append(.expression(expression))
+        for grouping in query.groupBy ?? [] {
+            try stack.append(.grouping(grouping))
         }
+        for window in query.windows { try appendChildren(of: window.specification, to: &stack) }
         if let having = query.having {
             try stack.append(.expression(having))
         }
@@ -476,6 +482,15 @@ enum FusionSelectQueryGraphWalker {
         case .inSubquery(let value, let query):
             try stack.append(.expression(value))
             try stack.append(.query(query))
+        case .window(let call):
+            switch call.function {
+            case .aggregate(let aggregate): try appendChildren(of: aggregate, to: &stack)
+            case .analytic(_, let arguments):
+                for argument in arguments { try stack.append(.expression(argument)) }
+            }
+            if case .specification(let specification) = call.reference {
+                try appendChildren(of: specification, to: &stack)
+            }
         case .aggregate(let aggregate):
             try stack.append(.aggregate(aggregate))
         case .function(let call):
@@ -491,7 +506,7 @@ enum FusionSelectQueryGraphWalker {
             if let fallback {
                 try stack.append(.expression(fallback))
             }
-        case .coalesce(let expressions), .array(let expressions), .row(let expressions), .greatest(let expressions), .least(let expressions):
+        case .coalesce(let expressions), .array(let expressions), .row(let expressions), .greatest(let expressions), .least(let expressions), .grouping(let expressions):
             for nested in expressions {
                 try stack.append(.expression(nested))
             }
@@ -509,6 +524,7 @@ enum FusionSelectQueryGraphWalker {
         to stack: inout WorkStack
     ) throws {
         switch aggregate {
+        case .sql(let call): try appendChildren(of: call, to: &stack)
         case .count(let expression, _):
             if let expression {
                 try stack.append(.expression(expression))
@@ -526,4 +542,35 @@ enum FusionSelectQueryGraphWalker {
             }
         }
     }
+
+    private static func appendChildren(of grouping: GroupingElement, to stack: inout WorkStack) throws {
+        switch grouping {
+        case .expression(let expression): try stack.append(.expression(expression))
+        case .rollup(let components), .cube(let components):
+            for component in components { for expression in component { try stack.append(.expression(expression)) } }
+        case .groupingSets(let sets):
+            for set in sets { for element in set { try stack.append(.grouping(element)) } }
+        }
+    }
+
+    private static func appendChildren(of call: SQLAggregateCall, to stack: inout WorkStack) throws {
+        for argument in call.arguments { try stack.append(.expression(argument)) }
+        for key in call.orderBy { try stack.append(.expression(key.expression)) }
+        if let filter = call.filter { try stack.append(.expression(filter)) }
+        for key in call.withinGroup ?? [] { try stack.append(.expression(key.expression)) }
+    }
+
+    private static func appendChildren(of specification: WindowSpecification, to stack: inout WorkStack) throws {
+        for expression in specification.partitionBy { try stack.append(.expression(expression)) }
+        for key in specification.orderBy { try stack.append(.expression(key.expression)) }
+        if let frame = specification.frame {
+            for bound in [frame.start, frame.end] {
+                switch bound {
+                case .preceding(let expression), .following(let expression): try stack.append(.expression(expression))
+                default: break
+                }
+            }
+        }
+    }
+
 }

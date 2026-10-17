@@ -97,6 +97,15 @@ public enum SPARQLSelectPlanCompiler {
         guard query.accessPath == nil else {
             throw SPARQLSelectPlanCompilationError.accessPathUnsupported
         }
+        guard query.windows.isEmpty else {
+            throw SPARQLExpressionCompilationError.unsupportedExpression("SQL named WINDOW")
+        }
+        let groupBy = try (query.groupBy ?? []).map { element in
+            guard case .expression(let expression) = element else {
+                throw SPARQLExpressionCompilationError.unsupportedExpression("SQL grouping sets")
+            }
+            return expression
+        }
         if isSubquery, query.dataset != .implicit {
             throw SPARQLSelectPlanCompilationError.explicitDatasetInSubquery
         }
@@ -136,7 +145,7 @@ public enum SPARQLSelectPlanCompiler {
         var queryLevel = try SPARQLQueryLevelPlanCompiler.prepare(
             source: query.source,
             filter: query.filter,
-            groupBy: query.groupBy ?? [],
+            groupBy: groupBy,
             having: having,
             orderBy: query.orderBy ?? [],
             orderVisibleVariables: projectionAliasVariables(

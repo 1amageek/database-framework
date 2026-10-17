@@ -23,14 +23,20 @@ final class CompositionRowLineage: Sendable {
     var payloadLease: DatabaseQueryPayloadLease { DatabaseQueryPayloadLease(retaining: reservation) }
 
     func member(for annotations: [String: FieldValue]) throws -> DatabaseCompositionMember {
-        guard case .bytes(let bits)? = annotations[Self.annotation], bits.count == byteCount else {
+        guard let annotation = annotations[Self.annotation] else {
+            guard annotations.isEmpty else { throw CompositionQueryError.workspaceCorrupted }
+            throw CompositionQueryError.unsupportedPlan("A source-reading scalar expression requires exactly one originating Composition member")
+        }
+        guard case .bytes(let bits) = annotation, bits.count == byteCount else {
             throw CompositionQueryError.workspaceCorrupted
         }
         var selected: Int?
         for index in members.indices {
             try workMeter.consume(at: .expressionEvaluation)
             if bits[index / 8] & (UInt8(1) << UInt8(index % 8)) != 0 {
-                guard selected == nil else { throw CompositionQueryError.workspaceCorrupted }
+                guard selected == nil else {
+                    throw CompositionQueryError.unsupportedPlan("A source-reading scalar expression requires exactly one originating Composition member")
+                }
                 selected = index
             }
         }
@@ -92,14 +98,29 @@ final class CompositionRowLineage: Sendable {
         return merged
     }
 
-    func result(_ row: borrowing QueryRow, retaining leases: [DatabaseQueryPayloadLease]) throws -> CompositionQueryRow {
-        guard case .bytes(let bits)? = row.annotations[Self.annotation], bits.count == byteCount else {
-            throw CompositionQueryError.workspaceCorrupted
+    func result(_ row: borrowing QueryRow, retaining leases: [DatabaseQueryPayloadLease],
+        allowingEmptyAggregate: Bool = false) throws -> CompositionQueryRow {
+        let bits: ByteString?
+        if let annotation = row.annotations[Self.annotation] {
+            guard case .bytes(let value) = annotation, value.count == byteCount else {
+                throw CompositionQueryError.workspaceCorrupted
+            }
+            bits = value
+        } else {
+            // Canonical empty groups have no representative source annotation.
+            guard allowingEmptyAggregate, row.annotations.isEmpty else {
+                throw CompositionQueryError.workspaceCorrupted
+            }
+            bits = nil
+        }
+        func includesMember(_ index: Int) -> Bool {
+            guard let bits else { return true }
+            return bits[index / 8] & (UInt8(1) << UInt8(index % 8)) != 0
         }
         var count = 0
         for index in members.indices {
             try workMeter.consume(2, at: .resultMaterialization)
-            if bits[index / 8] & (UInt8(1) << UInt8(index % 8)) != 0 { count += 1 }
+            if includesMember(index) { count += 1 }
         }
         guard count > 0 else { throw CompositionQueryError.workspaceCorrupted }
         let layout = try DatabaseRetainedArrayLayout.forElement(Base.ID.self)
@@ -120,7 +141,7 @@ final class CompositionRowLineage: Sendable {
                 .multiplied(by: UInt64(contributors.capacity - growth.capacity)).bytes,
                 at: .resultMaterialization)
         }
-        for index in members.indices where bits[index / 8] & (UInt8(1) << UInt8(index % 8)) != 0 {
+        for index in members.indices where includesMember(index) {
             contributors.append(members[index].baseID)
         }
         // Snapshot member order is the canonical order fixed by its Composition lease.

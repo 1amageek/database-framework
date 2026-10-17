@@ -2,6 +2,10 @@
 import Foundation
 import Testing
 import TestHeartbeat
+import DatabaseRuntime
+import ScalarIndex
+import StorageKit
+import TestSupport
 @testable import DatabaseKit
 @testable import DatabaseEngine
 
@@ -349,6 +353,73 @@ struct RequestAuthorizationPolicyTests {
                 context: principal("alice")
             )
         }
+    }
+}
+
+@Suite("SQL aggregate and window field authority", .timeLimit(.minutes(1)))
+struct SQLAggregateFieldAuthorizationTests {
+    @Test("Every grouping and window child requires the same field read authority")
+    func restrictedChildrenRequireAuthority() async throws {
+        let schema = try Schema(entities: [try FieldSecuredRecord.schemaEntity])
+        let provider = ScalarIndexMaintainerProvider()
+        var runtime = try EntityRuntimeDefinition(FieldSecuredRecord.self)
+        try runtime.register(provider)
+        let container = try await DBContainer.open(testing: schema,
+            configuration: .testing(storageEngine: InMemoryEngine()),
+            runtimeConfiguration: try DatabaseRuntimeConfiguration(
+                executionIdentity: DatabaseExecutionRuntimeIdentity(identifier: "sql-aggregate-field-authority", revision: 1),
+                indexMaintainerProviderDescriptors: [.init(describing: provider)],
+                entityRuntimes: [runtime.registration()],
+                authorizationPolicies: [AuthorizationPolicyHandler(FieldSecuredRecord.self)]),
+            security: .enabled())
+        defer { await container.shutdown() }
+        let lease = container.acquireActiveSchemaLease()
+        let reader = DatabaseReadPolicy(schemaLease: lease,
+            authorization: .authenticated(Principal(identifier: "employee")))
+        let privileged = DatabaseReadPolicy(schemaLease: lease,
+            authorization: .authenticated(Principal(identifier: "security", roles: ["security"])))
+        let restricted = queries(field: "secret")
+        let visible = queries(field: "title")
+        #expect(restricted.count == visible.count)
+        for (deniedQuery, visibleQuery) in zip(restricted, visible) {
+            let deniedPlan = DatabaseFieldReadAuthorizationPlan.make(query: deniedQuery, schema: schema)
+            #expect(deniedPlan.fieldsByEntity[FieldSecuredRecord.persistableType] == ["secret"])
+            #expect(throws: FieldSecurityError.self) {
+                _ = try reader.authorizeRead(listRequirements: [], fields: deniedPlan)
+            }
+            let elevated = try privileged.authorizeRead(listRequirements: [], fields: deniedPlan)
+            #expect(elevated.admittedFieldNames(forEntityName: FieldSecuredRecord.persistableType) == ["secret"])
+            let visiblePlan = DatabaseFieldReadAuthorizationPlan.make(query: visibleQuery, schema: schema)
+            let allowed = try reader.authorizeRead(listRequirements: [], fields: visiblePlan)
+            #expect(allowed.admittedFieldNames(forEntityName: FieldSecuredRecord.persistableType) == ["title"])
+        }
+    }
+
+    private func queries(field: String) -> [SelectQuery] {
+        let column = Expression.col("s", field)
+        let source = DataSource.aliased(.table(TableRef(FieldSecuredRecord.persistableType)), name: "s")
+        let base = SelectQuery(projection: [ProjectionItem(.literal(.int(1)))], source: source)
+        func aggregate(_ call: SQLAggregateCall) -> SelectQuery {
+            base.replacing(projection: [ProjectionItem(.aggregate(.sql(call)))])
+        }
+        func window(_ specification: WindowSpecification, function: WindowFunction = .analytic(.rank, arguments: [])) -> SelectQuery {
+            base.replacing(projection: [ProjectionItem(.window(WindowCall(function: function, reference: .specification(specification))))])
+        }
+        return [
+            base.replacing(groupBy: [.rollup([[column]])]),
+            base.replacing(groupBy: [.groupingSets([[.cube([[column]])]])]),
+            aggregate(SQLAggregateCall(function: .sum, arguments: [column])),
+            aggregate(SQLAggregateCall(function: .count, arguments: [], filter: column)),
+            aggregate(SQLAggregateCall(function: .count, arguments: [], orderBy: [SortKey(column)])),
+            aggregate(SQLAggregateCall(function: .mode, arguments: [], withinGroup: [SortKey(column)])),
+            window(WindowSpecification(partitionBy: [column])),
+            window(WindowSpecification(orderBy: [SortKey(column)])),
+            window(WindowSpecification(frame: WindowFrame(mode: .rows, start: .preceding(column), end: .currentRow))),
+            window(WindowSpecification(frame: WindowFrame(mode: .rows, start: .currentRow, end: .following(column)))),
+            window(WindowSpecification(), function: .analytic(.lag, arguments: [column])),
+            window(WindowSpecification(), function: .aggregate(SQLAggregateCall(function: .count, arguments: [], filter: column))),
+            base.replacing(windows: [NamedWindow(name: "w", specification: WindowSpecification(partitionBy: [column]))]),
+        ]
     }
 }
 #endif

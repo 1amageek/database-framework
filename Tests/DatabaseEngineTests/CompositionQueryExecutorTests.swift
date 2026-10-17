@@ -410,6 +410,155 @@ struct CompositionQueryExecutorTests {
         #expect(first.fields[1].isNull && second.fields[1].isNull)
     }
 
+    @Test("Composition extrema retain selected rich carriers across members and pages", .timeLimit(.minutes(2)))
+    func selectedRichExtrema() async throws {
+        let fixture = try await makeFixture(readerCanReadSecondary: true)
+        defer { await fixture.container.shutdown() }
+        try await insert([("first", 1)], baseID: fixture.primaryBaseID, fixture: fixture)
+        try await insert([("second", 2)], baseID: fixture.secondaryBaseID, fixture: fixture)
+        let source = fixture.container.session(authorization: fixture.readerAuthorization).composition(fixture.compositionID)
+        let rank = DatabaseKit.Expression.column(ColumnRef("rank"))
+        let isFirst = DatabaseKit.Expression.equal(rank, .literal(.int(1)))
+        let scaled = QueryValue.numeric(try QueryNumericValue(value: ExactDecimal(coefficient: 125, scale: 2), displayScale: 5))
+        let plain = QueryValue.numeric(try QueryNumericValue(value: ExactDecimal(coefficient: 125, scale: 2), displayScale: 2))
+        let finiteDate = QueryValue.primitive(.date(try CivilDate(year: 2000, month: 1, day: 1)))
+        func selected(_ first: QueryValue, _ second: QueryValue, type: DataType) -> DatabaseKit.Expression {
+            .caseWhen(cases: [CaseWhenPair(condition: isFirst,
+                result: .literal(.queryValue(first, type: .sql(type))))],
+                elseResult: .literal(.queryValue(second, type: .sql(type))))
+        }
+        let operands: [DatabaseKit.Expression] = [
+            selected(scaled, plain, type: .decimal(precision: nil, scale: nil)),
+            selected(.dateInfinity(.positive), .dateInfinity(.negative), type: .date),
+            selected(finiteDate, .dateInfinity(.positive), type: .date),
+            selected(.interval(try QueryIntervalValue(period: CalendarPeriod(months: 1, days: 0), time: TimeSpan(seconds: 0))),
+                .interval(try QueryIntervalValue(period: CalendarPeriod(months: 0, days: 30), time: TimeSpan(seconds: 0))), type: .interval()),
+            selected(.primitive(.string("z  ")), .primitive(.string("a")), type: .char(length: nil)),
+            .array([rank]), .row([rank, .cast(.literal(.null), targetType: .text)]),
+            .cast(.caseWhen(cases: [CaseWhenPair(condition: isFirst, result: .literal(.string("1")))],
+                elseResult: .literal(.string("2"))), targetType: .jsonb),
+            .cast(.literal(.null), targetType: .timestamp(withTimeZone: true)),
+        ]
+        for operand in operands {
+            let query = SelectQuery(projection: [
+                ProjectionItem(.aggregate(.sql(SQLAggregateCall(function: .min, arguments: [operand]))), alias: "minimum"),
+                ProjectionItem(.aggregate(.sql(SQLAggregateCall(function: .max, arguments: [operand]))), alias: "maximum"),
+            ], source: .table(TableRef(Item.persistableType)))
+            let result = try await executeParameterizedQuery(query, source: source, parameters: [], fixture: fixture)
+            #expect(result.rows.count == 1)
+            #expect(result.rows[0].origin == .derived(contributors: [fixture.primaryBaseID, fixture.secondaryBaseID]))
+            let values = result.rows[0].row.values
+            switch values[0] {
+            case .numeric:
+                #expect(values == [scaled, scaled])
+            case .dateInfinity:
+                #expect(values == [.dateInfinity(.negative), .dateInfinity(.positive)])
+            case .primitive(.date):
+                #expect(values == [finiteDate, .dateInfinity(.positive)])
+            case .interval:
+                let month = QueryValue.interval(try QueryIntervalValue(period: CalendarPeriod(months: 1, days: 0), time: TimeSpan(seconds: 0)))
+                #expect(values == [month, month])
+            case .primitive(.string):
+                #expect(values == [.primitive(.string("a")), .primitive(.string("z  "))])
+            case .array(let minimum):
+                guard case .array(let maximum) = values[1] else { Issue.record("Expected array maximum"); continue }
+                #expect(minimum.elements[0] == .primitive(.int64(1)))
+                #expect(maximum.elements[0] == .primitive(.int64(2)))
+            case .composite(let minimum):
+                guard case .composite(let maximum) = values[1] else { Issue.record("Expected composite maximum"); continue }
+                #expect(minimum.fields[0] == .primitive(.int64(1)))
+                #expect(maximum.fields[0] == .primitive(.int64(2)))
+            case .jsonb:
+                #expect(try CanonicalSQLValueSemantics.compareValues(values[0], values[1],
+                    leftType: result.columns[0].type, rightType: result.columns[1].type,
+                    environment: source.makeSQLTemporalEnvironment(), workMeter: DatabaseWorkMeter(
+                        budget: ExecutionBudget(), monotonicClock: fixture.container.monotonicClock)) == .lessThan)
+            case .primitive(.null): #expect(values.allSatisfy { $0.isNull })
+            default: Issue.record("Unexpected rich extremum carrier")
+            }
+        }
+        let invalid = SelectQuery(projection: [ProjectionItem(.aggregate(.sql(SQLAggregateCall(
+            function: .min, arguments: [.cast(.literal(.string("1")), targetType: .json)]))), alias: "invalid")],
+            source: .table(TableRef(Item.persistableType)), filter: .greaterThan(rank, .literal(.int(100))))
+        do {
+            _ = try await executeParameterizedQuery(invalid, source: source, parameters: [], fixture: fixture)
+            Issue.record("Expected unsupported selected JSON comparison")
+        } catch let error as CanonicalReadError {
+            guard case .expressionEvaluation = error else { throw error }
+        }
+        let valid = try await executeParameterizedQuery(SelectQuery(projection: [ProjectionItem(.aggregate(.min(rank)), alias: "minimum")],
+            source: .table(TableRef(Item.persistableType))), source: source, parameters: [], fixture: fixture)
+        #expect(valid.rows[0].row.values == [.primitive(.int64(1))])
+    }
+
+    @Test("Composition grouping, aggregate modifiers and windows execute globally", .timeLimit(.minutes(2)))
+    func selectedGlobalGroupingAndWindows() async throws {
+        let fixture = try await makeFixture(readerCanReadSecondary: true)
+        defer { await fixture.container.shutdown() }
+        try await insert([("a", 1), ("b", 2)], baseID: fixture.primaryBaseID, fixture: fixture)
+        try await insert([("c", 1), ("d", 2)], baseID: fixture.secondaryBaseID, fixture: fixture)
+        let source = fixture.container.session(authorization: fixture.readerAuthorization).composition(fixture.compositionID)
+        let rank = DatabaseKit.Expression.column(ColumnRef("rank"))
+        let grouped = SelectQuery(projection: [ProjectionItem(rank, alias: "rank"), ProjectionItem(.aggregate(.sql(
+            SQLAggregateCall(function: .count, arguments: []))), alias: "count")],
+            source: .table(TableRef(Item.persistableType)), groupBy: [.expression(rank)], orderBy: [SortKey(rank)])
+        let groups = try await executeParameterizedQuery(grouped, source: source, parameters: [], fixture: fixture)
+        #expect(groups.rows.map { $0.row.values } == [
+            [.primitive(.int64(1)), .primitive(.int64(2))], [.primitive(.int64(2)), .primitive(.int64(2))]])
+        #expect(groups.rows.allSatisfy { $0.origin == .derived(contributors: [fixture.primaryBaseID, fixture.secondaryBaseID]) })
+        let modified = SelectQuery(projection: [ProjectionItem(.aggregate(.sql(SQLAggregateCall(function: .count,
+            arguments: [rank], distinct: true, filter: .greaterThan(rank, .literal(.int(0)))))), alias: "count")],
+            source: .table(TableRef(Item.persistableType)))
+        let count = try await executeParameterizedQuery(modified, source: source, parameters: [], fixture: fixture)
+        #expect(count.rows[0].row.values == [.primitive(.int64(2))])
+        let empty = try await executeParameterizedQuery(modified.replacing(filter: .literal(.bool(false))),
+            source: source, parameters: [], fixture: fixture)
+        #expect(empty.rows.count == 1)
+        #expect(empty.rows[0].row.values == [.primitive(.int64(0))])
+        #expect(empty.rows[0].origin == .derived(contributors: [fixture.primaryBaseID, fixture.secondaryBaseID]))
+        let emptySet = try await executeParameterizedQuery(modified.replacing(groupBy: [.groupingSets([[]])])
+            .replacing(filter: .literal(.bool(false))), source: source, parameters: [], fixture: fixture)
+        #expect(emptySet.rows.count == 1)
+        #expect(emptySet.rows[0].row.values == [.primitive(.int64(0))])
+        #expect(emptySet.rows[0].origin == .derived(contributors: [fixture.primaryBaseID, fixture.secondaryBaseID]))
+        try await insert([("exclusive", 3)], baseID: fixture.primaryBaseID, fixture: fixture)
+        let subset = try await executeParameterizedQuery(grouped.replacing(filter: .equal(rank, .literal(.int(3)))),
+            source: source, parameters: [], fixture: fixture)
+        #expect(subset.rows.count == 1)
+        #expect(subset.rows[0].origin == .source(fixture.primaryBaseID))
+        let memberCount = DatabaseKit.Expression.subquery(SelectQuery(projection: [ProjectionItem(
+            .aggregate(.sql(SQLAggregateCall(function: .count, arguments: []))), alias: "count")],
+            source: .table(TableRef(Item.persistableType))))
+        let nestedArgument = SelectQuery(projection: [ProjectionItem(.aggregate(.sql(SQLAggregateCall(
+            function: .count, arguments: [memberCount], distinct: true))), alias: "count")],
+            source: .table(TableRef(Item.persistableType)))
+        let nested = try await executeParameterizedQuery(nestedArgument, source: source, parameters: [], fixture: fixture)
+        #expect(nested.rows[0].row.values == [.primitive(.int64(2))])
+        let groupRead = nestedArgument.replacing(projection: [
+            nestedArgument.projection[0], ProjectionItem(memberCount, alias: "groupRead")])
+        for candidate in [groupRead, groupRead.replacing(filter: .literal(.bool(false)))] {
+            let execution = ReadExecutionContext(options: .default, monotonicClock: fixture.container.monotonicClock)
+            let publication = PublicationEventProbe()
+            do {
+                try await CompositionQueryPlanner(structuralLimits: execution.queryStructuralLimits).execute(
+                    candidate, source: source, options: CompositionQueryExecutionOptions(pageSize: 1, readContext: execution)
+                ) { _ in await publication.receive(); return true }
+                Issue.record("Expected source-free or multiple-source group read rejection")
+            } catch let error as CompositionQueryError {
+                guard case .unsupportedPlan = error else { throw error }
+            }
+            #expect(await publication.receivedCount() == 0)
+            #expect(execution.workMeter.retainedIntermediateRows == 0)
+            #expect(execution.workMeter.retainedIntermediateBytes == 0)
+        }
+        let window = DatabaseKit.Expression.window(WindowCall(function: .analytic(.rowNumber, arguments: []),
+            reference: .specification(WindowSpecification(orderBy: [SortKey(rank)]))))
+        let numbered = SelectQuery(projection: [ProjectionItem(window, alias: "number")],
+            source: .table(TableRef(Item.persistableType)), orderBy: [SortKey(.column(ColumnRef("number")))])
+        let numbers = try await executeParameterizedQuery(numbered, source: source, parameters: [], fixture: fixture)
+        #expect(numbers.rows.map { $0.row.values[0] } == (1...5).map { .primitive(.int64(Int64($0))) })
+    }
+
     @Test("Composition numeric aggregates retain widened state and release after final overflow")
     func selectedNumericAggregateWorkspace() async throws {
         let fixture = try await makeFixture(readerCanReadSecondary: true)

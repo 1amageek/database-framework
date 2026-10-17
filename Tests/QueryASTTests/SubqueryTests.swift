@@ -25,7 +25,7 @@ struct SubqueryTests {
                 ProjectionItem(.aggregate(.sum(.column(ColumnRef(column: "amount")), distinct: false)), alias: "total")
             ],
             source: .table(TableRef("orders")),
-            groupBy: [.column(ColumnRef(column: "id"))]
+            groupBy: [.expression(.column(ColumnRef(column: "id")))]
         )
 
         let outerQuery = SelectQuery(
@@ -411,7 +411,7 @@ struct SubqueryTests {
                 ProjectionItem(.aggregate(.sum(.column(ColumnRef(column: "amount")), distinct: false)))
             ],
             source: .table(TableRef("orders")),
-            groupBy: [.column(ColumnRef(column: "user_id"))]
+            groupBy: [.expression(.column(ColumnRef(column: "user_id")))]
         )
 
         let cte = NamedSubquery(
@@ -445,7 +445,7 @@ struct SubqueryTests {
                     ProjectionItem(.aggregate(.count(nil, distinct: false)), alias: "cnt")
                 ],
                 source: .table(TableRef("orders")),
-                groupBy: [.column(ColumnRef(column: "user_id"))]
+                groupBy: [.expression(.column(ColumnRef(column: "user_id")))]
             )
         )
 
@@ -512,7 +512,7 @@ struct SubqueryTests {
                 ProjectionItem(.aggregate(.sum(.column(ColumnRef(column: "amount")), distinct: false)), alias: "total")
             ],
             source: .table(TableRef("orders")),
-            groupBy: [.column(ColumnRef(column: "user_id"))]
+            groupBy: [.expression(.column(ColumnRef(column: "user_id")))]
         )
 
         let join = JoinClause(

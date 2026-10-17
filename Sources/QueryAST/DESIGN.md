@@ -170,3 +170,17 @@ They compose the Kit-owned current-value, temporal value and interval descriptor
 contracts without interpreting clocks, zones, calendar arithmetic or typmods.
 S06-SYN01...06 are the local syntax/identity obligations; Database public SQL and
 QueryExecution own executable temporal acceptance.
+
+
+### S09 grouping and window composition
+
+**PLANNED; not implementation or verification evidence.**
+[Parser](Parser/DESIGN.md#s09-grouping-aggregate-and-window-grammar) and
+[Builder](Builder/DESIGN.md#s09-grouping-aggregate-and-window-emission) compose
+Kit-owned grouping elements, SQLAggregateCall, WindowCall and named-window
+metadata. Source occurrence capture retains all new children and exact names;
+serialization preserves direct OVER references versus copied specifications.
+Engine owns grouping expansion, aggregate legality/results, named inheritance,
+partition peers, frame bounds and evaluation. SQL-only additions remain typed
+SPARQL failures. S09-SYN01...06 plus public execution evidence close adaptation;
+syntax acceptance alone does not close SQL Q11/Q14 or F11–F13.

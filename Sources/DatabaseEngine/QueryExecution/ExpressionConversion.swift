@@ -328,10 +328,11 @@ extension Expression {
             case .array(let value): return lhs.referencesOnlySourceQualifier(sourceQualifier) && value.referencesOnlySourceQualifier(sourceQualifier)
             case .subquery: return false
             }
-        case .inSubquery, .subquery, .arraySubquery, .exists:
+        case .inSubquery, .subquery, .arraySubquery, .exists, .window, .grouping:
             return false
         case .aggregate(let aggregate):
             switch aggregate {
+            case .sql: return false
             case .count(let expression, _):
                 return expression?.referencesOnlySourceQualifier(
                     sourceQualifier

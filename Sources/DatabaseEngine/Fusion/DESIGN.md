@@ -76,3 +76,14 @@ owns parameterized filter/order execution, pre-read binding rejection, sealed
 authorization, exact meter ownership, and lease regressions. Changes to parameter
 selection require QueryExecution verification; changes to authority or lifetime
 require Read verification.
+
+
+### S09 query envelope preservation
+
+**PLANNED; not implementation or verification evidence.** Fusion consumes the
+Kit query envelope as an immutable semantic contract. It preserves grouping
+elements and named windows in reconstruction and delegates SQL-only aggregate,
+grouping and window interpretation to canonical QueryExecution. A path that
+cannot execute those forms rejects them explicitly rather than reducing them
+to expression grouping or omitting window metadata. Existing Fusion behavior
+remains the regression owner for its supported subset.

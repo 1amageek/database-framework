@@ -502,15 +502,16 @@ struct SQLParserTests {
             return
         }
         guard case .aggregate(
-            .arrayAgg(.column(let value), let orderBy, let distinct)
-        ) = try projectionExpression(items[0]) else {
+            .sql(let call)
+        ) = try projectionExpression(items[0]), call.function == .arrayAgg,
+              call.arguments.count == 1, case .column(let value) = call.arguments[0] else {
             Issue.record("Expected ARRAY_AGG")
             return
         }
         #expect(value.column == "name")
-        #expect(distinct)
-        #expect(orderBy?.count == 1)
-        #expect(orderBy?.first?.direction == .descending)
+        #expect(call.distinct)
+        #expect(call.orderBy.count == 1)
+        #expect(call.orderBy.first?.direction == .descending)
 
         guard case .aggregate(
             .groupConcat(.column(let joined), let separator, let isDistinct)

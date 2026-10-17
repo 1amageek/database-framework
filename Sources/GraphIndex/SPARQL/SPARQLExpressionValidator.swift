@@ -111,6 +111,8 @@ private extension SPARQLExpressionValidator {
             }
             switch consume expression {
         // SQL conditionals and quantified predicates have no RDF interpretation.
+        case .grouping, .window:
+            throw SPARQLExpressionCompilationError.unsupportedExpression("SQL grouping or window expression")
         case .arrayAccess, .collectionOperation, .collate, .arraySubquery, .wholeRow, .field, .fieldExpansion:
             throw SPARQLExpressionCompilationError.unsupportedExpression("SQL collection expression")
         case .currentValue:
@@ -255,6 +257,8 @@ private extension SPARQLExpressionValidator {
                     tasks: &tasks
                 )
 
+            case .aggregate(.sql):
+                throw SPARQLExpressionCompilationError.unsupportedExpression("SQL aggregate")
             case .aggregate:
                 throw SPARQLExpressionCompilationError.aggregateNotAllowed
 
@@ -336,6 +340,7 @@ private extension SPARQLExpressionValidator {
                   query.accessPath == nil,
                   query.groupBy == nil,
                   query.having == nil,
+              query.windows.isEmpty,
                   query.orderBy == nil,
                   query.pagination.limit == nil,
                   query.pagination.offset == nil,
@@ -473,6 +478,8 @@ private extension SPARQLExpressionValidator {
             let childDepth = try state.childDepth(after: depth)
 
             switch consume aggregate {
+            case .sql:
+                throw SPARQLExpressionCompilationError.unsupportedExpression("SQL aggregate")
             case .count(let expression, _):
                 if let expression {
                     tasks.append(

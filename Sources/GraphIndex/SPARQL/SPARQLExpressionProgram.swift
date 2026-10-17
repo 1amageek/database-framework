@@ -239,6 +239,8 @@ struct SPARQLExpressionProgram: Sendable {
     ) throws(SPARQLExpressionCompilationError) -> Decomposition {
         switch consume expression {
         // SQL conditionals and quantified predicates have no RDF interpretation.
+        case .grouping, .window:
+            throw SPARQLExpressionCompilationError.unsupportedExpression("SQL grouping or window expression")
         case .arrayAccess, .collectionOperation, .collate, .arraySubquery, .wholeRow, .field, .fieldExpansion:
             throw SPARQLExpressionCompilationError.unsupportedExpression("SQL collection expression")
         case .currentValue:
@@ -342,6 +344,8 @@ struct SPARQLExpressionProgram: Sendable {
                 children: []
             )
 
+        case .aggregate(.sql):
+            throw SPARQLExpressionCompilationError.unsupportedExpression("SQL aggregate")
         case .aggregate:
             return Decomposition(
                 opcode: .unsupported("aggregate"),

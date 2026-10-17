@@ -330,3 +330,15 @@ canonical/SPARQL preparation path. Internal reentry retains that statement
 time. The public facade does not implement temporal conversion, acquire zone
 data or read a process default. Binding/source failure mapping still uses the
 original occurrence arena; injected clocks and zones grant no authority.
+
+
+### S09 grouping and window adaptation assumption
+
+**PLANNED; not implementation or verification evidence.** SQL source mapping
+and SPARQL-function inlining consume Kit's S09 grouping/window children without
+flattening grouping sets or dropping named WINDOW metadata. Inlining traverses
+each represented expression with the original occurrence role, and query
+rebuilds preserve every window definition. The canonical Engine path owns
+SQL grouping/aggregate/window execution and legality; this facade adds no
+alternate aggregate evaluator. QueryAST's S09-SYN05 and public Database SQL
+tests own provenance and inlining regression witnesses.

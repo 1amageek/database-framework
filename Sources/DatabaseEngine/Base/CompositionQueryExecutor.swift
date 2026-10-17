@@ -87,7 +87,7 @@ public struct CompositionQueryExecutor<Model: Persistable>: Sendable {
         let aggregate = SelectQuery(
             projection: [
                 ProjectionItem(
-                    .aggregate(.count(nil, distinct: false)),
+                    .aggregate(.sql(SQLAggregateCall(function: .count, arguments: []))),
                     alias: "count"
                 ),
             ],

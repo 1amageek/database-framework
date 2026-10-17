@@ -206,10 +206,14 @@ struct SQLRowExecutionTests {
         )
 
         #expect(response.rows.count == 1)
-        #expect(
-            response.rows[0].values[0]
-                == .primitive(.array([.string("second"), .string("first")]))
-        )
+        #expect(response.columns[0].type == .sql(.array(.text)))
+        guard case .array(let ids) = response.rows[0].values[0] else {
+            Issue.record("Expected ARRAY_AGG SQL array output")
+            return
+        }
+        #expect(ids.elementType == .text)
+        #expect(Array(ids.dimensions) == [try QueryArrayDimension(lowerBound: 1, length: 2)])
+        #expect(Array(ids.elements) == [.primitive(.string("second")), .primitive(.string("first"))])
         guard case .primitive(.string(let joined)) = response.rows[0].values[1] else {
             Issue.record("Expected GROUP_CONCAT string output")
             return
@@ -446,7 +450,7 @@ struct SQLRowExecutionTests {
                     ),
                 ],
                 source: source,
-                groupBy: [.col("value")]
+                groupBy: [.expression(.col("value"))]
             )
         )
         #expect(
@@ -505,7 +509,7 @@ struct SQLRowExecutionTests {
                     ),
                 ],
                 source: fractionalSource,
-                groupBy: [.col("value")]
+                groupBy: [.expression(.col("value"))]
             )
         )
         #expect(
@@ -953,8 +957,17 @@ struct SQLRowExecutionTests {
         let maximum = "99999999999999999999999999999999999999"
         let average = try await context.executeSQL("SELECT AVG(\(maximum)::NUMERIC) FROM \"SQLRowItem\" WHERE rank = 1")
         #expect(average.rows[0].values == [try sqlNumeric(99_999_999_999_999_999_999_999_999_999_999_999_999)])
-        await #expect(throws: CanonicalReadError.self) {
-            _ = try await context.executeSQL("SELECT SUM(\(maximum)::NUMERIC) FROM \"SQLRowItem\" WHERE rank = 1")
+        let overflowSQL = "SELECT SUM(\(maximum)::NUMERIC) FROM \"SQLRowItem\" WHERE rank = 1"
+        do {
+            _ = try await context.executeSQL(overflowSQL)
+            Issue.record("The final SUM of two maximum numeric values must overflow")
+        } catch let failure as SQLBindingSourceFailure {
+            guard case .expression(.numericOverflow) = failure.cause else {
+                Issue.record("Expected the final SUM's typed numeric overflow, got \(failure)")
+                return
+            }
+            #expect(failure.position == 7)
+            #expect(failure.occurrence != nil)
         }
         let cancelled = try await context.executeSQL("SELECT SUM(CASE WHEN id = 'first' THEN -\(maximum)::NUMERIC ELSE \(maximum)::NUMERIC END) FROM \"SQLRowItem\"")
         #expect(cancelled.rows[0].values == average.rows[0].values)

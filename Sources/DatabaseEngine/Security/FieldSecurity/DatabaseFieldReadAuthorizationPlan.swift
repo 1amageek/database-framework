@@ -181,6 +181,9 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                     outerScopes: outerScopes
                 )
             }
+            for window in query.windows {
+                collect(window.specification, localBindings: bindings, outerScopes: outerScopes)
+            }
             for sortKey in query.orderBy ?? [] {
                 collect(
                     sortKey.expression,
@@ -578,6 +581,15 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                     query,
                     outerScopes: [localBindings] + outerScopes
                 )
+            case .window(let call):
+                switch call.function {
+                case .aggregate(let aggregate): collect(aggregate, localBindings: localBindings, outerScopes: outerScopes)
+                case .analytic(_, let arguments):
+                    for argument in arguments { collect(argument, localBindings: localBindings, outerScopes: outerScopes) }
+                }
+                if case .specification(let specification) = call.reference {
+                    collect(specification, localBindings: localBindings, outerScopes: outerScopes)
+                }
             case .aggregate(let aggregate):
                 collect(
                     aggregate,
@@ -613,7 +625,7 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                         outerScopes: outerScopes
                     )
                 }
-            case .coalesce(let expressions), .array(let expressions), .row(let expressions), .greatest(let expressions), .least(let expressions):
+            case .coalesce(let expressions), .array(let expressions), .row(let expressions), .greatest(let expressions), .least(let expressions), .grouping(let expressions):
                 for expression in expressions {
                     collect(
                         expression,
@@ -645,6 +657,7 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
             outerScopes: [[SourceBinding]]
         ) {
             switch aggregate {
+            case .sql(let call): collect(call, localBindings: localBindings, outerScopes: outerScopes)
             case .count(let expression, _):
                 if let expression {
                     collect(
@@ -674,6 +687,42 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                         localBindings: localBindings,
                         outerScopes: outerScopes
                     )
+                }
+            }
+        }
+
+        mutating func collect(_ grouping: GroupingElement, localBindings: [SourceBinding], outerScopes: [[SourceBinding]]) {
+            var pending = [grouping]
+            while let element = pending.popLast() {
+                switch element {
+                case .expression(let expression): collect(expression, localBindings: localBindings, outerScopes: outerScopes)
+                case .rollup(let components), .cube(let components):
+                    for expressions in components {
+                        for expression in expressions { collect(expression, localBindings: localBindings, outerScopes: outerScopes) }
+                    }
+                case .groupingSets(let sets):
+                    for elements in sets { pending.append(contentsOf: elements) }
+                }
+            }
+        }
+
+        mutating func collect(_ call: SQLAggregateCall, localBindings: [SourceBinding], outerScopes: [[SourceBinding]]) {
+            for argument in call.arguments { collect(argument, localBindings: localBindings, outerScopes: outerScopes) }
+            for key in call.orderBy { collect(key.expression, localBindings: localBindings, outerScopes: outerScopes) }
+            if let filter = call.filter { collect(filter, localBindings: localBindings, outerScopes: outerScopes) }
+            for key in call.withinGroup ?? [] { collect(key.expression, localBindings: localBindings, outerScopes: outerScopes) }
+        }
+
+        mutating func collect(_ specification: WindowSpecification, localBindings: [SourceBinding], outerScopes: [[SourceBinding]]) {
+            for expression in specification.partitionBy { collect(expression, localBindings: localBindings, outerScopes: outerScopes) }
+            for key in specification.orderBy { collect(key.expression, localBindings: localBindings, outerScopes: outerScopes) }
+            if let frame = specification.frame {
+                for bound in [frame.start, frame.end] {
+                    switch bound {
+                    case .preceding(let expression), .following(let expression):
+                        collect(expression, localBindings: localBindings, outerScopes: outerScopes)
+                    default: break
+                    }
                 }
             }
         }

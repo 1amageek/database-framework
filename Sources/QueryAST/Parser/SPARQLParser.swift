@@ -1639,7 +1639,7 @@ extension SPARQLParser {
                 projection: projection,
                 source: source,
                 filter: nil,
-                groupBy: modifiers.groupBy.isEmpty ? nil : modifiers.groupBy,
+                groupBy: modifiers.groupBy.isEmpty ? nil : modifiers.groupBy.map(GroupingElement.expression),
                 having: modifiers.combinedHaving,
                 orderBy: modifiers.orderBy.isEmpty ? nil : modifiers.orderBy,
                 quantifier: distinct ? .distinct : .all,

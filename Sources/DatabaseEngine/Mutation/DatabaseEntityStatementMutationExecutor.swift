@@ -604,6 +604,7 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
         binder: CanonicalQueryTypeBinder
     ) throws -> PreparedAssignment {
         _ = try fieldNumber(schema, entity: entity.name)
+        try binder.requireScalarPhase(expression)
         let type = schema.queryType ?? .primitive(schema.type, isArray: schema.isArray)
         let selected: Bool
         switch type {
@@ -620,7 +621,7 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
         default: selected = false
         }
         return PreparedAssignment(schema: schema, expression: expression,
-            bound: selected ? try binder.bindAssignment(expression, to: type) : nil)
+            bound: selected ? try binder.bindScalarAssignment(expression, to: type) : nil)
     }
 
     private func prepareAssignments(

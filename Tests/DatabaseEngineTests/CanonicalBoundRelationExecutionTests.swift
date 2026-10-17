@@ -39,7 +39,7 @@ struct CanonicalBoundRelationExecutionTests {
             projection: [ProjectionItem(key, alias: "next"), ProjectionItem(count, alias: "count")],
             source: .aliased(.values([[.literal(.int(2))], [.literal(.int(1))], [.literal(.int(2))]]), name: "input_9", columns: ["n"]),
             filter: .greaterThan(.column(ColumnRef("n")), .literal(.sqlUnknownString("0"))),
-            groupBy: [key], having: .greaterThan(count, .literal(.int(0))),
+            groupBy: [.expression(key)], having: .greaterThan(count, .literal(.int(0))),
             orderBy: [SortKey(.column(ColumnRef("next")), direction: .descending)]))
         #expect(response.rows.map(\.values) == [
             [.primitive(.int64(3)), .primitive(.int64(2))],
@@ -182,7 +182,7 @@ struct CanonicalBoundRelationExecutionTests {
             ProjectionItem(.add(.column(ColumnRef("n")), .literal(.int(1))), alias: "n"),
             ProjectionItem(count, alias: "count")],
             source: .aliased(.values([[.literal(.int(1))], [.literal(.int(2))]]), name: "input_3", columns: ["n"]),
-            groupBy: [.column(ColumnRef("n"))], orderBy: [SortKey(.literal(.int(1)))])
+            groupBy: [.expression(.column(ColumnRef("n")))], orderBy: [SortKey(.literal(.int(1)))])
         let response = try await context.query(query)
         #expect(response.rows.map(\.values) == [
             [.primitive(.int64(2)), .primitive(.int64(1))],

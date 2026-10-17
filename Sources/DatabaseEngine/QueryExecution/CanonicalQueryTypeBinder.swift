@@ -13,6 +13,9 @@ struct CanonicalQueryTypeBinder {
     private var currentOccurrence: QueryOccurrenceID?
     private var isNested = false
     private var allowsRowSubquery = false
+    private var permitsAggregates = true
+    private var permitsWindows = true
+    private(set) var windowDefinitions: [CanonicalBoundWindowDefinition] = []
     private let resolveColumn: (ColumnRef) throws -> Int
     private let wildcardSlots: (String?) throws -> [Int]
     private let resolveWholeRow: ((String) throws -> CanonicalBoundWholeRow)?
@@ -62,6 +65,9 @@ struct CanonicalQueryTypeBinder {
             scoped.currentOccurrence = occurrence
             return try scoped.bindSelect(query)
         }
+        if !query.windows.isEmpty {
+            return try preparingWindows(query.windows).bindSelect(query.replacing(windows: []))
+        }
         let bytes = UInt64(MemoryLayout<[CanonicalBoundExpression]>.stride
             + MemoryLayout<[CanonicalBoundKey]>.stride * 2)
         let reservation = try workMeter?.reserveIntermediate(bytes: bytes, at: .bindingCandidate)
@@ -70,14 +76,32 @@ struct CanonicalQueryTypeBinder {
         let selected = try bindProjection(query.projection)
         let output = selected.columns
         let projection = selected.projection
-        let filter = try query.filter.map { try childBinder(.filter).boolean($0) }
+        let filter = try query.filter.map { try childBinder(.filter).bindPredicate($0) }
         var groupBy: [CanonicalBoundExpression] = []
-        for (index, expression) in (query.groupBy ?? []).enumerated() {
-            let child = try childBinder(.groupBy, index).bind(expression)
-            try requireSQLComparison(child.type, operation: "GROUP BY")
-            try CanonicalBindingStorage.append(child, to: &groupBy, reservation: reservation)
+        func groupingLeaves(_ elements: [GroupingElement], binder: Self, field: QueryOccurrenceField = .groupBy) throws {
+            for (index, element) in elements.enumerated() {
+                let selected = binder.childBinder(field, index)
+                switch element {
+                case .expression(let expression):
+                    let child = try selected.childBinder(.operand).bindGroupingExpression(expression)
+                    try CanonicalBindingStorage.append(child, to: &groupBy, reservation: reservation)
+                case .rollup(let units), .cube(let units):
+                    for (unit, expressions) in units.enumerated() {
+                        for (position, expression) in expressions.enumerated() {
+                            let child = try selected.childBinder(.groupingComponent, unit)
+                                .childBinder(.argument, position).bindGroupingExpression(expression)
+                            try CanonicalBindingStorage.append(child, to: &groupBy, reservation: reservation)
+                        }
+                    }
+                case .groupingSets(let sets):
+                    for (index, set) in sets.enumerated() {
+                        try groupingLeaves(set, binder: selected.childBinder(.groupingSet, index), field: .groupingElement)
+                    }
+                }
+            }
         }
-        let having = try query.having.map { try childBinder(.having).boolean($0) }
+        try groupingLeaves(query.groupBy ?? [], binder: self)
+        let having = try query.having.map { try childBinder(.having).bindHaving($0) }
         var orderBy: [CanonicalBoundKey] = []
         for (index, key) in (query.orderBy ?? []).enumerated() {
             try CanonicalBindingStorage.append(childBinder(.orderBy, index).bindOrderKey(key,
@@ -101,7 +125,8 @@ struct CanonicalQueryTypeBinder {
         successful = true
         return CanonicalBoundSelect(columns: output, projection: projection, filter: filter,
             groupBy: groupBy, having: having, orderBy: orderBy, distinctOn: distinctOn,
-            metadataLease: reservation.map { DatabaseQueryPayloadLease(retaining: $0) }, bindingMetadata: bindingMetadata)
+            metadataLease: reservation.map { DatabaseQueryPayloadLease(retaining: $0) }, bindingMetadata: bindingMetadata,
+            windows: windowDefinitions)
     }
 
     /// Binds only ordered projection items; the relation owner supplies clause binding.
@@ -120,7 +145,7 @@ struct CanonicalQueryTypeBinder {
         try bindingMetadata.retain(reservation)
         successful = true
         return CanonicalBoundSelect(columns: columns, projection: projection, filter: nil,
-            groupBy: [], having: nil, orderBy: [], bindingMetadata: bindingMetadata)
+            groupBy: [], having: nil, orderBy: [], bindingMetadata: bindingMetadata, windows: windowDefinitions)
     }
 
     private func appendProjectionItem(_ item: ProjectionItem, index: Int,
@@ -253,8 +278,44 @@ struct CanonicalQueryTypeBinder {
         return result
     }
 
-    func bindPredicate(_ expression: DatabaseKit.Expression) throws -> CanonicalBoundExpression {
-        try boolean(expression)
+    func bindPredicate(_ expression: DatabaseKit.Expression, occurrence: QueryOccurrenceID? = nil) throws -> CanonicalBoundExpression {
+        var scoped = self
+        scoped.permitsAggregates = false
+        scoped.permitsWindows = false
+        if let occurrence { scoped.currentOccurrence = occurrence }
+        return try scoped.boolean(expression)
+    }
+
+    func bindHaving(_ expression: Expression, occurrence: QueryOccurrenceID? = nil) throws -> CanonicalBoundExpression {
+        var scoped = self
+        scoped.permitsWindows = false
+        if let occurrence { scoped.currentOccurrence = occurrence }
+        return try scoped.boolean(expression)
+    }
+
+    func bindGroupingExpression(_ expression: Expression, occurrence: QueryOccurrenceID? = nil) throws -> CanonicalBoundExpression {
+        var scoped = self
+        scoped.permitsAggregates = false
+        scoped.permitsWindows = false
+        let selected = try scoped.bind(expression, occurrence: occurrence)
+        try requireSQLComparison(selected.type, operation: "GROUP BY")
+        return selected
+    }
+
+    func bindScalarExpression(_ expression: Expression, contextualType: QueryColumnType? = nil,
+        occurrence: QueryOccurrenceID? = nil) throws -> CanonicalBoundExpression {
+        var scoped = self
+        scoped.permitsAggregates = false
+        scoped.permitsWindows = false
+        return try scoped.bind(expression, contextualType: contextualType, occurrence: occurrence)
+    }
+
+    func bindScalarAssignment(_ expression: Expression, to type: QueryColumnType,
+        occurrence: QueryOccurrenceID? = nil) throws -> CanonicalBoundExpression {
+        var scoped = self
+        scoped.permitsAggregates = false
+        scoped.permitsWindows = false
+        return try scoped.bindAssignment(expression, to: type, occurrence: occurrence)
     }
 
     func bindAssignment(_ expression: DatabaseKit.Expression, to type: QueryColumnType,
@@ -350,6 +411,8 @@ struct CanonicalQueryTypeBinder {
                         throw mismatch("pagination cannot reference its source row")
                     }
                     if case .aggregate = child.expression { throw mismatch("pagination aggregate") }
+                    if case .window = child.expression { throw mismatch("pagination window") }
+                    if case .grouping = child.expression { throw mismatch("pagination grouping") }
                     for nested in child.children.reversed() { try append(nested) }
                 }
                 return .expression(selected)
@@ -732,7 +795,29 @@ struct CanonicalQueryTypeBinder {
         case .function(let function):
             return try bindFunction(function, expression: expression)
         case .aggregate(let aggregate):
+            guard permitsAggregates else { throw mismatch("aggregate in forbidden expression phase") }
             return try bindAggregate(aggregate, expression: expression)
+        case .window(let call):
+            guard permitsWindows else { throw mismatch("window in forbidden expression phase") }
+            return try bindWindow(call, expression: expression)
+        case .grouping(let arguments):
+            guard permitsAggregates, !arguments.isEmpty, arguments.count <= 31 else {
+                throw mismatch("GROUPING arguments or expression phase")
+            }
+            var scoped = self
+            scoped.permitsAggregates = false
+            scoped.permitsWindows = false
+            let claim = try workMeter?.reserveIntermediate(bytes: UInt64(MemoryLayout<[CanonicalBoundExpression]>.stride), at: .bindingCandidate)
+            var successful = false
+            defer { if !successful { claim?.release() } }
+            var children: [CanonicalBoundExpression] = []
+            for (index, argument) in arguments.enumerated() {
+                try CanonicalBindingStorage.append(scoped.childBinder(.argument, index).bind(argument),
+                    to: &children, reservation: claim)
+            }
+            try bindingMetadata.retain(claim)
+            successful = true
+            return node(expression, .sql(.integer), false, children)
         case .subquery: return try bindSelectedExpression(expression, contextualType: contextualType, parameterContext: parameterContext)
         case .exists: return try bindSelectedExpression(expression, contextualType: contextualType, parameterContext: parameterContext)
         case .inSubquery(let operand, let query):
@@ -1410,7 +1495,29 @@ struct CanonicalQueryTypeBinder {
     private func bindAggregate(
         _ aggregate: AggregateFunction, expression: DatabaseKit.Expression
     ) throws -> CanonicalBoundExpression {
+        if case .sql(let call) = aggregate { return try bindSQLAggregate(call) }
+        if !allowingSPARQLFunctions {
+            let call: SQLAggregateCall?
+            switch aggregate {
+            case .count(let operand, let distinct): call = SQLAggregateCall(function: .count, arguments: operand.map { [$0] } ?? [], distinct: distinct)
+            case .sum(let operand, let distinct): call = SQLAggregateCall(function: .sum, arguments: [operand], distinct: distinct)
+            case .avg(let operand, let distinct): call = SQLAggregateCall(function: .avg, arguments: [operand], distinct: distinct)
+            case .min(let operand): call = SQLAggregateCall(function: .min, arguments: [operand])
+            case .max(let operand): call = SQLAggregateCall(function: .max, arguments: [operand])
+            case .arrayAgg(let operand, let ordering, let distinct): call = SQLAggregateCall(function: .arrayAgg, arguments: [operand], distinct: distinct, orderBy: ordering ?? [])
+            case .groupConcat, .sample, .sql: call = nil
+            }
+            if let call { return try bindSQLAggregate(call, indexedArgumentOccurrences: false) }
+        }
+        var scoped = self
+        scoped.permitsAggregates = false
+        scoped.permitsWindows = false
+        return try scoped.bindGenericAggregate(aggregate, expression: expression)
+    }
+
+    private func bindGenericAggregate(_ aggregate: AggregateFunction, expression: Expression) throws -> CanonicalBoundExpression {
         switch aggregate {
+        case .sql: throw mismatch("SQL aggregate on generic evaluator")
         case .count(let operand, let distinct):
             let children = try operand.map { [try childBinder(.aggregateArgument).bind($0)] } ?? []
             if distinct { for child in children { try requireSQLComparison(child.type, operation: "COUNT DISTINCT") } }
@@ -2290,9 +2397,10 @@ struct CanonicalQueryTypeBinder {
         wholeRow: CanonicalBoundWholeRow? = nil, fieldOrdinal: Int? = nil,
         comparisonMode: CanonicalSQLCompositeComparisonMode = .record,
         collation: SQLCollation? = nil, subqueryComparisonTypes: [QueryColumnType] = [],
-        metadataLease: DatabaseQueryPayloadLease? = nil
+        metadataLease: DatabaseQueryPayloadLease? = nil,
+        aggregate: CanonicalBoundAggregate? = nil, window: CanonicalBoundWindow? = nil
     ) -> CanonicalBoundExpression {
-        CanonicalBoundExpression(expression: expression, type: type, isNullable: nullable, children: children,
+        CanonicalBoundExpression(expression: expression, type: type, isNullable: nullable, children: children, aggregate: aggregate, window: window,
                                  occurrence: currentOccurrence, subqueryBinding: subqueryBinding, wholeRow: wholeRow,
                                  fieldOrdinal: fieldOrdinal, comparisonMode: comparisonMode, collation: collation,
                                  subqueryComparisonTypes: subqueryComparisonTypes, metadataLease: metadataLease,
@@ -2367,8 +2475,15 @@ struct CanonicalQueryTypeBinder {
         switch expression {
         case .column(let column): return column.column
         case .field(_, let name): return name
+        case .grouping: return "grouping"
+        case .window(let call):
+            switch call.function {
+            case .aggregate(let aggregate): return aggregate.function.rawValue
+            case .analytic(let function, _): return function.rawValue
+            }
         case .aggregate(let aggregate):
             switch aggregate {
+            case .sql(let call): return call.function.rawValue
             case .count: return "count"
             case .sum: return "sum"
             case .avg: return "avg"
@@ -2490,5 +2605,451 @@ struct CanonicalQueryTypeBinder {
     private static func exactDecimal(_ value: FieldValue) -> ExactDecimal? {
         if case .decimal(let decimal) = value { return decimal }
         return integer(value).map { ExactDecimal(coefficient: $0, scale: 0) }
+    }
+}
+
+extension CanonicalQueryTypeBinder {
+    private func bindSQLAggregate(_ call: SQLAggregateCall, asWindow: Bool = false,
+        indexedArgumentOccurrences: Bool = true) throws -> CanonicalBoundExpression {
+        guard !allowingSPARQLFunctions, call.schema == nil || call.schema == "pg_catalog" else {
+            throw mismatch("SQL aggregate namespace or language")
+        }
+        let ordered = [.percentileCont, .percentileDisc, .mode].contains(call.function)
+        guard ordered == (call.withinGroup != nil), !ordered || (!call.distinct && call.orderBy.isEmpty),
+              !asWindow || (!ordered && !call.distinct && call.orderBy.isEmpty),
+              !call.distinct || !call.arguments.isEmpty else { throw mismatch("aggregate modifiers") }
+        let arity: ClosedRange<Int>
+        switch call.function {
+        case .count: arity = 0...1
+        case .mode: arity = 0...0
+        case .stringAgg, .jsonObjectAgg, .jsonbObjectAgg, .corr, .covarPop, .covarSamp,
+             .regrCount, .regrAvgx, .regrAvgy, .regrSxx, .regrSxy, .regrSyy,
+             .regrSlope, .regrIntercept, .regrR2: arity = 2...2
+        default: arity = 1...1
+        }
+        guard arity.contains(call.arguments.count), !ordered || call.withinGroup?.count == 1 else {
+            throw mismatch("aggregate argument count")
+        }
+        var scoped = self
+        scoped.permitsWindows = false
+        scoped.permitsAggregates = asWindow
+        let claim = try workMeter?.reserveIntermediate(bytes: CanonicalBoundAggregate.storageByteCount
+            + UInt64(MemoryLayout<[CanonicalBoundExpression]>.stride), at: .bindingCandidate)
+        var successful = false
+        defer { if !successful { claim?.release() } }
+        var arguments: [CanonicalBoundExpression] = []
+        func append(_ child: CanonicalBoundExpression) throws {
+            try CanonicalBindingStorage.append(child, to: &arguments, reservation: claim)
+        }
+        for (index, expression) in call.arguments.enumerated() {
+            let binder = scoped.childBinder(.aggregateArgument, indexedArgumentOccurrences ? index : nil)
+            let child: CanonicalBoundExpression
+            switch call.function {
+            case .sum, .avg, .varPop, .varSamp, .variance, .stddevPop, .stddevSamp, .stddev:
+                child = try binder.bind(expression, contextualType: .sql(.bigint))
+            case .boolAnd, .boolOr, .every:
+                child = try binder.bindSourceValue(expression, to: .sql(.boolean))
+            case .corr, .covarPop, .covarSamp, .regrCount, .regrAvgx, .regrAvgy, .regrSxx,
+                 .regrSxy, .regrSyy, .regrSlope, .regrIntercept, .regrR2:
+                let input = try binder.bind(expression, contextualType: .sql(.doublePrecision))
+                guard Self.numericKind(input.type) != nil else { throw mismatch("regression numeric input") }
+                child = try coerce(input, to: .sql(.doublePrecision))
+            case .percentileCont, .percentileDisc:
+                let input = try binder.bind(expression, contextualType: .sql(.doublePrecision))
+                let target: QueryColumnType = Self.arrayElement(input.type) == nil
+                    ? .sql(.doublePrecision) : .sql(.array(.doublePrecision))
+                child = try binder.bindAssignment(input, to: target)
+            default: child = try binder.bind(expression)
+            }
+            try append(child)
+        }
+        var type: QueryColumnType
+        let nullable = call.function != .count && call.function != .regrCount
+        switch call.function {
+        case .count, .regrCount: type = .sql(.bigint)
+        case .sum, .avg:
+            if case .sql(.interval) = arguments[0].type {
+                type = .sql(.interval())
+            } else {
+                guard let input = Self.numericAggregateInputType(arguments[0].type) else { throw mismatch("numeric expression") }
+                arguments[0] = try coerce(arguments[0], to: input)
+                if call.function == .avg {
+                    type = Self.numericKind(input) == .floating ? .sql(.doublePrecision) : .sql(.decimal(precision: nil, scale: nil))
+                } else {
+                    switch input {
+                    case .sql(.smallint), .sql(.integer): type = .sql(.bigint)
+                    case .sql(.real): type = .sql(.real)
+                    case .sql(.doublePrecision): type = .sql(.doublePrecision)
+                    default: type = .sql(.decimal(precision: nil, scale: nil))
+                    }
+                }
+            }
+        case .min, .max:
+            try requireSQLComparison(arguments[0].type, operation: "MIN/MAX")
+            type = arguments[0].type
+        case .arrayAgg:
+            if let element = Self.arrayElement(arguments[0].type) {
+                type = .sql(.array(try sqlElement(element)))
+                arguments[0] = try bindSourceValue(arguments[0], to: type)
+            } else {
+                let element = try sqlElement(arguments[0].type)
+                arguments[0] = try bindSourceValue(arguments[0], to: .sql(element))
+                type = .sql(.array(element))
+            }
+        case .stringAgg:
+            let binary = arguments.contains { Self.isBytes($0.type) }
+            let target: QueryColumnType = binary ? .sql(.blob) : .sql(.text)
+            for index in arguments.indices where try isContextualUnknown(call.arguments[index]) {
+                arguments[index] = try scoped.childBinder(.aggregateArgument, indexedArgumentOccurrences ? index : nil)
+                    .bind(call.arguments[index], contextualType: target)
+            }
+            guard arguments.allSatisfy({ binary ? Self.isBytes($0.type) : Self.isText($0.type) }) else {
+                throw mismatch("STRING_AGG text or bytes signature")
+            }
+            for index in arguments.indices { arguments[index] = try coerce(arguments[index], to: target) }
+            type = target
+        case .boolAnd, .boolOr, .every: type = .sql(.boolean)
+        case .bitAnd, .bitOr, .bitXor:
+            guard let selected = Self.sqlScalar(arguments[0].type), [.smallint, .integer, .bigint].contains(selected) else {
+                throw mismatch("bit aggregate integer input")
+            }
+            type = .sql(selected)
+            arguments[0] = try coerce(arguments[0], to: type)
+        case .jsonAgg, .jsonObjectAgg: type = .sql(.json)
+        case .jsonbAgg, .jsonbObjectAgg: type = .sql(.jsonb)
+        case .varPop, .varSamp, .variance, .stddevPop, .stddevSamp, .stddev:
+            guard let input = Self.numericAggregateInputType(arguments[0].type) else { throw mismatch("statistic numeric input") }
+            arguments[0] = try coerce(arguments[0], to: input)
+            type = Self.numericKind(input) == .floating ? .sql(.doublePrecision) : .sql(.decimal(precision: nil, scale: nil))
+        case .corr, .covarPop, .covarSamp, .regrAvgx, .regrAvgy, .regrSxx, .regrSxy,
+             .regrSyy, .regrSlope, .regrIntercept, .regrR2: type = .sql(.doublePrecision)
+        case .percentileCont, .percentileDisc, .mode: type = .sql(.text)
+        }
+        if call.distinct {
+            for argument in arguments { try requireSQLComparison(argument.type, operation: "aggregate DISTINCT") }
+        }
+        var ordering: [CanonicalBoundKey] = []
+        for (index, key) in call.orderBy.enumerated() {
+            let input = try scoped.childBinder(.aggregateOrderBy, index).bind(key.expression)
+            try requireSQLComparison(input.type, operation: "aggregate ORDER BY")
+            var selected: Int?
+            for position in arguments.indices {
+                let left = CanonicalBoundKey(expression: arguments[position])
+                let right = CanonicalBoundKey(expression: input)
+                if try key.expression == call.arguments[position]
+                    || left.isSemanticallyEquivalent(to: right, workMeter: workMeter, isVolatileSubquery: { _ in true }) {
+                    selected = position
+                    break
+                }
+            }
+            guard !call.distinct || selected != nil else { throw mismatch("DISTINCT aggregate ORDER BY argument membership") }
+            try CanonicalBindingStorage.append(CanonicalBoundKey(expression: selected.map { arguments[$0] } ?? input,
+                projectionIndex: selected, sortKey: key, occurrence: input.occurrence), to: &ordering, reservation: claim)
+        }
+        let filter = try call.filter.map { try scoped.childBinder(.aggregateFilter).boolean($0) }
+        var within: [CanonicalBoundKey] = []
+        for (index, key) in (call.withinGroup ?? []).enumerated() {
+            let binder = scoped.childBinder(.aggregateWithinGroup, index)
+            var input = try binder.bind(key.expression, contextualType: call.function == .percentileCont ? .sql(.doublePrecision) : nil)
+            if call.function == .percentileCont {
+                if case .sql(.interval) = input.type { type = .sql(.interval()) }
+                else {
+                    guard Self.numericKind(input.type) != nil else { throw mismatch("PERCENTILE_CONT numeric or interval ordering") }
+                    input = try coerce(input, to: .sql(.doublePrecision))
+                    type = .sql(.doublePrecision)
+                }
+            } else { type = input.type }
+            try requireSQLComparison(input.type, operation: "WITHIN GROUP")
+            try CanonicalBindingStorage.append(CanonicalBoundKey(expression: input, sortKey: key), to: &within, reservation: claim)
+        }
+        if ordered, let fraction = arguments.first, Self.arrayElement(fraction.type) != nil {
+            type = .sql(.array(try sqlElement(type)))
+        }
+        var children: [CanonicalBoundExpression] = []
+        for argument in arguments { try CanonicalBindingStorage.append(argument, to: &children, reservation: claim) }
+        for key in ordering { try CanonicalBindingStorage.append(key.expression, to: &children, reservation: claim) }
+        if let filter { try CanonicalBindingStorage.append(filter, to: &children, reservation: claim) }
+        for key in within { try CanonicalBindingStorage.append(key.expression, to: &children, reservation: claim) }
+        let aggregate = CanonicalBoundAggregate(call: call, arguments: arguments,
+            directArguments: ordered ? arguments : [], orderBy: ordering, filter: filter, withinGroup: within)
+        try bindingMetadata.retain(claim)
+        successful = true
+        return node(.aggregate(.sql(call)), type, nullable, children, aggregate: aggregate)
+    }
+}
+
+extension CanonicalQueryTypeBinder {
+    func preparingWindows(_ definitions: [NamedWindow]) throws -> Self {
+        var scoped = self
+        scoped.windowDefinitions = []
+        let claim = try workMeter?.reserveIntermediate(bytes: UInt64(MemoryLayout<[CanonicalBoundWindowDefinition]>.stride), at: .bindingCandidate)
+        var successful = false
+        defer { if !successful { claim?.release() } }
+        for (index, definition) in definitions.enumerated() {
+            guard !scoped.windowDefinitions.contains(where: { $0.name == definition.name }) else {
+                throw mismatch("duplicate named window")
+            }
+            let selected = try scoped.childBinder(.namedWindow, index).childBinder(.windowReference)
+                .bindWindowSpecification(definition.specification, identity: index, name: definition.name)
+            try CanonicalBindingStorage.append(selected, to: &scoped.windowDefinitions, reservation: claim)
+        }
+        try bindingMetadata.retain(claim)
+        successful = true
+        return scoped
+    }
+
+    private func bindWindowSpecification(_ specification: WindowSpecification, identity: Int,
+        name: String = "") throws -> CanonicalBoundWindowDefinition {
+        var scoped = self
+        scoped.permitsWindows = false
+        let inherited: CanonicalBoundWindowDefinition?
+        if let inheritedName = specification.inheritedName {
+            guard let definition = windowDefinitions.first(where: { $0.name == inheritedName }) else {
+                throw mismatch("unknown or forward named window")
+            }
+            guard specification.partitionBy.isEmpty, definition.frame == nil,
+                  specification.orderBy.isEmpty || definition.orderBy.isEmpty else { throw mismatch("illegal named window copy") }
+            inherited = definition
+        } else { inherited = nil }
+        let claim = try workMeter?.reserveIntermediate(bytes: UInt64(MemoryLayout<CanonicalBoundWindowDefinition>.stride), at: .bindingCandidate)
+        var successful = false
+        defer { if !successful { claim?.release() } }
+        var partitions = inherited?.partitionBy ?? []
+        var ordering = inherited?.orderBy ?? []
+        for (index, expression) in specification.partitionBy.enumerated() {
+            let selected = try scoped.childBinder(.windowPartitionBy, index).bind(expression)
+            try requireSQLComparison(selected.type, operation: "window PARTITION BY")
+            try CanonicalBindingStorage.append(selected, to: &partitions, reservation: claim)
+        }
+        for (index, key) in specification.orderBy.enumerated() {
+            let selected = try scoped.childBinder(.windowOrderBy, index).bind(key.expression)
+            try requireSQLComparison(selected.type, operation: "window ORDER BY")
+            try CanonicalBindingStorage.append(CanonicalBoundKey(expression: selected, sortKey: key), to: &ordering, reservation: claim)
+        }
+        let frame = try specification.frame.map { try scoped.bindWindowFrame($0, orderBy: ordering) }
+        try bindingMetadata.retain(claim)
+        successful = true
+        return CanonicalBoundWindowDefinition(name: name, partitionBy: partitions,
+            orderBy: ordering, frame: frame, identity: identity)
+    }
+
+    private func bindWindowFrame(_ frame: WindowFrame, orderBy: [CanonicalBoundKey]) throws -> CanonicalBoundWindowFrame {
+        func position(_ bound: WindowFrameBound) -> Int {
+            switch bound {
+            case .unboundedPreceding: return 0
+            case .preceding: return 1
+            case .currentRow: return 2
+            case .following: return 3
+            case .unboundedFollowing: return 4
+            }
+        }
+        guard position(frame.start) != 4, position(frame.end) != 0,
+              position(frame.start) <= position(frame.end),
+              frame.mode != .groups || !orderBy.isEmpty else { throw mismatch("window frame bounds or GROUPS ordering") }
+        func offset(_ bound: WindowFrameBound, field: QueryOccurrenceField) throws -> CanonicalBoundExpression? {
+            let expression: Expression
+            switch bound {
+            case .preceding(let selected), .following(let selected): expression = selected
+            default: return nil
+            }
+            let target: QueryColumnType
+            switch frame.mode {
+            case .rows, .groups: target = .sql(.bigint)
+            case .range:
+                guard orderBy.count == 1 else { throw mismatch("RANGE offset requires one ORDER BY key") }
+                let type = orderBy[0].expression.type
+                if let scalar = Self.sqlScalar(type), Self.numericKind(type) != nil { target = .sql(scalar) }
+                else {
+                    switch type {
+                    case .sql(.date), .sql(.timestamp), .sql(.time(withTimeZone: false, precision: _)), .sql(.interval):
+                        target = .sql(.interval())
+                    default: throw mismatch("RANGE offset ordering type")
+                    }
+                }
+            }
+            var scoped = childBinder(field)
+            scoped.permitsWindows = false
+            scoped.permitsAggregates = false
+            let selected = try scoped.bindAssignment(expression, to: target)
+            let claim = try workMeter?.reserveIntermediate(bytes: UInt64(MemoryLayout<[CanonicalBoundExpression]>.stride), at: .bindingCandidate)
+            defer { claim?.release() }
+            var pending: [CanonicalBoundExpression] = []
+            try CanonicalBindingStorage.append(selected, to: &pending, reservation: claim)
+            while let node = pending.popLast() {
+                try workMeter?.consume(at: .bindingCandidate)
+                guard node.columnSlot == nil, node.wholeRow == nil, node.subqueryBinding == nil else {
+                    throw mismatch("window frame offset cannot reference a row or subquery")
+                }
+                switch node.expression {
+                case .aggregate, .window, .grouping, .subquery, .arraySubquery, .exists, .inSubquery:
+                    throw mismatch("window frame offset expression phase")
+                default: break
+                }
+                for child in node.children { try CanonicalBindingStorage.append(child, to: &pending, reservation: claim) }
+            }
+            return selected
+        }
+        return try CanonicalBoundWindowFrame(mode: frame.mode, start: frame.start, end: frame.end,
+            startOffset: offset(frame.start, field: .windowFrameStart),
+            endOffset: offset(frame.end, field: .windowFrameEnd), exclusion: frame.exclusion)
+    }
+
+    private func bindWindow(_ call: WindowCall, expression: Expression) throws -> CanonicalBoundExpression {
+        guard !allowingSPARQLFunctions else { throw mismatch("window expression in SPARQL") }
+        let reference = childBinder(.windowReference)
+        let definition: CanonicalBoundWindowDefinition
+        switch call.reference {
+        case .named(let name):
+            guard let selected = windowDefinitions.first(where: { $0.name == name }) else { throw mismatch("unknown named window") }
+            definition = selected
+        case .specification(let specification):
+            definition = try reference.bindWindowSpecification(specification,
+                identity: currentOccurrence.map { Int($0.rawValue) } ?? -1)
+        }
+        var scoped = childBinder(.windowFunction)
+        scoped.permitsWindows = false
+        let claim = try workMeter?.reserveIntermediate(bytes: CanonicalBoundWindow.storageByteCount
+            + UInt64(MemoryLayout<[CanonicalBoundExpression]>.stride), at: .bindingCandidate)
+        var successful = false
+        defer { if !successful { claim?.release() } }
+        let aggregate: CanonicalBoundExpression?
+        var arguments: [CanonicalBoundExpression] = []
+        let type: QueryColumnType
+        let nullable: Bool
+        switch call.function {
+        case .aggregate(let call):
+            let selected = try scoped.bindSQLAggregate(call, asWindow: true)
+            aggregate = selected
+            type = selected.type
+            nullable = selected.isNullable
+        case .analytic(let function, let inputs):
+            aggregate = nil
+            let arity: ClosedRange<Int>
+            switch function {
+            case .rowNumber, .rank, .denseRank, .percentRank, .cumeDist: arity = 0...0
+            case .ntile, .firstValue, .lastValue: arity = 1...1
+            case .nthValue: arity = 2...2
+            case .lag, .lead: arity = 1...3
+            }
+            guard arity.contains(inputs.count) else { throw mismatch("window function argument count") }
+            let navigationPair: [CanonicalBoundExpression]?
+            if [.lag, .lead].contains(function), inputs.count == 3 {
+                navigationPair = try scoped.bindCommon([inputs[0], inputs[2]], defaultType: .sql(.text),
+                    addresses: [scoped.childBinder(.argument, 0).currentOccurrence,
+                        scoped.childBinder(.argument, 2).currentOccurrence])
+            } else { navigationPair = nil }
+            for (index, input) in inputs.enumerated() {
+                let binder = scoped.childBinder(.argument, index)
+                let selected: CanonicalBoundExpression
+                if let pair = navigationPair, index == 0 || index == 2 {
+                    selected = pair[index == 0 ? 0 : 1]
+                } else if (function == .ntile && index == 0)
+                    || ([.lag, .lead, .nthValue].contains(function) && index == 1) {
+                    selected = try binder.bindAssignment(input, to: .sql(.integer))
+                } else { selected = try binder.bind(input) }
+                try CanonicalBindingStorage.append(selected, to: &arguments, reservation: claim)
+            }
+            switch function {
+            case .rowNumber, .rank, .denseRank: type = .sql(.bigint); nullable = false
+            case .percentRank, .cumeDist: type = .sql(.doublePrecision); nullable = false
+            case .ntile: type = .sql(.integer); nullable = true
+            case .lag, .lead:
+                if arguments.count == 3 {
+                    let selected = try commonType([arguments[0].type, arguments[2].type])
+                    arguments[0] = try coerce(arguments[0], to: selected)
+                    arguments[2] = try coerce(arguments[2], to: selected)
+                }
+                type = arguments[0].type
+                nullable = true
+            case .firstValue, .lastValue, .nthValue: type = arguments[0].type; nullable = true
+            }
+        }
+        var children: [CanonicalBoundExpression] = []
+        if let aggregate { try CanonicalBindingStorage.append(aggregate, to: &children, reservation: claim) }
+        for argument in arguments { try CanonicalBindingStorage.append(argument, to: &children, reservation: claim) }
+        for key in definition.partitionBy { try CanonicalBindingStorage.append(key, to: &children, reservation: claim) }
+        for key in definition.orderBy { try CanonicalBindingStorage.append(key.expression, to: &children, reservation: claim) }
+        if let offset = definition.frame?.startOffset { try CanonicalBindingStorage.append(offset, to: &children, reservation: claim) }
+        if let offset = definition.frame?.endOffset { try CanonicalBindingStorage.append(offset, to: &children, reservation: claim) }
+        let selected = CanonicalBoundWindow(call: call, arguments: arguments, aggregate: aggregate,
+            partitionBy: definition.partitionBy, orderBy: definition.orderBy, frame: definition.frame,
+            identity: definition.identity)
+        try bindingMetadata.retain(claim)
+        successful = true
+        return node(expression, type, nullable, children, window: selected)
+    }
+}
+
+extension CanonicalQueryTypeBinder {
+    /// Checks the current scalar scope without imposing SQL value adaptation.
+    func requireScalarPhase(_ expression: Expression) throws {
+        let claim = try workMeter?.reserveIntermediate(bytes: UInt64(MemoryLayout<[Expression]>.stride), at: .bindingCandidate)
+        defer { claim?.release() }
+        var pending: [Expression] = []
+        func append(_ expression: Expression) throws {
+            try CanonicalBindingStorage.append(expression, to: &pending, reservation: claim)
+        }
+        try append(expression)
+        while let expression = pending.popLast() {
+            try workMeter?.consume(at: .bindingCandidate)
+            switch expression {
+            case .aggregate, .window, .grouping:
+                throw mismatch("aggregate, GROUPING or window in scalar assignment")
+            case .add(let left, let right), .subtract(let left, let right), .multiply(let left, let right),
+                 .divide(let left, let right), .modulo(let left, let right), .concatenate(let left, let right),
+                 .equal(let left, let right), .notEqual(let left, let right), .lessThan(let left, let right),
+                 .lessThanOrEqual(let left, let right), .greaterThan(let left, let right),
+                 .greaterThanOrEqual(let left, let right), .and(let left, let right), .or(let left, let right),
+                 .nullIf(let left, let right), .isDistinctFrom(let left, let right, _),
+                 .collectionOperation(_, let left, let right):
+                try append(right)
+                try append(left)
+            case .negate(let operand), .not(let operand), .isNull(let operand), .isNotNull(let operand),
+                 .cast(let operand, _), .collate(let operand, _), .field(let operand, _), .fieldExpansion(let operand),
+                 .truthTest(let operand, _, _), .regex(let operand, _, _), .isTriple(let operand),
+                 .subject(let operand), .predicate(let operand), .object(let operand), .inSubquery(let operand, _):
+                try append(operand)
+            case .array(let children), .row(let children), .coalesce(let children), .greatest(let children), .least(let children):
+                for child in children.reversed() { try append(child) }
+            case .function(let function):
+                for child in function.arguments.reversed() { try append(child) }
+            case .inList(let operand, let children), .notInList(let operand, let children):
+                for child in children.reversed() { try append(child) }
+                try append(operand)
+            case .between(let operand, let lower, let upper):
+                try append(upper)
+                try append(lower)
+                try append(operand)
+            case .patternMatch(let subject, let pattern, let escape, _):
+                if let escape { try append(escape) }
+                try append(pattern)
+                try append(subject)
+            case .quantifiedComparison(let operand, _, _, let source):
+                if case .array(let array) = source { try append(array) }
+                try append(operand)
+            case .arrayAccess(let base, let subscripts):
+                for subscriptValue in subscripts.reversed() {
+                    switch subscriptValue {
+                    case .index(let value): try append(value)
+                    case .slice(let lower, let upper):
+                        if let upper { try append(upper) }
+                        if let lower { try append(lower) }
+                    }
+                }
+                try append(base)
+            case .caseWhen(let operand, let pairs, let fallback):
+                if let fallback { try append(fallback) }
+                for pair in pairs.reversed() { try append(pair.result); try append(pair.condition) }
+                if let operand { try append(operand) }
+            case .triple(let subject, let predicate, let object):
+                try append(object)
+                try append(predicate)
+                try append(subject)
+            case .subquery, .arraySubquery, .exists:
+                // A child SELECT owns its own aggregate and analytic phase.
+                break
+            case .literal, .currentValue, .wholeRow, .column, .variable, .parameter, .bound: break
+            }
+        }
     }
 }

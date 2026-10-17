@@ -62,6 +62,20 @@ extension CanonicalBoundKey {
         workMeter: DatabaseWorkMeter?) throws -> Bool {
         switch (left.expression, right.expression) {
         case (.column, .column): return false // A selected column must have a resolved slot.
+        case (.window, .window):
+            guard let lhs = left.window, let rhs = right.window else { return false }
+            return lhs === rhs
+        case (.grouping, .grouping): return true
+        case (.aggregate(.sql(let lhs)), .aggregate(.sql(let rhs))):
+            guard lhs.function == rhs.function, lhs.distinct == rhs.distinct,
+                  lhs.arguments.count == rhs.arguments.count, (lhs.filter == nil) == (rhs.filter == nil),
+                  (lhs.withinGroup == nil) == (rhs.withinGroup == nil),
+                  try sameOptionalName(lhs.schema, rhs.schema, workMeter: workMeter) else { return false }
+            func sameKeys(_ lhs: [SortKey], _ rhs: [SortKey]) -> Bool {
+                guard lhs.count == rhs.count else { return false }
+                return lhs.indices.allSatisfy { lhs[$0].direction == rhs[$0].direction && lhs[$0].nulls == rhs[$0].nulls }
+            }
+            return sameKeys(lhs.orderBy, rhs.orderBy) && sameKeys(lhs.withinGroup ?? [], rhs.withinGroup ?? [])
         case (.add, .add), (.subtract, .subtract), (.multiply, .multiply), (.divide, .divide),
              (.modulo, .modulo), (.concatenate, .concatenate), (.negate, .negate),
              (.equal, .equal), (.notEqual, .notEqual), (.lessThan, .lessThan),

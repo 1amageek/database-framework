@@ -386,7 +386,7 @@ struct CanonicalSQLRetainedOwnershipTests {
         )
         let query = SelectQuery(projection: [.wildcard()],
             source: .values([[.literal(.string("books"))]]),
-            groupBy: [.column(ColumnRef("column1"))])
+            groupBy: [.expression(.column(ColumnRef("column1")))])
 
         do {
             _ = try await container.testBaseContext().queryRetained(
@@ -954,7 +954,7 @@ struct CanonicalSQLRetainedOwnershipTests {
                     alias: "joined"
                 ),
             ],
-            source: .aliased(.values([[.literal(.string("first"))], [.literal(.string("second"))]]), name: "values", columns: ["value"]))
+            source: .aliased(.values([[.literal(.string("first"))], [.literal(.string("second"))], [.literal(.null)]]), name: "values", columns: ["value"]))
 
         let retained = try await container.testBaseContext().queryRetained(
             query,
@@ -964,13 +964,17 @@ struct CanonicalSQLRetainedOwnershipTests {
         #expect(meter.retainedIntermediateBytes > 0)
         let response = try retained.promoteToPublicResponse()
         #expect(response.rows.count == 1)
-        #expect(
-            (try response.rows[0].primitiveFields(columns: response.columns))["values"]
-                == .array([.string("first"), .string("second")])
-        )
-        #expect((try response.rows[0].primitiveFields(columns: response.columns))["joined"] == .string("first|second"))
         #expect(meter.retainedIntermediateRows == 0)
         #expect(meter.retainedIntermediateBytes == 0)
+        #expect(response.columns.map(\.type) == [.sql(.array(.text)), .sql(.text)])
+        guard case .array(let values) = response.rows[0].values[0] else {
+            Issue.record("Expected promoted ARRAY_AGG SQL array output")
+            return
+        }
+        #expect(values.elementType == .text)
+        #expect(Array(values.dimensions) == [try QueryArrayDimension(lowerBound: 1, length: 3)])
+        #expect(Array(values.elements) == [.primitive(.string("first")), .primitive(.string("second")), .primitive(.null)])
+        #expect(response.rows[0].values[1] == .primitive(.string("first|second")))
     }
 
     @Test("IN subquery keeps its candidate across a nested await")

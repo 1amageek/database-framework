@@ -598,7 +598,7 @@ struct SPARQLParserStrictnessTests {
         let query = try SPARQLParser().parseSelect(
             "SELECT ?key WHERE { ?s <urn:p> ?o } GROUP BY (STR(?s) AS ?key)"
         )
-        #expect(query.groupBy == [.variable(Variable("key"))])
+        #expect(query.groupBy == [.expression(.variable(Variable("key")))])
         guard case .graphPattern(
             .bind(_, variable: let alias, expression: _)
         ) = query.source else {

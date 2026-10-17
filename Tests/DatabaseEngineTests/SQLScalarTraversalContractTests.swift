@@ -63,6 +63,28 @@ struct SQLScalarTraversalContractTests {
             visitTable: { table, _ in _ = collectionSources.insert(table.table) },
             visitPolymorphic: { _, _ in Issue.record("Unexpected polymorphic source") })
         #expect(collectionSources == ["ArraySource", "IndexSource", "UpperSource", "LowerSource", "PathSource"])
+        let aggregate = SQLAggregateCall(function: .stringAgg,
+            arguments: [nested("AggregateArgument"), nested("AggregateDelimiter")],
+            orderBy: [SortKey(nested("AggregateOrder"))], filter: nested("AggregateFilter"),
+            withinGroup: [SortKey(nested("AggregateWithin"))])
+        let window = Expression.window(WindowCall(function: .aggregate(aggregate),
+            reference: .specification(WindowSpecification(
+                partitionBy: [nested("WindowPartition")], orderBy: [SortKey(nested("WindowOrder"))],
+                frame: WindowFrame(mode: .rows, start: .preceding(nested("WindowStart")),
+                    end: .following(nested("WindowEnd")))))))
+        let grouped = SelectQuery(projection: [ProjectionItem(window)], source: .values([[]]),
+            groupBy: [.groupingSets([[.rollup([[nested("GroupingUnit")]])]])],
+            windows: [NamedWindow(name: "named", specification: WindowSpecification(
+                partitionBy: [nested("NamedPartition")], orderBy: [SortKey(nested("NamedOrder"))],
+                frame: WindowFrame(mode: .groups, start: .preceding(nested("NamedStart")), end: .currentRow)))])
+        #expect(try FusionSelectQueryGraphWalker.containsNestedQuery(in: window, workMeter: meter))
+        var aggregateSources = Set<String>()
+        try FusionSelectQueryGraphWalker.forEachQuery(in: grouped, workMeter: meter, { _ in },
+            visitTable: { table, _ in _ = aggregateSources.insert(table.table) },
+            visitPolymorphic: { _, _ in Issue.record("Unexpected polymorphic source") })
+        #expect(aggregateSources == ["AggregateArgument", "AggregateDelimiter", "AggregateOrder", "AggregateFilter",
+            "AggregateWithin", "WindowPartition", "WindowOrder", "WindowStart", "WindowEnd", "GroupingUnit",
+            "NamedPartition", "NamedOrder", "NamedStart"])
         #expect(meter.retainedIntermediateRows == 0)
         #expect(meter.retainedIntermediateBytes == 0)
     }

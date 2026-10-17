@@ -191,6 +191,7 @@ fileprivate struct EntityIndexReadRuntime: Sendable {
 
 public struct EntityRuntimeDefinition: Sendable {
     public let entity: Schema.Entity
+    private let groupingIdentityFields: [String]?
 
     private var indexReaders: [IndexType: EntityIndexReadRuntime]
     private var indexProviders: [IndexType: any EntityIndexProvider]
@@ -211,6 +212,7 @@ public struct EntityRuntimeDefinition: Sendable {
         )
         let compiledIndexDescriptors = entity.indexDescriptors
         self.entity = entity
+        self.groupingIdentityFields = ["id"] + entity.dynamicFieldNames.filter { $0 != "id" }
         self.indexReaders = [:]
         self.indexProviders = [:]
         let canonicalSchemas = entity.fields.sorted(by: {
@@ -341,6 +343,7 @@ public struct EntityRuntimeDefinition: Sendable {
             ($0.fieldNumber, $0.name) < ($1.fieldNumber, $1.name)
         })
         self.entity = entity
+        self.groupingIdentityFields = nil
         self.indexReaders = [:]
         self.indexProviders = [:]
         self.canonicalizeStoredModel = { model, reservation, workMeter, stage in
@@ -455,6 +458,7 @@ public struct EntityRuntimeDefinition: Sendable {
         let compiledIndexDescriptors = entity.indexDescriptors
         return EntityRuntimeRegistration(
             entity: entity,
+            groupingIdentityFields: groupingIdentityFields,
             indexReaders: indexReaders,
             indexProviders: indexProviders,
             canonicalizeStoredModel: canonicalizeStoredModel,
@@ -1581,6 +1585,8 @@ private func makeCanonicalEntityIndex(
 
 public struct EntityRuntimeRegistration: Sendable {
     public let entity: Schema.Entity
+    /// Static adapter identity used to prove base-source grouping dependencies.
+    let groupingIdentityFields: [String]?
     private let indexProviders: [IndexType: EntityIndexProviderDescriptor]
 
     private let indexReaders: [IndexType: EntityIndexReadRuntime]
@@ -1663,6 +1669,7 @@ public struct EntityRuntimeRegistration: Sendable {
 
     fileprivate init(
         entity: Schema.Entity,
+        groupingIdentityFields: [String]?,
         indexReaders: [IndexType: EntityIndexReadRuntime],
         indexProviders: [IndexType: any EntityIndexProvider],
         canonicalizeStoredModel: @escaping CanonicalizeStoredModel,
@@ -1676,6 +1683,7 @@ public struct EntityRuntimeRegistration: Sendable {
         finalizeIndex: @escaping FinalizeIndex
     ) {
         self.entity = entity
+        self.groupingIdentityFields = groupingIdentityFields
         self.indexReaders = indexReaders
         self.indexProviders = indexProviders.mapValues {
             EntityIndexProviderDescriptor($0)

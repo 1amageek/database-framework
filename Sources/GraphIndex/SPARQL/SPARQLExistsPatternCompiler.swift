@@ -10,6 +10,7 @@ enum SPARQLExistsPatternCompiler {
               query.accessPath == nil,
               query.groupBy == nil,
               query.having == nil,
+              query.windows.isEmpty,
               query.orderBy == nil,
               query.pagination.limit == nil,
               query.pagination.offset == nil,

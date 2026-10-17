@@ -19,12 +19,21 @@ and `.assignment` context, then adapts the converted value at the existing
 persisted-model boundary. Mutation does not implement text, numeric, byte or
 UUID conversion algorithms.
 
+S09 assignment preparation calls `CanonicalQueryTypeBinder.requireScalarPhase`
+for every persisted target before selecting canonical or generic value adaptation.
+It then uses `bindScalarAssignment` for canonical scalar conversion. The phase
+check rejects aggregate, GROUPING and window expressions in the current scalar
+scope before UPDATE scanning or INSERT conflict lookup, including an empty
+source, and stops at a child SELECT boundary. QueryExecution owns that scalar-phase check and its typed failure;
+Mutation supplies the persisted field declaration. This does not change the
+existing statement forms or row-dependent scalar conversion behavior.
+
 ## Related Designs
 
 | Design | Relationship | Contract Used | Summary | Cautions |
 |---|---|---|---|---|
 | [DatabaseEngine](../DESIGN.md) | parent | Transaction execution authority and prepared mutation scan handoff | Composes prepared changes and admits scan destinations. | Keep temporary payload owners through destination admission; success requires authoritative close. |
-| [QueryExecution](../QueryExecution/DESIGN.md) | depends on | `CanonicalQueryTypeBinder.bindAssignment`, `DatabaseContext.evaluateCanonicalScalar`, bounded value footprints | Binds compiled target assignments and converts selected scalar values. | Pass `.assignment`; retain generated payload claims until the prepared change admits its destination. Synthetic query rows confer no mutation authority. |
+| [QueryExecution](../QueryExecution/DESIGN.md) | depends on | `CanonicalQueryTypeBinder.requireScalarPhase`, `bindScalarAssignment`, `DatabaseContext.evaluateCanonicalScalar`, bounded value footprints | Binds compiled target assignments and converts selected scalar values. | Pass `.assignment`; retain generated payload claims until the prepared change admits its destination. Synthetic query rows confer no mutation authority. |
 | [Kit Model](../../../../database-kit/Sources/DatabaseKit/Model/DESIGN.md) | depends on | PersistableEncodingError | Preserves typed query-value causes. | Rich meaning requires a declared descriptor. |
 
 ## Architecture

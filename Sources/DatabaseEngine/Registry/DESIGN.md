@@ -165,3 +165,27 @@ before comparing the fingerprint; dropping queryType is therefore a catalog
 correctness failure. SQLiteStorageTests.richValuesSurviveSQLiteRestart checks
 descriptor and manifest identity across direct catalog codec round-trip, then
 requires the real file-backed container reopen and rich data reload to succeed.
+
+
+### S09 static identity provenance
+
+The generic `EntityRuntimeDefinition.init<Model: Persistable>` is the sole
+source of the optional immutable `groupingIdentityFields` witness consumed by
+QueryExecution. Its static model adapter resolves the same logical identity as
+`EntityReferenceEncoder`: the declared `id` plus dynamic Directory fields.
+The witness is a capability of that admitted adapter, not an inference from a
+source column named id. A schema-driven registration supplies no witness until
+its future catalog owner establishes the corresponding primary-key contract.
+
+The container/schema generation owns the witness with the registration. It
+contains only field names and no callback, transaction or request state.
+QueryExecution maps the complete witness to slots of one base-table source and
+may preserve the mapping through a pure alias; it discards it across unproven
+relational transformations. An absent witness or any omitted key yields the
+normal typed nongrouped-column rejection. Dynamic Directory fields prevent an
+identifier repeated across partitions from becoming an unsound dependency.
+
+Public SQL tests group a statically registered entity by the full identity,
+reject a partial dynamic identity and reject derived-source inference. The
+same tests retain ordinary identity lookup/write behavior. No synchronization
+or platform capability changes; new storage is immutable on every target.

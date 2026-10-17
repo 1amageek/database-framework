@@ -494,6 +494,9 @@ extension SQLTextWriter {
         case .inSubquery(let value, let query):
             try append("("); try expression(value); try append(" IN ("); try select(query); try append("))")
         case .aggregate(let value): try aggregate(value)
+        case .grouping(let values):
+            try append("GROUPING("); try list(values) { (writer: inout SQLTextWriter, value: Expression) throws(SQLSerializationError) -> Void in try writer.expression(value) }; try append(")")
+        case .window(let call): try window(call)
         case .function(let call):
             guard !(call.distinct || call.finalArrayIsVariadic) || !call.arguments.isEmpty else { throw .invalidStructure("Generic DISTINCT/VARIADIC call requires arguments") }
             if let schema = call.schema { try identifier(schema); try append(".") }
@@ -579,6 +582,7 @@ extension SQLTextWriter {
         let distinct: Bool
         let order: [SortKey]?
         switch aggregate {
+        case .sql(let call): try sqlAggregate(call); return
         case .count(let expression, let flag): name = "COUNT"; value = expression; distinct = flag; order = nil
         case .sum(let expression, let flag): name = "SUM"; value = expression; distinct = flag; order = nil
         case .avg(let expression, let flag): name = "AVG"; value = expression; distinct = flag; order = nil
@@ -671,7 +675,7 @@ extension SQLTextWriter {
         }
         if case .setOperation(let operation, let quantifier, let left, let right) = query.source {
             guard query.projection == [.wildcard()], query.quantifier == .all,
-                  query.filter == nil, query.groupBy == nil, query.having == nil else {
+                  query.filter == nil, query.groupBy == nil, query.having == nil, query.windows.isEmpty else {
                 throw .invalidStructure("Invalid set query envelope")
             }
             try append("("); try select(left); try append(") ")
@@ -681,7 +685,7 @@ extension SQLTextWriter {
         } else if allowsValuesQuery, case .values(let rows) = query.source,
                   !rows.isEmpty, rows.first?.isEmpty == false,
                   query.projection == [.wildcard()], query.quantifier == .all,
-                  query.filter == nil, query.groupBy == nil, query.having == nil {
+                  query.filter == nil, query.groupBy == nil, query.having == nil, query.windows.isEmpty {
             try values(rows, parenthesized: false)
         } else {
             try append("SELECT ")
@@ -699,8 +703,18 @@ extension SQLTextWriter {
                 try append(" FROM "); try source(query.source)
             }
             if let filter = query.filter { try append(" WHERE "); try expression(filter) }
-            if let group = query.groupBy, !group.isEmpty { try append(" GROUP BY "); try list(group) { (writer: inout SQLTextWriter, value: Expression) throws(SQLSerializationError) -> Void in try writer.outputReference(value) } }
+            if let group = query.groupBy {
+                try append(" GROUP BY ")
+                if group.isEmpty { try append("()") }
+                else { try list(group) { (writer: inout SQLTextWriter, value: GroupingElement) throws(SQLSerializationError) -> Void in try writer.grouping(value) } }
+            }
             if let having = query.having { try append(" HAVING "); try expression(having) }
+            if !query.windows.isEmpty {
+                try append(" WINDOW ")
+                try list(query.windows) { (writer: inout SQLTextWriter, window: NamedWindow) throws(SQLSerializationError) -> Void in
+                    try writer.identifier(window.name); try writer.append(" AS "); try writer.windowSpecification(window.specification)
+                }
+            }
         }
         if let order = query.orderBy, !order.isEmpty { try append(" ORDER BY "); try sorts(order, outputReferences: true) }
         try pagination(query.pagination)
@@ -864,5 +878,119 @@ extension SQLTextWriter {
 
     private mutating func returning(_ items: [ProjectionItem]?) throws(SQLSerializationError) {
         if let items { try append(" RETURNING "); try projectionItems(items) }
+    }
+}
+
+extension SQLTextWriter {
+    mutating func grouping(_ element: GroupingElement) throws(SQLSerializationError) {
+        try enter(); defer { depth -= 1 }
+        switch element {
+        case .expression(let value): try outputReference(value)
+        case .rollup(let components), .cube(let components):
+            guard !components.isEmpty else { throw .unsupportedMetadata("Empty ROLLUP/CUBE has no SQL spelling") }
+            if case .rollup = element { try append("ROLLUP(") } else { try append("CUBE(") }
+            try list(components) { (writer: inout SQLTextWriter, expressions: [Expression]) throws(SQLSerializationError) -> Void in
+                guard !expressions.isEmpty else { throw .unsupportedMetadata("Empty ROLLUP/CUBE component has no SQL spelling") }
+                try writer.append("(")
+                try writer.list(expressions) { (writer: inout SQLTextWriter, value: Expression) throws(SQLSerializationError) -> Void in try writer.outputReference(value) }
+                try writer.append(")")
+            }
+            try append(")")
+        case .groupingSets(let sets):
+            guard !sets.isEmpty else { throw .unsupportedMetadata("Empty GROUPING SETS has no SQL spelling") }
+            try append("GROUPING SETS (")
+            try list(sets) { (writer: inout SQLTextWriter, elements: [GroupingElement]) throws(SQLSerializationError) -> Void in
+                if elements.count == 1, let only = elements.first {
+                    switch only {
+                    case .rollup, .cube, .groupingSets:
+                        try writer.collection(elements.count)
+                        try writer.grouping(only)
+                        return
+                    case .expression: break
+                    }
+                }
+                guard elements.allSatisfy({ if case .expression = $0 { return true }; return false }) else {
+                    throw .unsupportedMetadata("Compound grouping-set members require scalar expressions")
+                }
+                try writer.append("(")
+                try writer.list(elements) { (writer: inout SQLTextWriter, value: GroupingElement) throws(SQLSerializationError) -> Void in try writer.grouping(value) }
+                try writer.append(")")
+            }
+            try append(")")
+        }
+    }
+
+    mutating func sqlAggregate(_ call: SQLAggregateCall) throws(SQLSerializationError) {
+        try enter(); defer { depth -= 1 }
+        if let schema = call.schema { try identifier(schema); try append(".") }
+        try identifier(call.function.rawValue); try append("(")
+        if call.distinct { try append("DISTINCT ") }
+        if call.function == .count && call.arguments.isEmpty {
+            guard !call.distinct else { throw .invalidStructure("COUNT(DISTINCT *) is invalid SQL") }
+            try append("*")
+        } else {
+            try list(call.arguments) { (writer: inout SQLTextWriter, value: Expression) throws(SQLSerializationError) -> Void in try writer.expression(value) }
+        }
+        if !call.orderBy.isEmpty { try append(" ORDER BY "); try sorts(call.orderBy) }
+        try append(")")
+        if let order = call.withinGroup {
+            guard !order.isEmpty else { throw .invalidStructure("WITHIN GROUP requires sort keys") }
+            try append(" WITHIN GROUP (ORDER BY "); try sorts(order); try append(")")
+        }
+        if let filter = call.filter { try append(" FILTER (WHERE "); try expression(filter); try append(")") }
+    }
+
+    mutating func window(_ call: WindowCall) throws(SQLSerializationError) {
+        switch call.function {
+        case .aggregate(let aggregate): try sqlAggregate(aggregate)
+        case .analytic(let function, let arguments):
+            try identifier(function.rawValue); try append("(")
+            try list(arguments) { (writer: inout SQLTextWriter, value: Expression) throws(SQLSerializationError) -> Void in try writer.expression(value) }
+            try append(")")
+        }
+        try append(" OVER ")
+        switch call.reference {
+        case .named(let name): try identifier(name)
+        case .specification(let specification): try windowSpecification(specification)
+        }
+    }
+
+    mutating func windowSpecification(_ specification: WindowSpecification) throws(SQLSerializationError) {
+        try enter(); defer { depth -= 1 }
+        try append("(")
+        var separated = false
+        if let name = specification.inheritedName { try identifier(name); separated = true }
+        if !specification.partitionBy.isEmpty {
+            if separated { try append(" ") }
+            try append("PARTITION BY ")
+            try list(specification.partitionBy) { (writer: inout SQLTextWriter, value: Expression) throws(SQLSerializationError) -> Void in try writer.expression(value) }
+            separated = true
+        }
+        if !specification.orderBy.isEmpty {
+            if separated { try append(" ") }
+            try append("ORDER BY "); try sorts(specification.orderBy); separated = true
+        }
+        if let frame = specification.frame {
+            if separated { try append(" ") }
+            switch frame.mode { case .rows: try append("ROWS"); case .range: try append("RANGE"); case .groups: try append("GROUPS") }
+            try append(" BETWEEN "); try frameBound(frame.start); try append(" AND "); try frameBound(frame.end)
+            switch frame.exclusion {
+            case .noOthers: break
+            case .currentRow: try append(" EXCLUDE CURRENT ROW")
+            case .group: try append(" EXCLUDE GROUP")
+            case .ties: try append(" EXCLUDE TIES")
+            }
+        }
+        try append(")")
+    }
+
+    private mutating func frameBound(_ bound: WindowFrameBound) throws(SQLSerializationError) {
+        switch bound {
+        case .unboundedPreceding: try append("UNBOUNDED PRECEDING")
+        case .unboundedFollowing: try append("UNBOUNDED FOLLOWING")
+        case .currentRow: try append("CURRENT ROW")
+        case .preceding(let offset): try append("("); try expression(offset); try append(") PRECEDING")
+        case .following(let offset): try append("("); try expression(offset); try append(") FOLLOWING")
+        }
     }
 }

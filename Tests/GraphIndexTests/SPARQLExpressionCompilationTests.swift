@@ -5,6 +5,64 @@ import Testing
 
 @Suite("SPARQL expression compilation", .heartbeat)
 struct SPARQLExpressionCompilationTests {
+    @Test("SQL aggregates, grouping and windows fail every SPARQL expression admission")
+    func sqlAggregateAndWindowBoundary() throws {
+        let call = SQLAggregateCall(function: .count, arguments: [], filter: .literal(.bool(false)))
+        let expressions: [(Expression, String)] = [
+            (.aggregate(.sql(call)), "SQL aggregate"),
+            (.grouping([.variable(Variable("value"))]), "SQL grouping or window expression"),
+            (.window(WindowCall(function: .aggregate(call), reference: .specification(WindowSpecification()))),
+                "SQL grouping or window expression"),
+            (.window(WindowCall(function: .analytic(.rowNumber, arguments: []), reference: .named("window"))),
+                "SQL grouping or window expression"),
+        ]
+        for (expression, reason) in expressions {
+            let expected = SPARQLExpressionCompilationError.unsupportedExpression(reason)
+            #expect(throws: expected) { try SPARQLExpressionValidator.validate(expression) }
+            var aggregate = SPARQLAggregateRewriter()
+            #expect(throws: expected) { try aggregate.rewrite(expression) }
+            var grouped = SPARQLGroupedExpressionBindings()
+            grouped.insert(variable: "alias", for: expression)
+            var scope = SPARQLGroupScopeExpressionRewriter(groupedExpressions: grouped,
+                directlyGroupedVariables: [], eligibleVariables: [], protectedVariables: [])
+            #expect(throws: expected) { try scope.rewrite(expression, aggregateRewriter: &aggregate) }
+            #expect(throws: SPARQLExpressionEvaluationError.self) {
+                try ExpressionEvaluator.evaluate(expression, binding: VariableBinding())
+            }
+        }
+        #expect(throws: SPARQLExpressionCompilationError.unsupportedExpression("SQL aggregate")) {
+            try SPARQLExpressionValidator.validateAggregate(.sql(call))
+        }
+        // Generic graph COUNT retains its existing aggregate translation.
+        let generic = AggregateFunction.count(nil, distinct: false)
+        try SPARQLExpressionValidator.validateAggregate(generic)
+        var rewriter = SPARQLAggregateRewriter()
+        _ = try rewriter.rewrite(.aggregate(generic))
+        #expect(rewriter.aggregateBindings.count == 1)
+        #expect(rewriter.aggregateBindings[0].aggregate == generic)
+    }
+
+    @Test("SPARQL accepts expression grouping and rejects SQL grouping trees and named windows")
+    func sqlGroupingTreeAndNamedWindowBoundary() throws {
+        let key = Expression.variable(Variable("value"))
+        let query = SelectQuery(projection: [.expression(.aggregate(.count(nil, distinct: false)), alias: "count")],
+            source: .graphPattern(.basic([])))
+        for elements: [GroupingElement] in [
+            [.rollup([[key]])], [.cube([[key]])], [.groupingSets([[], [.expression(key)]])],
+        ] {
+            #expect(throws: SPARQLSemanticValidationError.unsupportedSQLExpression) {
+                try SPARQLSelectPlanCompiler.compile(query.replacing(groupBy: elements))
+            }
+        }
+        #expect(throws: SPARQLSemanticValidationError.unsupportedSQLExpression) {
+            try SPARQLSelectPlanCompiler.compile(query.replacing(windows: [NamedWindow(name: "named",
+                specification: WindowSpecification())]))
+        }
+        // A constant key is valid even with the empty graph input.
+        let grouped = query.replacing(groupBy: [.expression(.literal(.int(1)))])
+        _ = try SPARQLSelectPlanCompiler.compile(grouped)
+    }
+
     @Test("SQL-qualified function identity survives rewriting and fails SPARQL compilation")
     func qualifiedFunctionsRemainUnsupported() throws {
         let expression = Expression.function(

@@ -603,7 +603,7 @@ struct SelectQuerySPARQLSerializationTests {
         let query = SelectQuery(
             projection: [ProjectionItem(.variable(Variable("x")))],
             source: .graphPattern(GraphPattern.basic([])),
-            groupBy: [.variable(Variable("x"))]
+            groupBy: [.expression(.variable(Variable("x")))]
         )
 
         let sparql = try query.toSPARQL()
@@ -615,7 +615,7 @@ struct SelectQuerySPARQLSerializationTests {
         let query = SelectQuery(
             projection: [ProjectionItem(.variable(Variable("x")))],
             source: .graphPattern(GraphPattern.basic([])),
-            groupBy: [.variable(Variable("x"))],
+            groupBy: [.expression(.variable(Variable("x")))],
             having: .greaterThan(
                 .aggregate(.count(nil, distinct: false)),
                 .literal(.int(5))

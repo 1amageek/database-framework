@@ -12,7 +12,8 @@ public struct SQLQueryBuilder: Sendable {
     private var projection: [ProjectionItem]
     private var source: DataSource
     private var filter: Expression?
-    private var groupByExprs: [Expression]?
+    private var groupByExprs: [GroupingElement]?
+    private var windows: [NamedWindow] = []
     private var havingExpr: Expression?
     private var orderByKeys: [SortKey]?
     private var pagination: QueryPagination
@@ -414,14 +415,14 @@ extension SQLQueryBuilder {
     /// Group by columns
     public func groupBy(_ columns: String...) -> SQLQueryBuilder {
         var builder = self
-        builder.groupByExprs = columns.map { .column(ColumnRef(column: $0)) }
+        builder.groupByExprs = columns.map { .expression(.column(ColumnRef(column: $0))) }
         return builder
     }
 
     /// Group by expressions
     public func groupBy(_ expressions: Expression...) -> SQLQueryBuilder {
         var builder = self
-        builder.groupByExprs = expressions
+        builder.groupByExprs = expressions.map(GroupingElement.expression)
         return builder
     }
 
@@ -531,6 +532,7 @@ extension SQLQueryBuilder {
             filter: filter,
             groupBy: groupByExprs,
             having: havingExpr,
+            windows: windows,
             orderBy: orderByKeys,
             quantifier: quantifier,
             pagination: pagination,
@@ -550,7 +552,7 @@ extension SQLQueryBuilder {
     /// Count rows
     public func count() -> SQLQueryBuilder {
         var builder = self
-        builder.projection = [ProjectionItem(.aggregate(.count(nil, distinct: false)), alias: "count")]
+        builder.projection = [ProjectionItem(.aggregate(.sql(SQLAggregateCall(function: .count, arguments: []))), alias: "count")]
         return builder
     }
 
@@ -558,7 +560,7 @@ extension SQLQueryBuilder {
     public func sum(_ column: String) -> SQLQueryBuilder {
         var builder = self
         builder.projection = [ProjectionItem(
-            .aggregate(.sum(.column(ColumnRef(column: column)), distinct: false)),
+            .aggregate(.sql(SQLAggregateCall(function: .sum, arguments: [.column(ColumnRef(column: column))]))),
             alias: "sum"
         )]
         return builder
@@ -568,7 +570,7 @@ extension SQLQueryBuilder {
     public func avg(_ column: String) -> SQLQueryBuilder {
         var builder = self
         builder.projection = [ProjectionItem(
-            .aggregate(.avg(.column(ColumnRef(column: column)), distinct: false)),
+            .aggregate(.sql(SQLAggregateCall(function: .avg, arguments: [.column(ColumnRef(column: column))]))),
             alias: "avg"
         )]
         return builder
@@ -578,7 +580,7 @@ extension SQLQueryBuilder {
     public func max(_ column: String) -> SQLQueryBuilder {
         var builder = self
         builder.projection = [ProjectionItem(
-            .aggregate(.max(.column(ColumnRef(column: column)))),
+            .aggregate(.sql(SQLAggregateCall(function: .max, arguments: [.column(ColumnRef(column: column))]))),
             alias: "max"
         )]
         return builder
@@ -588,9 +590,26 @@ extension SQLQueryBuilder {
     public func min(_ column: String) -> SQLQueryBuilder {
         var builder = self
         builder.projection = [ProjectionItem(
-            .aggregate(.min(.column(ColumnRef(column: column)))),
+            .aggregate(.sql(SQLAggregateCall(function: .min, arguments: [.column(ColumnRef(column: column))]))),
             alias: "min"
         )]
+        return builder
+    }
+}
+
+
+extension SQLQueryBuilder {
+    /// Sets the semantic grouping elements, preserving compound units and empty sets.
+    public func groupBy(elements: [GroupingElement]) -> SQLQueryBuilder {
+        var builder = self
+        builder.groupByExprs = elements
+        return builder
+    }
+
+    /// Sets named window definitions without expanding their references.
+    public func window(_ definitions: NamedWindow...) -> SQLQueryBuilder {
+        var builder = self
+        builder.windows = definitions
         return builder
     }
 }

@@ -341,6 +341,7 @@ struct FusionExecution: Sendable {
         guard case .count(.fixed(let limit), withTies: false) = query.pagination.limit,
               query.filter == nil,
               query.groupBy == nil,
+              query.windows.isEmpty,
               query.having == nil,
               query.orderBy?.isEmpty != false,
               query.quantifier == .all,

@@ -7,7 +7,7 @@ struct SQLSourceCaptureCollector {
         case identifierOverflow
     }
 
-    private enum Kind { case expression, query, source, dataType, statement, valuesRow }
+    private enum Kind { case expression, query, source, dataType, statement, valuesRow, grouping, groupingComponent, groupingSet, windowFunction, windowReference, namedWindow }
     private struct Child {
         let field: QueryOccurrenceField
         let index: UInt32?
@@ -166,7 +166,7 @@ struct SQLSourceCaptureCollector {
             if escape != nil { try child(.argument, index: 1, into: &children, ledger: &ledger) }
         case .between, .triple:
             for index in 0..<3 { try child(.operand, index: index, into: &children, ledger: &ledger) }
-        case .array(let values), .row(let values), .coalesce(let values), .greatest(let values), .least(let values):
+        case .array(let values), .row(let values), .coalesce(let values), .greatest(let values), .least(let values), .grouping(let values):
             for index in values.indices { try child(.argument, index: index, into: &children, ledger: &ledger) }
         case .inList(_, let values), .notInList(_, let values):
             try child(.operand, index: 0, into: &children, ledger: &ledger)
@@ -201,8 +201,13 @@ struct SQLSourceCaptureCollector {
             }
             try child(.operand, index: 0, into: &children, ledger: &ledger)
             try child(.castType, kind: .dataType, into: &children, ledger: &ledger)
+        case .window:
+            try child(.windowFunction, kind: .windowFunction, into: &children, ledger: &ledger)
+            try child(.windowReference, kind: .windowReference, into: &children, ledger: &ledger)
         case .aggregate(let aggregate):
             switch aggregate {
+            case .sql(let call):
+                try aggregateChildren(call, into: &children, ledger: &ledger)
             case .count(let value, _):
                 if value != nil { try child(.aggregateArgument, into: &children, ledger: &ledger) }
             case .arrayAgg(_, let orderBy, _):
@@ -226,8 +231,9 @@ struct SQLSourceCaptureCollector {
         }
         try child(.source, kind: .source, into: &children, ledger: &ledger)
         if query.filter != nil { try child(.filter, into: &children, ledger: &ledger) }
-        for index in (query.groupBy ?? []).indices { try child(.groupBy, index: index, into: &children, ledger: &ledger) }
+        for index in (query.groupBy ?? []).indices { try child(.groupBy, index: index, kind: .grouping, into: &children, ledger: &ledger) }
         if query.having != nil { try child(.having, into: &children, ledger: &ledger) }
+        for index in query.windows.indices { try child(.namedWindow, index: index, kind: .namedWindow, into: &children, ledger: &ledger) }
         if case .distinctOn(let keys) = query.quantifier {
             for index in keys.indices { try child(.distinctOn, index: index, into: &children, ledger: &ledger) }
         }
@@ -268,6 +274,109 @@ struct SQLSourceCaptureCollector {
         var children: [Child] = []
         if case .array = type { try child(.elementType, kind: .dataType, into: &children, ledger: &ledger) }
         try recordNode(kind: .dataType, children: children, start: start, end: end, identifierEnd: identifierEnd, ledger: &ledger)
+    }
+
+    private mutating func aggregateChildren(_ call: SQLAggregateCall, into children: inout [Child],
+                                   ledger: inout QueryStructuralResourceLedger) throws {
+        for index in call.arguments.indices { try child(.aggregateArgument, index: index, into: &children, ledger: &ledger) }
+        for index in call.orderBy.indices { try child(.aggregateOrderBy, index: index, into: &children, ledger: &ledger) }
+        if call.filter != nil, let withinGroup = call.withinGroup {
+            try movePendingToEnd(from: pending.count - withinGroup.count - 1, count: withinGroup.count)
+        }
+        if call.filter != nil { try child(.aggregateFilter, into: &children, ledger: &ledger) }
+        for index in (call.withinGroup ?? []).indices { try child(.aggregateWithinGroup, index: index, into: &children, ledger: &ledger) }
+    }
+
+    mutating func unwrapLastRow(count: Int) throws {
+        guard let row = pending.popLast(), nodes[row].kind == .expression,
+              nodes[row].edges.count == count else { throw CaptureError.inconsistentConstruction }
+        for edgeIndex in nodes[row].edges { pending.append(edges[edgeIndex].child) }
+    }
+
+    mutating func recordExpressionGroupingSet(count: Int, start: Int, end: Int,
+                                             ledger: inout QueryStructuralResourceLedger) throws {
+        guard pending.count >= count else { throw CaptureError.inconsistentConstruction }
+        let base = pending.count - count
+        for _ in 0..<count {
+            try movePendingToEnd(from: base, count: 1)
+            guard let expression = pending.last, nodes[expression].kind == .expression else {
+                throw CaptureError.inconsistentConstruction
+            }
+            var children: [Child] = []
+            try child(.operand, into: &children, ledger: &ledger)
+            let range = nodes[expression].annotation?.range
+            try recordNode(kind: .grouping, children: children, start: range?.start,
+                end: range?.end ?? end, identifierEnd: nil, ledger: &ledger)
+        }
+        try recordGroupingSet(count: count, start: start, end: end, ledger: &ledger)
+    }
+
+    mutating func recordGroupingComponent(count: Int, start: Int, end: Int,
+                                         ledger: inout QueryStructuralResourceLedger) throws {
+        var children: [Child] = []
+        for index in 0..<count { try child(.argument, index: index, into: &children, ledger: &ledger) }
+        try recordNode(kind: .groupingComponent, children: children, start: start, end: end, identifierEnd: nil, ledger: &ledger)
+    }
+
+    mutating func recordGroupingSet(count: Int, start: Int, end: Int,
+                                   ledger: inout QueryStructuralResourceLedger) throws {
+        var children: [Child] = []
+        for index in 0..<count { try child(.groupingElement, index: index, kind: .grouping, into: &children, ledger: &ledger) }
+        try recordNode(kind: .groupingSet, children: children, start: start, end: end, identifierEnd: nil, ledger: &ledger)
+    }
+
+    mutating func recordGrouping(_ element: GroupingElement, start: Int, end: Int,
+                                ledger: inout QueryStructuralResourceLedger) throws {
+        var children: [Child] = []
+        switch element {
+        case .expression: try child(.operand, into: &children, ledger: &ledger)
+        case .rollup(let components), .cube(let components):
+            for index in components.indices { try child(.groupingComponent, index: index, kind: .groupingComponent, into: &children, ledger: &ledger) }
+        case .groupingSets(let sets):
+            for index in sets.indices { try child(.groupingSet, index: index, kind: .groupingSet, into: &children, ledger: &ledger) }
+        }
+        try recordNode(kind: .grouping, children: children, start: start, end: end, identifierEnd: nil, ledger: &ledger)
+    }
+
+    mutating func recordWindowFunction(_ function: WindowFunction, start: Int, end: Int, identifierEnd: Int,
+                                      ledger: inout QueryStructuralResourceLedger) throws {
+        var children: [Child] = []
+        switch function {
+        case .aggregate(let call): try aggregateChildren(call, into: &children, ledger: &ledger)
+        case .analytic(_, let arguments):
+            for index in arguments.indices { try child(.argument, index: index, into: &children, ledger: &ledger) }
+        }
+        try recordNode(kind: .windowFunction, children: children, start: start, end: end, identifierEnd: identifierEnd, ledger: &ledger)
+    }
+
+    mutating func recordNamedWindowReference(start: Int, end: Int,
+                                            ledger: inout QueryStructuralResourceLedger) throws {
+        try recordNode(kind: .windowReference, children: [], start: start, end: end, identifierEnd: end, ledger: &ledger)
+    }
+
+    mutating func recordWindowSpecification(_ specification: WindowSpecification, start: Int, end: Int,
+                                           ledger: inout QueryStructuralResourceLedger) throws {
+        var children: [Child] = []
+        for index in specification.partitionBy.indices { try child(.windowPartitionBy, index: index, into: &children, ledger: &ledger) }
+        for index in specification.orderBy.indices { try child(.windowOrderBy, index: index, into: &children, ledger: &ledger) }
+        if let frame = specification.frame {
+            switch frame.start {
+            case .preceding, .following: try child(.windowFrameStart, into: &children, ledger: &ledger)
+            default: break
+            }
+            switch frame.end {
+            case .preceding, .following: try child(.windowFrameEnd, into: &children, ledger: &ledger)
+            default: break
+            }
+        }
+        try recordNode(kind: .windowReference, children: children, start: start, end: end, identifierEnd: nil, ledger: &ledger)
+    }
+
+    mutating func recordNamedWindow(start: Int, end: Int, identifierEnd: Int,
+                                   ledger: inout QueryStructuralResourceLedger) throws {
+        var children: [Child] = []
+        try child(.windowReference, kind: .windowReference, into: &children, ledger: &ledger)
+        try recordNode(kind: .namedWindow, children: children, start: start, end: end, identifierEnd: identifierEnd, ledger: &ledger)
     }
 
     private mutating func recordNode(

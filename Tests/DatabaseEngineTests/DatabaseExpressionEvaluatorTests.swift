@@ -26,6 +26,17 @@ struct DatabaseExpressionEvaluatorTests {
         #expect(throws: DatabaseExpressionEvaluationError.unsupportedExpression("SQL VARIADIC requires selected SQL execution")) {
             try evaluator.evaluate(.function(FunctionCall(name: "concat", arguments: [.col("unread")], finalArrayIsVariadic: true)))
         }
+        for expression: Expression in [
+            .aggregate(.sql(SQLAggregateCall(function: .sum, arguments: [.col("unread")]))),
+            .grouping([.col("unread")]),
+            .window(WindowCall(function: .analytic(.firstValue, arguments: [.col("unread")]),
+                reference: .specification(WindowSpecification(partitionBy: [.col("unreadPartition")])))),
+        ] {
+            #expect(throws: DatabaseExpressionEvaluationError.unsupportedExpression(
+                "Expression kind requires a query-scoped evaluation context")) {
+                try evaluator.evaluate(expression)
+            }
+        }
         #expect(try evaluator.evaluate(.literal(.array([.int(1)]))) == .array([.int64(1)]))
         #expect(SQLCollectionError.invalidArrayInput(offset: 0, reason: "invalid").description.contains("UTF-8 offset 0"))
         #expect(SQLCollectionError.nullJSONObjectKey(argument: 1).description.contains("argument 1"))

@@ -280,7 +280,7 @@ struct GroupByBareFunctionTests {
             Issue.record("Expected 1 GROUP BY expression")
             return
         }
-        guard case .function(let call) = groupBy[0] else {
+        guard case .expression(.function(let call)) = groupBy[0] else {
             Issue.record("Expected .function, got \(groupBy[0])")
             return
         }
@@ -297,7 +297,7 @@ struct GroupByBareFunctionTests {
             Issue.record("Expected 1 GROUP BY expression")
             return
         }
-        guard case .variable(let v) = groupBy[0] else {
+        guard case .expression(.variable(let v)) = groupBy[0] else {
             Issue.record("Expected .variable")
             return
         }

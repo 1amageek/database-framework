@@ -13,6 +13,8 @@ final public output.
 - Child: [SQLArray](SQLArray/DESIGN.md), selected array algorithms and bounded row cursors.
 - Child: [SQLJSON](SQLJSON/DESIGN.md), lexical JSON and semantic JSONB algorithms and bounded row cursors.
 - Child: [SQLRelations](SQLRelations/DESIGN.md), S08 demand-driven SELECT producers and execution-local CTE cache lifecycle.
+- Child: [SQLAggregation](SQLAggregation/DESIGN.md), S09 selected aggregate transitions and ordered-set/statistical results.
+- Child: [SQLWindows](SQLWindows/DESIGN.md), S09 admitted partitions, peers, frames and window results.
 - Planned S01–S10 SQL execution obligations are recorded below; implementation
   completeness remains tracked by the workspace progress record.
 
@@ -46,6 +48,8 @@ copyable and could escape without their reservation.
 | [SQLArray](SQLArray/DESIGN.md) | child | Selected array evaluate/cast/compare and noncopyable row cursor | Implements the array layer over existing selected scalar policy. | Parent owns types, lazy selection and every referenced input claim. |
 | [SQLJSON](SQLJSON/DESIGN.md) | child | JSON conversion/extraction, JSONB compare/edit and noncopyable row cursor | Implements the JSON layer over the existing Kit owners. | Semantic identity is distinct from Kit representation hashing. |
 | [SQLRelations](SQLRelations/DESIGN.md) | child | Demand-driven producer, independent CTE consumers and awaited close | Owns S08 producing state and retained prefixes. | Binding, selected comparison and resource readiness remain with this parent and Read. |
+| [SQLAggregation](SQLAggregation/DESIGN.md) | child | Scoped selected-input reduction to a retained typed value | Owns ordinary, statistical and ordered-set transitions. | The parent supplies selected evaluation and retains every input owner through the callback scope. |
+| [SQLWindows](SQLWindows/DESIGN.md) | child | Selected partitions/peers/frame execution in original row order | Owns analytic function and aggregate-window evaluation. | It consumes post-HAVING rows and never retains execution callbacks in a final result. |
 
 ## Architecture
 
@@ -1405,3 +1409,165 @@ repeating intrinsic codec tests. Affected parent Database/Read and child
 SQLArray/SQLJSON designs must consume these seams. Actual sprint verification,
 local commits and deferred S18 integrated/URL/platform lanes remain owned by
 the workspace progress record.
+
+
+### S09 frozen grouping and analytic execution
+
+This section fixes the Q11/Q14/F11-F13 parent contract. It is a design
+obligation until the workspace progress record contains the corresponding
+runtime evidence and commits. Syntax, semantic carriage and exact function
+identity belong to [Query](../../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md#s09-frozen-grouping-aggregate-and-window-declarations);
+algorithms below consume those declarations without a second SQL AST.
+
+#### Responsibility and execution order
+
+```text
+bind source + named-window lexical scope
+  -> select expression types and clause legality before reads
+  -> admitted source rows -> WHERE
+  -> selected grouping-set expansion -> groups + active-key metadata
+  -> HAVING
+  -> SQLWindows over the surviving row/group contexts
+       -> SQLAggregation for each ordinary aggregate frame
+  -> projection occurrence cache -> final ORDER / DISTINCT / pagination
+  -> close producers / CTE caches / read transactions
+  -> existing Collecting-to-Ready publication boundary
+```
+
+The parent owns source metadata, grouping-key binding/expansion, group contexts,
+clause phase validation, selected evaluation callbacks and the existing result
+publication lifecycle. SQLAggregation owns FILTER, selected arguments,
+DISTINCT, aggregate internal ordering and transition/finalization under its
+child contract. SQLWindows owns partitions, selected sort keys, SQL peers,
+frames/exclusions, analytic functions and aggregate-window dispatch under its
+child contract. Base composes global operations through this same canonical
+path and owns member provenance and retained extrema; it does not evaluate
+member-local windows as a global result.
+
+`CanonicalQueryTypeBinder` owns exact aggregate signatures/modifier legality,
+window inheritance and selected frame-bound signatures. Prepare named windows
+before projection binding. Every clause and every copied bound plan consumes
+that same immutable select-local scope. A child SELECT creates a new scope;
+parent window definitions are never inferred from a callback or inherited as
+local definitions. `OVER name` and `OVER (name)` retain their distinct named
+reference and copying rules. Unknown, duplicate, forward and illegal copy
+references fail before a source read, including zero-row inputs.
+
+`CanonicalBoundAggregate` retains the selected call, arguments, direct
+arguments, internal order keys, FILTER and WITHIN GROUP keys. Its ordinary
+children have one documented order and are not rebound per row. A bound
+window is an immutable reference descriptor containing selected arguments,
+optional selected aggregate, partition keys, order keys and frame offsets.
+Descriptor identity is occurrence/object identity; a shared name alone must
+not coalesce independent volatile target occurrences.
+
+#### Grouping and phase invariants
+
+| Meaning | Required guarantee |
+|---|---|
+| One grouping representation | Kit GroupingElement owns expression, compound ROLLUP/CUBE units and nested GROUPING SETS. The parent expands it under the request meter; it never stores an unbounded pre-expanded Cartesian product. |
+| Selected grouping plan | CanonicalBoundGrouping owns unique selected leaves and ordered sets of their indices. Repeated sets remain repeated. The plan retains its construction/metadata claims with the bound SELECT. |
+| Group identity | The grouping-set occurrence and selected SQL key identities identify one group. Hash collisions require exact SQL equality. NULL keys compare equal for grouping; missing keys are not input NULL values. |
+| Empty input | Each admitted empty grouping set emits one global group even when no rows exist. Nonempty sets emit no group on empty input. Aggregate-only and HAVING-only SELECT retain their established global-group meaning. |
+| Omitted keys | Each group retains active-key metadata. Evaluating an omitted selected grouping expression yields typed NULL, including expressions nested in projection/HAVING/order/window arguments. It must not leak the representative row's source value. |
+| GROUPING | One to 31 arguments must match selected grouping expressions; return integer bits with the rightmost argument at bit zero. Arguments select grouping metadata and are not evaluated as row expressions. |
+| Aliases/ordinals | Keep S03 input-name priority, expanded projection ordinals, ambiguity and selected occurrence reuse. An aggregate/window ordinal is not a legal group key. |
+| Functional dependency | Admit an explicitly registered base entity's actual primary identity key and its source-slot lineage. A full key present in every applicable set may determine other columns from that base relation. Do not infer keys from a field name or propagate unproven dependency through derived/CTE/set/join outputs. |
+| Grouped validity | Reject nongrouped/unproven source columns before reading, including wildcard/outer references and empty sources. Scalar subqueries keep lexical shadowing and the same grouping validation boundaries. |
+| Phase legality | WHERE/JOIN/GROUP keys reject aggregate/window calls; HAVING rejects windows. Aggregate arguments cannot contain aggregates or windows. Window arguments may contain a grouped aggregate but cannot contain another window. A window aggregate itself does not turn an otherwise ungrouped SELECT into one global group. |
+
+Grouping expansion uses checked cardinality arithmetic and pre-admits each
+node, set, leaf, key and row-index capacity before allocation. Do not impose an
+invented correctness-independent grouping-set count. Existing structural,
+intermediate-row/byte and query-work limits bound the admitted expansion;
+overflow and one-past limits are typed failures.
+
+#### Selected value, ownership and failure seams
+
+The scoped aggregate and window callbacks evaluate a selected bound expression
+in the parent-owned row/group context and return the existing
+`DatabaseContext.ProjectedQueryValue`: value, immutable payload leases and
+retention state travel together. The final analytic result retains only value,
+type metadata and immutable claims, never a producer, authority, transaction,
+context or callback. Navigation and extrema retain the selected original rich
+value rather than round-tripping through FieldValue or display text.
+
+The ordinary aggregate callback and aggregate OVER share SQLAggregation. A
+window frame is a selected sequence of original row/group indices, not a new
+SQL query or an independently rebound expression. FILTER runs before row
+arguments; an excluded row does not evaluate those arguments. Ordered-set
+direct arguments execute once in the group's context. Exact integer/numeric
+statistics use the widened decimal owner; float overloads keep their selected
+floating semantics. Existing finite-numeric product exclusions remain in
+force, while the accepted temporal infinity contract applies to interval
+aggregates and temporal extrema.
+
+Composition output provenance does not grant evaluation authority. Selected
+grouping, aggregate, window and other non-reading scalar computations retain
+the global evaluation context and its source dispatcher throughout recursion.
+Only a required bound nested-query node invokes that dispatcher. Aggregate
+row arguments therefore dispatch nested reads using each underlying input
+row's original single-member annotation, not the group's merged contributors.
+An inherently multi-origin or source-free group supplies no single-member
+authority for a nested read; Base owns the typed capability rejection and
+malformed-lineage validation. QueryExecution neither interprets lineage bits
+nor substitutes a representative member. Cached group/window values and
+ordinary column values resolve before the nested-query dispatch boundary.
+
+Binding-claim retention traverses selected plans, sources, expressions and
+window definitions with one invocation-local, meter-admitted explicit
+worklist. Claim deduplication, visitation order and full-owner retention keep
+their existing meaning. This metadata walk must not recursively follow the
+plan/source graph on the native or WASM call stack; admitted worklist capacity,
+work units and cancellation bound the traversal instead. The existing deep
+derived/set/join/scalar/CTE fixtures retain their original budgets and depths.
+
+SQLWindows computes after HAVING and before final ordering, DISTINCT and
+pagination. Window sort stability never becomes SQL peer equality. Default
+RANGE, ROWS/RANGE/GROUPS bounds and EXCLUDE follow the selected types and
+collation. LAG/LEAD evaluate the offset in the current row; NULL offsets yield
+NULL, signed negative offsets reverse direction, and defaults execute only
+for an out-of-partition target. NTILE initializes its bucket count from the first partition row whose argument
+is non-NULL; earlier NULL arguments yield NULL without initializing it. Frame offsets separately reject NULL and negative values.
+Ordinary aggregate OVER rejects DISTINCT/internal ORDER and ordered-set OVER,
+as required by the PostgreSQL 18 profile; FILTER remains admitted.
+
+Every new loop consumes work and checks cancellation/deadline. Every retained
+array/dictionary/key/permutation/peer/frame/output grows only after admission
+and reconciles actual capacity. Existing same-task selected-evaluation yields
+and the S08 small recursive binding frames remain in place. Do not enlarge the
+8 MiB WASM stack or structural nesting limits to hide an execution defect.
+No new shared mutable global registration or target-specific isolation exists:
+new selected plans are immutable and all mutable evaluation state is scoped to
+one invocation. Existing producer actor/gate, read leases and authoritative
+cleanup/error precedence remain unchanged across Native, WASM and Embedded.
+
+Partial evaluators/converters explicitly reject SQL-only analytic forms. The
+canonical planner must not optimize an analytic query into a path that drops
+its envelope. Security/authorization, expression conversion and occurrence
+walkers visit every added semantic child, including FILTER, direct arguments,
+window definitions and frame offsets; generic SPARQL paths reject unsupported
+SQL-only syntax without approximation.
+
+#### Falsifiable completion evidence
+
+| ID | Required behavior and owning tests |
+|---|---|
+| S09-C01 | Kit/Wire/QueryAST: every new child changes identity, survives parameter substitution and bounded roundtrip, and retains exact source positions; unknown/truncated/oversized forms fail. |
+| S09-C02 | Public SQL: compound/nested ROLLUP/CUBE/sets, duplicate and empty sets, omitted NULL keys and GROUPING bits; PK functional dependency succeeds only with proven full key lineage. |
+| S09-C03 | Public SQL/binder: aliases/ordinals, nongrouped and forbidden phase/nesting references fail before reads even on empty input; child scopes remain distinct. |
+| S09-C04 | Public SQL: FILTER laziness, DISTINCT tuple semantics/internal ordering, volatile once-only arguments and aliases, empty/NULL/result-type rules for every ordinary aggregate family. |
+| S09-C05 | SQLAggregation/public SQL: integer widening, exact numeric scale/cancellation, interval finite/infinity SUM/AVG, typed overflow and rich ARRAY/JSON/BYTEA outputs. |
+| S09-C06 | SQLAggregation/public SQL versus isolated PostgreSQL 18.6: all statistic aliases, pairwise NULL removal, degenerate/small samples and precision-sensitive numeric fixtures. |
+| S09-C07 | Ordered-set public SQL: scalar and dimension/lower-bound-preserving fraction arrays, NULL/invalid fractions, empty input, interval interpolation and MODE ties. |
+| S09-C08 | SQLWindows/public SQL: named reference/copy, partition/collation/order/NULL/peer semantics, default frame and all ranking/navigation functions including lazy defaults. |
+| S09-C09 | SQLWindows/public SQL: ROWS/RANGE/GROUPS, DESC numeric/temporal offsets, empty frames and all exclusions; malformed bounds/types fail before reads. |
+| S09-C10 | Changed owners: exact/one-past row/byte/work/depth/capacity, cancellation/deadline, full-owner input retention, no claims after failure/cancel/final release and successful subsequent operation. |
+| S09-C11 | Base: rich temporal/infinite/numeric-scale extrema and global group/window placement preserve member provenance and release claims; primitive behavior regresses. |
+| S09-C12 | Final frozen source: focused then affected/consolidated Native lanes, matching ordinary/Embedded runtime fixtures with current stack baseline, one scoped review and limited recheck, coherent local commits and inactive-output cleanup. |
+
+Each child owns its detailed behavioral cases; this parent composes them with
+actual public SQL, result metadata, resource ownership and read/publication
+lifecycle evidence. Full FoundationDB, graph-enabled Database portable,
+MultiBase portable and final URL dependency/push integration remain the
+explicitly agreed S18 obligations. Their deferral is not a passed S09 result.

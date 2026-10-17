@@ -183,7 +183,7 @@ struct SQLCollectionExecutionTests {
             }
             let grouped = try await context.query(SelectQuery(projection: [ProjectionItem(.col("value")),
                 ProjectionItem(.aggregate(.count(nil, distinct: false)))], source: source,
-                groupBy: [.col("value")], orderBy: [SortKey(.col("value"))]))
+                groupBy: [.expression(.col("value"))], orderBy: [SortKey(.col("value"))]))
             #expect(grouped.rows.map { $0.values[1] } == counts.map { .primitive(.int64($0)) })
             let counted = try await context.query(SelectQuery(projection: [
                 ProjectionItem(.aggregate(.count(.col("value"), distinct: true)))], source: source))

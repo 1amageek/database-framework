@@ -8,6 +8,8 @@ struct CanonicalBoundExpression: Sendable {
     let isNullable: Bool
     let columnSlot: Int?
     let children: [CanonicalBoundExpression]
+    let aggregate: CanonicalBoundAggregate?
+    let window: CanonicalBoundWindow?
     let occurrence: QueryOccurrenceID?
     let subqueryBinding: CanonicalBoundSelect?
     let castContext: CanonicalQueryTypeBinder.CastContext
@@ -27,6 +29,8 @@ struct CanonicalBoundExpression: Sendable {
         isNullable: Bool,
         columnSlot: Int? = nil,
         children: [CanonicalBoundExpression] = [],
+        aggregate: CanonicalBoundAggregate? = nil,
+        window: CanonicalBoundWindow? = nil,
         occurrence: QueryOccurrenceID? = nil,
         subqueryBinding: CanonicalBoundSelect? = nil,
         castContext: CanonicalQueryTypeBinder.CastContext = .explicit,
@@ -45,6 +49,8 @@ struct CanonicalBoundExpression: Sendable {
         self.isNullable = isNullable
         self.columnSlot = columnSlot
         self.children = children
+        self.aggregate = aggregate
+        self.window = window
         self.occurrence = occurrence
         self.subqueryBinding = subqueryBinding
         self.castContext = castContext
@@ -100,6 +106,8 @@ struct CanonicalBoundExpression: Sendable {
         }
         let result: DatabaseKit.Expression
         switch expression {
+        case .grouping: result = try .grouping(children.indices.map(child))
+        case .window: result = expression
         case .row: result = try .row(children.indices.map(child))
         case .field(_, let name): result = try .field(child(0), name: name)
         case .fieldExpansion: result = try .fieldExpansion(child(0))
@@ -182,6 +190,20 @@ struct CanonicalBoundExpression: Sendable {
             }
             let lowered: AggregateFunction
             switch aggregate {
+            case .sql(let call):
+                guard let selected = self.aggregate else {
+                    throw DatabaseExpressionEvaluationError.typeMismatch(operation: "selected SQL aggregate")
+                }
+                func keys(_ keys: [CanonicalBoundKey]) throws -> [SortKey] {
+                    try keys.map { key in
+                        SortKey(try key.expression.loweredExpression,
+                            direction: key.sortKey?.direction ?? .ascending, nulls: key.sortKey?.nulls)
+                    }
+                }
+                lowered = try .sql(SQLAggregateCall(function: call.function,
+                    arguments: selected.arguments.map { try $0.loweredExpression }, distinct: call.distinct,
+                    orderBy: keys(selected.orderBy), filter: selected.filter.map { try $0.loweredExpression },
+                    withinGroup: call.withinGroup == nil ? nil : keys(selected.withinGroup), schema: call.schema))
             case .count(let operand, let distinct): lowered = try .count(operand == nil ? nil : argument(), distinct: distinct)
             case .sum(_, let distinct): lowered = try .sum(argument(), distinct: distinct)
             case .avg(_, let distinct): lowered = try .avg(argument(), distinct: distinct)

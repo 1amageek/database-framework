@@ -253,6 +253,7 @@ enum SelectQueryPlanner {
         _ query: SelectQuery
     ) -> Bool {
         query.quantifier == .all && !canonicalQueryRequiresAggregation(query)
+            && !canonicalQueryRequiresWindows(query)
     }
 
     /// Nil means the window requires selected SQL evaluation, so no physical window may be pushed.

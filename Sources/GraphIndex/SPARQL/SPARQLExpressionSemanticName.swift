@@ -48,6 +48,8 @@ enum SPARQLExpressionSemanticName {
         case .notInList: return "NOT-IN-list expression"
         case .inSubquery: return "IN-subquery expression"
         case .aggregate: return "aggregate"
+        case .grouping: return "SQL GROUPING"
+        case .window: return "SQL window"
         case .function: return "function call"
         case .caseWhen: return "CASE expression"
         case .coalesce: return "COALESCE expression"

@@ -161,7 +161,7 @@ package struct DatabaseExpressionEvaluator: Sendable {
                 throw DatabaseExpressionEvaluationError.unsupportedExpression("SQL VARIADIC requires selected SQL execution")
             }
             return try evaluate(function)
-        case .inSubquery, .aggregate, .triple, .isTriple, .subject, .predicate,
+        case .inSubquery, .aggregate, .grouping, .window, .triple, .isTriple, .subject, .predicate,
              .object, .subquery, .exists:
             throw DatabaseExpressionEvaluationError.unsupportedExpression(
                 "Expression kind requires a query-scoped evaluation context"

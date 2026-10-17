@@ -130,7 +130,7 @@ struct SQLTemporalExecutionTests {
         #expect(distinct.rows.count == 2 && distinct.rows[0].values == [.interval(day)])
         let grouped = try await context.query(SelectQuery(projection: [ProjectionItem(.col("i")), ProjectionItem(.aggregate(.count(nil, distinct: false)))],
             source: source,
-            groupBy: [.col("i")],
+            groupBy: [.expression(.col("i"))],
             orderBy: [SortKey(.col("i"))]))
         #expect(grouped.rows.count == 2)
         #expect(grouped.rows[0].values[1] == .primitive(.int64(1)))

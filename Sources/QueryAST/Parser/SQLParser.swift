@@ -120,6 +120,7 @@ public final class SQLParser {
     private var capturesSource = false
     private var preservesOutputReferenceCasts = false
     private var colonStartsSlice = false
+    private var implicitRowStart: Int?
     private var sourceCapture: SQLSourceCaptureCollector?
     private var sourceRoots: [QueryOccurrenceID] = []
     private var tokenIsQuoted = false
@@ -247,6 +248,7 @@ public final class SQLParser {
         sourceRoots = []
         preservesOutputReferenceCasts = false
         colonStartsSlice = false
+        implicitRowStart = nil
         tokenIsQuoted = false
         currentToken = .eof
         anonymousParameterPosition = 0
@@ -1100,15 +1102,16 @@ extension SQLParser {
         }
         var filter: Expression?
         if isKeyword("WHERE") { advance(); filter = try parseExpression() }
-        var group: [Expression]?
-        if isKeyword("GROUP") { advance(); try expect("BY"); group = try parseExpressionList(outputReferences: true) }
+        var group: [GroupingElement]?
+        if isKeyword("GROUP") { advance(); try expect("BY"); group = try parseGroupingList() }
         var having: Expression?
         if isKeyword("HAVING") { advance(); having = try parseExpression() }
+        let windows = try parseNamedWindows()
         if let distinctCapture, distinctKeyCount > 0 {
             try sourceCapture?.movePendingToEnd(from: distinctCapture, count: distinctKeyCount)
         }
         return try makeStructuralNode(SelectQuery(projection: projection, source: source, filter: filter,
-            groupBy: group, having: having, quantifier: quantifier), at: start)
+            groupBy: group, having: having, windows: windows, quantifier: quantifier), at: start)
     }
 
     private func parseValuesSource() throws -> DataSource {
@@ -1984,8 +1987,6 @@ extension SQLParser {
                 let value = try makeLiteralExpression(.sqlUnknownString(text), at: primaryStart)
                 return try normalizedCast(value, as: type, at: start)
             }
-            let aggregates = ["COUNT", "SUM", "AVG", "MIN", "MAX", "ARRAY_AGG", "GROUP_CONCAT"]
-            if aggregates.contains(upper), next == .symbol("(") { return try parseAggregate() }
             let syntaxExpression = ["EXISTS", "CASE", "CAST"].contains(upper)
             if !syntaxExpression || upper == "EXISTS" && next != .symbol("(") {
                 if identifierText != nil || Self.typeFunctionWords.contains(upper) && next == .symbol("(") {
@@ -2005,15 +2006,19 @@ extension SQLParser {
                 try expect(")")
                 return try makeStructuralNode(.subquery(subquery))
             }
+            let expressionStart = tokenStart
             let expr = try parseExpression()
             if isSymbol(",") {
                 try admitCollectionElement()
                 var fields = [expr]
                 while isSymbol(",") { advance(); try admitCollectionElement(); fields.append(try parseExpression()) }
                 try expect(")")
-                return try makeStructuralNode(.row(fields), at: primaryStart)
+                let row = try makeStructuralNode(Expression.row(fields), at: primaryStart)
+                implicitRowStart = primaryStart
+                return row
             }
             try expect(")")
+            if implicitRowStart == expressionStart { implicitRowStart = primaryStart }
             return expr
 
         case .keyword("EXISTS"):
@@ -2089,7 +2094,7 @@ extension SQLParser {
         case .keyword("COUNT"), .keyword("SUM"), .keyword("AVG"),
                 .keyword("MIN"), .keyword("MAX"),
                 .keyword("ARRAY_AGG"), .keyword("GROUP_CONCAT"):
-            return try parseAggregate()
+            return try parseIdentifierExpression(labelText ?? "")
 
         case .keyword("CASE"):
             return try parseCaseExpression()
@@ -2272,6 +2277,21 @@ extension SQLParser {
             }
             if schema == nil, !quoted, ["SUBSTRING", "POSITION", "TRIM"].contains(spelling) {
                 return try parseStringFunction(spelling, start: start, identifierEnd: identifierEnd)
+            }
+            if let function = SQLAggregateFunction(rawValue: name) {
+                return try parseSQLAggregate(function, schema: schema, start: start, identifierEnd: identifierEnd)
+            }
+            if let function = SQLWindowFunction(rawValue: name) {
+                return try parseAnalyticWindow(function, schema: schema, start: start, identifierEnd: identifierEnd)
+            }
+            if schema == nil, !quoted, spelling == "GROUPING" {
+                advance()
+                let arguments = try parseExpressionList()
+                try expect(")")
+                return try makeStructuralNode(.grouping(arguments), at: start, identifierEnd: identifierEnd)
+            }
+            if schema == nil, !quoted, spelling == "GROUP_CONCAT" {
+                return try parseGroupConcat(start: start, identifierEnd: identifierEnd)
             }
             advance()
             let distinct = isKeyword("DISTINCT")
@@ -2713,110 +2733,6 @@ extension SQLParser {
             try expectContextualWord("ZONE")
         }
         return false
-    }
-
-    private func parseAggregate() throws -> Expression {
-        let enclosingOutputReferenceCasts = preservesOutputReferenceCasts
-        preservesOutputReferenceCasts = false
-        defer { preservesOutputReferenceCasts = enclosingOutputReferenceCasts }
-        let aggregateStart = tokenStart
-        let aggregateIdentifierEnd = tokenEnd
-        let funcName = currentToken
-        advance()
-        try expect("(")
-
-        var distinct = false
-        if case .keyword("DISTINCT") = currentToken {
-            distinct = true
-            advance()
-        }
-
-        var arg: Expression?
-        if case .symbol("*") = currentToken {
-            advance()
-            arg = nil
-        } else {
-            arg = try parseExpression()
-        }
-
-        var separator: String?
-        if funcName == .keyword("GROUP_CONCAT"), isSymbol(",") {
-            advance()
-            guard case .string(let value) = currentToken else {
-                throw ParseError.invalidSyntax(
-                    message: "GROUP_CONCAT separator must be a string literal",
-                    position: tokenStart
-                )
-            }
-            separator = value
-            advance()
-        }
-
-        var aggregateOrderBy: [SortKey]?
-        if funcName == .keyword("ARRAY_AGG"),
-           case .keyword("ORDER") = currentToken {
-            advance()
-            try expect("BY")
-            aggregateOrderBy = try parseOrderBy()
-        }
-
-        try expect(")")
-
-        if arg == nil, funcName != .keyword("COUNT") {
-            throw ParseError.invalidSyntax(
-                message: "Only COUNT may use '*' as its aggregate argument",
-                position: tokenStart
-            )
-        }
-        if arg == nil, distinct {
-            throw ParseError.invalidSyntax(
-                message: "COUNT(DISTINCT *) is not valid",
-                position: tokenStart
-            )
-        }
-
-        switch funcName {
-        case .keyword("COUNT"):
-            return try makeAggregateExpression(
-                .count(arg, distinct: distinct), at: aggregateStart, identifierEnd: aggregateIdentifierEnd
-            )
-        case .keyword("SUM"):
-            let operand = try arg ?? makeLiteralExpression(.null)
-            return try makeAggregateExpression(
-                .sum(operand, distinct: distinct), at: aggregateStart, identifierEnd: aggregateIdentifierEnd
-            )
-        case .keyword("AVG"):
-            let operand = try arg ?? makeLiteralExpression(.null)
-            return try makeAggregateExpression(
-                .avg(operand, distinct: distinct), at: aggregateStart, identifierEnd: aggregateIdentifierEnd
-            )
-        case .keyword("MIN"):
-            let operand = try arg ?? makeLiteralExpression(.null)
-            return try makeAggregateExpression(.min(operand), at: aggregateStart, identifierEnd: aggregateIdentifierEnd)
-        case .keyword("MAX"):
-            let operand = try arg ?? makeLiteralExpression(.null)
-            return try makeAggregateExpression(.max(operand), at: aggregateStart, identifierEnd: aggregateIdentifierEnd)
-        case .keyword("ARRAY_AGG"):
-            let operand = try arg ?? makeLiteralExpression(.null)
-            return try makeAggregateExpression(
-                .arrayAgg(
-                    operand,
-                    orderBy: aggregateOrderBy,
-                    distinct: distinct
-                ), at: aggregateStart, identifierEnd: aggregateIdentifierEnd
-            )
-        case .keyword("GROUP_CONCAT"):
-            let operand = try arg ?? makeLiteralExpression(.null)
-            return try makeAggregateExpression(
-                .groupConcat(
-                    operand,
-                    separator: separator,
-                    distinct: distinct
-                ), at: aggregateStart, identifierEnd: aggregateIdentifierEnd
-            )
-        default:
-            throw ParseError.invalidSyntax(message: "Unknown aggregate function", position: tokenStart)
-        }
     }
 
     private func parseCaseExpression() throws -> Expression {
@@ -3997,5 +3913,267 @@ extension SQLParser {
             structuralError = savedStructuralError
         }
         return try operation()
+    }
+}
+
+// MARK: - Grouping, Aggregates, and Windows
+
+extension SQLParser {
+    private func parseGroupingList() throws -> [GroupingElement] {
+        var elements: [GroupingElement] = []
+        repeat {
+            if !elements.isEmpty { advance() }
+            try admitCollectionElement()
+            elements.append(try parseGroupingElement())
+        } while isSymbol(",")
+        return elements
+    }
+
+    private var startsGroupingOperation: Bool {
+        if (isContextualWord("ROLLUP") || isContextualWord("CUBE")), peekNextToken() == .symbol("(") { return true }
+        return isContextualWord("GROUPING") && (peekNextToken() == .identifier("sets") || peekNextToken() == .keyword("SETS"))
+    }
+
+    /// Parse a complete scalar expression before interpreting implicit tuple grouping syntax.
+    private func parseGroupingUnitExpressions() throws -> [Expression] {
+        let start = tokenStart
+        let enclosingRowStart = implicitRowStart
+        implicitRowStart = nil
+        defer { implicitRowStart = enclosingRowStart }
+        let expression = try parseOutputReferenceExpression()
+        if case .row(let fields) = expression, implicitRowStart == start {
+            try sourceCapture?.unwrapLastRow(count: fields.count)
+            return fields
+        }
+        return [expression]
+    }
+
+    private func parseGroupingElement() throws -> GroupingElement {
+        try enterStructuralNesting()
+        defer { leaveStructuralNesting() }
+        let start = tokenStart
+        let element: GroupingElement
+        if (isContextualWord("ROLLUP") || isContextualWord("CUBE")), peekNextToken() == .symbol("(") {
+            let rollup = isContextualWord("ROLLUP")
+            advance(); try expect("(")
+            var components: [[Expression]] = []
+            repeat {
+                if !components.isEmpty { advance() }
+                try admitCollectionElement()
+                let componentStart = tokenStart
+                let expressions = try parseGroupingUnitExpressions()
+                try sourceCapture?.recordGroupingComponent(count: expressions.count, start: componentStart,
+                    end: previousTokenEnd, ledger: &structuralLedger)
+                components.append(expressions)
+            } while isSymbol(",")
+            try expect(")")
+            element = rollup ? .rollup(components) : .cube(components)
+        } else if isContextualWord("GROUPING"), peekNextToken() == .identifier("sets") || peekNextToken() == .keyword("SETS") {
+            advance(); try expectContextualWord("SETS"); try expect("(")
+            var sets: [[GroupingElement]] = []
+            repeat {
+                if !sets.isEmpty { advance() }
+                try admitCollectionElement()
+                let setStart = tokenStart
+                let elements: [GroupingElement]
+                if isSymbol("("), peekNextToken() == .symbol(")") {
+                    advance(); advance()
+                    elements = []
+                    try sourceCapture?.recordGroupingSet(count: 0, start: setStart, end: previousTokenEnd, ledger: &structuralLedger)
+                } else if startsGroupingOperation {
+                    elements = [try parseGroupingElement()]
+                    try sourceCapture?.recordGroupingSet(count: 1, start: setStart, end: previousTokenEnd, ledger: &structuralLedger)
+                } else {
+                    let expressions = try parseGroupingUnitExpressions()
+                    try structuralLedger.consume(.totalNodes, amount: UInt64(expressions.count))
+                    elements = expressions.map(GroupingElement.expression)
+                    try sourceCapture?.recordExpressionGroupingSet(count: expressions.count, start: setStart,
+                        end: previousTokenEnd, ledger: &structuralLedger)
+                }
+                sets.append(elements)
+            } while isSymbol(",")
+            try expect(")")
+            element = .groupingSets(sets)
+        } else if isSymbol("("), peekNextToken() == .symbol(")") {
+            advance(); advance()
+            try sourceCapture?.recordGroupingSet(count: 0, start: start, end: previousTokenEnd, ledger: &structuralLedger)
+            element = .groupingSets([[]])
+        } else {
+            let expressions = try parseGroupingUnitExpressions()
+            if expressions.count == 1 {
+                element = .expression(expressions[0])
+            } else {
+                try structuralLedger.consume(.totalNodes, amount: UInt64(expressions.count))
+                try sourceCapture?.recordExpressionGroupingSet(count: expressions.count, start: start,
+                    end: previousTokenEnd, ledger: &structuralLedger)
+                element = .groupingSets([expressions.map(GroupingElement.expression)])
+            }
+        }
+        try structuralLedger.consume(.totalNodes)
+        try sourceCapture?.recordGrouping(element, start: start, end: previousTokenEnd, ledger: &structuralLedger)
+        return element
+    }
+
+    private func parseSQLAggregate(_ function: SQLAggregateFunction, schema: String?, start: Int,
+                                   identifierEnd: Int) throws -> Expression {
+        let enclosing = preservesOutputReferenceCasts
+        preservesOutputReferenceCasts = false
+        defer { preservesOutputReferenceCasts = enclosing }
+        try expect("(")
+        let distinct = consumeContextualWord("DISTINCT")
+        if !distinct { _ = consumeContextualWord("ALL") }
+        var arguments: [Expression] = []
+        let star = isSymbol("*")
+        if star { advance() }
+        else if !isSymbol(")") {
+            repeat {
+                if !arguments.isEmpty { advance() }
+                try admitCollectionElement()
+                arguments.append(try parseExpression())
+            } while isSymbol(",")
+        }
+        var orderBy: [SortKey] = []
+        if consumeContextualWord("ORDER") { try expect("BY"); orderBy = try parseOrderBy() }
+        try expect(")")
+        guard !star || function == .count && !distinct,
+              function != .count || !arguments.isEmpty || star else {
+            throw ParseError.invalidSyntax(message: "Invalid aggregate argument list", position: start)
+        }
+        var withinGroup: [SortKey]?
+        if consumeContextualWord("WITHIN") {
+            try expectContextualWord("GROUP"); try expect("("); try expect("ORDER"); try expect("BY")
+            withinGroup = try parseOrderBy(); try expect(")")
+        }
+        var filter: Expression?
+        if consumeContextualWord("FILTER") {
+            try expect("("); try expect("WHERE"); filter = try parseExpression(); try expect(")")
+        }
+        let call = try makeStructuralNode(SQLAggregateCall(function: function, arguments: arguments,
+            distinct: distinct, orderBy: orderBy, filter: filter, withinGroup: withinGroup, schema: schema))
+        if isKeyword("OVER") {
+            try sourceCapture?.recordWindowFunction(.aggregate(call), start: start, end: previousTokenEnd,
+                identifierEnd: identifierEnd, ledger: &structuralLedger)
+            advance()
+            let reference = try parseWindowReference()
+            let function = try makeStructuralNode(WindowFunction.aggregate(call))
+            return try makeStructuralNode(.window(WindowCall(function: function, reference: reference)),
+                at: start, identifierEnd: identifierEnd)
+        }
+        return try makeAggregateExpression(.sql(call), at: start, identifierEnd: identifierEnd)
+    }
+
+    private func parseAnalyticWindow(_ function: SQLWindowFunction, schema: String?, start: Int,
+                                     identifierEnd: Int) throws -> Expression {
+        // Analytic call metadata has no schema field; only the built-in catalog is representable.
+        guard schema == nil || schema == "pg_catalog" else {
+            throw ParseError.unsupportedFeature("Analytic function schema: " + (schema ?? ""))
+        }
+        try expect("(")
+        let arguments = isSymbol(")") ? [] : try parseExpressionList()
+        try expect(")")
+        let call = try makeStructuralNode(WindowFunction.analytic(function, arguments: arguments))
+        try sourceCapture?.recordWindowFunction(call, start: start, end: previousTokenEnd,
+            identifierEnd: identifierEnd, ledger: &structuralLedger)
+        try expect("OVER")
+        let reference = try parseWindowReference()
+        return try makeStructuralNode(.window(WindowCall(function: call, reference: reference)),
+            at: start, identifierEnd: identifierEnd)
+    }
+
+    private func parseGroupConcat(start: Int, identifierEnd: Int) throws -> Expression {
+        try expect("(")
+        let distinct = consumeContextualWord("DISTINCT")
+        let argument = try parseExpression()
+        var separator: String?
+        if isSymbol(",") {
+            advance()
+            guard case .string(let value) = currentToken else {
+                throw ParseError.invalidSyntax(message: "GROUP_CONCAT separator must be a string literal", position: tokenStart)
+            }
+            separator = value; advance()
+        }
+        try expect(")")
+        return try makeAggregateExpression(.groupConcat(argument, separator: separator, distinct: distinct),
+            at: start, identifierEnd: identifierEnd)
+    }
+
+    private func parseWindowReference() throws -> WindowReference {
+        if isSymbol("(") {
+            let specification = try parseWindowSpecification()
+            return try makeStructuralNode(WindowReference.specification(specification))
+        }
+        let start = tokenStart
+        let name = try parseRequiredIdentifier("window name")
+        try sourceCapture?.recordNamedWindowReference(start: start, end: previousTokenEnd, ledger: &structuralLedger)
+        return try makeStructuralNode(WindowReference.named(name))
+    }
+
+    private func parseWindowSpecification() throws -> WindowSpecification {
+        try enterStructuralNesting()
+        defer { leaveStructuralNesting() }
+        let start = tokenStart
+        try expect("(")
+        var inheritedName: String?
+        if !isSymbol(")"), !["PARTITION", "ORDER", "ROWS", "RANGE", "GROUPS"].contains(where: isContextualWord) {
+            inheritedName = try parseRequiredIdentifier("inherited window name")
+        }
+        var partition: [Expression] = []
+        if consumeContextualWord("PARTITION") { try expect("BY"); partition = try parseExpressionList() }
+        var order: [SortKey] = []
+        if consumeContextualWord("ORDER") { try expect("BY"); order = try parseOrderBy() }
+        var frame: WindowFrame?
+        if isContextualWord("ROWS") || isContextualWord("RANGE") || isContextualWord("GROUPS") {
+            let mode: WindowFrameMode = isContextualWord("ROWS") ? .rows : isContextualWord("RANGE") ? .range : .groups
+            advance()
+            let between = consumeContextualWord("BETWEEN")
+            let lower = try parseWindowBound()
+            let upper: WindowFrameBound
+            if between { try expect("AND"); upper = try parseWindowBound() }
+            else { upper = .currentRow }
+            var exclusion: WindowFrameExclusion = .noOthers
+            if consumeContextualWord("EXCLUDE") {
+                if consumeContextualWord("CURRENT") { try expect("ROW"); exclusion = .currentRow }
+                else if consumeContextualWord("GROUP") { exclusion = .group }
+                else if consumeContextualWord("TIES") { exclusion = .ties }
+                else { try expect("NO"); try expectContextualWord("OTHERS") }
+            }
+            frame = try makeStructuralNode(WindowFrame(mode: mode, start: lower, end: upper, exclusion: exclusion))
+        }
+        try expect(")")
+        let specification = try makeStructuralNode(WindowSpecification(inheritedName: inheritedName,
+            partitionBy: partition, orderBy: order, frame: frame))
+        try sourceCapture?.recordWindowSpecification(specification, start: start, end: previousTokenEnd,
+            ledger: &structuralLedger)
+        return specification
+    }
+
+    private func parseWindowBound() throws -> WindowFrameBound {
+        if consumeContextualWord("UNBOUNDED") {
+            if consumeContextualWord("PRECEDING") { return try makeStructuralNode(WindowFrameBound.unboundedPreceding) }
+            try expectContextualWord("FOLLOWING"); return try makeStructuralNode(WindowFrameBound.unboundedFollowing)
+        }
+        if consumeContextualWord("CURRENT") { try expect("ROW"); return try makeStructuralNode(WindowFrameBound.currentRow) }
+        let offset = try parseExpression()
+        if consumeContextualWord("PRECEDING") { return try makeStructuralNode(WindowFrameBound.preceding(offset)) }
+        try expectContextualWord("FOLLOWING"); return try makeStructuralNode(WindowFrameBound.following(offset))
+    }
+
+    private func parseNamedWindows() throws -> [NamedWindow] {
+        guard consumeContextualWord("WINDOW") else { return [] }
+        var windows: [NamedWindow] = []
+        repeat {
+            if !windows.isEmpty { advance() }
+            try admitCollectionElement()
+            let start = tokenStart
+            let name = try parseRequiredIdentifier("window definition name")
+            let identifierEnd = previousTokenEnd
+            try expect("AS")
+            let specification = try parseWindowSpecification()
+            let window = try makeStructuralNode(NamedWindow(name: name, specification: specification))
+            try sourceCapture?.recordNamedWindow(start: start, end: previousTokenEnd,
+                identifierEnd: identifierEnd, ledger: &structuralLedger)
+            windows.append(window)
+        } while isSymbol(",")
+        return windows
     }
 }

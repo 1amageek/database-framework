@@ -223,3 +223,22 @@ Kit regex        -> existing SPARQL regex program
 [SPARQLBoundedRegularExpressionTests](../../Tests/GraphIndexTests/SPARQLBoundedRegularExpressionTests.swift)
 checks matching, rejection, and pattern resource limits. This migration adds no
 shared mutable state or transaction authority.
+
+
+### S09 SQL-only semantic boundary
+
+Kit's groupBy now
+contains GroupingElement: SPARQL accepts only its expression case and converts
+that case explicitly to existing graph grouping plans. SQL grouping sets,
+GROUPING, SQLAggregateCall, window expressions and named WINDOW metadata fail
+through typed graph-language compilation errors. Expression rewrites retain
+existing SPARQL aggregate semantics and do not approximate SQL filters, ordering,
+frames or grouping expansion. Query rebuilds preserve the full Kit envelope.
+[SPARQLExpressionCompilationTests](../../Tests/GraphIndexTests/SPARQLExpressionCompilationTests.swift)
+adds explicit rejection for SQL aggregate, GROUPING, analytic/aggregate window,
+grouping trees and named WINDOW metadata, including a grouped-expression cache
+that must not hide the SQL-only carrier. Its generic COUNT and constant-expression
+grouping witnesses preserve the existing graph contract. The modified rewriters,
+validators and compiler use task-local state on every target and add no isolation
+or conditional-conformance branch. Runtime verification remains required; SQL
+execution remains QueryExecution-owned.

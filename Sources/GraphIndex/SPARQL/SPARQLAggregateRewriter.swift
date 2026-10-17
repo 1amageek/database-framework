@@ -9,6 +9,8 @@ struct SPARQLAggregateRewriter {
     ) throws -> Expression {
         switch expression {
         // SQL conditionals and quantified predicates have no RDF interpretation.
+        case .grouping, .window:
+            throw SPARQLExpressionCompilationError.unsupportedExpression("SQL grouping or window expression")
         case .arrayAccess, .collectionOperation, .collate, .arraySubquery, .wholeRow, .field, .fieldExpansion:
             throw SPARQLExpressionCompilationError.unsupportedExpression("SQL collection expression")
         case .currentValue:
@@ -110,6 +112,9 @@ struct SPARQLAggregateRewriter {
             )
 
         case .aggregate(let aggregate):
+            if case .sql = aggregate {
+                throw SPARQLExpressionCompilationError.unsupportedExpression("SQL aggregate")
+            }
             aggregateOccurrenceCount += 1
             let variable = register(aggregate)
             return .variable(Variable(variable))

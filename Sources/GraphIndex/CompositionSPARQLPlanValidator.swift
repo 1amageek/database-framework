@@ -14,6 +14,9 @@ enum CompositionSPARQLPlanValidator {
                 "SPARQL Composition SELECT does not accept WITH bindings"
             )
         }
+        guard query.windows.isEmpty else {
+            throw CompositionQueryError.unsupportedPlan("SPARQL Composition does not accept SQL WINDOW definitions")
+        }
         guard query.groupBy == nil, query.having == nil else {
             throw CompositionQueryError.unsupportedPlan(
                 "SPARQL grouping requires a global federated solution planner"
