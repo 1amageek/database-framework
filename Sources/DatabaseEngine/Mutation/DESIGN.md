@@ -54,6 +54,33 @@ Compiled fields -> bind supplied INSERT cells / UPDATE assignments
 
 ## Contracts and Invariants
 
+### S15 view and unique-index admission
+
+SQL mutation resolves its target through the same candidate generation as the
+statement read scope. SQLViews' read-only gate runs before physical resolution,
+so ordinary views, materialized views and their private backing relations cannot
+become writable table targets. This also rejects empty UPDATE/DELETE requests;
+the result does not depend on whether rows match.
+
+SQLIndexes owns semantic index key evaluation and partial-predicate implication.
+Mutation uses that contract to extend ON CONFLICT selection with admitted unique
+SQL indexes. A column target matches stable column identities, and a partial
+index is eligible only when its predicate follows from the supplied inference
+predicate. Untargeted DO NOTHING includes expression indexes. The index owner
+evaluates both candidate keys and predicates; Mutation does not duplicate their
+SQL equality or NULL rules. Existing constraint arbiters keep their timing rules.
+
+```text
+candidate SQL resolution -> reject read-only target -> physical runtime
+    -> constraints + eligible SQL unique indexes -> logical conflict selection
+        -> existing authorized mutation transaction -> index maintenance
+```
+
+Focused tests must distinguish named table mutation from view/backing mutation,
+and unique/partial/expression conflict selection from ordinary insertion. Late
+failure must retain the previous rows and index state. No mutable shared state
+or target-specific isolation branch is introduced.
+
 ### S12 Statement Effects and Explicit Temporal Environment
 
 Mutation owns two distinct outcome scopes. Existing public

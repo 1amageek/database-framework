@@ -96,6 +96,9 @@ extension DBContainer {
         authorization: AuthorizationContext
     ) async throws -> DatabaseSchemaPublicationResult {
         let lease = acquirePublishedSchemaLease()
+        guard catalog.indexes == lease.sqlCatalog.catalog.indexes else {
+            throw StorageError.invalidOperation("SQL index changes require physical candidate staging")
+        }
         let snapshot = try lease.sqlCatalog.replacingCatalog(catalog,
             physicalSchema: lease.schema, runtimeConfiguration: lease.runtimeConfiguration)
         let prepared = try prepareSchemaGeneration(lease.schema,
@@ -120,6 +123,9 @@ extension DBContainer {
         guard !idempotencyKey.isEmpty else {
             throw DatabaseSchemaPublicationError.invalidIdempotencyKey
         }
+        guard catalog.indexes == sourceLease.sqlCatalog.catalog.indexes else {
+            throw StorageError.invalidOperation("SQL index changes require physical candidate staging")
+        }
         #if DATABASE_MULTI_BASE
         let schemaEngine = storageTopology.controlDomain.engine
         let schemaRoot = storageTopology.controlDomain.systemRoot
@@ -135,7 +141,7 @@ extension DBContainer {
         let byteCount = try SQLCatalogCodec.admit(catalog,
             fingerprint: sourceLease.fingerprint,
             protectedContracts: sourceLease.sqlCatalog.protectedContracts,
-            limits: .default, runtimeConfiguration: sourceLease.runtimeConfiguration)
+            sqlOwnedEntityNames: sourceLease.sqlCatalog.sqlOwnedEntityNames, limits: .default, runtimeConfiguration: sourceLease.runtimeConfiguration)
         let metadataBytes = MemoryLayout<DatabaseSchemaGeneration>.stride
             + MemoryLayout<DatabaseSchemaStagingOutcome>.stride
             + MemoryLayout<DatabaseSchemaPublicationResult>.stride
@@ -151,7 +157,7 @@ extension DBContainer {
         try await databaseGrantStore.require(.administer,
             authorization: authorization, transaction: transaction)
         #endif
-        let validatesIntegrity = Self.changesSQLIntegrity(from: sourceLease.sqlCatalog.catalog, to: catalog)
+        let validatesIntegrity = try Self.changesSQLIntegrity(from: sourceLease.sqlCatalog.catalog, to: catalog)
         let validateExistingData: (@Sendable () async throws -> Void)?
         if validatesIntegrity {
             validateExistingData = {
@@ -242,7 +248,7 @@ extension DBContainer {
             try await self.databaseGrantStore.require(.administer,
                 authorization: authorization, transaction: transaction)
             #endif
-            let validatesIntegrity = validatesExistingSQLData
+            let validatesIntegrity = try validatesExistingSQLData
                 && Self.changesSQLIntegrity(from: publishedLease.sqlCatalog.catalog, to: sqlCatalog.catalog)
             let validateExistingData: (@Sendable () async throws -> Void)?
             if validatesIntegrity, let validationMeter {
@@ -272,7 +278,7 @@ extension DBContainer {
         return outcome.publication
     }
 
-    private func writeSchemaAggregate(
+    func writeSchemaAggregate(
         _ schema: Schema,
         fingerprint targetFingerprint: SchemaFingerprint,
         expectedFingerprint: SchemaFingerprint,
@@ -285,6 +291,7 @@ extension DBContainer {
         registry: SchemaRegistry,
         transaction: any TransactionAccess,
         advancesSQLWriterGeneration: Bool = false,
+        registryMode: SchemaRegistryPersistMode = .strict,
         validateExistingData: (@Sendable () async throws -> Void)? = nil
     ) async throws -> SchemaPublicationTransactionOutcome {
         let state = try await Self.loadSchemaCatalog(registry: registry,
@@ -331,15 +338,15 @@ extension DBContainer {
         }
         let next = actualGeneration.addingReportingOverflow(1)
         guard !next.overflow else { throw DatabaseSchemaPublicationError.generationOverflow }
-        try await validateExistingData?()
         if advancesSQLWriterGeneration {
             try transaction.setValue(Tuple(next.partialValue).pack(),
                 for: Self.sqlWriterGenerationKey(metadataSubspace: metadataSubspace))
         }
         try await Self.persistSchemaCatalog(schema, fingerprint: targetFingerprint,
             preparedGeneration: preparedGeneration, generation: next.partialValue,
-            sqlCatalog: sqlCatalog, registry: registry, mode: .strict, metadataSubspace: self.metadataSubspace,
+            sqlCatalog: sqlCatalog, registry: registry, mode: registryMode, metadataSubspace: self.metadataSubspace,
             transaction: transaction)
+        try await validateExistingData?()
         let result = DatabaseSchemaPublicationResult(previousFingerprint: actualFingerprint,
             fingerprint: targetFingerprint, schemaVersion: schema.version, generation: next.partialValue,
             indexPhysicalFingerprint: preparedGeneration.indexPhysicalFingerprint,
@@ -354,7 +361,8 @@ extension DBContainer {
     ) throws -> SQLCatalogSnapshot {
         let stored = SQLCatalogStoredState(catalog: lease.sqlCatalog.catalog,
             physicalSchemaFingerprint: lease.sqlCatalog.physicalSchemaFingerprint,
-            protectedContracts: lease.sqlCatalog.protectedContracts, digest: lease.sqlCatalog.digest)
+            protectedContracts: lease.sqlCatalog.protectedContracts, digest: lease.sqlCatalog.digest,
+            sqlOwnedEntityNames: lease.sqlCatalog.sqlOwnedEntityNames)
         return try stored.reconciledForApplication(physicalSchema: lease.schema,
             targetPhysicalSchema: schema, runtimeConfiguration: runtimeConfiguration, candidate: candidate)
     }
@@ -378,16 +386,19 @@ extension DBContainer {
             schema: schema,
             transactionCapabilities: transactionCapabilities
         )
-        let layouts = try IndexRuntimeConfigurationValidator.validate(
+        let physicalLayouts = try IndexRuntimeConfigurationValidator.validate(
             schema: schema,
             runtimeConfiguration: runtimeConfiguration
         )
+        let catalog = catalogSnapshot.catalog
+        let layouts = try Self.sqlIndexPhysicalLayouts(catalog, including: physicalLayouts)
         return try DatabasePreparedSchemaGeneration(
             schemaFingerprint: SchemaManifest(schema: schema).fingerprint(),
             runtimeConfiguration: runtimeConfiguration,
             securityConfiguration: securityConfiguration,
             indexPhysicalLayouts: layouts,
-            sqlCatalogDigest: catalogSnapshot.digest
+            sqlCatalogDigest: catalogSnapshot.digest,
+            sqlIndexIdentities: SQLIndexRuntime.identities(catalog: catalog)
         )
     }
 
@@ -397,17 +408,20 @@ extension DBContainer {
     package func prepareMigrationSchemaGeneration(
         _ schema: Schema
     ) throws -> DatabasePreparedSchemaGeneration {
-        let layouts = try IndexRuntimeConfigurationValidator.validate(
+        let physicalLayouts = try IndexRuntimeConfigurationValidator.validate(
             schema: schema,
             runtimeConfiguration: runtimeConfiguration,
             allowingConfigurationsOutsideSchema: true
         )
+        let catalog = acquireActiveSchemaLease().sqlCatalog.catalog
+        let layouts = try Self.sqlIndexPhysicalLayouts(catalog, including: physicalLayouts)
         return try DatabasePreparedSchemaGeneration(
             schemaFingerprint: SchemaManifest(schema: schema).fingerprint(),
             runtimeConfiguration: runtimeConfiguration,
             securityConfiguration: securityConfiguration,
             indexPhysicalLayouts: layouts,
-            sqlCatalogDigest: acquireActiveSchemaLease().sqlCatalog.digest
+            sqlCatalogDigest: acquireActiveSchemaLease().sqlCatalog.digest,
+            sqlIndexIdentities: SQLIndexRuntime.identities(catalog: catalog)
         )
     }
 
@@ -998,7 +1012,8 @@ extension DBContainer {
     ) async throws {
         let state = SQLCatalogStoredState(catalog: sqlCatalog.catalog,
             physicalSchemaFingerprint: sqlCatalog.physicalSchemaFingerprint,
-            protectedContracts: sqlCatalog.protectedContracts, digest: sqlCatalog.digest)
+            protectedContracts: sqlCatalog.protectedContracts, digest: sqlCatalog.digest,
+            sqlOwnedEntityNames: sqlCatalog.sqlOwnedEntityNames)
         try await persistSchemaCatalog(schema, fingerprint: fingerprint,
             preparedGeneration: preparedGeneration, generation: generation, sqlCatalog: state,
             registry: registry, mode: mode, metadataSubspace: metadataSubspace, transaction: transaction)
@@ -1334,7 +1349,7 @@ extension DBContainer {
     }
 }
 
-private struct SchemaPublicationTransactionOutcome: Sendable {
+struct SchemaPublicationTransactionOutcome: Sendable {
     let publication: DatabaseSchemaPublicationResult
     let shouldPublishGeneration: Bool
 }

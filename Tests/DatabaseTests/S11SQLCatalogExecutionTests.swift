@@ -462,7 +462,8 @@ struct S11SQLCatalogExecutionTests {
         }
         let title = try #require(exact.columns.first { $0.fieldNumber == 2 })
         let subset = try SQLRelation(id: exact.id, namespaceID: exact.namespaceID, name: exact.name,
-            entityName: exact.entityName, columns: [title])
+            entityName: exact.entityName, columns: [title],
+            fieldNumberHighWaterMark: exact.fieldNumberHighWaterMark)
         try await publish(SQLCatalog(namespaces: container.sqlCatalog.namespaces, relations: [subset]),
             in: container, key: "security-subset")
         let wildcard = try await reader.executeSQL("SELECT * FROM documents ORDER BY 1")

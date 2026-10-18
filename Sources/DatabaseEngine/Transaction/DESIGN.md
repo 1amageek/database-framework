@@ -578,3 +578,37 @@ method exposes no model or read capability. This derived write result does
 not require entity GET authority. Journal rollback restores the model used
 for the digest together with all other effects. Ordinary reads retain their
 existing entity and field policy checks.
+
+### S15 physical candidate selection
+
+[Schema](../Schema/DESIGN.md) owns candidate preparation, complete source-to-target
+physical conversion, root admission and atomic aggregate persistence. This actor
+owns the current candidate lease and requires a prepared candidate's source lease
+to be its exact current lease. The mutation maintenance service is derived from
+that lease's immutable runtime, so the existing checkpoint record restores schema,
+policy, runtime and maintainer selection together.
+
+```text
+current lease -> prepare physical candidate -> stage in caller transaction
+  -> select new lease -> rehydrate existing selected-root mutation journal models
+  -> later statements / final validation
+checkpoint rollback -> storage undo -> journal undo -> retained prior lease
+```
+
+Physical rewrites update existing journal entries through the ordinary undo path;
+they do not clear checkpoint history or evaluate conversion expressions twice.
+Journal rehydration reads only the attempt's selected root even when the global
+physical schema change transforms multiple retained roots. Every admitted actor operation enters an execution scope bound to its current
+lease and rebinds the ambient transaction's schema admission to that same lease.
+After the operation returns, immediate constraint validation enters a fresh scope:
+staging may have replaced the candidate during the operation. Journal rehydration
+and final SQL/maintainer validation also enter the current-lease scope. Container
+Directory resolution therefore receives the same schema as the actor runtime and
+catalog, including a newly created table with CHECK before its first INSERT.
+The current lease is
+available internally through `currentSQLSchemaLease()` so callers cannot prepare
+from a stale statement TaskLocal after an earlier DDL statement.
+
+`S15SchemaStagingTests` owns pre-DDL writes, candidate visibility, physical
+checkpoint rollback and failed-conversion rollback. Final publication remains the
+existing outer commit owner's responsibility.

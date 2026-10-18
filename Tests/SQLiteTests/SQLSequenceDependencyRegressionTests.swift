@@ -11,7 +11,7 @@ import Testing
 
 @Suite("S13 stable sequence default dependencies", .timeLimit(.minutes(1)), .heartbeat)
 struct SQLSequenceDependencyRegressionTests {
-    @Test("Literal defaults retain sequence identity across caller paths, DROP, rollback and file reopen", arguments: [false, true])
+    @Test("Literal defaults retain sequence identity across rename, namespace rename, DROP, rollback and file reopen", arguments: [false, true])
     func stableDefaultDependencies(unknownLiteral: Bool) async throws {
         let database = try SQLiteTestDatabase(prefix: "s13-sequence-dependencies")
         defer { database.remove() }
@@ -21,11 +21,17 @@ struct SQLSequenceDependencyRegressionTests {
         try await publish(original, in: first, key: "initial")
         _ = try await execute(first, [insert("first")])
         #expect(try await values("first", in: first) == row(10, 100))
+        _ = try await execute(first, [
+            .statement(.ddl(.alterSequence(SQLAlterSequence(name: TableRef(schema: "app", table: "dep"), renameTo: "renamed")))),
+            .statement(.ddl(.renameSchema(name: "public", to: "renamed_public")))])
+        let published = first.sqlCatalog
+        #expect(published.relations[0].columns[1].sequenceBindings == [try SQLSequenceBinding(originalName: "dep", sequenceID: "app-sequence-id")])
+        #expect(published.relations[0].columns[2].sequenceBindings == [try SQLSequenceBinding(originalName: "public.dep", sequenceID: "public-sequence-id")])
         await first.shutdown()
 
         let reopened = try await restore(database)
         defer { await reopened.shutdown() }
-        #expect(reopened.sqlCatalog == original)
+        #expect(reopened.sqlCatalog == published)
         _ = try await execute(reopened, [insert("reopened")])
         #expect(try await values("reopened", in: reopened) == row(11, 101))
         // An unrelated DROP sees neither public nor app in its caller path.
@@ -47,7 +53,7 @@ struct SQLSequenceDependencyRegressionTests {
         let retained = try #require(reopened.sqlCatalog.relations.first)
         #expect(retained.columns[1].policy == .input(defaultExpression: nil))
         #expect(retained.columns[1].backing == original.relations[0].columns[1].backing)
-        #expect(retained.columns[2...].elementsEqual(original.relations[0].columns[2...]))
+        #expect(retained.columns[2...].elementsEqual(published.relations[0].columns[2...]))
         #expect(retained.constraints == original.relations[0].constraints)
         _ = try await execute(reopened, [insert("cascade")])
         #expect(try await values("cascade", in: reopened) == row(nil, 103))
@@ -76,6 +82,7 @@ struct SQLSequenceDependencyRegressionTests {
         defer { await container.shutdown() }
         let admitted = try catalog(unknownLiteral: true)
         try await publish(admitted, in: container, key: "initial")
+        let published = container.sqlCatalog
         let generation = container.schemaGeneration
         let missing = try SQLCatalog(namespaces: admitted.namespaces, relations: admitted.relations,
             sequences: admitted.sequences.filter { $0.id != "app-sequence-id" })
@@ -91,7 +98,7 @@ struct SQLSequenceDependencyRegressionTests {
             try await publish(retargeted, in: container, key: "retargeted")
         }
         #expect(container.schemaGeneration == generation)
-        #expect(container.sqlCatalog == admitted)
+        #expect(container.sqlCatalog == published)
         _ = try await execute(container, [insert("survives")])
         #expect(try await values("survives", in: container) == row(10, 100))
     }

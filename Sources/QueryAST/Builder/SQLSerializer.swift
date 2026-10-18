@@ -15,7 +15,7 @@ public struct SQLSerializer: SQLSerializing {
 
     private func validateMutation(_ statement: QueryStatement) throws(SQLSerializationError) {
         switch statement {
-        case .insert, .update, .delete, .with, .merge, .truncate:
+        case .insert, .update, .delete, .with, .merge, .truncate, .ddl:
             do { try QueryStructuralValidator.validate(statement, limits: limits) }
             catch { throw .invalidStructure(error.description) }
         default: break
@@ -1022,6 +1022,7 @@ extension SQLTextWriter {
             }
             try append(value.identity == .restart ? " RESTART IDENTITY" : " CONTINUE IDENTITY")
             try append(value.references == .cascade ? " CASCADE" : " RESTRICT")
+        case .ddl(let value): try ddl(value)
         case .with: throw .invalidStructure("WITH must use statement continuation")
         case .createGraph(let value): try createGraph(value)
         case .dropGraph(let name): try append("DROP PROPERTY GRAPH "); try identifier(name)

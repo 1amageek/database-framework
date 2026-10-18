@@ -8,6 +8,7 @@ public enum SQLCatalogBindingError: Error, Sendable, Equatable {
     case physicalFingerprintMismatch
     case digestMismatch
     case invalidProtection(String)
+    case invalidSQLOwnership(String)
     case protectedRelationRemoved(String)
     case relationRetargeted(String)
     case columnRetargeted(relation: String, column: String)

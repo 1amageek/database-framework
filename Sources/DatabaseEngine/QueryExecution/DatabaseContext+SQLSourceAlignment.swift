@@ -23,9 +23,47 @@ extension DatabaseContext {
     func alignCatalogSource(_ relation: CanonicalRelation, table: TableRef,
         resolution: SQLReadResolution?, workMeter: DatabaseWorkMeter,
         authorization: DatabaseReadAuthorization? = nil,
-        assigningCandidateOrdinals: Bool = false) async throws -> CanonicalRelation {
+        assigningCandidateOrdinals: Bool = false,
+        resolvedRelation: SQLCatalogResolvedRelation? = nil) async throws -> CanonicalRelation {
         guard let resolution else { return relation }
-        let resolved = try resolution.resolve(table)
+        let resolved = try resolvedRelation ?? resolution.resolve(table)
+        if resolvedRelation == nil, resolution.viewBindings != nil,
+           let current = resolution.snapshot.resolvedRelation(id: resolved.declaration.id) {
+            let aligned = try await alignCatalogSource(relation, table: table, resolution: resolution,
+                workMeter: workMeter, authorization: authorization,
+                assigningCandidateOrdinals: assigningCandidateOrdinals, resolvedRelation: current)
+            let indices = try resolved.columns.map { column -> Int in
+                guard let physical = current.columns.first(where: {
+                    SQLCatalogName($0.declaration.id) == SQLCatalogName(column.declaration.id)
+                }), let slot = aligned.schema.layout.slots.firstIndex(where: {
+                    CanonicalSourceName.equal($0.name, physical.declaration.name)
+                }) else {
+                    throw SQLViewExecutionError.missingColumn(relation: current.declaration.id, column: column.declaration.id)
+                }
+                return slot
+            }
+            let claim = try workMeter.reserveIntermediate(bytes: UInt64(indices.count) * 256 + 256, at: .bindingCandidate)
+            let schema = try CanonicalRelationSchema(scopes: [CanonicalRelationScope(name: table.effectiveName,
+                columns: resolved.columns.map { $0.declaration.name }, types: resolved.columns.map { .some($0.type) },
+                nullability: resolved.columns.map { $0.isNullable })])
+            let layout = CanonicalSourceLayout(slots: schema.layout.slots, scopes: schema.layout.scopes,
+                reservation: claim, types: schema.slotTypes, nullability: schema.slotNullability,
+                payloadLeases: [aligned.rows.payloadLease])
+            var rows = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(workMeter: workMeter,
+                stage: .bindingCandidate, layout: DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self),
+                expectedCount: aligned.rows.count)
+            for row in aligned.rows {
+                try workMeter.consume(at: .bindingCandidate)
+                try rows.append(footprint: CanonicalRelationalFootprintMeter.sourceAliasFootprint(of: row, workMeter: workMeter)) {
+                    CanonicalSourceRow(values: indices.map { row.values[$0] }, layout: layout,
+                        annotations: row.annotations, version: row.version,
+                        payloadLeases: row.payloadLeases + [aligned.rows.payloadLease], sourcePresence: row.sourcePresence,
+                        candidateOrdinal: row.candidateOrdinal, candidateIdentity: row.candidateIdentity)
+                }
+            }
+            return CanonicalRelation(schema: schema.retaining(layout: layout),
+                rows: try rows.finish().moveToSharedOwnership(at: .bindingCandidate), schemaLayout: layout)
+        }
         let allowed = authorization?.admittedFieldNames(forEntityName: resolved.entity.name)
         let footprint = try DatabaseIntermediateCollectionMeter.arrayFootprint(
             count: resolved.columns.count, element: Int?.self)

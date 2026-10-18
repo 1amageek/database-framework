@@ -65,7 +65,7 @@ package enum SQLSequenceRuntime {
 
     package static func nextValue(sequenceID: String, occurrence: String) async throws -> Int64 {
         guard let request else { throw SQLSequenceExecutionError.requestRequired }
-        let catalog = try request.context.makeSQLReadResolution(searchPath: request.searchPath,
+        let catalog = try request.context.makeSQLReadResolution(searchPath: ActiveSQLSession.binding?.resolution.searchPath ?? request.searchPath,
             workMeter: requestWorkMeter()).snapshot.catalog
         guard let sequence = catalog.sequences.first(where: { $0.id.utf8.elementsEqual(sequenceID.utf8) }) else {
             throw SQLSequenceExecutionError.unknownSequence(sequenceID)
@@ -83,7 +83,7 @@ package enum SQLSequenceRuntime {
     }
 
     static func resolve(name: String, request: SQLSequenceRequest) throws -> SQLSequence {
-        let resolution = try request.context.makeSQLReadResolution(searchPath: request.searchPath,
+        let resolution = try request.context.makeSQLReadResolution(searchPath: ActiveSQLSession.binding?.resolution.searchPath ?? request.searchPath,
             workMeter: requestWorkMeter())
         let parts = try identifiers(name)
         let namespaces: [String]

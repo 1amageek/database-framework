@@ -234,6 +234,54 @@ the candidate allowance. A candidate cannot retroactively admit a stale writer.
 | Harmless rename retains old meaning | Old-lease mutation after rename |
 | Foreign roots are never scanned through control storage | Explicit cross-domain rejection |
 
+### S15 physical candidate preparation and transformation
+
+SQL DDL extends the transaction-owned candidate path with an explicitly prepared
+physical schema. Application reconciliation remains a separate authority and is
+never used by SQL DDL to replace or remove a persisted compiled-model witness.
+The candidate retains the old generation while constructing its new runtime,
+Directory layer map, security delegate, physical layouts, catalog and admission
+reservation before any storage mutation. Unchanged runtime registrations and
+injected capability registries are retained; changed dynamic entities receive
+schema-driven registrations from the same explicitly composed providers.
+
+```text
+old generation + proposed physical schema/catalog
+  -> static protection + complete candidate runtime/layout/security admission
+  -> caller-owned transaction and same storage domain
+      -> CAS + staged complete target metadata and writer floor
+      -> old runtime: read/decode + old index removal
+      -> target runtime: transform/validate + item/blob write + new index insertion
+      -> exact retired index cleanup (Directory nodes remain)
+      -> final SQL integrity validation -> idempotent success record
+  -> checkpoint retains exact immutable candidate
+  -> authoritative outer commit -> synchronous prepared publication
+```
+
+The physical aggregate writer may admit breaking registry changes only for the
+exact entity set whose complete source rows were transformed or deleted in the
+same attempt. A static Directory is opened once from its declaration; only
+entities with dynamic Directory components use partition-catalog enumeration.
+The Directory enumerator intentionally returns no partitions for a static
+entity, which must never be interpreted as absence of its physical row store. A candidate schema alone does not prove that transformation.
+The complete target aggregate is staged after generation CAS and before row
+conversion and integrity validation, so target-bound reads validate against the
+same transaction's target physical fingerprint. Validation failure poisons the
+transaction; only checkpoint rollback or full abort can discard its staged
+metadata and row effects. An idempotent success record is written only after
+validation succeeds, and publication still waits for confirmed outer commit.
+Physical field and index write-meaning changes advance the durable SQL writer
+floor; catalog-only renames retain the existing harmless-rename behavior.
+The transaction selects mutation maintainers from its current immutable lease;
+checkpoint restoration therefore restores runtime and maintainer selection as
+one value. Failed conversion, policy, index, constraint or storage operations
+abort or roll back through the existing checkpoint owner.
+
+S15 schema tests must exercise successful conversion and failure rollback,
+checkpoint restoration, old-lease writer rejection, static protection, item/blob
+cleanup, exact index cleanup and retained Directory identity. File-backed reopen
+and the whole SQL DDL matrix are owned by the task integration verification.
+
 ### S12 transaction-owned candidate contract
 
 The S12 trusted staging seam accepts a catalog-only declaration plus the outer
@@ -468,3 +516,14 @@ application-owned protection regeneration, and global migration reconciliation.
 The package-owned harness runs narrow selectors first, then affected target
 and consolidated package/backend lanes once the implementation converges.
 No build or behavioral execution is claimed by this design document.
+
+### Normal application composition with durable SQL entities
+
+Normal `DBContainer.open(for:)` composes the current application declaration with
+persisted SQL-owned physical entities through SQLCatalog's internal durable
+witness. Runtime reconstruction uses the application's explicitly composed entity
+and authorization factories. No identifier prefix, missing compiled witness, or
+current runtime name establishes SQL ownership. The final composed schema,
+runtime, catalog and physical layout are validated together before bootstrap or
+publication. This preserves ordinary normal-open behavior after SQL CREATE TABLE
+or MATERIALIZED VIEW without switching the host to a different opening API.

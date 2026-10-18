@@ -4,7 +4,7 @@ import StorageKit
 
 extension DBContainer {
     /// Names and input defaults do not change the validity of retained rows.
-    static func changesSQLIntegrity(from previous: SQLCatalog, to candidate: SQLCatalog) -> Bool {
+    static func changesSQLIntegrity(from previous: SQLCatalog, to candidate: SQLCatalog) throws -> Bool {
         for relation in candidate.relations {
             let old = previous.relations.first { SQLConstraintCompiler.same($0.id, relation.id) }
             if relation.primaryKeyColumnIDs?.map(SQLCatalogName.init) != old?.primaryKeyColumnIDs?.map(SQLCatalogName.init)
@@ -12,13 +12,17 @@ extension DBContainer {
             if relation.constraints.count != (old?.constraints.count ?? 0) { return true }
             for constraint in relation.constraints {
                 guard let prior = old?.constraints.first(where: { SQLConstraintCompiler.same($0.id, constraint.id) }),
-                    prior.kind == constraint.kind, prior.timing == constraint.timing else { return true }
+                    try SQLCatalogSemanticContract.constraint(prior.kind, relation: old!)
+                        == SQLCatalogSemanticContract.constraint(constraint.kind, relation: relation),
+                    prior.timing == constraint.timing else { return true }
             }
             for column in relation.columns {
                 let prior = old?.columns.first { SQLConstraintCompiler.same($0.id, column.id) }
                 switch (column.policy, prior?.policy) {
                 case (.generated(let expression), .generated(let oldExpression)):
-                    if expression != oldExpression || column.backing != prior?.backing { return true }
+                    if try SQLCatalogSemanticContract.expression(expression, relation: relation)
+                        != SQLCatalogSemanticContract.expression(oldExpression, relation: old!)
+                        || column.backing != prior?.backing { return true }
                 case (.generated, _), (.identity, _):
                     if column.policy != prior?.policy || column.backing != prior?.backing { return true }
                 case (_, .generated), (_, .identity): return true

@@ -182,3 +182,50 @@ attempt and independent allocator transaction. Its collecting box leaves that
 scope before the final Ready transition; no transaction, schema/Base request
 lease or sequence recovery operation survives public promotion. SQLSequences
 owns queue cancellation/deadline behavior and durable allocator semantics.
+
+
+### S15 SQL-owned physical index generations
+
+Core bootstrap and schema restoration consume Schema's validated SQL catalog
+snapshot and SQLIndexes' storage identities. The SDK runtime validator first
+resolves schema-owned layouts; Schema then adds catalog-owned SQL index layouts.
+Both index sets enter the retained generation and persisted layout admission.
+SQL namespaces are lookup metadata and never select a Directory or authority.
+
+```text
+declared application schema + runtime
+    -> provider/layout validation before any storage transaction
+    -> persisted schema + SQL catalog
+    -> ownership merge + application contract reconciliation
+    -> merged SDK layout validation + SQL index identities/layouts
+    -> physical fingerprint and persisted-layout equality
+    -> immutable generation publication
+    -> index initialization
+```
+
+The physical fingerprint includes SQL index definition and layout identities,
+so changing an expression, predicate, binding, uniqueness or NULL semantics
+invalidates an old physical generation even when its storage name is unchanged.
+Ordinary application open and schema-driven restore retain the same complete
+layout map, reject persisted mismatches before index initialization, and preserve
+compiled model protection. Normal application open validates the supplied
+application runtime and index providers before any storage transaction or
+Directory preparation. It then asks SQLCatalog to merge its persisted
+physical-ownership witnesses with the current declared application schema. Only entities created by admitted SQL physical candidates survive absent
+application declarations; current application and compiled-model contracts remain
+authoritative. Core rebuilds the immutable runtime through its existing injected
+factories, then validates the merged schema, storage requirements and layouts
+before reconciliation and publication. An unchanged schema reuses its admitted
+provider layouts; a merged schema validates its effective layouts again. Invalid
+application providers therefore fail without storage access, while SQL ownership
+restoration still validates the complete generation. Logical catalog edits cannot grant physical
+ownership, and SQL namespaces do not choose this merge.
+Migration catalog publication derives identities from
+the exact reconciled catalog it persists. Schema owns candidate preparation and
+transactional publication; Core consumes that aggregate without bypassing
+reconciliation or separating row, runtime and catalog visibility.
+
+[S15CoreSQLIndexGenerationTests](../../../Tests/DatabaseEngineTests/S15CoreSQLIndexGenerationTests.swift)
+owns definition-sensitive fingerprints and both reopen paths, including rejection
+of incomplete persisted SQL layouts. The existing actor/Mutex state owners and
+Sendable contracts remain common to Native, WASM and Embedded.

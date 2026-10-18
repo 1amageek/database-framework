@@ -447,3 +447,29 @@ commit-unknown and Ready rules remain authoritative. Per-statement registry
 owners are discarded before a checkpoint transition, while completed output
 claims remain held by the block until its final transition. Native, ordinary
 WASM and Embedded share the same immutable inputs and synchronized runtime state.
+
+
+## S15 DDL Composition
+
+[SQLDDL](../SQLDDL/DESIGN.md) owns declaration binding and candidate construction.
+SQLBlock admits DDL with administer/read/write access in the existing single
+transaction and temporal statement scope. A request-owned immutable identity
+is reused through sequence-allocation replay. DDL command results remain in the
+same collecting buffer as SELECT/DML and cannot become Ready before commit and
+authoritative close.
+
+```text
+DDL statement -> stable request IDs -> schema candidate + row/index rewrites
+  -> following statements see the staged catalog
+  -> rollback to checkpoint restores prior catalog/data/index state
+  -> temporary namespace removal -> commit/close -> ordered public results
+```
+
+Each statement derives an effective search path from the current transaction
+catalog. A block-private temporary namespace precedes the requested path only
+while it exists. Qualified permanent names retain their exact meaning. Successful
+collection removes every temporary relation and its owned dependencies before
+commit. Failure relies on the outer authoritative rollback, so no private
+namespace or physical generation becomes durable. No process or cross-request
+session state is introduced. TRUNCATE invokes the same read-only view/MV rejection
+contract as ordinary mutations before physical target resolution.

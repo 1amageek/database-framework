@@ -139,7 +139,7 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
             throw DatabaseEntityStatementMutationError.unsupportedStatement(
                 "graph definitions are managed by the application runtime"
             )
-        case .with, .merge, .truncate:
+        case .with, .merge, .truncate, .ddl:
             throw DatabaseEntityStatementMutationError.unsupportedStatement(
                 "SQL-only statements require the SQL statement executor"
             )
@@ -547,6 +547,7 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
     }
 
     private func resolve(_ table: TableRef) throws -> ResolvedEntity {
+        try sqlSession?.resolution.rejectReadOnlyMutation(table)
         let selected = try sqlSession?.resolution.resolve(table)
         guard selected != nil || table.schema == nil else {
             throw DatabaseEntityStatementMutationError.unsupportedStatement(
@@ -1175,7 +1176,16 @@ extension DatabaseEntityStatementMutationExecutor {
     private struct SQLArbiter: Sendable {
         let ids: [String]
         let nulls: SQLNullUniqueness
-        let attributes: SQLConstraintAttributes
+        let attributes: SQLConstraintAttributes?
+        let index: SQLCompiledIndex?
+
+        init(ids: [String], nulls: SQLNullUniqueness,
+            attributes: SQLConstraintAttributes? = nil, index: SQLCompiledIndex? = nil) {
+            self.ids = ids
+            self.nulls = nulls
+            self.attributes = attributes
+            self.index = index
+        }
     }
 
     private func executePreparedSQL(_ input: QueryStatement, preparation: SQLMutationPreparation,
@@ -1455,7 +1465,8 @@ extension DatabaseEntityStatementMutationExecutor {
 }
 
 extension DatabaseEntityStatementMutationExecutor {
-    private func sqlArbiters(_ query: InsertQuery, relation: SQLRelation) throws -> [SQLArbiter] {
+    private func sqlArbiters(_ query: InsertQuery, relation: SQLRelation,
+        workMeter: DatabaseWorkMeter) throws -> [SQLArbiter] {
         var keys: [SQLArbiter] = []
         if let ids = relation.primaryKeyColumnIDs, let attributes = relation.primaryKeyConstraint {
             keys.append(SQLArbiter(ids: ids, nulls: .notDistinct, attributes: attributes))
@@ -1465,31 +1476,53 @@ extension DatabaseEntityStatementMutationExecutor {
                 keys.append(SQLArbiter(ids: ids, nulls: nulls, attributes: constraint.attributes))
             }
         }
+        if let catalog = sqlCatalog, let schema = sqlSchema {
+            for index in catalog.indexes where index.unique
+                && SQLConstraintCompiler.same(index.relationID, relation.id) {
+                let compiled = try SQLIndexCompiler.compile(index, relation: relation,
+                    physicalSchema: schema, workMeter: workMeter)
+                keys.append(SQLArbiter(ids: SQLIndexCompiler.conflictColumns(index, relation: relation) ?? [],
+                    nulls: index.nulls, index: compiled))
+            }
+        }
         let selected: [SQLArbiter]
         switch query.conflictTarget {
         case .columns(let names, let predicate):
-            guard predicate == nil else { throw SQLMutationError.unsupportedConflictInference }
             let ids = try names.map { name -> SQLCatalogName in
                 guard let column = relation.columns.first(where: { SQLConstraintCompiler.same($0.name, name) }) else { throw SQLMutationError.invalidConflictTarget }
                 return SQLCatalogName(column.id)
             }
             guard Set(ids).count == ids.count else { throw SQLMutationError.invalidConflictTarget }
-            selected = keys.filter { Set($0.ids.map(SQLCatalogName.init)) == Set(ids) }
+            selected = try keys.filter { arbiter in
+                guard Set(arbiter.ids.map(SQLCatalogName.init)) == Set(ids) else { return false }
+                guard let index = arbiter.index else { return true }
+                return try SQLIndexCompiler.predicateImplies(query: predicate, index: index.declaration, relation: relation)
+            }
         case .constraint(let name):
-            selected = keys.filter { SQLConstraintCompiler.same($0.attributes.name, name) }
+            selected = keys.filter { arbiter in
+                arbiter.attributes.map { SQLConstraintCompiler.same($0.name, name) } ?? false
+            }
         case nil:
             if case .doUpdate = query.onConflict { throw SQLMutationError.invalidConflictTarget }
             selected = keys
         }
         if query.conflictTarget != nil && selected.isEmpty { throw SQLMutationError.invalidConflictTarget }
-        if query.conflictTarget != nil && selected.contains(where: { if case .deferrable = $0.attributes.timing { return true }; return false }) {
+        if query.conflictTarget != nil && selected.contains(where: { if case .deferrable? = $0.attributes?.timing { return true }; return false }) {
             throw SQLMutationError.deferrableConflictTarget
         }
-        return selected.filter { if case .deferrable = $0.attributes.timing { return false }; return true }
+        return selected.filter { if case .deferrable? = $0.attributes?.timing { return false }; return true }
     }
 
     private func sqlKeyMatches(_ left: CanonicalSourceRow, _ right: CanonicalSourceRow,
-        arbiter: SQLArbiter, relation: SQLRelation, workMeter: DatabaseWorkMeter) throws -> Bool {
+        arbiter: SQLArbiter, relation: SQLRelation, workMeter: DatabaseWorkMeter) async throws -> Bool {
+        if let index = arbiter.index {
+            guard let a = try await index.key(row: left, environment: temporalEnvironment!, workMeter: workMeter),
+                  let b = try await index.key(row: right, environment: temporalEnvironment!, workMeter: workMeter) else {
+                return false
+            }
+            if arbiter.nulls == .distinct && (a.hasNull || b.hasNull) { return false }
+            return try a.equal(to: b, workMeter: workMeter)
+        }
         if arbiter.nulls == .distinct && (SQLConstraintRows.nullCount(left, ids: arbiter.ids, relation: relation) > 0
             || SQLConstraintRows.nullCount(right, ids: arbiter.ids, relation: relation) > 0) { return false }
         let a = try SQLConstraintRows.key(left, ids: arbiter.ids, relation: relation,
@@ -1504,7 +1537,7 @@ extension DatabaseEntityStatementMutationExecutor {
         actions: inout SQLMutationArray<SQLAction>, workMeter: DatabaseWorkMeter) async throws {
         guard let relation = entity.relation else { throw SQLMutationError.invalidConflictTarget }
         let columns = try insertColumns(query.columns, entity: entity)
-        let arbiters = try query.onConflict.map { _ in try sqlArbiters(query, relation: relation) } ?? []
+        let arbiters = try query.onConflict.map { _ in try sqlArbiters(query, relation: relation, workMeter: workMeter) } ?? []
         let row: CanonicalSourceRow
         if let inputRow { row = inputRow }
         else { row = CanonicalSourceRow(values: [], layout: CanonicalSourceLayout(slots: [])) }
@@ -1605,7 +1638,7 @@ extension DatabaseEntityStatementMutationExecutor {
                     let action = actions.elements.last(where: { $0.identity == target.identity })
                     if action?.change.kind == .delete { continue }
                     let current = action?.row ?? target.row
-                    if try sqlKeyMatches(current, candidateRow, arbiter: arbiter, relation: entity.relation!, workMeter: workMeter) {
+                    if try await sqlKeyMatches(current, candidateRow, arbiter: arbiter, relation: entity.relation!, workMeter: workMeter) {
                         conflict = SQLTarget(model: action?.change.newModel ?? target.model, row: current, identity: target.identity)
                         conflictIsModified = action != nil; break
                     }
@@ -1613,7 +1646,7 @@ extension DatabaseEntityStatementMutationExecutor {
                 if conflict != nil { break }
                 for action in actions.elements where action.change.kind == .insert {
                     guard let row = action.row, let model = action.change.newModel else { continue }
-                    if try sqlKeyMatches(row, candidateRow, arbiter: arbiter, relation: entity.relation!, workMeter: workMeter) {
+                    if try await sqlKeyMatches(row, candidateRow, arbiter: arbiter, relation: entity.relation!, workMeter: workMeter) {
                         conflict = SQLTarget(model: model, row: row, identity: action.identity); conflictIsModified = true; break
                     }
                 }
@@ -1716,7 +1749,9 @@ extension DatabaseEntityStatementMutationExecutor {
         switch input {
         case .insert(let query):
             try insert(query, CanonicalSourceLayout(slots: []))
-            if query.onConflict != nil { _ = try sqlArbiters(query, relation: entity.relation!) }
+            if query.onConflict != nil {
+                _ = try sqlArbiters(query, relation: entity.relation!, workMeter: scope.execution.workMeter)
+            }
             if case .doUpdate(let values, let filter) = query.onConflict {
                 let layout = try sqlNullRow(targetLayout).merged(with: sqlNullRow(targetLayout).applyingAlias("excluded")).layout
                 try assignments(values, layout); try predicate(filter, layout)

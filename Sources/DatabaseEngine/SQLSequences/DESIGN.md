@@ -111,16 +111,26 @@ grant racing cancellation/deadline is returned before the queued request fails.
 
 ### Numeric ALTER and constant dependencies
 
-S13 ALTER changes numeric options and ownership with stable namespace/name. A
-logical rename or namespace move fails explicitly at the S15 gate; S15 must
-preserve the identity-binding contract before enabling those changes.
+SQLSequence persists its declared smallint/integer/bigint type. ALTER without
+AS preserves that type; NO MINVALUE/NO MAXVALUE uses its signed range and
+increment direction. ALTER AS replaces prior default bounds with the new type
+bounds and validates retained explicit bounds. START changes declaration metadata;
+RESTART alone changes the transactional head.
+
+ALTER preserves its stable sequence identity while numeric options, ownership,
+logical name and namespace may change. S15 persists direct literal default
+bindings in SQLColumn.sequenceBindings, so rename never re-resolves an existing
+default through its original spelling. Protected identity policies retain their
+sequence and owner contracts through logical rename.
 At catalog admission, direct string and SQL unknown-string literal arguments to
 NEXTVAL/CURRVAL/SETVAL bind to stable sequence IDs. The publication API has no
 search path: unqualified names resolve only in the declaring relation namespace;
 qualified names resolve the named namespace. A missing constant target rejects
 publication. Explicit text casts/dynamic arguments remain late-bound.
-SQLCatalogSnapshot retains immutable per-column literal-to-ID maps and rebuilds
-them from the same canonical declarations on restore. Unchanged policies cannot
+SQLCatalogSnapshot retains immutable per-column literal-to-ID maps and restores
+them from canonical persisted SQLSequenceBinding declarations. A declaration
+without retained bindings is resolved once on admission; stale or unused
+persisted bindings reject rather than retarget. Unchanged policies cannot
 retarget a different ID during catalog replacement. During default evaluation
 (including referential SET DEFAULT), task-local binding selects those IDs only
 for direct literal occurrences. Ordinary statement expressions continue to use

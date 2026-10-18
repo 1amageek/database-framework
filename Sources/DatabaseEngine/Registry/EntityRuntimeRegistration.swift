@@ -1034,7 +1034,7 @@ public struct EntityRuntimeDefinition: Sendable {
         )
     }
 
-    private static func canonicalTableRows(
+    static func canonicalTableRows(
         from models: DatabaseRetainedPersistedModels,
         entity: Schema.Entity,
         admittedFieldNames: Set<String>,

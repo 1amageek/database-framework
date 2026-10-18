@@ -14,7 +14,8 @@ public struct DatabasePreparedSchemaGeneration: Sendable {
         runtimeConfiguration: DatabaseRuntimeConfiguration,
         securityConfiguration: SecurityConfiguration,
         indexPhysicalLayouts: [String: IndexPhysicalLayout],
-        sqlCatalogDigest: ByteString
+        sqlCatalogDigest: ByteString,
+        sqlIndexIdentities: [DatabaseIndexStorageIdentity] = []
     ) throws {
         guard sqlCatalogDigest.count == SHA256Accumulator.digestByteCount else {
             throw DatabaseSchemaPublicationError.corruptedState("SQL catalog digest has an invalid length")
@@ -58,6 +59,16 @@ public struct DatabasePreparedSchemaGeneration: Sendable {
                 }
                 try writer.writeString(name)
                 try writer.writeBytes(layout.fingerprint)
+            }
+            if !sqlIndexIdentities.isEmpty {
+                try writer.writeString("sql-index-generations")
+                let identities = sqlIndexIdentities.sorted { $0.name < $1.name }
+                try writer.writeCount(identities.count)
+                for identity in identities {
+                    try writer.writeString(identity.name)
+                    try writer.writeBytes(identity.definitionFingerprint.bytes)
+                    try writer.writeBytes(identity.layoutFingerprint)
+                }
             }
         }
         let indexPhysicalFingerprint = physicalAccumulator.finalize()

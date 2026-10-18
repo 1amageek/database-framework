@@ -18,6 +18,10 @@ public struct AuthorizationPolicyRegistry: Sendable {
         self.handlers = registered
     }
 
+    func adding(_ additions: [AuthorizationPolicyHandler]) throws -> Self {
+        try Self(handlers: Array(handlers.values) + additions)
+    }
+
     func handler(
         for entityName: String
     ) -> AuthorizationPolicyHandler? {

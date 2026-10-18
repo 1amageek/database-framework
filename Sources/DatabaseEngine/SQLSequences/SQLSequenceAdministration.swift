@@ -23,12 +23,6 @@ extension SQLSequenceRequest {
             guard let position = sequences.firstIndex(where: { $0.id.utf8.elementsEqual(declaration.id.utf8) }) else {
                 throw SQLSequenceExecutionError.unknownSequence(declaration.id)
             }
-            let current = sequences[position]
-            // FIXME(INCOMPLETE_IMPLEMENTATION): The active S13 sequence administration path supports numeric options and ownership only. S15 must preserve admitted default identity bindings across logical sequence rename or namespace movement before those operations can succeed.
-            guard current.name.utf8.elementsEqual(declaration.name.utf8),
-                  current.namespaceID.utf8.elementsEqual(declaration.namespaceID.utf8) else {
-                throw SQLSequenceExecutionError.unsupportedSequenceRename(declaration.id)
-            }
             if let restart, restart < declaration.minimum || restart > declaration.maximum {
                 throw SQLSequenceExecutionError.invalidRestart(restart)
             }
@@ -60,10 +54,12 @@ extension SQLSequenceRequest {
                 return try SQLRelation(id: relation.id, namespaceID: relation.namespaceID,
                     name: relation.name, entityName: relation.entityName, columns: columns,
                     primaryKeyColumnIDs: relation.primaryKeyColumnIDs,
-                    primaryKeyConstraint: relation.primaryKeyConstraint, constraints: relation.constraints)
+                    primaryKeyConstraint: relation.primaryKeyConstraint, constraints: relation.constraints,
+                    fieldNumberHighWaterMark: relation.fieldNumberHighWaterMark)
             }
         }
-        let candidate = try SQLCatalog(namespaces: catalog.namespaces, relations: relations, sequences: sequences)
+        let candidate = try SQLCatalog(namespaces: catalog.namespaces, relations: relations, sequences: sequences,
+            views: catalog.views, materializedViews: catalog.materializedViews, indexes: catalog.indexes)
         let storage = try context.executionStorage()
         let store = SQLSequenceStore(root: storage.systemRoot)
         if let headStart {
@@ -73,7 +69,7 @@ extension SQLSequenceRequest {
             try transaction.storageAccess.clear(key: store.headKey(changedID))
         }
         _ = try await transaction.stageSQLCatalog(candidate, expectedGeneration: policy.schemaGeneration,
-            idempotencyKey: commandIdentity(step: step))
+            idempotencyKey: commandIdentity(step: step) + "-generation-" + String(policy.schemaGeneration))
         return kind
     }
 

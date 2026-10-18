@@ -134,6 +134,8 @@ extension SQLCatalogCodec {
             writeAction(key.onDelete, into: &writer)
             writer.writeBool(key.onDeleteColumnIDs != nil)
             if let columns = key.onDeleteColumnIDs { try writeIDs(columns, into: &writer) }
+            writer.writeBool(key.referencedUniqueIndexID != nil)
+            if let indexID = key.referencedUniqueIndexID { try writer.writeString(indexID) }
         }
     }
 
@@ -166,9 +168,11 @@ extension SQLCatalogCodec {
             }
             let onUpdate = try readAction(from: &reader), onDelete = try readAction(from: &reader)
             let subset = try reader.readBool() ? readIDs(from: &reader) : nil
+            let uniqueIndexID = try reader.readBool() ? reader.readString() : nil
             kind = try .foreignKey(SQLForeignKey(columnIDs: columns,
                 referencedRelationID: referenced, referencedColumnIDs: target, match: match,
-                onUpdate: onUpdate, onDelete: onDelete, onDeleteColumnIDs: subset))
+                onUpdate: onUpdate, onDelete: onDelete, onDeleteColumnIDs: subset,
+                referencedUniqueIndexID: uniqueIndexID))
         default: throw StorageFrameError.invalidValueTag(tag)
         }
         return try SQLConstraint(attributes: attributes, kind: kind)
@@ -180,6 +184,12 @@ extension SQLCatalogCodec {
         try writer.writeString(sequence.id)
         try writer.writeString(sequence.namespaceID)
         try writer.writeString(sequence.name)
+        switch sequence.declaredType {
+        case .smallint: writer.writeUInt8(1)
+        case .integer: writer.writeUInt8(2)
+        case .bigint: writer.writeUInt8(3)
+        default: throw .invalidValue
+        }
         writer.writeInt64(sequence.start)
         writer.writeInt64(sequence.increment)
         writer.writeInt64(sequence.minimum)
@@ -194,6 +204,14 @@ extension SQLCatalogCodec {
 
     static func readSequence(from reader: inout StorageFrameDecoder) throws -> SQLSequence {
         let id = try reader.readString(), namespaceID = try reader.readString(), name = try reader.readString()
+        let typeTag = try reader.readUInt8()
+        let declaredType: DataType
+        switch typeTag {
+        case 1: declaredType = .smallint
+        case 2: declaredType = .integer
+        case 3: declaredType = .bigint
+        default: throw StorageFrameError.invalidValueTag(typeTag)
+        }
         let start = try reader.readInt64(), increment = try reader.readInt64()
         let minimum = try reader.readInt64(), maximum = try reader.readInt64()
         let cycle = try reader.readBool()
@@ -201,7 +219,7 @@ extension SQLCatalogCodec {
             columnID: reader.readString()) : nil
         return try SQLSequence(id: id, namespaceID: namespaceID, name: name,
             start: start, increment: increment, minimum: minimum, maximum: maximum,
-            cycle: cycle, ownedBy: owner)
+            cycle: cycle, ownedBy: owner, declaredType: declaredType)
     }
 
     static func writeExpression(_ expression: Expression,
@@ -219,7 +237,7 @@ extension SQLCatalogCodec {
         try QueryIRWireFormat.decodeExpression(reader.readBytes(), limits: queryLimits(reader.limits))
     }
 
-    private static func queryLimits(_ limits: StorageFrameLimits) throws -> DatabaseWireLimits {
+    static func queryLimits(_ limits: StorageFrameLimits) throws -> DatabaseWireLimits {
         try DatabaseWireLimits(maximumFrameBytes: limits.maximumFrameBytes,
             maximumStringBytes: limits.maximumStringBytes,
             maximumByteStringBytes: limits.maximumByteStringBytes,

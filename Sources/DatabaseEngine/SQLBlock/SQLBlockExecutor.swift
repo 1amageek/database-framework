@@ -56,6 +56,7 @@ public struct SQLBlockExecutor: Sendable {
         }
         let timeline = try SQLBlockStatementTimeline(count: block.steps.count, workMeter: meter)
         let requiredAccess: Security.Access = try requiredAccess(for: block, workMeter: meter)
+        let ddlRequest = SQLDDLRequest()
         let mutations = SQLMutationRequest(workMeter: meter)
         let request = SQLSequenceRequest(context: context, searchPath: options.searchPath,
             meter: meter, configuration: options.configuration, deadline: deadline)
@@ -73,7 +74,7 @@ public struct SQLBlockExecutor: Sendable {
                                 await request.beginAttempt()
                                 await mutations.beginAttempt()
                                 let collecting = try await collect(block, parameters: parameters, options: options,
-                                    binder: binder, transaction: transaction, timeline: timeline, workMeter: meter,
+                                    binder: binder, transaction: transaction, timeline: timeline, workMeter: meter, ddlRequest: ddlRequest,
                                     occurrences: occurrences, occurrence: occurrence)
                                 return DatabaseReadResultBox(consume collecting)
                             }
@@ -107,7 +108,7 @@ public struct SQLBlockExecutor: Sendable {
     private func collect(
         _ block: SQLBlock, parameters: [QueryParameter], options: SQLBlockExecutionOptions,
         binder: QueryParameterBinder, transaction: DatabaseTransaction,
-        timeline: SQLBlockStatementTimeline, workMeter: DatabaseWorkMeter,
+        timeline: SQLBlockStatementTimeline, workMeter: DatabaseWorkMeter, ddlRequest: SQLDDLRequest,
         occurrences: QueryOccurrenceArena?, occurrence: QueryOccurrenceID?
     ) async throws -> Collecting {
         var results = try DatabaseRetainedArrayBuilder<CollectedStatement>(workMeter: workMeter,
@@ -131,7 +132,11 @@ public struct SQLBlockExecutor: Sendable {
             switch step {
             case .statement(let statement):
                 let instant = timeline.instant(at: index, clock: context.container.wallClock)
-                let session = try await transaction.makeSQLSessionBinding(searchPath: options.searchPath, workMeter: workMeter)
+                let catalog = await transaction.currentSQLSchemaLease().sqlCatalog.catalog
+                let effectivePath = try ddlRequest.searchPath(options.searchPath, catalog: catalog)
+                let effectiveOptions = SQLBlockExecutionOptions(checkpointLimits: options.checkpointLimits, budget: options.budget,
+                    structuralLimits: options.structuralLimits, searchPath: effectivePath, configuration: options.configuration)
+                let session = try await transaction.makeSQLSessionBinding(searchPath: effectivePath, workMeter: workMeter)
                 result = try await ActiveSQLSession.$binding.withValue(session) {
                     try await transaction.withStatementScope {
                         let inherited = context.makeSQLTemporalEnvironment()
@@ -140,8 +145,8 @@ public struct SQLBlockExecutor: Sendable {
                         return try await SQLMutationRuntime.$statementIndex.withValue(index) {
                           try await SQLSequenceRuntime.$statementIndex.withValue(index) {
                             try await context.withSQLTemporalStatement(environment: temporal) {
-                                try await execute(statement, parameters: parameters, options: options,
-                                    binder: binder, transaction: transaction, temporal: temporal, workMeter: workMeter,
+                                try await execute(statement, parameters: parameters, options: effectiveOptions,
+                                    binder: binder, transaction: transaction, temporal: temporal, workMeter: workMeter, ddlRequest: ddlRequest, stepIndex: index,
                                     occurrences: occurrences, occurrence: occurrence)
                             }
                           }
@@ -179,16 +184,23 @@ public struct SQLBlockExecutor: Sendable {
             }
             results.append(result, using: consume admission)
         }
+        try await SQLDDLExecutor(context: context, transaction: transaction, options: options, workMeter: workMeter,
+            parameters: parameters, request: ddlRequest).cleanupTemporaryObjects(step: block.steps.count)
         return Collecting(statements: results.finish(), outputClaim: outputClaim)
     }
 
     private func execute(
         _ statement: QueryStatement, parameters: [QueryParameter], options: SQLBlockExecutionOptions,
         binder: QueryParameterBinder, transaction: DatabaseTransaction,
-        temporal: SQLTemporalEnvironment, workMeter: DatabaseWorkMeter,
+        temporal: SQLTemporalEnvironment, workMeter: DatabaseWorkMeter, ddlRequest: SQLDDLRequest, stepIndex: Int,
         occurrences: QueryOccurrenceArena?, occurrence: QueryOccurrenceID?
     ) async throws -> CollectedStatement {
         switch statement {
+        case .ddl:
+            guard case .ddl(let command) = try binder.bind(statement) else { throw SQLBlockExecutionError.unsupportedStatement }
+            let kind = try await SQLDDLExecutor(context: context, transaction: transaction, options: options,
+                workMeter: workMeter, parameters: parameters, request: ddlRequest).execute(command, step: stepIndex)
+            return .command(kind, nil)
         case .select(let query):
             guard !query.source.usesSPARQLSemantics else { throw SQLBlockExecutionError.unsupportedStatement }
             let boxed = try await DatabaseReadSession.withSession(context: context, workMeter: workMeter) { session in
@@ -336,7 +348,7 @@ public struct SQLBlockExecutor: Sendable {
                 return .composed(finished.values, body)
             }
             throw SQLBlockExecutionError.unsupportedStatement
-        case .createGraph, .dropGraph, .sparqlUpdate, .construct, .ask, .describe:
+        case .ddl, .createGraph, .dropGraph, .sparqlUpdate, .construct, .ask, .describe:
             throw SQLBlockExecutionError.unsupportedStatement
         }
     }
@@ -405,7 +417,10 @@ public struct SQLBlockExecutor: Sendable {
             return .command(kind, result.affectedRows)
         case .truncate(let query):
             guard let session = ActiveSQLSession.binding else { throw SQLBlockExecutionError.unsupportedStatement }
-            let relations = try query.tables.map { try session.resolution.resolve($0).declaration }
+            let relations = try query.tables.map { table in
+                try session.resolution.rejectReadOnlyMutation(table)
+                return try session.resolution.resolve(table).declaration
+            }
             let outcome = try await transaction.withEntityMutationOperation(workMeter: workMeter) { operation in
                 try await transaction.truncateSQLRelations(relations, cascade: query.references == .cascade,
                     within: operation, workMeter: workMeter)
@@ -434,6 +449,7 @@ public struct SQLBlockExecutor: Sendable {
             case .sequence: access.insert(.administer)
             case .statement(let statement):
                 switch statement {
+                case .ddl: access.formUnion([.administer, .read, .write])
                 case .insert, .update, .delete, .merge, .truncate: access.insert(.write)
                 case .with(let with):
                     var pending = try SQLArrayBuffer<QueryStatement>(meter: workMeter)

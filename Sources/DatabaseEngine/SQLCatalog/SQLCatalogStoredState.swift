@@ -7,13 +7,41 @@ struct SQLCatalogStoredState: Sendable {
     let physicalSchemaFingerprint: SchemaFingerprint
     let protectedContracts: [SQLCatalogProtectedContract]
     let digest: ByteString
+    let sqlOwnedEntityNames: [String]
+
+    init(catalog: SQLCatalog, physicalSchemaFingerprint: SchemaFingerprint,
+        protectedContracts: [SQLCatalogProtectedContract], digest: ByteString,
+        sqlOwnedEntityNames: [String] = []
+    ) {
+        self.catalog = catalog
+        self.physicalSchemaFingerprint = physicalSchemaFingerprint
+        self.protectedContracts = protectedContracts
+        self.digest = digest
+        self.sqlOwnedEntityNames = sqlOwnedEntityNames
+    }
+
+    /// Composes persisted SQL entities with the current application declaration.
+    func applicationSchema(physicalSchema: Schema, declaredSchema: Schema) throws -> Schema {
+        try validate(physicalSchema: physicalSchema)
+        var entities = declaredSchema.entities
+        for name in sqlOwnedEntityNames {
+            guard let stored = physicalSchema.entities.first(where: { SQLCatalogName($0.name) == SQLCatalogName(name) }) else {
+                throw SQLCatalogBindingError.invalidSQLOwnership(name)
+            }
+            if let declared = declaredSchema.entity(named: stored.name) {
+                guard declared == stored else { throw SQLCatalogBindingError.runtimeContractMismatch(name) }
+            } else { entities.append(stored) }
+        }
+        return try Schema(entities: entities, version: declaredSchema.version)
+    }
 
     func snapshot(physicalSchema: Schema, runtimeConfiguration: DatabaseRuntimeConfiguration,
         limits: StorageFrameLimits = .default
     ) throws -> SQLCatalogSnapshot {
         try validate(physicalSchema: physicalSchema, limits: limits)
         let snapshot = try SQLCatalogSnapshot(catalog: catalog, physicalSchema: physicalSchema,
-            runtimeConfiguration: runtimeConfiguration, protectedContracts: protectedContracts, limits: limits)
+            runtimeConfiguration: runtimeConfiguration, protectedContracts: protectedContracts, limits: limits,
+            sqlOwnedEntityNames: sqlOwnedEntityNames)
         guard snapshot.digest == digest else { throw SQLCatalogBindingError.digestMismatch }
         return snapshot
     }
@@ -27,7 +55,7 @@ struct SQLCatalogStoredState: Sendable {
             targetPhysicalSchema: targetPhysicalSchema)
         try SQLCatalogCodec.admit(target,
             fingerprint: SchemaManifest(schema: targetPhysicalSchema).fingerprint(),
-            protectedContracts: protectedContracts, limits: .default,
+            protectedContracts: protectedContracts, sqlOwnedEntityNames: sqlOwnedEntityNames, limits: .default,
             runtimeConfiguration: runtimeConfiguration)
         let targetRelations = Dictionary(uniqueKeysWithValues: target.relations.map {
             (SQLCatalogName($0.id), $0)
@@ -72,7 +100,8 @@ struct SQLCatalogStoredState: Sendable {
             }
         }
         return try SQLCatalogSnapshot(catalog: target, physicalSchema: targetPhysicalSchema,
-            runtimeConfiguration: runtimeConfiguration, protectedContracts: protections)
+            runtimeConfiguration: runtimeConfiguration, protectedContracts: protections,
+            sqlOwnedEntityNames: sqlOwnedEntityNames)
     }
 
     func validate(physicalSchema: Schema,
@@ -82,9 +111,9 @@ struct SQLCatalogStoredState: Sendable {
             throw SQLCatalogBindingError.physicalFingerprintMismatch
         }
         try SQLCatalogCodec.admit(catalog, fingerprint: physicalSchemaFingerprint,
-            protectedContracts: protectedContracts, limits: limits)
+            protectedContracts: protectedContracts, sqlOwnedEntityNames: sqlOwnedEntityNames, limits: limits)
         let bytes = try SQLCatalogCodec.canonicalBytes(catalog, fingerprint: physicalSchemaFingerprint,
-            protectedContracts: protectedContracts, limits: limits)
+            protectedContracts: protectedContracts, sqlOwnedEntityNames: sqlOwnedEntityNames, limits: limits)
         var accumulator = SHA256Accumulator()
         accumulator.update(bytes)
         guard digest == accumulator.finalize() else { throw SQLCatalogBindingError.digestMismatch }
@@ -104,6 +133,10 @@ struct SQLCatalogStoredState: Sendable {
                 }
             }
         }
+        try SQLCatalogSnapshot.validateSQLOwnedEntities(sqlOwnedEntityNames, catalog: catalog,
+            physicalSchema: physicalSchema, protectedContracts: protectedContracts)
+        try SQLViews.validate(catalog: catalog, physicalSchema: physicalSchema)
+        try SQLIndexCompiler.validate(catalog: catalog, physicalSchema: physicalSchema)
         var protectedIDs: Set<SQLCatalogName> = []
         for protection in protectedContracts {
             let id = SQLCatalogName(protection.relationID)
@@ -142,7 +175,7 @@ struct SQLCatalogStoredState: Sendable {
                 source: protection.source))
         }
         return try Self.migrationState(catalog: target, physicalSchema: targetPhysicalSchema,
-            protectedContracts: protections)
+            protectedContracts: protections, sqlOwnedEntityNames: sqlOwnedEntityNames)
     }
 
     /// The aggregate owner calls this only after proving complete initial absence.
@@ -152,18 +185,19 @@ struct SQLCatalogStoredState: Sendable {
     }
 
     private static func migrationState(catalog: SQLCatalog, physicalSchema: Schema,
-        protectedContracts: [SQLCatalogProtectedContract]
+        protectedContracts: [SQLCatalogProtectedContract], sqlOwnedEntityNames: [String] = []
     ) throws -> SQLCatalogStoredState {
         let fingerprint = try SchemaManifest(schema: physicalSchema).fingerprint()
         try SQLCatalogCodec.admit(catalog, fingerprint: fingerprint,
-            protectedContracts: protectedContracts, limits: .default)
+            protectedContracts: protectedContracts, sqlOwnedEntityNames: sqlOwnedEntityNames, limits: .default)
         try SQLConstraintCompiler.validate(catalog: catalog, physicalSchema: physicalSchema)
         let bytes = try SQLCatalogCodec.canonicalBytes(catalog, fingerprint: fingerprint,
-            protectedContracts: protectedContracts)
+            protectedContracts: protectedContracts, sqlOwnedEntityNames: sqlOwnedEntityNames)
         var accumulator = SHA256Accumulator()
         accumulator.update(bytes)
         return SQLCatalogStoredState(catalog: catalog, physicalSchemaFingerprint: fingerprint,
-            protectedContracts: protectedContracts, digest: accumulator.finalize())
+            protectedContracts: protectedContracts, digest: accumulator.finalize(),
+            sqlOwnedEntityNames: sqlOwnedEntityNames)
     }
 
     private func derivedApplicationCatalog(physicalSchema: Schema,
@@ -177,7 +211,16 @@ struct SQLCatalogStoredState: Sendable {
             (SQLCatalogName($0.name), $0)
         })
         var relations: [SQLRelation] = []
+        let sqlOwned = Set(sqlOwnedEntityNames.map(SQLCatalogName.init))
         for old in catalog.relations {
+            if sqlOwned.contains(SQLCatalogName(old.entityName)) {
+                guard let original = previousEntities[SQLCatalogName(old.entityName)],
+                    let target = targetEntities[SQLCatalogName(old.entityName)], target == original else {
+                    throw SQLCatalogBindingError.invalidSQLOwnership(old.entityName)
+                }
+                relations.append(old)
+                continue
+            }
             guard let entity = targetEntities[SQLCatalogName(old.entityName)] else { continue }
             let previousFields = previousEntities[SQLCatalogName(old.entityName)]?.fields ?? []
             let numbers = Set(entity.fields.map { $0.fieldNumber })
@@ -197,7 +240,8 @@ struct SQLCatalogStoredState: Sendable {
             }
             relations.append(try SQLRelation(id: old.id, namespaceID: old.namespaceID, name: old.name,
                 entityName: old.entityName, columns: columns, primaryKeyColumnIDs: old.primaryKeyColumnIDs,
-                primaryKeyConstraint: old.primaryKeyConstraint, constraints: old.constraints))
+                primaryKeyConstraint: old.primaryKeyConstraint, constraints: old.constraints,
+                fieldNumberHighWaterMark: max(old.fieldNumberHighWaterMark, columns.compactMap { $0.fieldNumber }.max() ?? 0)))
         }
         for entity in targetPhysicalSchema.entities where previousEntities[SQLCatalogName(entity.name)] == nil {
             let publicNamespace: SQLNamespace
@@ -213,6 +257,7 @@ struct SQLCatalogStoredState: Sendable {
                 columns: derived.columns, primaryKeyColumnIDs: derived.primaryKeyColumnIDs,
                 primaryKeyConstraint: derived.primaryKeyConstraint, constraints: derived.constraints))
         }
-        return try SQLCatalog(namespaces: namespaces, relations: relations, sequences: catalog.sequences)
+        return try SQLCatalog(namespaces: namespaces, relations: relations, sequences: catalog.sequences,
+            views: catalog.views, materializedViews: catalog.materializedViews, indexes: catalog.indexes)
     }
 }

@@ -12,6 +12,7 @@ public enum DatabaseRuntimeConfigurationError: Error, Sendable, Equatable {
     case duplicatePersistableMutationMaintainer(identifier: String)
     case duplicatePersistableType(entityName: String)
     case duplicateAuthorizationPolicy(entityName: String)
+    case authorizationPolicyEntityMismatch(expected: String, actual: String)
     case missingCompiledEntityType(entityName: String)
     case entitySchemaMismatch(
         entityName: String,

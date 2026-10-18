@@ -31,6 +31,21 @@ struct S13SQLCatalogTests {
         #expect(virtual.isNullable)
         #expect(relation.columns.compactMap { $0.field?.fieldNumber } == [1, 2, 3])
         #expect(try SQLCatalogCodec.encode(snapshot) == SQLCatalogCodec.encode(state))
+        let widths: [(DataType, Int64, Int64)] = [
+            (.smallint, Int64(Int16.min), Int64(Int16.max)),
+            (.integer, Int64(Int32.min), Int64(Int32.max)),
+            (.bigint, Int64.min, Int64.max)]
+        for (type, minimum, maximum) in widths {
+            let sequence = try SQLSequence(id: "sequence", namespaceID: "public", name: "item_sequence",
+                start: 1, increment: 1, minimum: minimum, maximum: maximum,
+                ownedBy: SQLSequenceOwner(relationID: "items", columnID: "id"), declaredType: type)
+            let catalog = try SQLCatalog(namespaces: fixture.catalog.namespaces,
+                relations: fixture.catalog.relations, sequences: [sequence])
+            let typed = try self.state(catalog, schema: fixture.schema)
+            let restored = try SQLCatalogCodec.decode(SQLCatalogCodec.encode(typed))
+            #expect(restored.catalog.sequences.first?.declaredType == type)
+            #expect(restored.catalog == catalog)
+        }
     }
 
     @Test("SQL metadata changes catalog identity without changing the physical fingerprint")

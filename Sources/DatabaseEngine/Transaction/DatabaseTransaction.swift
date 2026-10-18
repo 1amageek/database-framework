@@ -34,7 +34,10 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
     private let container: DBContainer
     private var readPolicy: DatabaseReadPolicy
     private let readAuthorization: DatabaseReadAuthorization?
-    private let mutationMaintenanceService: PersistableMutationMaintenanceService
+    private var mutationMaintenanceService: PersistableMutationMaintenanceService {
+        PersistableMutationMaintenanceService(
+            maintainers: readPolicy.schemaLease.runtimeConfiguration.persistableMutationMaintainers)
+    }
     private let operationGate = TransactionOperationGate()
     private var validationGate: TransactionOperationGate?
     private var state: State = .open
@@ -99,11 +102,6 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
             authorization: authorization
         )
         self.readAuthorization = nil
-        self.mutationMaintenanceService =
-            PersistableMutationMaintenanceService(
-                maintainers: container.runtimeConfiguration
-                    .persistableMutationMaintainers
-            )
     }
 
     package init(
@@ -118,11 +116,6 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
         self.transactionInstant = transactionInstant ?? container.wallClock.now
         self.readPolicy = readPolicy
         self.readAuthorization = readAuthorization
-        self.mutationMaintenanceService =
-            PersistableMutationMaintenanceService(
-                maintainers: container.runtimeConfiguration
-                    .persistableMutationMaintainers
-            )
     }
 
     package nonisolated func makeSQLTemporalEnvironment() -> SQLTemporalEnvironment {
@@ -874,10 +867,10 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
             previousModel: prepared.deletion.persistedModel, currentModel: nil)
         try updateMutationJournal(identity: target, previousModel: nil,
             currentModel: prepared.write.result.canonicalModel)
-        try await sourceStore.commitPreparedDelete(prepared.deletion, transaction: storageAccess)
+        try await sourceStore.commitPreparedDelete(prepared.deletion, transaction: storageAccess, workMeter: sqlMeter())
         try await PolymorphicProjectionMaintainer(container: container).remove(
             prepared.deletion.persistedModel, identifier: prepared.deletion.identifier, transaction: storageAccess)
-        try await targetStore.commitPreparedWrite(prepared.write, transaction: storageAccess)
+        try await targetStore.commitPreparedWrite(prepared.write, transaction: storageAccess, workMeter: sqlMeter())
         try await PolymorphicProjectionMaintainer(container: container).update(
             prepared.write.result, transaction: storageAccess)
         let context = try makeMutationContext(operationID: operationID)
@@ -999,22 +992,24 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
             operationGate: validationGate
         )
         do {
-            if mutationJournal.persistedEffectCount > 0 {
-                try await container.requireSQLWriterGeneration(readPolicy.schemaLease.generation, transaction: storageAccess)
-            }
-            try await validateSQLConstraints(forceDeferred: true)
-            if let retainedModels = try mutationJournal.retainedCurrentModels() {
-                try await retainedModels.withElements { models in
+            try await withCurrentSchemaExecution {
+                if mutationJournal.persistedEffectCount > 0 {
+                    try await container.requireSQLWriterGeneration(readPolicy.schemaLease.generation, transaction: storageAccess)
+                }
+                try await validateSQLConstraints(forceDeferred: true)
+                if let retainedModels = try mutationJournal.retainedCurrentModels() {
+                    try await retainedModels.withElements { models in
+                        try await mutationMaintenanceService.validateFinalState(
+                            of: models,
+                            context: context
+                        )
+                    }
+                } else {
                     try await mutationMaintenanceService.validateFinalState(
-                        of: models,
+                        of: mutationJournal.currentModels(),
                         context: context
                     )
                 }
-            } else {
-                try await mutationMaintenanceService.validateFinalState(
-                    of: mutationJournal.currentModels(),
-                    context: context
-                )
             }
             await context.closeAndWait()
             guard state == .preparingCommit(operationID) else {
@@ -1157,7 +1152,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
         )
         try await store.commitPreparedWrite(
             preparedWrite,
-            transaction: storageAccess
+            transaction: storageAccess, workMeter: sqlMeter()
         )
         try await PolymorphicProjectionMaintainer(
             container: container
@@ -1236,7 +1231,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
         )
         try await store.commitPreparedDelete(
             preparedDelete,
-            transaction: storageAccess
+            transaction: storageAccess, workMeter: sqlMeter()
         )
         try await PolymorphicProjectionMaintainer(
             container: container
@@ -1869,6 +1864,8 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
         }
     }
 
+    package func currentSQLSchemaLease() -> DatabaseSchemaLease { readPolicy.schemaLease }
+
     @_spi(DatabaseExecution)
     public func stageSQLCatalog(_ catalog: SQLCatalog, expectedGeneration: UInt64,
         idempotencyKey: String) async throws -> DatabaseSchemaPublicationResult {
@@ -1884,6 +1881,54 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
             if let candidate = outcome.state {
                 schemaStagingState = candidate
                 readPolicy = DatabaseReadPolicy(schemaLease: candidate.lease, authorization: readPolicy.authorization)
+                sqlConstraintsPending = true
+            }
+            return outcome.publication
+        }
+    }
+
+    package func stageSQLSchemaCandidate(_ candidate: DatabaseSQLSchemaCandidate,
+        expectedGeneration: UInt64, idempotencyKey: String, rewrites: [SQLSchemaRewrite]
+    ) async throws -> DatabaseSchemaPublicationResult {
+        try await performOperation { _ in
+            guard candidate.sourceLease === readPolicy.schemaLease else {
+                throw DatabaseSchemaPublicationError.generationConflict(
+                    expected: readPolicy.schemaLease.generation, actual: candidate.sourceLease.generation)
+            }
+            guard let meter = checkpointWorkMeter else { throw DatabaseTransactionCheckpointError.unavailable }
+            let original = checkpointInitialLease ?? readPolicy.schemaLease.publicationSource ?? readPolicy.schemaLease
+            try await container.requireSQLWriterGeneration(schemaStagingState?.lease.generation ?? original.generation,
+                transaction: storageAccess)
+            let previousModels = try mutationJournal.retainedCurrentModels()
+            let outcome = try await container.stageSQLSchemaCandidate(candidate,
+                expectedGeneration: expectedGeneration, idempotencyKey: idempotencyKey,
+                rewrites: rewrites, authorization: readPolicy.authorization,
+                transaction: storageAccess, workMeter: meter)
+            if let staged = outcome.state {
+                let oldLease = readPolicy.schemaLease
+                schemaStagingState = staged
+                readPolicy = DatabaseReadPolicy(schemaLease: staged.lease, authorization: readPolicy.authorization)
+                subspaceCache = DatabaseStoreCache()
+                let changed = Set(rewrites.map { $0.entityName })
+                if let previousModels {
+                    try await withCurrentSchemaExecution {
+                        try await previousModels.withElements { models in
+                            for old in models where changed.contains(old.entity) {
+                                guard let oldRuntime = oldLease.runtimeConfiguration.entityRuntimes.registration(named: old.entity) else {
+                                    throw DatabaseTransactionError.unknownEntity(old.entity)
+                                }
+                                let identity = try oldRuntime.identity(for: old)
+                                let current: PersistedModel?
+                                if readPolicy.schema.entity(named: old.entity) != nil {
+                                    let resolved = try resolve(identity)
+                                    current = try await loadPersistedModelUnchecked(entity: identity.entity,
+                                        id: resolved.id, partition: resolved.partition)
+                                } else { current = nil }
+                                try updateMutationJournal(identity: identity, previousModel: old, currentModel: current)
+                            }
+                        }
+                    }
+                }
                 sqlConstraintsPending = true
             }
             return outcome.publication
@@ -1923,6 +1968,26 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
         return box.take()
     }
 
+    /// Binds each actor operation to its exact current immutable generation.
+    /// An operation may replace the candidate, so later validation enters a
+    /// fresh scope rather than retaining the operation's initial generation.
+    private func withCurrentSchemaExecution<Value: ~Copyable & Sendable>(
+        _ operation: () async throws -> sending Value
+    ) async rethrows -> sending Value {
+        let lease = readPolicy.schemaLease
+        let box = try await DatabaseSchemaExecutionScope.$container.withValue(container) {
+            try await DatabaseSchemaExecutionScope.$lease.withValue(lease) {
+                if let binding = ActiveDatabaseTransactionContext.binding, binding.container === container {
+                    return try await ActiveDatabaseTransactionContext.$binding.withValue(binding.rebindingSchemaLease(lease)) {
+                        DatabaseReadResultBox(try await operation())
+                    }
+                }
+                return DatabaseReadResultBox(try await operation())
+            }
+        }
+        return box.take()
+    }
+
     private func performAdmittedOperation<Value: ~Copyable & Sendable>(
         _ operation: (UInt64) async throws -> sending Value
     ) async throws -> sending Value {
@@ -1940,8 +2005,12 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
                 scheduledDeletions.removeAll(keepingCapacity: true)
                 scheduledWrites.removeAll(keepingCapacity: true)
             }
-            let value = try await operation(issuedOperationID)
-            try await validateSQLConstraints(forceDeferred: false)
+            let value = try await withCurrentSchemaExecution {
+                try await operation(issuedOperationID)
+            }
+            try await withCurrentSchemaExecution {
+                try await validateSQLConstraints(forceDeferred: false)
+            }
             guard state == .executing(issuedOperationID) else {
                 throw lifecycleError(for: state)
             }

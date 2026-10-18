@@ -12,6 +12,11 @@ struct SQLSequenceDefaultBindings: Sendable, Equatable {
         return false
     }
 
+    func declarations() throws -> [SQLSequenceBinding] {
+        try sequenceIDsByLiteral.map { try SQLSequenceBinding(originalName: $0.key.value, sequenceID: $0.value.value) }
+            .sorted { $0.originalName.utf8.lexicographicallyPrecedes($1.originalName.utf8) }
+    }
+
     static func literalTarget(_ expression: Expression) -> String? {
         guard case .function(let function) = expression,
               ["nextval", "currval", "setval"].contains(function.name),
@@ -30,14 +35,27 @@ struct SQLSequenceDefaultBindings: Sendable, Equatable {
             .bindScalarAssignment(expression,
                 to: SQLConstraintCompiler.columnType(column, relation: relation, physicalSchema: physicalSchema))
         var bindings: [SQLCatalogName: SQLCatalogName] = [:]
-        try collect(bound, relation: relation, catalog: catalog, into: &bindings)
+        try collect(bound, relation: relation, catalog: catalog, persisted: column.sequenceBindings, into: &bindings)
+        guard column.sequenceBindings.allSatisfy({ bindings[SQLCatalogName($0.originalName)] == SQLCatalogName($0.sequenceID) }) else {
+            throw SQLSequenceExecutionError.invalidPersistedState
+        }
         return Self(sequenceIDsByLiteral: bindings)
     }
 
     private static func collect(_ bound: CanonicalBoundExpression, relation: SQLRelation,
-        catalog: SQLCatalog, into bindings: inout [SQLCatalogName: SQLCatalogName]
+        catalog: SQLCatalog, persisted: [SQLSequenceBinding], into bindings: inout [SQLCatalogName: SQLCatalogName]
     ) throws {
         if let name = literalTarget(bound.expression) {
+            if let retained = persisted.first(where: { $0.originalName.utf8.elementsEqual(name.utf8) }) {
+                guard catalog.sequences.contains(where: { $0.id.utf8.elementsEqual(retained.sequenceID.utf8) }) else {
+                    throw SQLSequenceExecutionError.unknownSequence(retained.sequenceID)
+                }
+                bindings[SQLCatalogName(name)] = SQLCatalogName(retained.sequenceID)
+                for child in bound.children {
+                    try collect(child, relation: relation, catalog: catalog, persisted: persisted, into: &bindings)
+                }
+                return
+            }
             let parts = try SQLSequenceRuntime.identifiers(name)
             let namespaceID: String?
             if parts.count == 2 {
@@ -52,7 +70,7 @@ struct SQLSequenceDefaultBindings: Sendable, Equatable {
             bindings[SQLCatalogName(name)] = SQLCatalogName(sequence.id)
         }
         for child in bound.children {
-            try collect(child, relation: relation, catalog: catalog, into: &bindings)
+            try collect(child, relation: relation, catalog: catalog, persisted: persisted, into: &bindings)
         }
     }
 }

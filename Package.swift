@@ -137,6 +137,7 @@ let package = Package(
             exclude: [
                 "README.md",
                 "DESIGN.md",
+                "Configuration/DESIGN.md",
                 "Core/DESIGN.md",
                 "Directory/DESIGN.md",
                 "QueryExecution/DESIGN.md",
@@ -157,7 +158,10 @@ let package = Package(
                 "Registry/DESIGN.md",
                 "SQLCatalog/DESIGN.md",
                 "SQLConstraints/DESIGN.md",
+                "SQLDDL/DESIGN.md",
+                "SQLIndexes/DESIGN.md",
                 "SQLSequences/DESIGN.md",
+                "SQLViews/DESIGN.md",
                 "Schema/DESIGN.md",
                 "SQLBlock/DESIGN.md",
                 "Base/DESIGN.md",
@@ -283,6 +287,7 @@ let package = Package(
                     condition: .when(traits: ["Relationships"])
                 ),
             ],
+            exclude: ["DESIGN.md"],
             swiftSettings: [
                 .define(
                     "DATABASE_RUNTIME_SCALAR_INDEXES",

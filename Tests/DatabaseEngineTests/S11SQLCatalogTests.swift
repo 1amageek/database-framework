@@ -133,8 +133,12 @@ struct S11SQLCatalogTests {
         #expect(throws: SQLCatalogBindingError.digestMismatch) { _ = try SQLCatalogCodec.decode(ByteString(bytes)) }
         let unknown = try StorageFrameEncoder.encode { writer throws(StorageFrameError) in
             writer.writeUInt32(0x434C_5153)
-            writer.writeUInt16(2)
+            writer.writeUInt16(3)
             try writer.writeBytes(snapshot.physicalSchemaFingerprint.bytes)
+            try writer.writeCount(0)
+            try writer.writeCount(0)
+            try writer.writeCount(0)
+            try writer.writeCount(0)
             try writer.writeCount(0)
             try writer.writeCount(0)
             try writer.writeCount(0)
@@ -221,7 +225,8 @@ struct S11SQLCatalogTests {
         let columns = old.columns
         let variants = try [
             SQLRelation(id: old.id, namespaceID: old.namespaceID, name: old.name, entityName: old.entityName,
-                columns: Array(columns.dropLast()), primaryKeyColumnIDs: nil),
+                columns: Array(columns.dropLast()), primaryKeyColumnIDs: nil,
+                fieldNumberHighWaterMark: old.fieldNumberHighWaterMark),
             SQLRelation(id: old.id, namespaceID: old.namespaceID, name: old.name, entityName: old.entityName,
                 columns: columns.reversed().enumerated().map { index, column in
                     try SQLColumn(id: columns[index].id, name: column.name, backing: column.backing, policy: column.policy)

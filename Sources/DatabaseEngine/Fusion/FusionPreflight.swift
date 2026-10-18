@@ -30,6 +30,9 @@ enum FusionPreflight {
             )
         )
 
+        var viewGraphs = try DatabaseRetainedArrayBuilder<FusionResolvedQueryGraph>(
+            workMeter: workMeter, stage: .validation,
+            layout: DatabaseRetainedArrayLayout.forElement(FusionResolvedQueryGraph.self))
         // Collect every logical node and every list requirement before
         // resolving even one entity, selector, or feature executor.
         try FusionSelectQueryGraphWalker.forEachQuery(
@@ -47,6 +50,7 @@ enum FusionPreflight {
             guard case .table(let tableRef) = query.source else {
                 throw FusionExecutionError.unsupportedSource
             }
+            if try sqlResolution?.ordinaryView(tableRef) != nil { throw FusionExecutionError.unsupportedSource }
             for stage in source.stages {
                 for input in stage.inputs {
                     guard case .connected(let connected) = input.operation
@@ -81,6 +85,19 @@ enum FusionPreflight {
                 )
             }
         } visitTable: { tableRef, query in
+            if let sqlResolution {
+                let definition: SQLViewDefinition?
+                let id: String?
+                if let view = try sqlResolution.ordinaryView(tableRef) { definition = view.definition; id = view.id }
+                else { definition = nil; id = nil }
+                if let definition, let id {
+                    let nested = try resolveGraph(definition.query, context: context, workMeter: workMeter,
+                        sqlResolution: sqlResolution.forView(definition, id: id, workMeter: workMeter))
+                    listAuthorizationRequirements.append(contentsOf: nested.listAuthorizationRequirements)
+                    try viewGraphs.append(footprint: DatabaseIntermediateFootprint(rows: 1)) { nested }
+                    if try sqlResolution.ordinaryView(tableRef) != nil { return }
+                }
+            }
             listAuthorizationRequirements.append(
                 try DatabaseReadPolicy.listRequirement(
                     entityName: try sqlResolution?.resolve(tableRef).entity.name ?? tableRef.table,
@@ -100,6 +117,7 @@ enum FusionPreflight {
                 )
             }
         }
+        let retainedViewGraphs = try viewGraphs.finish().moveToSharedOwnership(at: .validation)
         let retainedLogicalNodes = try logicalNodes.finish()
             .moveToSharedOwnership(at: .validation)
         var authorizationPlan = try DatabaseFieldReadAuthorizationPlan.make(
@@ -117,6 +135,12 @@ enum FusionPreflight {
             ),
             expectedCount: retainedLogicalNodes.count
         )
+        for graph in retainedViewGraphs {
+            authorizationPlan = authorizationPlan.merging(graph.authorizationPlan)
+            if let nodes = graph.nodes {
+                for node in nodes { try resolvedNodes.append(footprint: DatabaseIntermediateFootprint(rows: 1)) { node } }
+            }
+        }
         for logicalNode in retainedLogicalNodes {
             let resolvedEntity = try sqlResolution?.resolve(logicalNode.tableRef).entity
             guard let entity = resolvedEntity ?? policy.schema.entity(
@@ -177,6 +201,7 @@ enum FusionPreflight {
         }
         switch query.source {
         case .table(let tableRef):
+            if try sqlResolution?.ordinaryView(tableRef) != nil { throw FusionExecutionError.unsupportedSource }
             guard let entity = try sqlResolution?.resolve(tableRef).entity ?? policy.schema.entity(named: tableRef.table)
             else {
                 return DatabaseFieldReadAuthorizationPlan(

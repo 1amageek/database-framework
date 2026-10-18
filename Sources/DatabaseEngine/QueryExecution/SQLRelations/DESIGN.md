@@ -316,3 +316,25 @@ frame. RETURNING pulls use their declaration's changed-image frame. Closing a
 consumer never discards a sibling's frame, and all producer cleanup completes
 before the statement's read session closes. Typed failure for an unreadable
 non-RETURNING definition is distinct from an empty returned relation.
+
+## Producer construction resumption boundary
+
+Selected producer construction enters and resumes through cooperative same-task
+boundaries, before any pull begins. Ordinary WASM can synchronously resume both
+sides of an async call; a nested derived source otherwise accumulates the
+`makeSelectProducer -> makeSourceProducer -> makeSelectProducer` construction
+continuations despite bounded query depth and the separate pull boundaries.
+
+```text
+SELECT construction -> yield + request checkpoint
+    -> construct child source in the same session/task
+        -> yield + request checkpoint
+            -> compose selected producer and transfer child ownership
+```
+
+The child is retained immediately after construction. Cancellation, deadline or
+budget rejection at the resumption checkpoint closes that child before closing
+its CTE caches; cleanup failure preserves the original error. Construction does
+not start a new task/session, alter output demand, increase the VM stack, or
+change query/fixture limits. The existing 30-level S08 derived-source fixture on
+the ordinary/Embedded default-stack runtime is the behavioral regression owner.

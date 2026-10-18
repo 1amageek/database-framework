@@ -300,9 +300,9 @@ public final class DBContainer: Sendable {
     }
 
     private static func open(
-        for schema: Schema,
+        for declaredSchema: Schema,
         configuration: DBConfiguration,
-        runtimeConfiguration: DatabaseRuntimeConfiguration,
+        runtimeConfiguration declaredRuntimeConfiguration: DatabaseRuntimeConfiguration,
         security: SecurityConfiguration,
         persistSchemaCatalog: Bool,
         initializeIndexes: Bool,
@@ -315,20 +315,14 @@ public final class DBContainer: Sendable {
         let storageEngine = try configuration.claimStorageEngine()
         #endif
         do {
-            try runtimeConfiguration.validate(schema: schema)
-            let schemaFingerprint = try SchemaManifest(schema: schema)
-                .fingerprint()
-            let indexPhysicalLayouts = try IndexRuntimeConfigurationValidator.validate(
-                schema: schema,
-                runtimeConfiguration: runtimeConfiguration
+            try declaredRuntimeConfiguration.validate(schema: declaredSchema)
+            let declaredIndexPhysicalLayouts = try IndexRuntimeConfigurationValidator.validate(
+                schema: declaredSchema,
+                runtimeConfiguration: declaredRuntimeConfiguration
             )
 
             let transactionCapabilities = try await inspectTransactionCapabilities(
                 storageEngine: storageEngine
-            )
-            try runtimeConfiguration.validateStorageRequirements(
-                schema: schema,
-                transactionCapabilities: transactionCapabilities
             )
 
             #if DATABASE_MULTI_BASE
@@ -353,6 +347,29 @@ public final class DBContainer: Sendable {
             let restored = try await restoreSchemaState(storageEngine: storageEngine,
                 root: schemaRoot, metadataSubspace: preparedStorage.metadataSubspace,
                 clock: configuration.monotonicClock)
+            let schema = try restored.sqlCatalog?.applicationSchema(
+                physicalSchema: restored.schema, declaredSchema: declaredSchema) ?? declaredSchema
+            let runtimeConfiguration: DatabaseRuntimeConfiguration
+            if schema == declaredSchema {
+                runtimeConfiguration = declaredRuntimeConfiguration
+            } else {
+                runtimeConfiguration = try declaredRuntimeConfiguration.replacingPhysicalSchema(schema)
+            }
+            try runtimeConfiguration.validate(schema: schema)
+            try runtimeConfiguration.validateStorageRequirements(
+                schema: schema,
+                transactionCapabilities: transactionCapabilities
+            )
+            let schemaFingerprint = try SchemaManifest(schema: schema).fingerprint()
+            let validatedIndexPhysicalLayouts: [String: IndexPhysicalLayout]
+            if schema == declaredSchema {
+                validatedIndexPhysicalLayouts = declaredIndexPhysicalLayouts
+            } else {
+                validatedIndexPhysicalLayouts = try IndexRuntimeConfigurationValidator.validate(
+                    schema: schema,
+                    runtimeConfiguration: runtimeConfiguration
+                )
+            }
             let sqlCatalog: SQLCatalogSnapshot
             if let stored = restored.sqlCatalog {
                 sqlCatalog = try stored.reconciledForApplication(physicalSchema: restored.schema,
@@ -361,10 +378,13 @@ public final class DBContainer: Sendable {
                 sqlCatalog = try SQLCatalogSnapshot(catalog: SQLCatalogSnapshot.derivedCatalog(physicalSchema: schema),
                     physicalSchema: schema, runtimeConfiguration: runtimeConfiguration)
             }
+            let indexPhysicalLayouts = try Self.sqlIndexPhysicalLayouts(
+                sqlCatalog.catalog, including: validatedIndexPhysicalLayouts)
             let preparedGeneration = try DatabasePreparedSchemaGeneration(
                 schemaFingerprint: schemaFingerprint, runtimeConfiguration: runtimeConfiguration,
                 securityConfiguration: security, indexPhysicalLayouts: indexPhysicalLayouts,
-                sqlCatalogDigest: sqlCatalog.digest)
+                sqlCatalogDigest: sqlCatalog.digest,
+                sqlIndexIdentities: SQLIndexRuntime.identities(catalog: sqlCatalog.catalog))
             let container = try DBContainer(
                 schema: schema,
                 schemaFingerprint: schemaFingerprint,
@@ -483,7 +503,7 @@ public final class DBContainer: Sendable {
             )
             let runtimeConfiguration = try await runtimeFactory(restored.schema)
             try runtimeConfiguration.validate(schema: restored.schema)
-            let indexPhysicalLayouts = try IndexRuntimeConfigurationValidator.validate(
+            let validatedIndexPhysicalLayouts = try IndexRuntimeConfigurationValidator.validate(
                 schema: restored.schema,
                 runtimeConfiguration: runtimeConfiguration
             )
@@ -495,12 +515,15 @@ public final class DBContainer: Sendable {
                 sqlCatalog = try SQLCatalogSnapshot(catalog: SQLCatalogSnapshot.derivedCatalog(physicalSchema: restored.schema),
                     physicalSchema: restored.schema, runtimeConfiguration: runtimeConfiguration)
             }
+            let indexPhysicalLayouts = try Self.sqlIndexPhysicalLayouts(
+                sqlCatalog.catalog, including: validatedIndexPhysicalLayouts)
             let preparedGeneration = try DatabasePreparedSchemaGeneration(
                 schemaFingerprint: restored.fingerprint,
                 runtimeConfiguration: runtimeConfiguration,
                 securityConfiguration: security,
                 indexPhysicalLayouts: indexPhysicalLayouts,
-                sqlCatalogDigest: sqlCatalog.digest
+                sqlCatalogDigest: sqlCatalog.digest,
+                sqlIndexIdentities: SQLIndexRuntime.identities(catalog: sqlCatalog.catalog)
             )
             if let persisted = restored.indexPhysicalFingerprint {
                 guard persisted == preparedGeneration.indexPhysicalFingerprint
@@ -2953,7 +2976,8 @@ extension DBContainer {
                 executableCatalog = snapshot
                 catalogState = SQLCatalogStoredState(catalog: snapshot.catalog,
                     physicalSchemaFingerprint: snapshot.physicalSchemaFingerprint,
-                    protectedContracts: snapshot.protectedContracts, digest: snapshot.digest)
+                    protectedContracts: snapshot.protectedContracts, digest: snapshot.digest,
+                    sqlOwnedEntityNames: snapshot.sqlOwnedEntityNames)
             } else {
                 executableCatalog = nil
                 if let stored = state.sqlCatalog {
@@ -2966,7 +2990,9 @@ extension DBContainer {
             let prepared = try DatabasePreparedSchemaGeneration(schemaFingerprint: fingerprint,
                 runtimeConfiguration: self.runtimeConfiguration,
                 securityConfiguration: self.securityConfiguration,
-                indexPhysicalLayouts: candidate.indexPhysicalLayouts, sqlCatalogDigest: catalogState.digest)
+                indexPhysicalLayouts: candidate.indexPhysicalLayouts,
+                sqlCatalogDigest: catalogState.digest,
+                sqlIndexIdentities: SQLIndexRuntime.identities(catalog: catalogState.catalog))
             if state.sqlCatalog != nil, state.fingerprint == fingerprint,
                 state.executionRuntimeFingerprint == prepared.executionRuntimeFingerprint,
                 state.sqlCatalog?.digest == catalogState.digest {

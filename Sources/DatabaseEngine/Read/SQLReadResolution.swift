@@ -8,14 +8,20 @@ package final class SQLReadResolution: Sendable {
     package let searchPath: SQLSearchPath
     let currentUser: String?
     let continuationIdentity: ByteString
+    let viewBindings: [SQLViewSourceBinding]?
+    let expandingViewIDs: [String]
+    var workMeter: DatabaseWorkMeter { reservation.workMeter }
     private let reservation: DatabaseIntermediateReservation
 
     init(policy: DatabaseReadPolicy, snapshot: SQLCatalogSnapshot, searchPath: SQLSearchPath,
-         currentUser: String?, reservation: DatabaseIntermediateReservation) {
+         currentUser: String?, reservation: DatabaseIntermediateReservation,
+         viewBindings: [SQLViewSourceBinding]? = nil, expandingViewIDs: [String] = []) {
         self.policy = policy
         self.snapshot = snapshot
         self.searchPath = searchPath
         self.currentUser = currentUser
+        self.viewBindings = viewBindings
+        self.expandingViewIDs = expandingViewIDs
         var digest = SHA256Accumulator()
         digest.update(snapshot.digest)
         func appendCount(_ count: UInt64, to digest: inout SHA256Accumulator) {
@@ -39,8 +45,7 @@ package final class SQLReadResolution: Sendable {
     }
 
     func resolve(_ table: TableRef) throws -> SQLCatalogResolvedRelation {
-        try snapshot.resolveRelation(name: table.table, namespace: table.schema,
-            searchPath: searchPath, currentUser: currentUser)
+        try resolveSQLViewPhysicalSource(table)
     }
 
     func validate(_ policy: DatabaseReadPolicy) throws {

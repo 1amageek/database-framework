@@ -49,13 +49,13 @@ final class SQLStatementReadScope: Sendable {
         try resolution.validate(context.readPolicy())
     }
 
-    func physicalSource(_ table: TableRef, query: SelectQuery) throws -> SQLStatementSourceSnapshot {
+    func physicalSource(_ table: TableRef, query: SelectQuery, sqlResolution: SQLReadResolution? = nil) throws -> SQLStatementSourceSnapshot {
         try validate()
         return try state.withLock { state in
-            if let existing = state.snapshots.first(where: { $0.matches(table, query: query) }) { return existing }
+            if let existing = state.snapshots.first(where: { $0.matches(table, query: query, sqlResolution: sqlResolution) }) { return existing }
             guard !state.sealed else { throw SQLStatementReadError.uncapturedSource }
             let value = try SQLStatementSourceSnapshot(table: table, query: query,
-                scopeIdentity: ObjectIdentifier(self), meter: execution.workMeter)
+                scopeIdentity: ObjectIdentifier(self), meter: execution.workMeter, sqlResolution: sqlResolution)
             try CanonicalBindingStorage.append(value, to: &state.snapshots, reservation: reservation)
             return value
         }

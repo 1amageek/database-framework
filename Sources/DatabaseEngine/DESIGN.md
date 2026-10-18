@@ -44,6 +44,7 @@ StorageKit Directory node through [Directory](Directory/DESIGN.md).
 | [StorageKit](../../../storage-kit/Sources/StorageKit/DESIGN.md) | depends on | Storage transaction and physical checkpoint contract | Supplies backend-neutral atomicity and journal behavior. | Framework restores logical state without implementing backend key semantics. |
 | [Database](../Database/DESIGN.md) | used by | Operation admission and ready output | Exposes statement/block entry points. | It cannot acquire independent transaction authority. |
 | [Read](Read/DESIGN.md) | child | Session admission | Composes this direct component contract. | Context methods cannot bypass it. |
+| [Configuration](Configuration/DESIGN.md) | child | Immutable runtime and explicit schema-driven factories | Composes installed capabilities and application-owned authorization. | New entities receive no implicit allow policy. |
 | [Core](Core/DESIGN.md) | child | Polymorphic orchestration | Composes this direct component contract. | Does not decide query authority. |
 | [Serialization](Serialization/DESIGN.md) | child | Retained bounded item read | Composes this direct component contract. | Envelope and chunks are bounded. |
 | [QueryExecution](QueryExecution/DESIGN.md) | child | Retained aggregate/destinations | Composes this direct component contract. | Copyable raw values do not escape. |
@@ -56,6 +57,9 @@ StorageKit Directory node through [Directory](Directory/DESIGN.md).
 | [SQLCatalog](SQLCatalog/DESIGN.md) | child | Resolved SQL relation/column mappings and bounded catalog persistence | Maps logical names to existing physical owners without granting authority. | Requests consume the snapshot retained by their schema generation. |
 | [Schema](Schema/DESIGN.md) | child | Aggregate schema/catalog generation lifecycle | Persists and restores the pair atomically and publishes only after commit. | Catalog-only changes participate in generation CAS and execution identity. |
 | [SQLBlock](SQLBlock/DESIGN.md) | child | Ordered semantic steps, named checkpoints and aggregate readiness | Coordinates one admitted transaction and request meter. | Grammar and remote operation dispatch remain S16/S17; physical journals remain StorageKit-owned. |
+| [SQLDDL](SQLDDL/DESIGN.md) | child | Name-bound transactional schema and table changes | Composes physical transformation and stable logical identities. | Namespace names do not grant storage authority. |
+| [SQLViews](SQLViews/DESIGN.md) | child | Stored SELECT binding and materialized population | Expands caller-authorized reads and owns view lifecycle. | Ordinary views have no physical entity; materialized backing is private. |
+| [SQLIndexes](SQLIndexes/DESIGN.md) | child | SQL expression and partial index lifecycle | Builds and maintains semantic keys in the admitted transaction. | Planner selection requires a proven predicate implication. |
 | [Directory](Directory/DESIGN.md) | child | Declaration-to-node binding | Composes this direct component contract. | A resolved node is valid only in its resolving transaction. |
 
 ## Architecture
@@ -103,8 +107,30 @@ generation; no collecting child result is independently publishable.
 
 The public semantic facade consumes the same Engine path. S14 adds no remote
 dispatch or per-backend SQL forwarding. S15 owns schema/index/view DDL and S17
-owns the public remote/text statement surface. Full FoundationDB, graph-enabled
+owns the public remote statement surface. Full FoundationDB, graph-enabled
 Database portable, MultiBase portable, URL integration and push remain S18.
+
+### S15 DDL composition
+
+The [Kit DDL declarations](../../../database-kit/Sources/DatabaseKit/Query/SQL/DDL/DESIGN.md)
+carry unresolved SQL intent. Engine execution composes the following owners:
+
+```text
+SQLBlock -> SQLDDL -> Schema: prepare an admitted physical/catalog candidate
+                     -> SQLViews: bind definitions and populate materializations
+                     -> SQLIndexes: build, maintain and retire exact index state
+                     -> Transaction: transform old rows and stage the candidate
+                         -> authoritative commit/close -> generation publication
+```
+
+The child designs own conversion, dependency, runtime and persistence details.
+The enclosing transaction owns atomicity and checkpoints; no DDL child opens an
+independent data transaction or publishes its own generation. Static model
+protection and Directory identity remain assumptions of every child. Stored
+definitions and indexes retain stable logical bindings across rename and reopen.
+S15 also connects the existing constraint, generated-column, identity and
+sequence semantics to DDL text. Operational commands remain S16 and remote
+dispatch remains S17.
 
 ### Assumptions
 

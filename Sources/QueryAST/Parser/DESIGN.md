@@ -719,3 +719,36 @@ targets; no shared or unsafe state is added.
 
 Parser/Builder tests own these cases; Engine/public semantic execution
 separately proves committed effects, snapshot visibility, output and rollback.
+
+### S15 schema definition grammar
+
+Parser consumes the name-based [Kit DDL contract](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DDL/DESIGN.md).
+CREATE/ALTER/DROP schema, table, index, view, materialized view and sequence
+produce `QueryStatement.ddl`; PROPERTY GRAPH keeps its existing branch. CTAS,
+view bodies, DEFAULT, generated expressions, CHECK, ALTER USING and index
+expressions use the enclosing parser and structural ledger. Column and table
+constraints preserve timing, null uniqueness, reference actions and names.
+Sequence options preserve omission versus explicit NO bounds, restart and
+ownership. Temporary scope is a declaration flag; execution owns its lifecycle.
+
+```text
+SQL text -> bounded token ledger -> immutable DDL intent
+    -> shared expression / type / SELECT grammar
+        -> structural admission -> runtime catalog binding
+```
+
+Canonical round trips must retain declaration metadata, nested parameters and
+source occurrence identity. Unsupported clauses, malformed/duplicate options,
+trailing tokens and exhausted budgets fail explicitly. Parsed support is syntax
+evidence only; Engine tests establish catalog and storage effects. S16 settings,
+transaction control and SET CONSTRAINTS remain outside this grammar.
+
+| Evidence | Owned behavior |
+|---|---|
+| S15-SYN01 | All DDL alternatives, ordered ALTER actions, CTAS/temp, ordinary/MV body and data mode survive canonical text round trips. |
+| S15-SYN02 | Column constraints/defaults/generated/identity/SERIAL and every sequence option preserve explicit metadata; malformed and unsupported text fails. |
+| S15-SYN03 | Equal repeated children retain distinct DEFAULT/generated/CHECK/USING/index/SELECT source occurrence paths under one ledger. |
+| S15-SYN04 | Exact output boundary succeeds, one-past output/collection bounds and malformed intrinsic declarations fail; PROPERTY GRAPH behavior remains intact. |
+
+`SQLDDLSyntaxTests` owns these parser/writer witnesses. Full SQL D01–D12
+execution and durable publication remain Engine-owned completion evidence.

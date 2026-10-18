@@ -924,24 +924,25 @@ extension SQLParser {
             let start = tokenStart
             return try captureMutation(.truncate(try parseTruncateQuery()), start: start)
         case .keyword("CREATE"):
+            let start = tokenStart
             advance()
             if case .keyword("PROPERTY") = currentToken {
                 return .createGraph(try parseCreateGraph())
             }
-            throw ParseError.unsupportedFeature("CREATE statement type")
+            return try captureDDL(parseCreateDDL(), start: start)
         case .keyword("DROP"):
+            let start = tokenStart
             advance()
-            try expect("PROPERTY")
-            try expect("GRAPH")
-            guard let graphName = identifierText else {
-                throw ParseError.unexpectedToken(
-                    expected: "property graph name",
-                    found: tokenDescription(currentToken),
-                    position: tokenStart
-                )
+            if consumeContextualWord("PROPERTY") {
+                try expect("GRAPH")
+                return .dropGraph(try parseRequiredIdentifier("property graph name"))
             }
+            return try captureDDL(parseDropDDL(), start: start)
+        case .identifier(let word) where !tokenIsQuoted && ["alter", "refresh"].contains(word):
+            let start = tokenStart
+            let refresh = word == "refresh"
             advance()
-            return .dropGraph(graphName)
+            return try captureDDL(refresh ? parseRefreshDDL() : parseAlterDDL(), start: start)
         default:
             throw ParseError.invalidSyntax(
                 message: "Expected statement keyword",
@@ -4504,5 +4505,450 @@ extension SQLParser {
         if consumeContextualWord("CASCADE") { references = .cascade }
         else { _ = consumeContextualWord("RESTRICT") }
         return try makeStructuralNode(TruncateQuery(tables: tables, identity: identity, references: references))
+    }
+}
+
+// MARK: - Schema Definition Parsing
+
+extension SQLParser {
+    private func captureDDL(_ ddl: SQLDDLStatement, start: Int) throws -> QueryStatement {
+        let statement = QueryStatement.ddl(ddl)
+        try sourceCapture?.recordDDL(ddl, start: start, end: previousTokenEnd, ledger: &structuralLedger)
+        return try makeStructuralNode(statement)
+    }
+
+    private func ddlName() throws -> TableRef {
+        let start = tokenStart
+        let name = try parseNamedTableReference(allowsImplicitAlias: false, allowsExplicitAlias: false)
+        try sourceCapture?.recordMutationTarget(start: start, end: previousTokenEnd, ledger: &structuralLedger)
+        return name
+    }
+
+    private func ddlIfExists(negated: Bool = false) throws -> Bool {
+        guard consumeContextualWord("IF") else { return false }
+        if negated { try expectContextualWord("NOT") }
+        try expectContextualWord("EXISTS")
+        return true
+    }
+
+    private func ddlDropBehavior() -> SQLDropBehavior {
+        if consumeContextualWord("CASCADE") { return .cascade }
+        _ = consumeContextualWord("RESTRICT")
+        return .restrict
+    }
+
+    private func ddlNames() throws -> [TableRef] {
+        var names: [TableRef] = []
+        repeat {
+            try admitCollectionElement()
+            names.append(try ddlName())
+            if !isSymbol(",") { break }
+            advance()
+        } while true
+        return names
+    }
+
+    private func ddlColumns() throws -> [String] {
+        try parseIdentifierList(openingConsumed: false, expected: "column name")
+    }
+
+    private func ddlWithData() throws -> Bool {
+        guard consumeContextualWord("WITH") else { return true }
+        let no = consumeContextualWord("NO")
+        try expectContextualWord("DATA")
+        return !no
+    }
+
+    private func parseCreateDDL() throws -> SQLDDLStatement {
+        let replace: Bool
+        if consumeContextualWord("OR") { try expectContextualWord("REPLACE"); replace = true }
+        else { replace = false }
+        let temporary = consumeContextualWord("TEMP") || consumeContextualWord("TEMPORARY")
+        let unique = consumeContextualWord("UNIQUE")
+        let materialized = consumeContextualWord("MATERIALIZED")
+        if consumeContextualWord("SCHEMA") {
+            guard !replace && !temporary && !unique && !materialized else { throw ddlSyntax("Invalid CREATE SCHEMA modifiers") }
+            let conditional = try ddlIfExists(negated: true)
+            let start = tokenStart
+            let name = try parseRequiredIdentifier("schema name")
+            try sourceCapture?.recordMutationTarget(start: start, end: previousTokenEnd, ledger: &structuralLedger)
+            return .createSchema(name: name, ifNotExists: conditional)
+        }
+        if consumeContextualWord("TABLE") {
+            guard !replace && !unique && !materialized else { throw ddlSyntax("Invalid CREATE TABLE modifiers") }
+            let conditional = try ddlIfExists(negated: true)
+            let name = try ddlName()
+            let source: SQLTableDefinition
+            if isSymbol("("), !withLookahead({ advance(); return startsQuery }) {
+                let isNames = withLookahead { advance(); guard identifierText != nil else { return false }; advance(); return isSymbol(",") || isSymbol(")") }
+                if isNames {
+                    let columns = try ddlColumns()
+                    try expectContextualWord("AS")
+                    source = .query(try parseSelectQuery(), columns: columns, withData: try ddlWithData())
+                } else {
+                    advance()
+                    var columns: [SQLColumnDefinition] = []
+                    var constraints: [SQLTableConstraint] = []
+                    if !isSymbol(")") {
+                        repeat {
+                            try admitCollectionElement()
+                            if ddlStartsConstraint { constraints.append(try ddlConstraint(column: nil)) }
+                            else { columns.append(try ddlColumn()) }
+                            if !isSymbol(",") { break }; advance()
+                        } while true
+                    }
+                    try expect(")")
+                    source = .columns(columns, constraints: constraints)
+                }
+            } else {
+                try expectContextualWord("AS")
+                source = .query(try parseSelectQuery(), columns: nil, withData: try ddlWithData())
+            }
+            return .createTable(SQLCreateTable(name: name, source: source, temporary: temporary, ifNotExists: conditional))
+        }
+        if consumeContextualWord("INDEX") {
+            guard !replace && !temporary && !materialized else { throw ddlSyntax("Invalid CREATE INDEX modifiers") }
+            let conditional = try ddlIfExists(negated: true)
+            let targetStart = tokenStart
+            let name = TableRef(try parseRequiredIdentifier("index name"))
+            try sourceCapture?.recordMutationTarget(start: targetStart, end: previousTokenEnd, ledger: &structuralLedger)
+            try expectContextualWord("ON")
+            let table = try ddlName()
+            try expect("(")
+            let keys = try parseOrderBy()
+            try sourceCapture?.recordDDLIndexKeys(count: keys.count, ledger: &structuralLedger)
+            try expect(")")
+            let nulls = try ddlNulls()
+            let predicate = consumeContextualWord("WHERE") ? try parseExpression() : nil
+            return .createIndex(SQLCreateIndex(name: name, table: table, keys: keys, predicate: predicate,
+                unique: unique, nulls: nulls, ifNotExists: conditional))
+        }
+        if consumeContextualWord("VIEW") {
+            guard !temporary && !unique && !(replace && materialized) else { throw ddlSyntax("Invalid CREATE VIEW modifiers") }
+            let conditional = materialized ? try ddlIfExists(negated: true) : false
+            let name = try ddlName()
+            let columns = isSymbol("(") ? try ddlColumns() : nil
+            try expectContextualWord("AS")
+            let query = try parseSelectQuery()
+            if materialized {
+                return .createMaterializedView(SQLCreateMaterializedView(name: name, columns: columns, query: query,
+                    withData: try ddlWithData(), ifNotExists: conditional))
+            }
+            return .createView(SQLCreateView(name: name, columns: columns, query: query, orReplace: replace))
+        }
+        if consumeContextualWord("SEQUENCE") {
+            guard !replace && !temporary && !unique && !materialized else { throw ddlSyntax("Invalid CREATE SEQUENCE modifiers") }
+            let conditional = try ddlIfExists(negated: true)
+            let name = try ddlName()
+            let options = try ddlSequenceOptions(allowRestart: false)
+            return .createSequence(SQLCreateSequence(name: name, options: options.options, ownedBy: options.ownedBy, ifNotExists: conditional))
+        }
+        throw ParseError.unsupportedFeature("CREATE statement type")
+    }
+
+    private func parseDropDDL() throws -> SQLDDLStatement {
+        let materialized = consumeContextualWord("MATERIALIZED")
+        let kind = try parseRequiredIdentifier("DROP object kind", allowsKeywordLabel: true)
+        guard !materialized || kind == "view" else { throw ddlSyntax("MATERIALIZED requires VIEW") }
+        let conditional = try ddlIfExists()
+        if kind == "schema" {
+            var names: [String] = []
+            repeat {
+                let start = tokenStart
+                try admitCollectionElement(); names.append(try parseRequiredIdentifier("schema name"))
+                try sourceCapture?.recordMutationTarget(start: start, end: previousTokenEnd, ledger: &structuralLedger)
+                if !isSymbol(",") { break }; advance()
+            } while true
+            return .dropSchema(names: names, ifExists: conditional, behavior: ddlDropBehavior())
+        }
+        let names = try ddlNames()
+        let behavior = ddlDropBehavior()
+        switch kind {
+        case "table": return .dropTable(names: names, ifExists: conditional, behavior: behavior)
+        case "index": return .dropIndex(names: names, ifExists: conditional, behavior: behavior)
+        case "view": return materialized ? .dropMaterializedView(names: names, ifExists: conditional, behavior: behavior) : .dropView(names: names, ifExists: conditional, behavior: behavior)
+        case "sequence": return .dropSequence(names: names, ifExists: conditional, behavior: behavior)
+        default: throw ParseError.unsupportedFeature("DROP \(kind)")
+        }
+    }
+
+    private func parseRefreshDDL() throws -> SQLDDLStatement {
+        try expectContextualWord("MATERIALIZED"); try expectContextualWord("VIEW")
+        return .refreshMaterializedView(name: try ddlName(), withData: try ddlWithData())
+    }
+
+    private func parseAlterDDL() throws -> SQLDDLStatement {
+        if consumeContextualWord("SCHEMA") {
+            let start = tokenStart
+            let name = try parseRequiredIdentifier("schema name")
+            try sourceCapture?.recordMutationTarget(start: start, end: previousTokenEnd, ledger: &structuralLedger)
+            try expectContextualWord("RENAME"); try expectContextualWord("TO")
+            return .renameSchema(name: name, to: try parseRequiredIdentifier("new schema name"))
+        }
+        if consumeContextualWord("SEQUENCE") {
+            let conditional = try ddlIfExists()
+            let name = try ddlName()
+            if consumeContextualWord("RENAME") {
+                try expectContextualWord("TO")
+                return .alterSequence(SQLAlterSequence(name: name, renameTo: try parseRequiredIdentifier("new sequence name"), ifExists: conditional))
+            }
+            let options = try ddlSequenceOptions(allowRestart: true)
+            guard options.consumed else { throw ddlSyntax("ALTER SEQUENCE requires an action") }
+            return .alterSequence(SQLAlterSequence(name: name, options: options.options, restart: options.restart,
+                ownedBy: options.ownedBy, ifExists: conditional))
+        }
+        try expectContextualWord("TABLE")
+        let conditional = try ddlIfExists()
+        let name = try ddlName()
+        var actions: [SQLAlterTableAction] = []
+        repeat {
+            try admitCollectionElement(); actions.append(try ddlAlterAction())
+            if !isSymbol(",") { break }; advance()
+        } while true
+        return .alterTable(SQLAlterTable(name: name, actions: actions, ifExists: conditional))
+    }
+
+    private func ddlAlterAction() throws -> SQLAlterTableAction {
+        let start = tokenStart
+        let checkpoint = sourceCapture?.pendingCheckpoint ?? 0
+        let action = try ddlAlterActionBody()
+        try sourceCapture?.recordDDLAction(action, checkpoint: checkpoint, start: start, end: previousTokenEnd, ledger: &structuralLedger)
+        return try makeStructuralNode(action)
+    }
+
+    private func ddlAlterActionBody() throws -> SQLAlterTableAction {
+        if consumeContextualWord("ADD") {
+            if ddlStartsConstraint { return .addConstraint(try ddlConstraint(column: nil)) }
+            _ = consumeContextualWord("COLUMN")
+            let conditional = try ddlIfExists(negated: true)
+            return .addColumn(try ddlColumn(), ifNotExists: conditional)
+        }
+        if consumeContextualWord("DROP") {
+            let constraint = consumeContextualWord("CONSTRAINT")
+            if !constraint { _ = consumeContextualWord("COLUMN") }
+            let conditional = try ddlIfExists()
+            let name = try parseRequiredIdentifier(constraint ? "constraint name" : "column name")
+            let behavior = ddlDropBehavior()
+            return constraint ? .dropConstraint(name: name, ifExists: conditional, behavior: behavior) : .dropColumn(name: name, ifExists: conditional, behavior: behavior)
+        }
+        if consumeContextualWord("RENAME") {
+            if consumeContextualWord("TO") { return .renameTable(to: try parseRequiredIdentifier("new table name")) }
+            _ = consumeContextualWord("COLUMN")
+            let name = try parseRequiredIdentifier("column name")
+            try expectContextualWord("TO")
+            return .renameColumn(name: name, to: try parseRequiredIdentifier("new column name"))
+        }
+        try expectContextualWord("ALTER"); _ = consumeContextualWord("COLUMN")
+        let name = try parseRequiredIdentifier("column name")
+        let setDataType = withLookahead { consumeContextualWord("SET") && consumeContextualWord("DATA") }
+        if consumeContextualWord("TYPE") || setDataType {
+            if setDataType { try expectContextualWord("SET"); try expectContextualWord("DATA"); try expectContextualWord("TYPE") }
+            let type = try parseDataType()
+            let using = consumeContextualWord("USING") ? try parseExpression() : nil
+            return .alterColumnType(name: name, type: type, using: using)
+        }
+        if consumeContextualWord("SET") {
+            if consumeContextualWord("DEFAULT") { return .setDefault(column: name, expression: try parseExpression()) }
+            try expectContextualWord("NOT"); try expectContextualWord("NULL")
+            return .setNotNull(column: name)
+        }
+        try expectContextualWord("DROP")
+        if consumeContextualWord("DEFAULT") { return .dropDefault(column: name) }
+        try expectContextualWord("NOT"); try expectContextualWord("NULL")
+        return .dropNotNull(column: name)
+    }
+
+    private var ddlStartsConstraint: Bool {
+        withLookahead { ["CONSTRAINT", "PRIMARY", "UNIQUE", "CHECK", "FOREIGN"].contains { consumeContextualWord($0) } }
+    }
+
+    private func ddlColumn() throws -> SQLColumnDefinition {
+        let start = tokenStart
+        let checkpoint = sourceCapture?.pendingCheckpoint ?? 0
+        let name = try parseRequiredIdentifier("column name")
+        let serial: DataType? = withLookahead {
+            if consumeContextualWord("SMALLSERIAL") || consumeContextualWord("SERIAL2") { return .smallint }
+            if consumeContextualWord("SERIAL") || consumeContextualWord("SERIAL4") { return .integer }
+            if consumeContextualWord("BIGSERIAL") || consumeContextualWord("SERIAL8") { return .bigint }
+            return nil
+        }
+        let type: DataType
+        var policy: SQLColumnDefinitionPolicy
+        if let serial {
+            type = serial
+            let typeStart = tokenStart
+            advance(); policy = .serial
+            try sourceCapture?.record(serial, start: typeStart, end: previousTokenEnd, identifierEnd: previousTokenEnd, ledger: &structuralLedger)
+        }
+        else { type = try parseDataType(); policy = .input(defaultExpression: nil) }
+        var hasPolicy = serial != nil
+        var constraints: [SQLTableConstraint] = []
+        while true {
+            if consumeContextualWord("DEFAULT") {
+                guard !hasPolicy else { throw ddlSyntax("Duplicate column generation policy") }
+                policy = .input(defaultExpression: try parseExpression()); hasPolicy = true
+            } else if consumeContextualWord("GENERATED") {
+                guard !hasPolicy else { throw ddlSyntax("Duplicate column generation policy") }
+                let generation: SQLIdentityGeneration
+                if consumeContextualWord("ALWAYS") { generation = .always }
+                else { try expectContextualWord("BY"); try expectContextualWord("DEFAULT"); generation = .byDefault }
+                try expectContextualWord("AS")
+                if consumeContextualWord("IDENTITY") {
+                    let options: SQLSequenceOptions
+                    if isSymbol("(") {
+                        advance(); let parsed = try ddlSequenceOptions(allowRestart: false, allowOwnership: false)
+                        options = parsed.options; try expect(")")
+                    } else { options = SQLSequenceOptions() }
+                    policy = .identity(generation: generation, options: options)
+                } else {
+                    guard generation == .always else { throw ddlSyntax("Generated expression requires ALWAYS") }
+                    try expect("("); let expression = try parseExpression(); try expect(")")
+                    let stored: Bool
+                    if consumeContextualWord("STORED") { stored = true }
+                    else { _ = consumeContextualWord("VIRTUAL"); stored = false }
+                    policy = .generated(expression, stored: stored)
+                }
+                hasPolicy = true
+            } else if consumeContextualWord("NULL") {
+                // Explicit NULL is the default nullable column policy.
+            } else if ddlStartsConstraint || withLookahead({ consumeContextualWord("NOT") || consumeContextualWord("REFERENCES") }) {
+                try admitCollectionElement(); constraints.append(try ddlConstraint(column: name))
+            } else { break }
+        }
+        let column = SQLColumnDefinition(name: name, type: type, policy: policy, constraints: constraints)
+        try sourceCapture?.recordDDLColumn(column, checkpoint: checkpoint, start: start, end: previousTokenEnd, ledger: &structuralLedger)
+        return try makeStructuralNode(column)
+    }
+
+    private func ddlConstraint(column: String?) throws -> SQLTableConstraint {
+        let start = tokenStart
+        let checkpoint = sourceCapture?.pendingCheckpoint ?? 0
+        let name = consumeContextualWord("CONSTRAINT") ? try parseRequiredIdentifier("constraint name") : nil
+        let kind: SQLTableConstraintKind
+        if consumeContextualWord("PRIMARY") {
+            try expectContextualWord("KEY")
+            kind = .primaryKey(columns: try column.map { [$0] } ?? ddlColumns())
+        } else if consumeContextualWord("UNIQUE") {
+            let nulls = try ddlNulls()
+            kind = .unique(columns: try column.map { [$0] } ?? ddlColumns(), nulls: nulls)
+        } else if consumeContextualWord("NOT") {
+            guard let column else { throw ddlSyntax("NOT NULL requires a column") }
+            try expectContextualWord("NULL"); kind = .notNull(column: column)
+        } else if consumeContextualWord("CHECK") {
+            try expect("("); kind = .check(try parseExpression()); try expect(")")
+        } else {
+            let columns: [String]
+            if let column { columns = [column] }
+            else { try expectContextualWord("FOREIGN"); try expectContextualWord("KEY"); columns = try ddlColumns() }
+            try expectContextualWord("REFERENCES")
+            let table = try ddlName()
+            let referenced = isSymbol("(") ? try ddlColumns() : nil
+            var match = SQLForeignKeyMatch.simple
+            if consumeContextualWord("MATCH") {
+                if consumeContextualWord("FULL") { match = .full }
+                else { try expectContextualWord("SIMPLE") }
+            }
+            var update = SQLReferentialAction.noAction
+            var delete = SQLReferentialAction.noAction
+            var deleteColumns: [String]?
+            var seen: Set<String> = []
+            while consumeContextualWord("ON") {
+                let isDelete = consumeContextualWord("DELETE")
+                if !isDelete { try expectContextualWord("UPDATE") }
+                guard seen.insert(isDelete ? "delete" : "update").inserted else { throw ddlSyntax("Duplicate referential action") }
+                let action = try ddlReferenceAction()
+                if isDelete { delete = action; if isSymbol("(") { deleteColumns = try ddlColumns() } }
+                else { update = action }
+            }
+            kind = .foreignKey(SQLForeignKeyDefinition(columns: columns, referencedTable: table,
+                referencedColumns: referenced, match: match, onUpdate: update, onDelete: delete, onDeleteColumns: deleteColumns))
+        }
+        var deferrable: Bool?
+        var deferred: Bool?
+        while true {
+            if consumeContextualWord("DEFERRABLE") {
+                guard deferrable == nil else { throw ddlSyntax("Duplicate constraint timing") }; deferrable = true
+            } else if withLookahead({ consumeContextualWord("NOT") && consumeContextualWord("DEFERRABLE") }) {
+                advance(); advance()
+                guard deferrable == nil else { throw ddlSyntax("Duplicate constraint timing") }; deferrable = false
+            } else if consumeContextualWord("INITIALLY") {
+                guard deferred == nil else { throw ddlSyntax("Duplicate initial timing") }
+                if consumeContextualWord("DEFERRED") { deferred = true }
+                else { try expectContextualWord("IMMEDIATE"); deferred = false }
+            } else { break }
+        }
+        guard deferred != true || deferrable != false else { throw ddlSyntax("INITIALLY DEFERRED contradicts NOT DEFERRABLE") }
+        if deferred == true { deferrable = true }
+        let constraint = SQLTableConstraint(name: name, timing: deferrable == true ? .deferrable(initiallyDeferred: deferred ?? false) : .immediate, kind: kind)
+        try sourceCapture?.recordDDLConstraint(constraint, checkpoint: checkpoint, start: start, end: previousTokenEnd, ledger: &structuralLedger)
+        return try makeStructuralNode(constraint)
+    }
+
+    private func ddlNulls() throws -> SQLNullUniqueness {
+        guard consumeContextualWord("NULLS") else { return .distinct }
+        let not = consumeContextualWord("NOT")
+        try expectContextualWord("DISTINCT")
+        return not ? .notDistinct : .distinct
+    }
+
+    private func ddlReferenceAction() throws -> SQLReferentialAction {
+        if consumeContextualWord("NO") { try expectContextualWord("ACTION"); return .noAction }
+        if consumeContextualWord("RESTRICT") { return .restrict }
+        if consumeContextualWord("CASCADE") { return .cascade }
+        try expectContextualWord("SET")
+        if consumeContextualWord("NULL") { return .setNull }
+        try expectContextualWord("DEFAULT"); return .setDefault
+    }
+
+    private func ddlInteger() throws -> Int64 {
+        let negative = isSymbol("-")
+        if negative || isSymbol("+") { advance() }
+        guard case .number(let number) = currentToken,
+              let value = Int64((negative ? "-" : "") + number) else { throw ddlSyntax("Expected signed 64-bit integer") }
+        advance(); return value
+    }
+
+    private func ddlSequenceOptions(allowRestart: Bool, allowOwnership: Bool = true) throws ->
+        (options: SQLSequenceOptions, restart: SQLSequenceRestart?, ownedBy: SQLSequenceOwnership?, consumed: Bool) {
+        var type: DataType?, start: Int64?, increment: Int64?, minimum: SQLSequenceBound?, maximum: SQLSequenceBound?, cycle: Bool?
+        var restart: SQLSequenceRestart?, ownership: SQLSequenceOwnership?
+        var seen: Set<String> = []
+        func duplicate(_ key: String) throws {
+            guard seen.insert(key).inserted else { throw ddlSyntax("Duplicate sequence option \(key)") }
+        }
+        while true {
+            if consumeContextualWord("AS") { try duplicate("type"); type = try parseDataType() }
+            else if consumeContextualWord("START") { try duplicate("start"); _ = consumeContextualWord("WITH"); start = try ddlInteger() }
+            else if consumeContextualWord("INCREMENT") { try duplicate("increment"); _ = consumeContextualWord("BY"); increment = try ddlInteger() }
+            else if consumeContextualWord("MINVALUE") { try duplicate("minimum"); minimum = .value(try ddlInteger()) }
+            else if consumeContextualWord("MAXVALUE") { try duplicate("maximum"); maximum = .value(try ddlInteger()) }
+            else if consumeContextualWord("CYCLE") { try duplicate("cycle"); cycle = true }
+            else if consumeContextualWord("NO") {
+                if consumeContextualWord("MINVALUE") { try duplicate("minimum"); minimum = SQLSequenceBound.none }
+                else if consumeContextualWord("MAXVALUE") { try duplicate("maximum"); maximum = SQLSequenceBound.none }
+                else { try expectContextualWord("CYCLE"); try duplicate("cycle"); cycle = false }
+            } else if allowRestart, consumeContextualWord("RESTART") {
+                try duplicate("restart")
+                if consumeContextualWord("WITH") { restart = .value(try ddlInteger()) }
+                else if isSymbol("-") || isSymbol("+") || { if case .number = currentToken { return true }; return false }() { restart = .value(try ddlInteger()) }
+                else { restart = .start }
+            } else if allowOwnership, consumeContextualWord("OWNED") {
+                try duplicate("ownership"); try expectContextualWord("BY")
+                if consumeContextualWord("NONE") { ownership = SQLSequenceOwnership.none }
+                else {
+                    let first = try parseRequiredIdentifier("owned column relation")
+                    try expect(".")
+                    let second = try parseRequiredIdentifier("owned column", allowsKeywordLabel: true)
+                    if isSymbol(".") {
+                        advance(); ownership = .column(table: TableRef(schema: first, table: second), column: try parseRequiredIdentifier("owned column", allowsKeywordLabel: true))
+                    } else { ownership = .column(table: TableRef(first), column: second) }
+                }
+            } else { break }
+        }
+        return (SQLSequenceOptions(type: type, start: start, increment: increment, minimum: minimum, maximum: maximum, cycle: cycle), restart, ownership, !seen.isEmpty)
+    }
+
+    private func ddlSyntax(_ message: String) -> ParseError {
+        .invalidSyntax(message: message, position: tokenStart)
     }
 }

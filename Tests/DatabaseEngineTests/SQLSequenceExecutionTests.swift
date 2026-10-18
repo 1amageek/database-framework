@@ -166,12 +166,15 @@ struct SQLSequenceExecutionTests {
         _ = try await container.publishSQLCatalog(SQLCatalog(namespaces: catalog.namespaces,
             relations: [dependent], sequences: catalog.sequences), expectedGeneration: container.schemaGeneration,
             idempotencyKey: "sequence-default-dependency", authorization: TestBaseEnvironment.authorization)
+        let publishedColumns = try #require(container.sqlCatalog.relations.first?.columns)
+        let boundColumn = try #require(publishedColumns.first { $0.name == "title" })
+        #expect(boundColumn.sequenceBindings == [try SQLSequenceBinding(originalName: "counter", sequenceID: "counter")])
         await #expect(throws: SQLSequenceExecutionError.dependentIdentity("counter")) {
             try await run(container, [.sequence(.drop(id: "counter", cascade: false))])
         }
         _ = try await run(container, [.savepoint("s"), .sequence(.drop(id: "counter", cascade: true)), .rollbackTo("s")])
         #expect(container.sqlCatalog.sequences.count == 1)
-        #expect(container.sqlCatalog.relations.first?.columns == dependent.columns)
+        #expect(container.sqlCatalog.relations.first?.columns == publishedColumns)
         _ = try await run(container, [.sequence(.drop(id: "counter", cascade: true))])
         #expect(container.sqlCatalog.sequences.isEmpty)
         let retained = try #require(container.sqlCatalog.relations.first?.columns.first(where: { $0.name == "title" }))
@@ -179,18 +182,24 @@ struct SQLSequenceExecutionTests {
         #expect(retained.policy == .input(defaultExpression: nil))
     }
 
-    @Test("S13 numeric ALTER rejects logical rename before any catalog or allocator effect")
-    func renameIsExplicitS15Gate() async throws {
+    @Test("Logical sequence rename preserves allocator identity and checkpoint rollback")
+    func renamePreservesIdentity() async throws {
         let container = try await open()
         defer { await container.shutdown() }
         _ = try await run(container, [.sequence(.create(sequence()))])
         let renamed = try SQLSequence(id: "counter", namespaceID: "public", name: "renamed",
             start: 1, increment: 1, minimum: 1, maximum: 100)
-        await #expect(throws: SQLSequenceExecutionError.unsupportedSequenceRename("counter")) {
-            try await run(container, [.sequence(.alter(renamed, restart: nil))])
+        _ = try await run(container, [.savepoint("before"), .sequence(.alter(renamed, restart: nil)), .rollbackTo("before")])
+        #expect(container.sqlCatalog.sequences.first?.name == "counter")
+        let first = try await run(container, [call("NEXTVAL", [.string("counter")])])
+        #expect(try value(first, at: 0) == 1)
+        _ = try await run(container, [.sequence(.alter(renamed, restart: nil))])
+        await #expect(throws: SQLSequenceExecutionError.self) {
+            try await run(container, [call("NEXTVAL", [.string("counter")])])
         }
-        let next = try await run(container, [call("NEXTVAL", [.string("counter")])])
-        #expect(try value(next, at: 0) == 1)
+        let next = try await run(container, [call("NEXTVAL", [.string("renamed")])])
+        #expect(try value(next, at: 0) == 2)
+        #expect(container.sqlCatalog.sequences.first?.id == "counter")
     }
 
     @Test("Allocation replay is separate from the storage retry maximum")

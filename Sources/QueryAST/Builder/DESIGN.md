@@ -658,3 +658,15 @@ punctuation. SPARQL explicitly rejects the new SQL forms and retains its
 existing behavior. S14-SYN01...04 are owned by Parser's table; Builder adds
 construction/text/parse witnesses, malformed-AST rejection and exact/one-past
 output limits. Runtime effect proof remains Engine-owned.
+
+### S15 schema definition emission
+
+The canonical bounded writer emits [Kit DDL](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DDL/DESIGN.md)
+through the shared statement entry point. It quotes object and column names,
+preserves ordered ALTER actions and index keys, emits every represented column
+policy/constraint/sequence option and shares expression, type and SELECT writers
+with ordinary queries. CREATE TABLE AS and materialized views retain WITH DATA
+versus WITH NO DATA. Invalid intrinsic shape fails before output; output growth
+is checked before mutation. No writer allocates catalog identity or evaluates
+a schema expression. Parser round trips and budget boundaries own syntax proof;
+Engine owns observable effects.

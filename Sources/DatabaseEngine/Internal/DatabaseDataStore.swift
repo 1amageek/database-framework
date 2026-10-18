@@ -87,8 +87,9 @@ package final class DatabaseDataStore: DataStore, Sendable {
             contentsOf: encodedType
         )
         self.indexLifecycleStore = IndexLifecycleStore(
-            container: container,
-            subspace: subspace
+            container: container, subspace: subspace,
+            schema: readPolicy.schemaLease.schema,
+            indexPhysicalLayouts: readPolicy.schemaLease.indexPhysicalLayouts
         )
         self.violationTracker = UniquenessViolationTracker(
             container: container,
@@ -2549,7 +2550,8 @@ package final class DatabaseDataStore: DataStore, Sendable {
     /// retained model and encoded byte owned across the mutation pipeline.
     func commitPreparedWrite(
         _ prepared: PersistablePreparedWrite,
-        transaction: any TransactionAccess
+        transaction: any TransactionAccess,
+        workMeter: DatabaseWorkMeter? = nil
     ) async throws {
         try await prepared.storage.write(
             prepared.result.encodedValue,
@@ -2562,6 +2564,106 @@ package final class DatabaseDataStore: DataStore, Sendable {
             id: prepared.result.identifier,
             transaction: transaction
         )
+        try await SQLIndexRuntime.maintain(oldModel: prepared.result.previousCanonicalModel,
+            newModel: prepared.result.canonicalModel, catalog: readPolicy.sqlCatalog.catalog,
+            physicalSchema: readPolicy.schema, storeSubspace: subspace, container: container,
+            transaction: transaction, workMeter: workMeter)
+    }
+
+    /// Rewrites through distinct immutable source and target contracts.
+    func rewriteSQLRows(to target: DatabaseDataStore?, transform: SQLSchemaRewrite,
+        transaction: any TransactionAccess, workMeter: DatabaseWorkMeter
+    ) async throws {
+        let sourceRuntime = try runtime(for: entity.name)
+        let targetRuntime = try target.map { try $0.runtime(for: $0.entity.name) }
+        if let target {
+            for index in target.entity.indexDescriptors {
+                if try await target.indexLifecycleStore.state(of: index.name, transaction: transaction) == .disabled {
+                    try await target.indexLifecycleStore.enable(index.name, transaction: transaction)
+                    try await target.indexLifecycleStore.makeReadable(index.name, transaction: transaction)
+                }
+            }
+        }
+        let storage = container.itemStorageFactory.make(transaction: transaction, blobsSubspace: blobsSubspace)
+        let range = itemSubspace.subspace(entity.name).range()
+        // Remove the complete old key set before inserting transformed keys so
+        // a valid key permutation is not rejected by an intermediate unique key.
+        try await storage.consumeRetainedScan(begin: range.begin, end: range.end,
+            workMeter: workMeter, stage: .mutationPlanning) { _, bytes in
+            try workMeter.consume(at: .mutationPlanning)
+            let old = try sourceRuntime.canonicalized(DataAccess.deserializePersistedModel(bytes,
+                expectedEntity: self.entity.name))
+            let identity = try sourceRuntime.identity(for: old)
+            let id = try PersistableIdentifierKeyCodec.tuple(for: identity,
+                expectedType: sourceRuntime.entity.identifierType)
+            try await self.indexMaintenanceService.updateIndexesUntyped(runtime: sourceRuntime,
+                oldModel: old, newModel: nil, id: id, transaction: transaction)
+            try await SQLIndexRuntime.maintain(oldModel: old, newModel: nil,
+                catalog: self.readPolicy.sqlCatalog.catalog, physicalSchema: self.readPolicy.schema,
+                storeSubspace: self.subspace, container: self.container,
+                transaction: transaction, workMeter: workMeter)
+        }
+        try await storage.consumeRetainedScan(begin: range.begin, end: range.end,
+            workMeter: workMeter, stage: .mutationPlanning) { key, bytes in
+            try workMeter.consume(at: .mutationPlanning)
+            let old = try sourceRuntime.canonicalized(DataAccess.deserializePersistedModel(bytes,
+                expectedEntity: self.entity.name))
+            let oldIdentity = try sourceRuntime.identity(for: old)
+            let targetLease = target?.readPolicy.schemaLease ?? self.readPolicy.schemaLease
+            let result = try await DatabaseSchemaExecutionScope.$container.withValue(self.container) {
+                try await DatabaseSchemaExecutionScope.$lease.withValue(targetLease) {
+                    if let binding = ActiveDatabaseTransactionContext.binding, binding.container === self.container {
+                        return try await ActiveDatabaseTransactionContext.$binding.withValue(binding.rebindingSchemaLease(targetLease)) {
+                            try await transform.transform(old)
+                        }
+                    }
+                    return try await transform.transform(old)
+                }
+            }
+            let replacement: PersistedModel?
+            if let result {
+                guard let targetRuntime else {
+                    throw DatabaseSchemaPublicationError.corruptedState("removed entity rewrite returned a row")
+                }
+                let new = try targetRuntime.canonicalized(result)
+                guard try targetRuntime.identity(for: new) == oldIdentity else {
+                    throw DatabaseSchemaPublicationError.corruptedState("physical SQL rewrite changed row identity or Directory")
+                }
+                replacement = new
+            } else { replacement = nil }
+            let footprint = try DatabaseEntityMutationFootprintMeter.footprint(of: old, workMeter: workMeter)
+            let retained = try workMeter.reserveIntermediate(rows: footprint.rows, bytes: footprint.bytes,
+                at: .mutationPlanning)
+            defer { retained.release() }
+            let id = try PersistableIdentifierKeyCodec.tuple(for: oldIdentity,
+                expectedType: sourceRuntime.entity.identifierType)
+            if let replacement, let target, let targetRuntime {
+                let encoded = try PersistableStorageCodec.encode(replacement)
+                let encodedClaim = try workMeter.reserveIntermediate(bytes: UInt64(encoded.count), at: .mutationPlanning)
+                defer { encodedClaim.release() }
+                try await storage.write(encoded, for: key)
+                try await target.indexMaintenanceService.updateIndexesUntyped(runtime: targetRuntime,
+                    oldModel: nil, newModel: replacement, id: id, transaction: transaction)
+                try await SQLIndexRuntime.maintain(oldModel: nil, newModel: replacement,
+                    catalog: target.readPolicy.sqlCatalog.catalog, physicalSchema: target.readPolicy.schema,
+                    storeSubspace: target.subspace, container: target.container, transaction: transaction, workMeter: workMeter)
+            } else {
+                try await storage.delete(for: key)
+            }
+        }
+        for index in entity.indexDescriptors {
+            let oldIdentity = try indexLifecycleStore.storageIdentity(for: index.name)
+            let targetIdentity: DatabaseIndexStorageIdentity?
+            if let target, target.entity.indexDescriptors.contains(where: { $0.name == index.name }) {
+                targetIdentity = try target.indexLifecycleStore.storageIdentity(for: index.name)
+            } else { targetIdentity = nil }
+            if oldIdentity != targetIdentity {
+                try IndexStorageRetirer.retire(indexName: index.name,
+                    selection: .physicalGeneration(definitionFingerprint: oldIdentity.definitionFingerprint,
+                        layoutFingerprint: oldIdentity.layoutFingerprint), storeSubspace: subspace,
+                    transaction: transaction)
+            }
+        }
     }
 
     /// Evaluate a `WritePrecondition` against an observed existence bit.
@@ -2712,7 +2814,8 @@ package final class DatabaseDataStore: DataStore, Sendable {
     /// Applies a prepared delete after mutation ownership admission succeeds.
     func commitPreparedDelete(
         _ prepared: PersistablePreparedDelete,
-        transaction: any TransactionAccess
+        transaction: any TransactionAccess,
+        workMeter: DatabaseWorkMeter? = nil
     ) async throws {
         try await indexMaintenanceService.updateIndexesUntyped(
             runtime: prepared.runtime,
@@ -2721,6 +2824,9 @@ package final class DatabaseDataStore: DataStore, Sendable {
             id: prepared.identifier,
             transaction: transaction
         )
+        try await SQLIndexRuntime.maintain(oldModel: prepared.persistedModel, newModel: nil,
+            catalog: readPolicy.sqlCatalog.catalog, physicalSchema: readPolicy.schema,
+            storeSubspace: subspace, container: container, transaction: transaction, workMeter: workMeter)
         try await prepared.storage.delete(for: prepared.key)
     }
 

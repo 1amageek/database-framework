@@ -350,6 +350,8 @@ struct DatabaseRuntimeConfigurationValidationTests {
                 try RuntimeConfigurationPolymorphicVectorEntity.schemaEntity
             ]
         )
+        let indexName = try #require(schema.polymorphicGroups.first?.indexes.first?.name)
+        let deployment = VectorIndexConfiguration(indexName: indexName, algorithm: .flat)
         let configuration = try DatabaseFrameworkRuntime.configuration(
             executionIdentity: DatabaseExecutionRuntimeIdentity(
                 identifier: "database-tests",
@@ -359,10 +361,20 @@ struct DatabaseRuntimeConfigurationValidationTests {
                 try DatabaseFrameworkRuntime.entity(
                     RuntimeConfigurationPolymorphicVectorEntity.self
                 )
-            ]
+            ],
+            indexConfigurations: [deployment]
         )
 
         try configuration.validate(schema: schema)
+        let added = try Schema.Entity(name: "RuntimeAddedSQLItem", identifierType: .string,
+            fields: [FieldSchema(name: "id", fieldNumber: 1, type: .string)],
+            directoryComponents: [.staticPath("runtime-added-sql-item")])
+        let composedSchema = try Schema(entities: schema.entities + [added], version: schema.version)
+        let cloned = try configuration.replacingPhysicalSchema(composedSchema)
+        try cloned.validate(schema: composedSchema)
+        let retained = try #require(cloned.indexConfigurations(named: indexName).first)
+        #expect(retained.indexName == deployment.indexName)
+        #expect(try retained.executionOptions == deployment.executionOptions)
     }
     #endif
 

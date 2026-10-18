@@ -270,3 +270,62 @@ Canonical catalog defaults + declaring relation namespace
 SQLSequenceDependencyRegressionTests owns literal-variant admission, same-name
 namespace isolation, runtime INSERT defaults, RESTRICT/CASCADE, rollback and
 canonical persistence/reopen behavior.
+
+### S15 durable DDL metadata
+
+Catalog format 3 includes ordinary views, materialized-view definitions and
+population state, rich SQL index declarations, each relation's durable field
+number high-water mark, and each input default's literal-to-sequence identity
+bindings. Sequence declarations also persist their accepted integer `declaredType`
+with a closed one-byte tag, preserving width-specific defaults across numeric
+ALTER and restart. Unsupported tags and non-integer declarations fail explicitly.
+Foreign keys may retain the stable identity of their eligible unique
+SQL index witness; this identity is persisted with the foreign-key declaration.
+Views and indexes delegate their validation and bounded field codecs
+to their owning components. Their canonical bytes participate in catalog digest;
+SQL index definition/layout identities also participate in physical generation
+identity through [Schema](../Schema/DESIGN.md).
+
+```text
+SQL declaration -> bounded catalog admission -> stable sequence bindings
+  -> immutable physical/table/view/index mappings -> deterministic format 3
+  -> digest + complete schema generation -> restore with identical bindings
+```
+
+SQL physical replacement preserves persisted compiled-model protection unchanged
+and never invokes application reconciliation. Relation/field retargeting and
+static physical changes remain rejected. Logical CHECK/generated-expression
+renames compare meaning after replacing bound column names with their stable
+column IDs; protected sequence renames preserve identity, numeric options and
+ownership. High-water marks cannot decrease when a relation ID survives.
+Application reconciliation preserves all S15 arrays and high-water metadata;
+incompatible surviving dependencies fail admission explicitly.
+
+Behavioral owners are `S15SchemaTransformationTests` for static protection,
+high-water persistence and column meaning, `S15SchemaStagingTests` for physical
+candidate visibility/rollback, plus the SQLViews and SQLIndexes suites for their
+own contracts. Old persisted frame versions are rejected explicitly during this
+initial-development format transition.
+
+### SQL-created physical entity ownership
+
+Framework persists an internal `sqlOwnedEntityNames` witness in the catalog frame
+and digest. Only physical SQL candidate preparation adds newly created physical
+entities to that witness. Logical catalog declarations cannot assert ownership.
+Rename and type changes retain the witness; SQL DROP removes it with the physical
+entity. A witness must identify one actual physical entity and catalog relation,
+be unique, and never overlap a compiled-model protection witness.
+
+```text
+trusted SQL physical candidate -> exact new physical entity names -> durable witness
+normal application open -> declared application schema + witnessed SQL entities
+  -> explicit runtime factory -> complete catalog validation -> same generation
+```
+
+Normal application composition retains SQL-created tables and materialized-view
+backing entities from the persisted schema. It does not retain an application
+schema-driven entity merely because the current application removed it. The
+current declared application schema remains authoritative for application-owned
+entities. An application declaration that conflicts with a retained SQL-owned
+physical contract fails explicitly; it cannot silently take over ownership.
+Application reconciliation preserves SQL-owned declarations and dependencies.

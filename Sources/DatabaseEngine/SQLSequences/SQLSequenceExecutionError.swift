@@ -11,7 +11,6 @@ public enum SQLSequenceExecutionError: Error, Sendable, Equatable {
     case sequenceAlreadyExists(String)
     case dependentIdentity(String)
     case invalidRestart(Int64)
-    case unsupportedSequenceRename(String)
 }
 
 struct SQLSequenceAllocationDemand: Error, Sendable {

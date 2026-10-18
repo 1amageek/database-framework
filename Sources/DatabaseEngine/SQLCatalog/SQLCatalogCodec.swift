@@ -4,18 +4,19 @@ import DatabaseWire
 
 enum SQLCatalogCodec {
     private static let magic: UInt32 = 0x434C_5153
-    private static let version: UInt16 = 2
+    private static let version: UInt16 = 3
     private static let digestFootprint = ByteString(repeating: 0, count: SHA256Accumulator.digestByteCount)
 
     @discardableResult
     static func admit(_ catalog: SQLCatalog, fingerprint: SchemaFingerprint,
-        protectedContracts: [SQLCatalogProtectedContract], limits: StorageFrameLimits,
+        protectedContracts: [SQLCatalogProtectedContract], sqlOwnedEntityNames: [String] = [], limits: StorageFrameLimits,
         runtimeConfiguration: DatabaseRuntimeConfiguration? = nil
     ) throws -> Int {
         // Existing protection keys have an admitted input footprint. Count new
         // compiled witnesses without allocating their digests or lookup indexes.
         let byteCount = try StorageFrameEncoder.measure(limits: limits) { writer throws(StorageFrameError) in
-            try write(catalog, fingerprint: fingerprint, protectedContracts: protectedContracts, into: &writer)
+            try write(catalog, fingerprint: fingerprint, protectedContracts: protectedContracts,
+                sqlOwnedEntityNames: sqlOwnedEntityNames, into: &writer)
             try writer.writeBytes(digestFootprint)
         }
         guard let runtimeConfiguration else { return byteCount }
@@ -32,6 +33,7 @@ enum SQLCatalogCodec {
         guard !count.overflow else { throw StorageFrameError.byteCountOverflow }
         return try StorageFrameEncoder.measure(limits: limits) { writer throws(StorageFrameError) in
             try writeDeclaration(catalog, fingerprint: fingerprint, into: &writer)
+            try writeSQLOwnership(sqlOwnedEntityNames, into: &writer)
             try writer.writeCount(count.partialValue)
             for protection in protectedContracts { try writeProtection(protection, into: &writer) }
             for relation in catalog.relations where !existing.contains(SQLCatalogName(relation.id)) {
@@ -47,10 +49,12 @@ enum SQLCatalogCodec {
     }
 
     static func canonicalBytes(_ catalog: SQLCatalog, fingerprint: SchemaFingerprint,
-        protectedContracts: [SQLCatalogProtectedContract], limits: StorageFrameLimits = .default
+        protectedContracts: [SQLCatalogProtectedContract], sqlOwnedEntityNames: [String] = [],
+        limits: StorageFrameLimits = .default
     ) throws -> ByteString {
         try StorageFrameEncoder.encode(limits: limits) { writer throws(StorageFrameError) in
-            try write(catalog, fingerprint: fingerprint, protectedContracts: protectedContracts, into: &writer)
+            try write(catalog, fingerprint: fingerprint, protectedContracts: protectedContracts,
+                sqlOwnedEntityNames: sqlOwnedEntityNames, into: &writer)
         }
     }
 
@@ -59,7 +63,8 @@ enum SQLCatalogCodec {
     ) throws -> ByteString {
         try encode(SQLCatalogStoredState(catalog: snapshot.catalog,
             physicalSchemaFingerprint: snapshot.physicalSchemaFingerprint,
-            protectedContracts: snapshot.protectedContracts, digest: snapshot.digest), limits: limits)
+            protectedContracts: snapshot.protectedContracts, digest: snapshot.digest,
+            sqlOwnedEntityNames: snapshot.sqlOwnedEntityNames), limits: limits)
     }
 
     static func encode(_ state: SQLCatalogStoredState,
@@ -68,7 +73,8 @@ enum SQLCatalogCodec {
         // The catalog frame has one final owner; shared QueryIR payloads use their own bounded codec.
         try StorageFrameEncoder.encode(limits: limits) { writer throws(StorageFrameError) in
             try write(state.catalog, fingerprint: state.physicalSchemaFingerprint,
-                protectedContracts: state.protectedContracts, into: &writer)
+                protectedContracts: state.protectedContracts, sqlOwnedEntityNames: state.sqlOwnedEntityNames,
+                into: &writer)
             try writer.writeBytes(state.digest)
         }
     }
@@ -103,7 +109,14 @@ enum SQLCatalogCodec {
                 let name = try reader.readString()
                 let backing = try readBacking(from: &reader)
                 let policy = try readPolicy(from: &reader)
-                columns.append(try SQLColumn(id: id, name: name, backing: backing, policy: policy))
+                let bindingCount = try count(from: &reader, minimumBytes: 8)
+                var bindings: [SQLSequenceBinding] = []
+                bindings.reserveCapacity(bindingCount)
+                for _ in 0..<bindingCount {
+                    bindings.append(try SQLSequenceBinding(originalName: reader.readString(), sequenceID: reader.readString()))
+                }
+                columns.append(try SQLColumn(id: id, name: name, backing: backing, policy: policy,
+                    sequenceBindings: bindings))
             }
             var key: [String]?
             if try reader.readBool() {
@@ -118,14 +131,24 @@ enum SQLCatalogCodec {
             var constraints: [SQLConstraint] = []
             constraints.reserveCapacity(constraintCount)
             for _ in 0..<constraintCount { constraints.append(try readConstraint(from: &reader)) }
+            guard let highWater = Int(exactly: try reader.readInt64()) else {
+                throw StorageFrameError.integerOutOfRange
+            }
             relations.append(try SQLRelation(id: id, namespaceID: namespaceID, name: name,
                 entityName: entityName, columns: columns, primaryKeyColumnIDs: key,
-                primaryKeyConstraint: primaryKeyConstraint, constraints: constraints))
+                primaryKeyConstraint: primaryKeyConstraint, constraints: constraints,
+                fieldNumberHighWaterMark: highWater))
         }
-        let sequenceCount = try count(from: &reader, minimumBytes: 46)
+        let sequenceCount = try count(from: &reader, minimumBytes: 47)
         var sequences: [SQLSequence] = []
         sequences.reserveCapacity(sequenceCount)
         for _ in 0..<sequenceCount { sequences.append(try readSequence(from: &reader)) }
+        let views = try readViews(from: &reader)
+        let indexes = try readIndexes(from: &reader)
+        let ownershipCount = try count(from: &reader, minimumBytes: 4)
+        var sqlOwnedEntityNames: [String] = []
+        sqlOwnedEntityNames.reserveCapacity(ownershipCount)
+        for _ in 0..<ownershipCount { sqlOwnedEntityNames.append(try reader.readString()) }
         let protectionCount = try count(from: &reader, minimumBytes: 13)
         var protections: [SQLCatalogProtectedContract] = []
         protections.reserveCapacity(protectionCount)
@@ -140,7 +163,8 @@ enum SQLCatalogCodec {
         let canonicalByteCount = bytes.count - reader.remainingCount
         let digest = try reader.readBytes()
         try reader.ensureFullyRead()
-        let catalog = try SQLCatalog(namespaces: namespaces, relations: relations, sequences: sequences)
+        let catalog = try SQLCatalog(namespaces: namespaces, relations: relations, sequences: sequences,
+            views: views.views, materializedViews: views.materializedViews, indexes: indexes)
         var protectedIDs: Set<SQLCatalogName> = []
         let relationsByID = Dictionary(uniqueKeysWithValues: catalog.relations.map {
             (SQLCatalogName($0.id), $0)
@@ -154,12 +178,14 @@ enum SQLCatalogCodec {
                 throw SQLCatalogBindingError.invalidProtection(protection.relationID)
             }
         }
+        try SQLCatalogSnapshot.validateSQLOwnedEntities(sqlOwnedEntityNames, catalog: catalog,
+            protectedContracts: protections)
         var accumulator = SHA256Accumulator()
         // Hash the retained validated source range, without re-encoding a copy.
         accumulator.update(bytes[bytes.startIndex..<(bytes.startIndex + canonicalByteCount)])
         guard digest == accumulator.finalize() else { throw SQLCatalogBindingError.digestMismatch }
         return SQLCatalogStoredState(catalog: catalog, physicalSchemaFingerprint: fingerprint,
-            protectedContracts: protections, digest: digest)
+            protectedContracts: protections, digest: digest, sqlOwnedEntityNames: sqlOwnedEntityNames)
     }
 
     static func count(from reader: inout StorageFrameDecoder,
@@ -171,9 +197,11 @@ enum SQLCatalogCodec {
     }
 
     private static func write(_ catalog: SQLCatalog, fingerprint: SchemaFingerprint,
-        protectedContracts: [SQLCatalogProtectedContract], into writer: inout StorageFrameEncoder
+        protectedContracts: [SQLCatalogProtectedContract], sqlOwnedEntityNames: [String],
+        into writer: inout StorageFrameEncoder
     ) throws(StorageFrameError) {
         try writeDeclaration(catalog, fingerprint: fingerprint, into: &writer)
+        try writeSQLOwnership(sqlOwnedEntityNames, into: &writer)
         try writer.writeCount(protectedContracts.count)
         for protection in protectedContracts { try writeProtection(protection, into: &writer) }
     }
@@ -201,6 +229,11 @@ enum SQLCatalogCodec {
                 try writer.writeString(column.name)
                 try writeBacking(column.backing, into: &writer)
                 try writePolicy(column.policy, into: &writer)
+                try writer.writeCount(column.sequenceBindings.count)
+                for binding in column.sequenceBindings {
+                    try writer.writeString(binding.originalName)
+                    try writer.writeString(binding.sequenceID)
+                }
             }
             writer.writeBool(relation.primaryKeyColumnIDs != nil)
             if let key = relation.primaryKeyColumnIDs {
@@ -211,9 +244,19 @@ enum SQLCatalogCodec {
             }
             try writer.writeCount(relation.constraints.count)
             for constraint in relation.constraints { try writeConstraint(constraint, into: &writer) }
+            guard let highWater = Int64(exactly: relation.fieldNumberHighWaterMark) else { throw .integerOutOfRange }
+            writer.writeInt64(highWater)
         }
         try writer.writeCount(catalog.sequences.count)
         for sequence in catalog.sequences { try writeSequence(sequence, into: &writer) }
+        try writeViews(catalog, into: &writer)
+        try writeIndexes(catalog, into: &writer)
+    }
+
+    private static func writeSQLOwnership(_ names: [String], into writer: inout StorageFrameEncoder
+    ) throws(StorageFrameError) {
+        try writer.writeCount(names.count)
+        for name in names { try writer.writeString(name) }
     }
 
     private static func writeProtection(_ protection: SQLCatalogProtectedContract,

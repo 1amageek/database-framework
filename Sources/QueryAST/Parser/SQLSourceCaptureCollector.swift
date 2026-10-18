@@ -7,7 +7,7 @@ struct SQLSourceCaptureCollector {
         case identifierOverflow
     }
 
-    private enum Kind { case expression, literal, query, source, dataType, statement, valuesRow, grouping, groupingComponent, groupingSet, windowFunction, windowReference, namedWindow, mutationTarget, assignment, conflictTarget, conflictAction, returningAliases, namedStatement, mergeClause, mergeAction }
+    private enum Kind { case expression, literal, query, source, dataType, statement, valuesRow, grouping, groupingComponent, groupingSet, windowFunction, windowReference, namedWindow, mutationTarget, assignment, conflictTarget, conflictAction, returningAliases, namedStatement, mergeClause, mergeAction, ddlColumn, ddlConstraint, ddlAction, ddlIndexKey }
     private struct Child {
         let field: QueryOccurrenceField
         let index: UInt32?
@@ -435,7 +435,7 @@ struct SQLSourceCaptureCollector {
     ) throws -> QueryOccurrenceID {
         if let statement {
             switch statement {
-            case .select, .insert, .update, .delete, .with, .merge, .truncate: break
+            case .select, .insert, .update, .delete, .with, .merge, .truncate, .ddl: break
             default:
                 pending.removeAll(keepingCapacity: true)
                 try recordNode(kind: .statement, children: [], start: start, end: end ?? start ?? 0, identifierEnd: nil, ledger: &ledger)
@@ -635,6 +635,113 @@ extension SQLSourceCaptureCollector {
         case .truncate(let value):
             for index in value.tables.indices { try child(.truncateRelation, index: index, kind: .mutationTarget, into: &children, ledger: &ledger) }
         default: throw CaptureError.inconsistentConstruction
+        }
+        try recordNode(kind: .statement, children: children, start: start, end: end, identifierEnd: nil, ledger: &ledger)
+    }
+}
+
+extension SQLSourceCaptureCollector {
+    mutating func recordDDLColumn(_ value: SQLColumnDefinition, checkpoint: Int, start: Int, end: Int,
+                                  ledger: inout QueryStructuralResourceLedger) throws {
+        var children: [Child] = []
+        var constraint = 0
+        var type = 0
+        for index in checkpoint..<pending.count {
+            switch nodes[pending[index]].kind {
+            case .dataType:
+                try child(type == 0 ? .castType : .elementType, kind: .dataType, into: &children, ledger: &ledger)
+                type += 1
+            case .expression:
+                let field: QueryOccurrenceField
+                if case .generated = value.policy { field = .ddlGenerated } else { field = .ddlDefault }
+                try child(field, into: &children, ledger: &ledger)
+            case .ddlConstraint:
+                try child(.ddlConstraint, index: constraint, kind: .ddlConstraint, into: &children, ledger: &ledger)
+                constraint += 1
+            default: throw CaptureError.inconsistentConstruction
+            }
+        }
+        try recordNode(kind: .ddlColumn, children: children, start: start, end: end, identifierEnd: nil, ledger: &ledger)
+    }
+
+    mutating func recordDDLConstraint(_ value: SQLTableConstraint, checkpoint: Int, start: Int, end: Int,
+                                      ledger: inout QueryStructuralResourceLedger) throws {
+        var children: [Child] = []
+        for index in checkpoint..<pending.count {
+            switch nodes[pending[index]].kind {
+            case .expression: try child(.ddlCheck, into: &children, ledger: &ledger)
+            case .mutationTarget: try child(.source, kind: .mutationTarget, into: &children, ledger: &ledger)
+            default: throw CaptureError.inconsistentConstruction
+            }
+        }
+        try recordNode(kind: .ddlConstraint, children: children, start: start, end: end, identifierEnd: nil, ledger: &ledger)
+    }
+
+    mutating func recordDDLAction(_ value: SQLAlterTableAction, checkpoint: Int, start: Int, end: Int,
+                                 ledger: inout QueryStructuralResourceLedger) throws {
+        var children: [Child] = []
+        for index in checkpoint..<pending.count {
+            switch nodes[pending[index]].kind {
+            case .ddlColumn: try child(.ddlColumn, kind: .ddlColumn, into: &children, ledger: &ledger)
+            case .ddlConstraint: try child(.ddlConstraint, kind: .ddlConstraint, into: &children, ledger: &ledger)
+            case .dataType: try child(.castType, kind: .dataType, into: &children, ledger: &ledger)
+            case .expression:
+                let field: QueryOccurrenceField
+                if case .setDefault = value { field = .ddlDefault } else { field = .ddlUsing }
+                try child(field, into: &children, ledger: &ledger)
+            default: throw CaptureError.inconsistentConstruction
+            }
+        }
+        try recordNode(kind: .ddlAction, children: children, start: start, end: end, identifierEnd: nil, ledger: &ledger)
+    }
+
+    mutating func recordDDLIndexKeys(count: Int, ledger: inout QueryStructuralResourceLedger) throws {
+        guard count >= 0, count <= pending.count else { throw CaptureError.inconsistentConstruction }
+        for index in (pending.count - count)..<pending.count {
+            let childNode = pending[index]
+            guard nodes[childNode].kind == .expression else { throw CaptureError.inconsistentConstruction }
+            try ledger.consume(.totalNodes)
+            try ledger.consume(.collectionElements)
+            try ledger.consume(.retainedBytes, amount: UInt64(MemoryLayout<Node>.stride + MemoryLayout<Edge>.stride))
+            let edgeStart = edges.count
+            edges.append(Edge(field: .operand, index: nil, child: childNode))
+            let node = nodes.count
+            nodes.append(Node(kind: .ddlIndexKey, annotation: nodes[childNode].annotation, edges: edgeStart..<edges.count))
+            pending[index] = node
+        }
+    }
+
+    mutating func recordDDL(_ value: SQLDDLStatement, start: Int, end: Int,
+                           ledger: inout QueryStructuralResourceLedger) throws {
+        var children: [Child] = []
+        var column = 0, constraint = 0, action = 0, key = 0, target = 0
+        let multipleTargets: Bool
+        switch value {
+        case .dropSchema, .dropTable, .dropIndex, .dropView, .dropMaterializedView, .dropSequence: multipleTargets = true
+        default: multipleTargets = false
+        }
+        for index in pending.indices {
+            switch nodes[pending[index]].kind {
+            case .mutationTarget:
+                if case .createIndex = value, target == 1 {
+                    try child(.source, kind: .mutationTarget, into: &children, ledger: &ledger)
+                } else {
+                    try child(.ddlTarget, index: multipleTargets ? target : nil, kind: .mutationTarget, into: &children, ledger: &ledger)
+                }
+                target += 1
+            case .ddlColumn:
+                try child(.ddlColumn, index: column, kind: .ddlColumn, into: &children, ledger: &ledger); column += 1
+            case .ddlConstraint:
+                try child(.ddlConstraint, index: constraint, kind: .ddlConstraint, into: &children, ledger: &ledger); constraint += 1
+            case .ddlAction:
+                try child(.ddlAction, index: action, kind: .ddlAction, into: &children, ledger: &ledger); action += 1
+            case .ddlIndexKey:
+                try child(.ddlIndexKey, index: key, kind: .ddlIndexKey, into: &children, ledger: &ledger); key += 1
+            case .query: try child(.ddlQuery, kind: .query, into: &children, ledger: &ledger)
+            case .expression: try child(.ddlIndexPredicate, into: &children, ledger: &ledger)
+            case .dataType: try child(.castType, kind: .dataType, into: &children, ledger: &ledger)
+            default: throw CaptureError.inconsistentConstruction
+            }
         }
         try recordNode(kind: .statement, children: children, start: start, end: end, identifierEnd: nil, ledger: &ledger)
     }

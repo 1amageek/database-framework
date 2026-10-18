@@ -325,18 +325,40 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
             let fields: [SourceBinding.Field]?
             if let sqlResolution {
                 do {
+                    let definition: SQLViewDefinition?
+                    let viewID: String?
+                    if let view = try sqlResolution.ordinaryView(table) { definition = view.definition; viewID = view.id }
+                    else { definition = nil; viewID = nil }
+                    if let definition, let viewID {
+                        let nestedResolution = try sqlResolution.forView(definition, id: viewID,
+                            workMeter: sqlResolution.workMeter)
+                        var nested = Collector(schema: schema, sqlResolution: nestedResolution,
+                            collectingOrdering: collectingOrdering)
+                        nested.collect(definition.query)
+                        if let failure = nested.resolutionFailure { throw failure }
+                        for (name, fields) in nested.fieldsByEntity { fieldsByEntity[name, default: []].formUnion(fields) }
+                        if try sqlResolution.ordinaryView(table) != nil {
+                            let columns = try sqlResolution.viewColumns(table, definition: definition)
+                            return collectingOrdering ? orderingBindings(names: columns.map { $0.name },
+                                dependencies: nested.fieldsByEntity, qualifiers: [table.effectiveName]) : []
+                        }
+                    }
                     let relation = try sqlResolution.resolve(table)
                     entity = relation.entity
                     fields = try relation.columns.enumerated().map { ordinal, column in
                         let dependencies: [String]
                         if let field = column.field { dependencies = [field.name] }
                         else if case .generated(let expression) = column.declaration.policy {
-                            let bound = try SQLConstraintCompiler.bindGenerated(expression, column: column.declaration,
-                                relation: relation.declaration, physicalSchema: schema)
+                            let current = sqlResolution.snapshot.resolvedRelation(id: relation.declaration.id) ?? relation
+                            guard let currentColumn = current.columns.first(where: {
+                                SQLCatalogName($0.declaration.id) == SQLCatalogName(column.declaration.id)
+                            }) else { throw SQLViewExecutionError.missingColumn(relation: relation.declaration.id, column: column.declaration.id) }
+                            let bound = try SQLConstraintCompiler.bindGenerated(expression, column: currentColumn.declaration,
+                                relation: current.declaration, physicalSchema: schema)
                             var names = Set<String>()
                             func collectDependencies(_ value: CanonicalBoundExpression) throws {
                                 if let slot = value.columnSlot {
-                                    guard relation.columns.indices.contains(slot), let field = relation.columns[slot].field else {
+                                    guard current.columns.indices.contains(slot), let field = current.columns[slot].field else {
                                         throw SQLReadResolutionError.missingPhysicalColumn(entity: entity.name, field: column.declaration.name)
                                     }
                                     names.insert(field.name)

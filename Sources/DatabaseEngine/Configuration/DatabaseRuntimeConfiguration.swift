@@ -13,6 +13,8 @@ public struct DatabaseRuntimeConfiguration: Sendable {
     public let authorizationPolicies: AuthorizationPolicyRegistry
     public let entityRuntimes: EntityRuntimeRegistry
     public let indexConfigurations: [any IndexRuntimeConfiguration]
+    private let schemaDrivenAuthorizationPolicyFactory: (@Sendable (Schema.Entity) -> AuthorizationPolicyHandler?)?
+    private let schemaDrivenEntityFactory: (@Sendable (Schema.Entity) throws -> EntityRuntimeRegistration)?
     private let indexConfigurationsByName: [String: [any IndexRuntimeConfiguration]]
 
     public init(
@@ -26,7 +28,9 @@ public struct DatabaseRuntimeConfiguration: Sendable {
         persistableMutationMaintainers: [any PersistableMutationMaintainer] = [],
         entityRuntimes: [EntityRuntimeRegistration] = [],
         authorizationPolicies: [AuthorizationPolicyHandler] = [],
-        indexConfigurations: [any IndexRuntimeConfiguration] = []
+        indexConfigurations: [any IndexRuntimeConfiguration] = [],
+        schemaDrivenEntityFactory: (@Sendable (Schema.Entity) throws -> EntityRuntimeRegistration)? = nil,
+        schemaDrivenAuthorizationPolicyFactory: (@Sendable (Schema.Entity) -> AuthorizationPolicyHandler?)? = nil
     ) throws(DatabaseRuntimeConfigurationError) {
         try self.init(
             executionIdentity: executionIdentity,
@@ -40,7 +44,9 @@ public struct DatabaseRuntimeConfiguration: Sendable {
             persistableMutationMaintainers: persistableMutationMaintainers,
             entityRuntimes: entityRuntimes,
             authorizationPolicies: authorizationPolicies,
-            indexConfigurations: indexConfigurations
+            indexConfigurations: indexConfigurations,
+            schemaDrivenEntityFactory: schemaDrivenEntityFactory,
+            schemaDrivenAuthorizationPolicyFactory: schemaDrivenAuthorizationPolicyFactory
         )
     }
 
@@ -59,7 +65,9 @@ public struct DatabaseRuntimeConfiguration: Sendable {
         persistableMutationMaintainers: [any PersistableMutationMaintainer] = [],
         entityRuntimes: [EntityRuntimeRegistration] = [],
         authorizationPolicies: [AuthorizationPolicyHandler] = [],
-        indexConfigurations: [any IndexRuntimeConfiguration] = []
+        indexConfigurations: [any IndexRuntimeConfiguration] = [],
+        schemaDrivenEntityFactory: (@Sendable (Schema.Entity) throws -> EntityRuntimeRegistration)? = nil,
+        schemaDrivenAuthorizationPolicyFactory: (@Sendable (Schema.Entity) -> AuthorizationPolicyHandler?)? = nil
     ) throws(DatabaseRuntimeConfigurationError) {
         guard !executionIdentity.identifier.isEmpty,
             executionIdentity.identifier.utf8.count
@@ -71,6 +79,8 @@ public struct DatabaseRuntimeConfiguration: Sendable {
         guard executionIdentity.revision > 0 else {
             throw .invalidExecutionIdentityRevision
         }
+        self.schemaDrivenAuthorizationPolicyFactory = schemaDrivenAuthorizationPolicyFactory
+        self.schemaDrivenEntityFactory = schemaDrivenEntityFactory
         self.executionIdentity = executionIdentity
         self.indexMaintainerProviders = try IndexMaintainerProviderRegistry(
             descriptors: indexMaintainerProviderDescriptors
@@ -86,9 +96,17 @@ public struct DatabaseRuntimeConfiguration: Sendable {
             graphTableExecutor: graphTableSourceExecutor,
             sparqlExecutor: sparqlSourceExecutor
         )
-        self.authorizationPolicies = try AuthorizationPolicyRegistry(
-            handlers: authorizationPolicies
-        )
+        var admittedPolicies = authorizationPolicies
+        for registration in entityRuntimes where registration.compiledModelContract == nil
+            && !authorizationPolicies.contains(where: { $0.entityName == registration.entity.name }) {
+            if let policy = schemaDrivenAuthorizationPolicyFactory?(registration.entity) {
+                guard policy.entityName == registration.entity.name else {
+                    throw .authorizationPolicyEntityMismatch(expected: registration.entity.name, actual: policy.entityName)
+                }
+                admittedPolicies.append(policy)
+            }
+        }
+        self.authorizationPolicies = try AuthorizationPolicyRegistry(handlers: admittedPolicies)
         self.entityRuntimes = try EntityRuntimeRegistry(
             registrations: entityRuntimes
         )
@@ -109,6 +127,50 @@ public struct DatabaseRuntimeConfiguration: Sendable {
             }
         }
         self.persistableMutationMaintainers = persistableMutationMaintainers
+    }
+
+    /// Retains the installed capabilities while changing dynamic entity contracts.
+    package func replacingPhysicalSchema(_ schema: Schema) throws -> Self {
+        var registrations: [EntityRuntimeRegistration] = []
+        for entity in schema.entities {
+            if let current = entityRuntimes.registration(named: entity.name), current.entity == entity {
+                registrations.append(current)
+            } else if let factory = schemaDrivenEntityFactory {
+                registrations.append(try factory(entity))
+            } else {
+                registrations.append(EntityRuntimeDefinition(schemaDriven: entity).registration())
+            }
+        }
+        var policies: [AuthorizationPolicyHandler] = []
+        for entity in schema.entities where entityRuntimes.registration(named: entity.name) == nil
+            && authorizationPolicies.handler(for: entity.name) == nil {
+            if let policy = schemaDrivenAuthorizationPolicyFactory?(entity) {
+                guard policy.entityName == entity.name else {
+                    throw DatabaseRuntimeConfigurationError.authorizationPolicyEntityMismatch(
+                        expected: entity.name, actual: policy.entityName)
+                }
+                policies.append(policy)
+            }
+        }
+        return try Self(source: self, registrations: registrations, addedPolicies: policies,
+            indexNames: schema.allIndexNames)
+    }
+
+    private init(source: Self, registrations: [EntityRuntimeRegistration],
+        addedPolicies: [AuthorizationPolicyHandler], indexNames: Set<String>
+    ) throws {
+        self.executionIdentity = source.executionIdentity
+        self.indexMaintainerProviders = source.indexMaintainerProviders
+        self.readExecutors = source.readExecutors
+        self.fusionReadExecutors = source.fusionReadExecutors
+        self.logicalSourceExecutors = source.logicalSourceExecutors
+        self.persistableMutationMaintainers = source.persistableMutationMaintainers
+        self.authorizationPolicies = try source.authorizationPolicies.adding(addedPolicies)
+        self.entityRuntimes = try EntityRuntimeRegistry(registrations: registrations)
+        self.indexConfigurations = source.indexConfigurations.filter { indexNames.contains($0.indexName) }
+        self.indexConfigurationsByName = source.indexConfigurationsByName.filter { indexNames.contains($0.key) }
+        self.schemaDrivenEntityFactory = source.schemaDrivenEntityFactory
+        self.schemaDrivenAuthorizationPolicyFactory = source.schemaDrivenAuthorizationPolicyFactory
     }
 
     /// Returns the deployment policy paired with one declared index in this

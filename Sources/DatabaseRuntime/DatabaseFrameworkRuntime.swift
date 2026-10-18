@@ -42,7 +42,8 @@ public enum DatabaseFrameworkRuntime {
         executionIdentity: DatabaseExecutionRuntimeIdentity,
         entityRuntimes: [EntityRuntimeRegistration],
         authorizationPolicies: [AuthorizationPolicyHandler] = [],
-        indexConfigurations: [any IndexRuntimeConfiguration] = []
+        indexConfigurations: [any IndexRuntimeConfiguration] = [],
+        schemaDrivenAuthorizationPolicyFactory: (@Sendable (Schema.Entity) -> AuthorizationPolicyHandler?)? = nil
     ) throws(DatabaseRuntimeConfigurationError) -> DatabaseRuntimeConfiguration {
         #if DATABASE_RUNTIME_GRAPH_INDEXES
         try configuration(
@@ -50,7 +51,8 @@ public enum DatabaseFrameworkRuntime {
             entityRuntimes: entityRuntimes,
             sparqlFunctionRegistry: .empty,
             authorizationPolicies: authorizationPolicies,
-            indexConfigurations: indexConfigurations
+            indexConfigurations: indexConfigurations,
+            schemaDrivenAuthorizationPolicyFactory: schemaDrivenAuthorizationPolicyFactory
         )
         #else
         try makeConfiguration(
@@ -59,7 +61,8 @@ public enum DatabaseFrameworkRuntime {
             authorizationPolicies: authorizationPolicies,
             indexConfigurations: indexConfigurations,
             graphTableSourceExecutor: nil,
-            sparqlSourceExecutor: nil
+            sparqlSourceExecutor: nil,
+            schemaDrivenAuthorizationPolicyFactory: schemaDrivenAuthorizationPolicyFactory
         )
         #endif
     }
@@ -68,7 +71,8 @@ public enum DatabaseFrameworkRuntime {
         executionIdentity: DatabaseExecutionRuntimeIdentity,
         schema: Schema,
         authorizationPolicies: [AuthorizationPolicyHandler] = [],
-        indexConfigurations: [any IndexRuntimeConfiguration] = []
+        indexConfigurations: [any IndexRuntimeConfiguration] = [],
+        schemaDrivenAuthorizationPolicyFactory: (@Sendable (Schema.Entity) -> AuthorizationPolicyHandler?)? = nil
     ) throws -> DatabaseRuntimeConfiguration {
         #if DATABASE_RUNTIME_GRAPH_INDEXES
         try configuration(
@@ -76,7 +80,8 @@ public enum DatabaseFrameworkRuntime {
             schema: schema,
             sparqlFunctionRegistry: .empty,
             authorizationPolicies: authorizationPolicies,
-            indexConfigurations: indexConfigurations
+            indexConfigurations: indexConfigurations,
+            schemaDrivenAuthorizationPolicyFactory: schemaDrivenAuthorizationPolicyFactory
         )
         #else
         try makeConfiguration(
@@ -85,7 +90,8 @@ public enum DatabaseFrameworkRuntime {
             authorizationPolicies: authorizationPolicies,
             indexConfigurations: indexConfigurations,
             graphTableSourceExecutor: nil,
-            sparqlSourceExecutor: nil
+            sparqlSourceExecutor: nil,
+            schemaDrivenAuthorizationPolicyFactory: schemaDrivenAuthorizationPolicyFactory
         )
         #endif
     }
@@ -96,7 +102,8 @@ public enum DatabaseFrameworkRuntime {
         entityRuntimes: [EntityRuntimeRegistration],
         sparqlFunctionRegistry: SPARQLFunctionRegistry,
         authorizationPolicies: [AuthorizationPolicyHandler] = [],
-        indexConfigurations: [any IndexRuntimeConfiguration] = []
+        indexConfigurations: [any IndexRuntimeConfiguration] = [],
+        schemaDrivenAuthorizationPolicyFactory: (@Sendable (Schema.Entity) -> AuthorizationPolicyHandler?)? = nil
     ) throws(DatabaseRuntimeConfigurationError) -> DatabaseRuntimeConfiguration {
         try makeConfiguration(
             executionIdentity: executionIdentity,
@@ -106,7 +113,8 @@ public enum DatabaseFrameworkRuntime {
             graphTableSourceExecutor: GraphTableReadExecutors.sourceExecutor,
             sparqlSourceExecutor: SPARQLReadExecutors.sourceExecutor(
                 functionRegistry: sparqlFunctionRegistry
-            )
+            ),
+            schemaDrivenAuthorizationPolicyFactory: schemaDrivenAuthorizationPolicyFactory
         )
     }
 
@@ -115,7 +123,8 @@ public enum DatabaseFrameworkRuntime {
         schema: Schema,
         sparqlFunctionRegistry: SPARQLFunctionRegistry,
         authorizationPolicies: [AuthorizationPolicyHandler] = [],
-        indexConfigurations: [any IndexRuntimeConfiguration] = []
+        indexConfigurations: [any IndexRuntimeConfiguration] = [],
+        schemaDrivenAuthorizationPolicyFactory: (@Sendable (Schema.Entity) -> AuthorizationPolicyHandler?)? = nil
     ) throws -> DatabaseRuntimeConfiguration {
         try makeConfiguration(
             executionIdentity: executionIdentity,
@@ -125,7 +134,8 @@ public enum DatabaseFrameworkRuntime {
             graphTableSourceExecutor: GraphTableReadExecutors.sourceExecutor,
             sparqlSourceExecutor: SPARQLReadExecutors.sourceExecutor(
                 functionRegistry: sparqlFunctionRegistry
-            )
+            ),
+            schemaDrivenAuthorizationPolicyFactory: schemaDrivenAuthorizationPolicyFactory
         )
     }
     #endif
@@ -162,7 +172,8 @@ public enum DatabaseFrameworkRuntime {
         authorizationPolicies: [AuthorizationPolicyHandler],
         indexConfigurations: [any IndexRuntimeConfiguration],
         graphTableSourceExecutor: (any GraphTableSourceExecutor)?,
-        sparqlSourceExecutor: (any SPARQLSourceExecutor)?
+        sparqlSourceExecutor: (any SPARQLSourceExecutor)?,
+        schemaDrivenAuthorizationPolicyFactory: (@Sendable (Schema.Entity) -> AuthorizationPolicyHandler?)?
     ) throws(DatabaseRuntimeConfigurationError) -> DatabaseRuntimeConfiguration {
         try DatabaseRuntimeConfiguration(
             executionIdentity: executionIdentity,
@@ -175,7 +186,9 @@ public enum DatabaseFrameworkRuntime {
             persistableMutationMaintainers: persistableMutationMaintainers(),
             entityRuntimes: entityRuntimes,
             authorizationPolicies: authorizationPolicies,
-            indexConfigurations: indexConfigurations
+            indexConfigurations: indexConfigurations,
+            schemaDrivenEntityFactory: { try schemaDrivenEntity($0) },
+            schemaDrivenAuthorizationPolicyFactory: schemaDrivenAuthorizationPolicyFactory
         )
     }
 
