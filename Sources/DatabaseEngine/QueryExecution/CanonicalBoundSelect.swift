@@ -16,6 +16,7 @@ final class CanonicalBoundSelect: Sendable {
     let bindingMetadata: CanonicalBindingMetadata?
     let metadataLease: DatabaseQueryPayloadLease?
     let sourcePlan: CanonicalSourceBindingPlan?
+    let projectionLayout: CanonicalSourceLayout?
 
     init(columns: [QueryColumn], projection: [CanonicalBoundExpression],
          filter: CanonicalBoundExpression?, groupBy: [CanonicalBoundExpression],
@@ -25,7 +26,9 @@ final class CanonicalBoundSelect: Sendable {
          pagination: CanonicalBoundPagination = CanonicalBoundPagination(),
          ctes: [CanonicalBoundCTE] = [], metadataLease: DatabaseQueryPayloadLease? = nil,
          bindingMetadata: CanonicalBindingMetadata? = nil,
-         grouping: CanonicalBoundGrouping? = nil, windows: [CanonicalBoundWindowDefinition] = []) {
+         grouping: CanonicalBoundGrouping? = nil, windows: [CanonicalBoundWindowDefinition] = [],
+         projectionLayout: CanonicalSourceLayout? = nil) {
+        self.projectionLayout = projectionLayout
         self.metadataLease = metadataLease
         self.bindingMetadata = bindingMetadata
         self.columns = columns
@@ -47,6 +50,6 @@ final class CanonicalBoundSelect: Sendable {
                              groupBy: groupBy, having: having, orderBy: orderBy,
                              sourcePlan: sourcePlan, distinctOn: distinctOn,
                              pagination: pagination, ctes: ctes, metadataLease: metadataLease, bindingMetadata: bindingMetadata,
-                             grouping: grouping, windows: windows)
+                             grouping: grouping, windows: windows, projectionLayout: projectionLayout)
     }
 }

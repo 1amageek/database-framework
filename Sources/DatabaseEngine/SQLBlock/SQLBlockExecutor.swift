@@ -56,12 +56,14 @@ public struct SQLBlockExecutor: Sendable {
         }
         let timeline = try SQLBlockStatementTimeline(count: block.steps.count, workMeter: meter)
         let requiredAccess: Security.Access = try requiredAccess(for: block, workMeter: meter)
+        let mutations = SQLMutationRequest(workMeter: meter)
         let request = SQLSequenceRequest(context: context, searchPath: options.searchPath,
             meter: meter, configuration: options.configuration, deadline: deadline)
         try await context.container.sqlSequenceCoordinator.enter(clock: clock, deadline: deadline)
         let boxed: DatabaseReadResultBox<Collecting>
         do {
-            boxed = try await SQLSequenceRuntime.$request.withValue(request) {
+            boxed = try await SQLMutationRuntime.$request.withValue(mutations) {
+              try await SQLSequenceRuntime.$request.withValue(request) {
                 try await SQLSequenceRuntime.$workMeter.withValue(meter) {
                     while true {
                         do {
@@ -69,6 +71,7 @@ public struct SQLBlockExecutor: Sendable {
                                 configuration: options.configuration, checkpointLimits: options.checkpointLimits,
                                 workMeter: meter, executionDeadline: deadline) { transaction in
                                 await request.beginAttempt()
+                                await mutations.beginAttempt()
                                 let collecting = try await collect(block, parameters: parameters, options: options,
                                     binder: binder, transaction: transaction, timeline: timeline, workMeter: meter,
                                     occurrences: occurrences, occurrence: occurrence)
@@ -81,6 +84,7 @@ public struct SQLBlockExecutor: Sendable {
                         }
                     }
                 }
+              }
             }
         } catch {
             do { try await request.close() }
@@ -133,12 +137,14 @@ public struct SQLBlockExecutor: Sendable {
                         let inherited = context.makeSQLTemporalEnvironment()
                         let temporal = SQLTemporalEnvironment(transactionInstant: inherited.transactionInstant,
                             statementInstant: instant, wallClock: inherited.wallClock, configuration: inherited.configuration)
-                        return try await SQLSequenceRuntime.$statementIndex.withValue(index) {
+                        return try await SQLMutationRuntime.$statementIndex.withValue(index) {
+                          try await SQLSequenceRuntime.$statementIndex.withValue(index) {
                             try await context.withSQLTemporalStatement(environment: temporal) {
                                 try await execute(statement, parameters: parameters, options: options,
                                     binder: binder, transaction: transaction, temporal: temporal, workMeter: workMeter,
                                     occurrences: occurrences, occurrence: occurrence)
                             }
+                          }
                         }
                     }
                 }
@@ -202,24 +208,222 @@ public struct SQLBlockExecutor: Sendable {
                 return rows
             }
             return .rows(boxed)
-        case .insert, .update, .delete:
+        case .insert, .update, .delete, .merge, .truncate, .with:
             let bound = try binder.bind(statement)
-            guard options.budget.maximumRows > 0 else {
-                throw DatabaseWorkLimitError.maximumRows(stage: .mutationPlanning,
-                    consumed: workMeter.consumedRows, requested: 1, maximum: 0)
+            let operation: @Sendable (DatabaseReadSession) async throws -> sending CollectedStatement = { session in
+                let resolution = try session.makeSQLReadResolution(searchPath: options.searchPath, workMeter: workMeter)
+                let execution = ReadExecutionContext(options: ReadExecutionOptions(budget: options.budget),
+                    monotonicClock: context.container.monotonicClock, workMeter: workMeter,
+                    queryStructuralLimits: options.structuralLimits, temporalEnvironment: temporal)
+                    .withoutExternalPageWindow().withSQLResolution(resolution)
+                let scope = try SQLStatementReadScope(context: context, session: session, execution: execution)
+                return try await ActiveSQLStatementReads.$scope.withValue(scope) {
+                    do {
+                        let prepared = try await prepare(bound, scope: scope, transaction: transaction,
+                            options: options, workMeter: workMeter)
+                        try scope.seal()
+                        let result = try await run(prepared, scope: scope, transaction: transaction,
+                            options: options, temporal: temporal, workMeter: workMeter)
+                        try await scope.close()
+                        return result
+                    } catch {
+                        let primary = error
+                        do { try await scope.close() }
+                        catch { throw SQLRelationCleanupError(operationError: primary, cleanupError: error) }
+                        throw primary
+                    }
+                }
             }
-            guard let maximumChanges = Int(exactly: options.budget.maximumRows) else {
-                throw SQLBlockExecutionError.mutationLimitOutOfRange(options.budget.maximumRows)
+            var main = bound
+            while case .with(let composed) = main { main = composed.body }
+            if case .select = main {
+                return try await DatabaseReadSession.withSession(context: context,
+                    workMeter: workMeter, operation)
             }
-            let limits = try DatabaseEntityMutationLimits(maximumChanges: maximumChanges, maximumPreconditions: 1)
-            let effects = try await DatabaseEntityStatementMutationExecutor(container: context.container, limits: limits)
-                .executeSQL(bound, searchPath: options.searchPath, transaction: transaction,
-                    workMeter: workMeter, temporalEnvironment: temporal)
-            let kind: SQLCommandKind
-            switch statement { case .insert: kind = .insert; case .update: kind = .update; default: kind = .delete }
-            return .command(kind, UInt64(effects.count))
+            return try await DatabaseReadSession.withSQLMutationSession(context: context,
+                transaction: transaction, workMeter: workMeter, operation)
         case .createGraph, .dropGraph, .sparqlUpdate, .construct, .ask, .describe:
             throw SQLBlockExecutionError.unsupportedStatement
+        }
+    }
+
+    private indirect enum PreparedStatement: Sendable {
+        case select(SelectQuery)
+        case mutation(QueryStatement, SQLMutationPreparation)
+        case truncate(TruncateQuery)
+        case composed([PreparedNamedStatement], PreparedStatement)
+    }
+
+    private struct PreparedNamedStatement: Sendable {
+        let declaration: SQLStatementRelation
+        let statement: PreparedStatement
+    }
+
+    private func mutationExecutor(options: SQLBlockExecutionOptions,
+        workMeter: DatabaseWorkMeter) throws -> DatabaseEntityStatementMutationExecutor {
+        guard options.budget.maximumRows > 0 else {
+            throw DatabaseWorkLimitError.maximumRows(stage: .mutationPlanning,
+                consumed: workMeter.consumedRows, requested: 1, maximum: 0)
+        }
+        guard let count = Int(exactly: options.budget.maximumRows) else {
+            throw SQLBlockExecutionError.mutationLimitOutOfRange(options.budget.maximumRows)
+        }
+        return DatabaseEntityStatementMutationExecutor(container: context.container,
+            limits: try DatabaseEntityMutationLimits(maximumChanges: count, maximumPreconditions: 1))
+    }
+
+    private func prepare(_ statement: QueryStatement, scope: SQLStatementReadScope,
+        transaction: DatabaseTransaction, options: SQLBlockExecutionOptions,
+        workMeter: DatabaseWorkMeter) async throws -> PreparedStatement {
+        try workMeter.consume(at: .mutationPlanning)
+        switch statement {
+        case .select(let query):
+            guard !query.source.usesSPARQLSemantics else { throw SQLBlockExecutionError.unsupportedStatement }
+            try await scope.capture(query)
+            return .select(query)
+        case .insert, .update, .delete, .merge:
+            let executor = try mutationExecutor(options: options, workMeter: workMeter)
+            return .mutation(statement, try await executor.prepareSQLReads(statement, scope: scope,
+                transaction: transaction, workMeter: workMeter))
+        case .truncate(let query): return .truncate(query)
+        case .with(let with):
+            // SELECT-only WITH keeps the existing complete recursive/demand semantics.
+            if case .select(let body) = with.body,
+               with.statements.allSatisfy({ if case .select = $0.statement { return true }; return false }) {
+                let definitions = with.statements.map { definition -> NamedSubquery in
+                    guard case .select(let query) = definition.statement else { preconditionFailure() }
+                    return NamedSubquery(name: definition.name, columns: definition.columns, query: query,
+                        materialized: definition.materialized, search: definition.search, cycle: definition.cycle)
+                }
+                let query = body.replacing(subqueries: definitions + (body.subqueries ?? []))
+                    .replacing(withRecursive: with.recursive || body.withRecursive)
+                try await scope.capture(query)
+                return .select(query)
+            }
+            var definitions = try SQLArrayBuffer<PreparedNamedStatement>(meter: workMeter)
+            for definition in try orderedDefinitions(with, scope: scope, workMeter: workMeter) {
+                switch definition.statement {
+                case .select(let body):
+                    let query: SelectQuery
+                    if with.recursive {
+                        let selected = NamedSubquery(name: definition.name, columns: definition.columns,
+                            query: body, materialized: definition.materialized,
+                            search: definition.search, cycle: definition.cycle)
+                        query = SelectQuery(projection: [.wildcard()], source: .table(TableRef(definition.name)),
+                            subqueries: [selected], withRecursive: true)
+                    } else { query = body }
+                    _ = try await context.prepareStatementSelect(query, name: definition.name,
+                        aliases: with.recursive ? nil : definition.columns, scope: scope)
+                case .insert, .update, .delete, .merge:
+                    guard definition.search == nil, definition.cycle == nil else {
+                        throw SQLStatementReadError.invalidDeclaration(definition.name)
+                    }
+                    let prepared = try await prepare(definition.statement, scope: scope,
+                        transaction: transaction, options: options, workMeter: workMeter)
+                    guard case .mutation(_, let mutation) = prepared else { throw SQLBlockExecutionError.unsupportedStatement }
+                    let relation = try scope.register(name: definition.name, columns: mutation.returningColumns,
+                        aliases: definition.columns)
+                    try definitions.append(PreparedNamedStatement(declaration: relation, statement: prepared))
+                default: throw SQLBlockExecutionError.unsupportedStatement
+                }
+            }
+            guard case .with = with.body else {
+                let body = try await prepare(with.body, scope: scope, transaction: transaction,
+                    options: options, workMeter: workMeter)
+                let finished = definitions.finish()
+                // The prepared graph retains its metered storage through its last execution.
+                try scope.retain(finished.reservation)
+                return .composed(finished.values, body)
+            }
+            throw SQLBlockExecutionError.unsupportedStatement
+        case .createGraph, .dropGraph, .sparqlUpdate, .construct, .ask, .describe:
+            throw SQLBlockExecutionError.unsupportedStatement
+        }
+    }
+
+    private func orderedDefinitions(_ with: SQLWithStatement, scope: SQLStatementReadScope,
+        workMeter: DatabaseWorkMeter) throws -> [SQLNamedStatement] {
+        guard with.recursive else { return with.statements }
+        let names = CanonicalSourceNames(with.statements.map { $0.name })
+        let footprint = try DatabaseIntermediateCollectionMeter.arrayFootprint(count: with.statements.count,
+            element: CanonicalSourceNames.self).adding(DatabaseIntermediateCollectionMeter.arrayFootprint(
+                count: with.statements.count, element: Int.self))
+        let claim = try workMeter.reserveIntermediate(bytes: footprint.bytes, at: .bindingCandidate)
+        try scope.retain(claim)
+        let dependencies = with.statements.map { context.statementReadDependencies($0.statement, among: names) }
+        try claim.reserveAdditional(bytes: UInt64(dependencies.reduce(0) { $0 + $1.count }) * 128, at: .bindingCandidate)
+        var pending = Array(with.statements.indices)
+        var result = try SQLArrayBuffer<SQLNamedStatement>(meter: workMeter)
+        while !pending.isEmpty {
+            var ready: Int?
+            for (position, index) in pending.enumerated() {
+                try workMeter.consume(at: .bindingCandidate)
+                let definition = with.statements[index]
+                if dependencies[index].contains(definition.name) {
+                    guard case .select = definition.statement else {
+                        throw SQLStatementReadError.invalidDeclaration(definition.name)
+                    }
+                }
+                if dependencies[index].allSatisfy({ name in
+                    CanonicalSourceName.equal(name, definition.name)
+                        || !pending.contains { CanonicalSourceName.equal(with.statements[$0].name, name) }
+                }) { ready = position; break }
+            }
+            guard let ready else { throw SQLBlockExecutionError.unsupportedStatement }
+            try result.append(with.statements[pending.remove(at: ready)])
+        }
+        let finished = result.finish(); try scope.retain(finished.reservation)
+        return finished.values
+    }
+
+    private func run(_ prepared: PreparedStatement, scope: SQLStatementReadScope,
+        transaction: DatabaseTransaction, options: SQLBlockExecutionOptions,
+        temporal: SQLTemporalEnvironment, workMeter: DatabaseWorkMeter) async throws -> CollectedStatement {
+        switch prepared {
+        case .select(let query):
+            let result = try await scope.select(query)
+            guard let count = UInt32(exactly: result.visibleRange.count) else {
+                throw DatabaseWorkLimitError.maximumRows(stage: .resultMaterialization,
+                    consumed: workMeter.consumedRows, requested: .max, maximum: options.budget.maximumRows)
+            }
+            try workMeter.recordOutputRows(count)
+            return .rows(result)
+        case .mutation(let statement, let preparation):
+            let executor = try mutationExecutor(options: options, workMeter: workMeter)
+            let result = try await executor.executeSQL(statement, searchPath: options.searchPath,
+                preparation: preparation, readScope: scope, transaction: transaction,
+                workMeter: workMeter, temporalEnvironment: temporal)
+            if let returning = result.returning { return .rows(returning) }
+            let kind: SQLCommandKind
+            switch statement {
+            case .insert: kind = .insert
+            case .update: kind = .update
+            case .delete: kind = .delete
+            case .merge: kind = .merge
+            default: throw SQLBlockExecutionError.unsupportedStatement
+            }
+            return .command(kind, result.affectedRows)
+        case .truncate(let query):
+            guard let session = ActiveSQLSession.binding else { throw SQLBlockExecutionError.unsupportedStatement }
+            let relations = try query.tables.map { try session.resolution.resolve($0).declaration }
+            let outcome = try await transaction.withEntityMutationOperation(workMeter: workMeter) { operation in
+                try await transaction.truncateSQLRelations(relations, cascade: query.references == .cascade,
+                    within: operation, workMeter: workMeter)
+            }
+            if query.identity == .restart {
+                guard let request = SQLSequenceRuntime.request else { throw SQLSequenceExecutionError.requestRequired }
+                try await request.restartOwnedIdentities(relationIDs: outcome.relationIDs,
+                    step: SQLSequenceRuntime.statementIndex, transaction: transaction)
+            }
+            return .command(.truncate, outcome.affectedRows)
+        case .composed(let definitions, let body):
+            for definition in definitions {
+                let result = try await run(definition.statement, scope: scope, transaction: transaction,
+                    options: options, temporal: temporal, workMeter: workMeter)
+                if case .rows(let rows) = result { try definition.declaration.install(rows) }
+            }
+            return try await run(body, scope: scope, transaction: transaction,
+                options: options, temporal: temporal, workMeter: workMeter)
         }
     }
 
@@ -230,7 +434,23 @@ public struct SQLBlockExecutor: Sendable {
             case .sequence: access.insert(.administer)
             case .statement(let statement):
                 switch statement {
-                case .insert, .update, .delete: access.insert(.write)
+                case .insert, .update, .delete, .merge, .truncate: access.insert(.write)
+                case .with(let with):
+                    var pending = try SQLArrayBuffer<QueryStatement>(meter: workMeter)
+                    try pending.append(with.body)
+                    for declaration in with.statements { try pending.append(declaration.statement) }
+                    var index = 0
+                    while index < pending.values.count {
+                        let child = pending.values[index]; index += 1
+                        switch child {
+                        case .insert, .update, .delete, .merge, .truncate: access.insert(.write)
+                        case .with(let nested):
+                            try pending.append(nested.body)
+                            for declaration in nested.statements { try pending.append(declaration.statement) }
+                        default:
+                            if try SQLSequenceEffectAnalysis.containsEffect(child, workMeter: workMeter) { access.insert(.write) }
+                        }
+                    }
                 default:
                     if try SQLSequenceEffectAnalysis.containsEffect(statement, workMeter: workMeter) {
                         access.insert(.write)
@@ -283,7 +503,7 @@ public struct SQLBlockExecutor: Sendable {
                     case .rows(let rows):
                         // Public ownership requires one final positional Array; the collecting shared backing remains charged throughout this transfer.
                         let output = rows.rows.materializePage(rows.visibleRange)
-                        results.append(.rows(try QueryResponse(columns: rows.rows.columns, rows: output, metadata: rows.metadata)))
+                        results.append(.rows(try QueryResponse(columns: rows.rows.columns, rows: output, metadata: rows.metadata, affectedRows: rows.affectedRows)))
                     }
                 }
             }

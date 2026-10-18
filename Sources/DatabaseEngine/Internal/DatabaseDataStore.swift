@@ -2402,6 +2402,35 @@ package final class DatabaseDataStore: DataStore, Sendable {
         }
     }
 
+    private enum SaveAuthorization: Sendable {
+        case ordinary
+        case integrity(SQLReferentialActionAuthorization)
+        case relocation(PersistedModel)
+    }
+
+    /// Prepares both physical halves after authorizing one logical UPDATE.
+    func prepareRelocation(
+        old: PersistedModel, new: PersistedModel,
+        oldIdentity: EntityReference, newIdentity: EntityReference,
+        destination: DatabaseDataStore, precondition: WritePrecondition,
+        transaction: any TransactionAccess, workMeter: DatabaseWorkMeter
+    ) async throws -> (deletion: PersistablePreparedDelete, write: PersistablePreparedWrite) {
+        guard let deletion = try await prepareDelete(old, identity: oldIdentity,
+            precondition: precondition, transaction: transaction, workMeter: workMeter,
+            integrityAuthorization: nil, evaluatesDeletePolicy: false) else {
+            throw DatabaseEntityMutationError.entityNotFound(oldIdentity)
+        }
+        do {
+            let write = try await destination.prepareSave(new, identity: newIdentity,
+                precondition: .notExists, transaction: transaction, workMeter: workMeter,
+                authorization: .relocation(deletion.persistedModel))
+            return (deletion, write)
+        } catch {
+            deletion.transientReservation?.release()
+            throw error
+        }
+    }
+
     /// Resolves, validates, and encodes one write without mutating storage.
     func prepareSave(
         _ model: PersistedModel,
@@ -2411,7 +2440,19 @@ package final class DatabaseDataStore: DataStore, Sendable {
         workMeter: DatabaseWorkMeter?,
         integrityAuthorization: SQLReferentialActionAuthorization? = nil
     ) async throws -> PersistablePreparedWrite {
-        try await integrityAuthorization?.validate(identity: identity, schemaLease: readPolicy.schemaLease)
+        try await prepareSave(model, identity: identity, precondition: precondition,
+            transaction: transaction, workMeter: workMeter,
+            authorization: integrityAuthorization.map(SaveAuthorization.integrity) ?? .ordinary)
+    }
+
+    private func prepareSave(
+        _ model: PersistedModel, identity: EntityReference, precondition: WritePrecondition,
+        transaction: any TransactionAccess, workMeter: DatabaseWorkMeter?,
+        authorization: SaveAuthorization
+    ) async throws -> PersistablePreparedWrite {
+        if case .integrity(let token) = authorization {
+            try await token.validate(identity: identity, schemaLease: readPolicy.schemaLease)
+        }
         let persistableType = model.entity
         let runtime = try runtime(for: persistableType)
         let canonicalModel = try runtime.canonicalized(model)
@@ -2441,17 +2482,23 @@ package final class DatabaseDataStore: DataStore, Sendable {
                 previousCanonicalModel
             )
             oldCanonicalModel = persistedPreviousModel
-            if integrityAuthorization == nil {
+            if case .ordinary = authorization {
                 try readPolicy.withAuthorization {
                     try securityDelegate?.evaluateUpdate(persistedPreviousModel, newResource: canonicalModel)
                 }
             }
             existingRowPresent = true
         } else {
-            if integrityAuthorization == nil {
+            if case .ordinary = authorization {
                 try readPolicy.withAuthorization { try securityDelegate?.evaluateCreate(canonicalModel) }
             }
             existingRowPresent = false
+        }
+
+        if case .relocation(let original) = authorization {
+            try readPolicy.withAuthorization {
+                try securityDelegate?.evaluateUpdate(original, newResource: canonicalModel)
+            }
         }
 
         // Validate intent before the first write so a mismatch cannot leave
@@ -2593,6 +2640,16 @@ package final class DatabaseDataStore: DataStore, Sendable {
         workMeter: DatabaseWorkMeter?,
         integrityAuthorization: SQLReferentialActionAuthorization? = nil
     ) async throws -> PersistablePreparedDelete? {
+        try await prepareDelete(model, identity: identity, precondition: precondition,
+            transaction: transaction, workMeter: workMeter,
+            integrityAuthorization: integrityAuthorization, evaluatesDeletePolicy: true)
+    }
+
+    private func prepareDelete(
+        _ model: PersistedModel, identity: EntityReference, precondition: WritePrecondition,
+        transaction: any TransactionAccess, workMeter: DatabaseWorkMeter?,
+        integrityAuthorization: SQLReferentialActionAuthorization?, evaluatesDeletePolicy: Bool
+    ) async throws -> PersistablePreparedDelete? {
         try await integrityAuthorization?.validate(identity: identity, schemaLease: readPolicy.schemaLease)
         let persistableType = model.entity
         let runtime = try runtime(for: persistableType)
@@ -2625,7 +2682,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
             currentVersion: try Self.entityVersionDigest(for: persistedModel),
             identity: identity
         )
-        if integrityAuthorization == nil {
+        if evaluatesDeletePolicy, integrityAuthorization == nil {
             try readPolicy.withAuthorization { try securityDelegate?.evaluateDelete(persistedModel) }
         }
         let transientReservation: DatabaseIntermediateReservation?

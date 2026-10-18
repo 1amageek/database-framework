@@ -306,3 +306,10 @@ Each implementation gate retains explicit unsupported failures until its
 actual execution proof exists. Full FoundationDB, graph-enabled Database
 portable and MultiBase portable integration, final URL verification and push
 remain the user's S18 verification boundary.
+
+S14 extends the existing semantic statement/block path through
+[Engine DML composition](Sources/DatabaseEngine/DESIGN.md#s14-dml-composition)
+and [QueryAST](Sources/QueryAST/DESIGN.md). Their children own declaration
+adaptation, immutable statement reads, mutation outcomes, ordinary authorization
+and transactional table/identity changes. The package facade retains its
+post-closure result contract; no new storage or transport owner is introduced.

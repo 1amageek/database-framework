@@ -466,3 +466,13 @@ the existing read path. Sequence requests use the profile's serializable collect
 block contract; an external page or continuation is rejected before effects because
 its lifetime cannot preserve this request-local effect history. Pure SELECT paging
 is unchanged. General text DML/DDL and remote dispatch keep their later sprint owners.
+
+### S14 semantic mutation results
+
+The existing semantic `executeStatement` and `executeSQLBlock` facade consumes
+[SQLBlock's S14 composition](../DatabaseEngine/SQLBlock/DESIGN.md#s14-mutation-bearing-statement-composition).
+A DML RETURNING result remains `.rows(QueryResponse)` and preserves its direct
+`affectedRows`, even for an empty relation. The facade neither reexecutes a CTE
+nor materializes a result before the Engine's transaction, read session, required
+schema/sequence work and request leases have authoritatively closed. Textual DML
+admission and remote operation publication retain their separate later owners.

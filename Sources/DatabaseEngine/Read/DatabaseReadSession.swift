@@ -681,6 +681,37 @@ public struct DatabaseReadSession: Sendable {
             )
         }
         #endif
+        return try await withAdmittedSession(context: context, binding: binding,
+            workMeter: workMeter, operation)
+    }
+
+    /// Mutation-owned reads borrow the exact writable transaction's admission.
+    package static func withSQLMutationSession<Result: ~Copyable & Sendable>(
+        context: DatabaseContext,
+        transaction: DatabaseTransaction,
+        workMeter: DatabaseWorkMeter,
+        _ operation: @Sendable (DatabaseReadSession) async throws -> sending Result
+    ) async throws -> sending Result {
+        guard let binding = ActiveDatabaseTransactionContext.binding,
+              binding.databaseTransaction === transaction else {
+            throw DatabaseTransactionError.invalidOperationContext
+        }
+        try binding.validate(for: context)
+        #if DATABASE_MULTI_BASE
+        guard binding.grantedAccess.isSuperset(of: .write) else {
+            throw DatabaseGrantAuthorizationError.denied(resource: context.resource, required: .write)
+        }
+        #endif
+        return try await withAdmittedSession(context: context, binding: binding,
+            workMeter: workMeter, operation)
+    }
+
+    private static func withAdmittedSession<Result: ~Copyable & Sendable>(
+        context: DatabaseContext,
+        binding: DatabaseTransactionExecutionBinding,
+        workMeter: DatabaseWorkMeter,
+        _ operation: @Sendable (DatabaseReadSession) async throws -> sending Result
+    ) async throws -> sending Result {
         let storageAccess = ReadAuthorizedTransactionAccess
             .admittedReadAccess(binding.transaction)
         let session = try DatabaseReadSession(

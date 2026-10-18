@@ -74,6 +74,7 @@ public final class SQLParser {
         "IF", "VERTEX", "TABLES", "EDGE", "KEY", "LABEL", "DESTINATION",
         "REFERENCES", "PROPERTIES", "NO", "LATERAL", "NATURAL",
         "COLLATE", "FETCH", "NEXT", "ONLY", "TIES", "ROW",
+        "MERGE", "TRUNCATE", "MATCHED",
     ]
 
     // PostgreSQL 18 lexical categories: src/include/parser/kwlist.h.
@@ -903,14 +904,25 @@ extension SQLParser {
 extension SQLParser {
     private func parseStatement() throws -> QueryStatement {
         switch currentToken {
-        case .keyword("SELECT"), .keyword("WITH"), .keyword("VALUES"), .symbol("("):
+        case .keyword("WITH"):
+            return try parseWithStatement()
+        case .keyword("SELECT"), .keyword("VALUES"), .symbol("("):
             return .select(try parseSelectQuery())
         case .keyword("INSERT"):
-            return .insert(try parseInsertQuery())
+            let start = tokenStart
+            return try captureMutation(.insert(try parseInsertQuery()), start: start)
         case .keyword("UPDATE"):
-            return .update(try parseUpdateQuery())
+            let start = tokenStart
+            return try captureMutation(.update(try parseUpdateQuery()), start: start)
         case .keyword("DELETE"):
-            return .delete(try parseDeleteQuery())
+            let start = tokenStart
+            return try captureMutation(.delete(try parseDeleteQuery()), start: start)
+        case .keyword("MERGE"):
+            let start = tokenStart
+            return try captureMutation(.merge(try parseMergeQuery()), start: start)
+        case .keyword("TRUNCATE"):
+            let start = tokenStart
+            return try captureMutation(.truncate(try parseTruncateQuery()), start: start)
         case .keyword("CREATE"):
             advance()
             if case .keyword("PROPERTY") = currentToken {
@@ -1140,19 +1152,73 @@ extension SQLParser {
     }
 
     private func parseWithClause() throws -> (definitions: [NamedSubquery], recursive: Bool) {
+        let parsed = try parseWithDefinitions(statementBodies: false)
+        var definitions: [NamedSubquery] = []
+        for value in parsed.definitions {
+            guard case .select(let query) = value.statement else { throw ParseError.unsupportedFeature("Writable WITH requires a statement boundary") }
+            definitions.append(NamedSubquery(name: value.name, columns: value.columns, query: query,
+                materialized: value.materialized, search: value.search, cycle: value.cycle))
+        }
+        return (definitions, parsed.recursive)
+    }
+
+    private func parseWithStatement() throws -> QueryStatement {
+        let start = tokenStart
+        try enterStructuralNesting(); defer { leaveStructuralNesting() }
+        let definitions = try parseWithDefinitions(statementBodies: true)
+        if definitions.definitions.allSatisfy({ if case .select = $0.statement { return true }; return false }), startsQuery {
+            try sourceCapture?.normalizeSelectDefinitions(count: definitions.definitions.count, ledger: &structuralLedger)
+            var query = try parseSelectQuery()
+            if query.subqueries != nil {
+                let source = try makeStructuralNode(DataSource.subquery(query))
+                try sourceCapture?.recordSyntheticProjection(ledger: &structuralLedger)
+                try sourceCapture?.swapLastPending()
+                query = try makeStructuralNode(SelectQuery(projection: [.wildcard()], source: source))
+            }
+            try sourceCapture?.unwrapLastQuery()
+            let ctes = definitions.definitions.map { value -> NamedSubquery in
+                guard case .select(let query) = value.statement else { preconditionFailure("SELECT definitions already checked") }
+                return NamedSubquery(name: value.name, columns: value.columns, query: query,
+                    materialized: value.materialized, search: value.search, cycle: value.cycle)
+            }
+            query = query.replacing(subqueries: ctes).replacing(withRecursive: definitions.recursive)
+            return .select(try makeStructuralNode(query, at: start))
+        }
+        let body = try parseStatement()
+        guard isAdmittedWithBody(body) else { throw ParseError.unsupportedFeature("WITH main statement kind") }
+        let statement = QueryStatement.with(SQLWithStatement(recursive: definitions.recursive,
+            statements: definitions.definitions, body: body))
+        try sourceCapture?.recordMutation(statement, start: start, end: previousTokenEnd, ledger: &structuralLedger)
+        return try makeStructuralNode(statement)
+    }
+
+    private func isAdmittedWithBody(_ statement: QueryStatement) -> Bool {
+        switch statement {
+        case .select, .insert, .update, .delete, .merge: return true
+        default: return false
+        }
+    }
+
+    private func captureMutation(_ statement: QueryStatement, start: Int) throws -> QueryStatement {
+        try sourceCapture?.recordMutation(statement, start: start, end: previousTokenEnd, ledger: &structuralLedger)
+        return statement
+    }
+
+    private func parseWithDefinitions(statementBodies: Bool) throws -> (definitions: [SQLNamedStatement], recursive: Bool) {
         try expect("WITH")
 
         // RECURSIVE is contextual here so unrelated identifiers retain their
         // ordinary SQL name semantics.
         let recursive = consumeContextualWord("RECURSIVE")
 
-        var subqueries: [NamedSubquery] = []
+        var subqueries: [SQLNamedStatement] = []
         var first = true
 
         while first || isSymbol(",") {
             if !first { advance() }
             first = false
 
+            let definitionStart = tokenStart
             guard let name = identifierText else {
                 throw ParseError.unexpectedToken(
                     expected: "CTE name",
@@ -1196,7 +1262,8 @@ extension SQLParser {
             }
 
             try expect("(")
-            let query = try parseSelectQuery()
+            let statement: QueryStatement = statementBodies ? try parseStatement() : .select(try parseSelectQuery())
+            guard isAdmittedWithBody(statement) else { throw ParseError.unsupportedFeature("WITH definition statement kind") }
             try expect(")")
             var search: CTESearchClause?
             if consumeContextualWord("SEARCH") {
@@ -1231,16 +1298,17 @@ extension SQLParser {
             try admitCollectionElement()
             subqueries.append(
                 try makeStructuralNode(
-                    NamedSubquery(
+                    SQLNamedStatement(
                         name: name,
                         columns: columnList,
-                        query: query,
+                        statement: statement,
                         materialized: materialized,
                         search: search,
                         cycle: cycle
                     )
                 )
             )
+            if statementBodies, let value = subqueries.last { try sourceCapture?.recordNamedStatement(value, start: definitionStart, end: previousTokenEnd, ledger: &structuralLedger) }
         }
 
         return (subqueries, recursive)
@@ -2383,7 +2451,7 @@ extension SQLParser {
             colonStartsSlice = false
             defer { colonStartsSlice = previousColonRole }
             let spelling = asciiUppercase(name)
-            let expressionFunctions: Set<String> = ["COALESCE", "NULLIF", "GREATEST", "LEAST", "GROUPING", "JSON_ARRAY", "JSON_OBJECT", "JSON_QUERY", "JSON_SCALAR", "JSON_SERIALIZE", "JSON_VALUE", "JSON_EXISTS", "NORMALIZE", "SUBSTRING", "POSITION", "TRIM", "XMLCONCAT", "XMLFOREST"]
+            let expressionFunctions: Set<String> = ["MERGE_ACTION", "COALESCE", "NULLIF", "GREATEST", "LEAST", "GROUPING", "JSON_ARRAY", "JSON_OBJECT", "JSON_QUERY", "JSON_SCALAR", "JSON_SERIALIZE", "JSON_VALUE", "JSON_EXISTS", "NORMALIZE", "SUBSTRING", "POSITION", "TRIM", "XMLCONCAT", "XMLFOREST"]
             guard schema != nil || quoted || !Self.columnNameWords.contains(spelling) || expressionFunctions.contains(spelling) else {
                 throw ParseError.invalidSyntax(message: "Keyword is not a function name", position: start)
             }
@@ -2958,7 +3026,9 @@ extension SQLParser {
     private func parseInsertQuery() throws -> InsertQuery {
         try expect("INSERT")
         try expect("INTO")
+        let targetStart = tokenStart
         let target = try parseNamedTableReference(allowsImplicitAlias: false)
+        try sourceCapture?.recordMutationTarget(start: targetStart, end: previousTokenEnd, ledger: &structuralLedger)
 
         let columns: [String]?
         if isSymbol("(") {
@@ -2984,6 +3054,7 @@ extension SQLParser {
             var rows: [[Expression]] = []
             repeat {
                 try admitCollectionElement()
+                let rowStart = tokenStart
                 try expect("(")
                 var row: [Expression] = []
                 guard !isSymbol(")") else {
@@ -2999,6 +3070,7 @@ extension SQLParser {
                     advance()
                 }
                 try expect(")")
+                try sourceCapture?.recordValuesRow(count: row.count, start: rowStart, end: previousTokenEnd, ledger: &structuralLedger)
                 rows.append(row)
                 guard isSymbol(",") else { break }
                 advance()
@@ -3020,10 +3092,27 @@ extension SQLParser {
             )
         }
 
+        try sourceCapture?.recordInsertSource(source, end: previousTokenEnd, ledger: &structuralLedger)
+
         var onConflict: OnConflictAction?
+        var conflictTarget: SQLConflictTarget?
         if isKeyword("ON") {
             advance()
             try expect("CONFLICT")
+            if isSymbol("(") {
+                let targetStart = tokenStart
+                let columns = try parseIdentifierList(openingConsumed: false, expected: "conflict column")
+                let predicate: Expression?
+                if isKeyword("WHERE") { advance(); predicate = try parseExpression() } else { predicate = nil }
+                conflictTarget = .columns(columns, where: predicate)
+                try sourceCapture?.recordConflictTarget(conflictTarget!, start: targetStart, end: previousTokenEnd, ledger: &structuralLedger)
+            } else if isKeyword("ON") {
+                let targetStart = tokenStart
+                advance(); try expectContextualWord("CONSTRAINT")
+                conflictTarget = .constraint(try parseRequiredIdentifier("constraint name"))
+                try sourceCapture?.recordConflictTarget(conflictTarget!, start: targetStart, end: previousTokenEnd, ledger: &structuralLedger)
+            }
+            let actionStart = tokenStart
             try expect("DO")
             if isKeyword("NOTHING") {
                 advance()
@@ -3052,6 +3141,7 @@ extension SQLParser {
                     position: tokenStart
                 )
             }
+            if let onConflict { try sourceCapture?.recordConflictAction(onConflict, start: actionStart, end: previousTokenEnd, ledger: &structuralLedger) }
         }
 
         let returning = try parseReturningClause()
@@ -3061,15 +3151,19 @@ extension SQLParser {
                 columns: columns,
                 source: source,
                 onConflict: onConflict,
-                returning: returning,
-                overriding: overriding
+                returning: returning.items,
+                overriding: overriding,
+                conflictTarget: conflictTarget,
+                returningAliases: returning.aliases
             )
         )
     }
 
     private func parseUpdateQuery() throws -> UpdateQuery {
         try expect("UPDATE")
+        let targetStart = tokenStart
         let target = try parseNamedTableReference(implicitAliasTerminators: ["SET"])
+        try sourceCapture?.recordMutationTarget(start: targetStart, end: previousTokenEnd, ledger: &structuralLedger)
         try expect("SET")
         let assignments = try parseAssignments()
 
@@ -3096,7 +3190,8 @@ extension SQLParser {
                 assignments: assignments,
                 from: source,
                 filter: filter,
-                returning: returning
+                returning: returning.items,
+                returningAliases: returning.aliases
             )
         )
     }
@@ -3104,7 +3199,9 @@ extension SQLParser {
     private func parseDeleteQuery() throws -> DeleteQuery {
         try expect("DELETE")
         try expect("FROM")
+        let targetStart = tokenStart
         let target = try parseNamedTableReference(implicitAliasTerminators: ["USING", "WHERE", "RETURNING"])
+        try sourceCapture?.recordMutationTarget(start: targetStart, end: previousTokenEnd, ledger: &structuralLedger)
 
         let source: DataSource?
         if isKeyword("USING") {
@@ -3128,7 +3225,8 @@ extension SQLParser {
                 target: target,
                 using: source,
                 filter: filter,
-                returning: returning
+                returning: returning.items,
+                returningAliases: returning.aliases
             )
         )
     }
@@ -3434,32 +3532,52 @@ extension SQLParser {
     private func parseAssignments() throws -> [Assignment] {
         var assignments: [Assignment] = []
         while true {
-            guard let column = identifierText else {
-                throw ParseError.unexpectedToken(
-                    expected: "assignment column",
-                    found: tokenDescription(currentToken),
-                    position: tokenStart
-                )
-            }
-            advance()
+            let start = tokenStart
+            let columns: [String]
+            if isSymbol("(") { columns = try parseIdentifierList(openingConsumed: false, expected: "assignment column") }
+            else { columns = [try parseRequiredIdentifier("assignment column")] }
             try expect("=")
+            let rhsStart = tokenStart
             let value = try parseExpression()
+            if columns.count > 1 {
+                switch value {
+                case .row, .subquery: break
+                default: throw ParseError.invalidSyntax(message: "Tuple assignment requires ROW or subquery", position: rhsStart)
+                }
+            }
             try admitCollectionElement()
-            assignments.append(
-                try makeStructuralNode(
-                    Assignment(column: column, value: value)
-                )
-            )
+            let assignment = try makeStructuralNode(Assignment(columns: columns, value: value))
+            try sourceCapture?.recordAssignment(assignment, start: start, end: previousTokenEnd, ledger: &structuralLedger)
+            assignments.append(assignment)
             guard isSymbol(",") else { break }
             advance()
         }
         return assignments
     }
 
-    private func parseReturningClause() throws -> [ProjectionItem]? {
-        guard isKeyword("RETURNING") else { return nil }
+    private func parseReturningClause() throws -> (items: [ProjectionItem]?, aliases: SQLReturningAliases?) {
+        guard isKeyword("RETURNING") else { return (nil, nil) }
         advance()
-        return try parseProjection()
+        var aliases: SQLReturningAliases?
+        if isKeyword("WITH") {
+            let start = tokenStart
+            advance(); try expect("(")
+            var old: String?, new: String?
+            repeat {
+                if old != nil || new != nil { try expect(",") }
+                let isOld: Bool
+                if consumeContextualWord("OLD") { isOld = true }
+                else { try expectContextualWord("NEW"); isOld = false }
+                if isOld ? old != nil : new != nil { throw ParseError.invalidSyntax(message: "Duplicate RETURNING transition alias", position: tokenStart) }
+                try expect("AS")
+                let name = try parseRequiredIdentifier("RETURNING transition alias")
+                if isOld { old = name } else { new = name }
+            } while isSymbol(",")
+            try expect(")")
+            aliases = SQLReturningAliases(old: old, new: new)
+            try sourceCapture?.recordReturningAliases(start: start, end: previousTokenEnd, ledger: &structuralLedger)
+        }
+        return (try parseProjection(), aliases)
     }
 
 }
@@ -4296,5 +4414,95 @@ extension SQLParser {
             windows.append(window)
         } while isSymbol(",")
         return windows
+    }
+}
+
+extension SQLParser {
+    private func parseMergeQuery() throws -> MergeQuery {
+        try expect("MERGE")
+        if isKeyword("INTO") { advance() }
+        let targetStart = tokenStart
+        let target = try parseNamedTableReference(implicitAliasTerminators: ["USING"])
+        try sourceCapture?.recordMutationTarget(start: targetStart, end: previousTokenEnd, ledger: &structuralLedger)
+        try expect("USING")
+        let source = try parseDataSource()
+        try expect("ON")
+        let condition = try parseExpression()
+        var clauses: [SQLMergeClause] = []
+        while isKeyword("WHEN") {
+            let start = tokenStart
+            advance()
+            let match: SQLMergeMatch
+            if isKeyword("NOT") {
+                advance(); try expect("MATCHED")
+                if isKeyword("BY") {
+                    advance()
+                    if consumeContextualWord("SOURCE") { match = .notMatchedBySource }
+                    else { try expectContextualWord("TARGET"); match = .notMatchedByTarget }
+                } else { match = .notMatchedByTarget }
+            } else { try expect("MATCHED"); match = .matched }
+            let predicate: Expression?
+            if isKeyword("AND") { advance(); predicate = try parseExpression() } else { predicate = nil }
+            try expect("THEN")
+            let actionStart = tokenStart
+            let action: SQLMergeAction
+            if isKeyword("UPDATE") {
+                advance(); try expect("SET"); action = .update(try parseAssignments())
+            } else if isKeyword("DELETE") { advance(); action = .delete }
+            else if isKeyword("DO") { advance(); try expect("NOTHING"); action = .doNothing }
+            else {
+                try expect("INSERT")
+                let columns = isSymbol("(") ? try parseIdentifierList(openingConsumed: false, expected: "MERGE insert column") : nil
+                var overriding: SQLIdentityOverride?
+                if consumeContextualWord("OVERRIDING") {
+                    if consumeContextualWord("SYSTEM") { overriding = .systemValue }
+                    else { try expectContextualWord("USER"); overriding = .userValue }
+                    try expectContextualWord("VALUE")
+                }
+                if isKeyword("DEFAULT") {
+                    advance(); try expect("VALUES")
+                    action = .insert(columns: columns, values: nil, overriding: overriding)
+                } else {
+                    try expect("VALUES"); try expect("(")
+                    var values: [Expression] = []
+                    repeat {
+                        if !values.isEmpty { try expect(",") }
+                        try admitCollectionElement()
+                        values.append(try parseExpression())
+                    } while isSymbol(",")
+                    try expect(")")
+                    action = .insert(columns: columns, values: values, overriding: overriding)
+                }
+            }
+            try sourceCapture?.recordMergeAction(action, start: actionStart, end: previousTokenEnd, ledger: &structuralLedger)
+            let clause = try makeStructuralNode(SQLMergeClause(match: match, condition: predicate, action: action))
+            try sourceCapture?.recordMergeClause(clause, start: start, end: previousTokenEnd, ledger: &structuralLedger)
+            try admitCollectionElement(); clauses.append(clause)
+        }
+        guard !clauses.isEmpty else { throw ParseError.invalidSyntax(message: "MERGE requires WHEN clauses", position: tokenStart) }
+        let returning = try parseReturningClause()
+        return try makeStructuralNode(MergeQuery(target: target, source: source, condition: condition,
+            clauses: clauses, returning: returning.items, returningAliases: returning.aliases))
+    }
+
+    private func parseTruncateQuery() throws -> TruncateQuery {
+        try expect("TRUNCATE")
+        if isKeyword("TABLE") { advance() }
+        var tables: [TableRef] = []
+        repeat {
+            if !tables.isEmpty { try expect(",") }
+            let start = tokenStart
+            let table = try parseNamedTableReference(allowsImplicitAlias: false)
+            guard table.alias == nil else { throw ParseError.invalidSyntax(message: "TRUNCATE does not admit aliases", position: start) }
+            try sourceCapture?.recordMutationTarget(start: start, end: previousTokenEnd, ledger: &structuralLedger)
+            try admitCollectionElement(); tables.append(table)
+        } while isSymbol(",")
+        var identity = SQLTruncateIdentity.continue
+        if consumeContextualWord("RESTART") { try expectContextualWord("IDENTITY"); identity = .restart }
+        else if consumeContextualWord("CONTINUE") { try expectContextualWord("IDENTITY") }
+        var references = SQLTruncateReferences.restrict
+        if consumeContextualWord("CASCADE") { references = .cascade }
+        else { _ = consumeContextualWord("RESTRICT") }
+        return try makeStructuralNode(TruncateQuery(tables: tables, identity: identity, references: references))
     }
 }

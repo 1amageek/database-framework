@@ -286,3 +286,33 @@ JOIN provenance and complete function composition remain parent test owners.
 
 
 S11 source identity follows [QueryExecution's exact logical identity contract](../DESIGN.md#s11-exact-logical-source-identity). SQLCTEEnvironment consumer lookup and immutable replacement compare UTF-8 bytes, so two normalized-equivalent CTE names keep separate caches and factories. Producer state, lifetime and synchronization remain unchanged.
+
+## S14 statement-owned returned relations
+
+[QueryExecution's statement read scope](../DESIGN.md#s14-statement-read-and-mutation-projection-scope)
+owns the prestatement source registry and private lexical output declarations.
+SQLRelations consumes their immutable retained frames through the existing
+producer protocol. A RETURNING reference receives an independent consumer offset
+over the same completed relation; it cannot invoke the mutation again.
+
+```text
+SQLBlock eagerly completes one writable definition
+    -> one retained RETURNING frame
+        -> consumer A(offset) / consumer B(offset)
+            -> existing selected join/filter/projection
+```
+
+Writable definitions execute exactly once even when unreferenced or consumed with
+LIMIT 0. Their effect execution is SQLBlock's responsibility and never a CTE
+producer factory. This exception does not alter ordinary SELECT CTE behavior:
+unused SELECT definitions remain unstarted and requested prefixes remain lazy.
+The existing mutable `SQLCTECache` is still actor/gate protected identically on
+all targets. Completed returned relations need only immutable retained backing
+plus the existing independently isolated consumer cursor; no mutable Array or
+target-specific synchronization branch is introduced.
+
+Base-source pulls in a mutation-bearing statement use the captured prestatement
+frame. RETURNING pulls use their declaration's changed-image frame. Closing a
+consumer never discards a sibling's frame, and all producer cleanup completes
+before the statement's read session closes. Typed failure for an unreadable
+non-RETURNING definition is distinct from an empty returned relation.

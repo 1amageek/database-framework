@@ -13,9 +13,22 @@ public struct SQLSerializer: SQLSerializing {
         return writer.text
     }
 
-    public func serialize(_ statement: QueryStatement) throws(SQLSerializationError) -> String { try emit { (writer: inout SQLTextWriter) throws(SQLSerializationError) -> Void in try writer.statement(statement) } }
+    private func validateMutation(_ statement: QueryStatement) throws(SQLSerializationError) {
+        switch statement {
+        case .insert, .update, .delete, .with, .merge, .truncate:
+            do { try QueryStructuralValidator.validate(statement, limits: limits) }
+            catch { throw .invalidStructure(error.description) }
+        default: break
+        }
+    }
+
+    public func serialize(_ statement: QueryStatement) throws(SQLSerializationError) -> String {
+        try validateMutation(statement)
+        return try emit { (writer: inout SQLTextWriter) throws(SQLSerializationError) -> Void in try writer.statement(statement) }
+    }
     public func serialize(_ statements: [QueryStatement]) throws(SQLSerializationError) -> String {
-        try emit { (writer: inout SQLTextWriter) throws(SQLSerializationError) -> Void in
+        for statement in statements { try validateMutation(statement) }
+        return try emit { (writer: inout SQLTextWriter) throws(SQLSerializationError) -> Void in
             try writer.collection(statements.count)
             guard !statements.isEmpty else { throw .invalidStructure("Empty SQL statement block") }
             for (index, statement) in statements.enumerated() {
@@ -671,23 +684,7 @@ extension SQLTextWriter {
                 try writer.append(" AS ")
                 if let hint = cte.materialized { try writer.append(hint == .materialized ? "MATERIALIZED " : "NOT MATERIALIZED ") }
                 try writer.append("("); try writer.select(cte.query); try writer.append(")")
-                if let search = cte.search {
-                    try writer.append(search.order == .depthFirst ? " SEARCH DEPTH FIRST BY " : " SEARCH BREADTH FIRST BY ")
-                    try writer.identifiers(search.columns)
-                    try writer.append(" SET "); try writer.identifier(search.sequenceColumn)
-                }
-                if let cycle = cte.cycle {
-                    try writer.append(" CYCLE "); try writer.identifiers(cycle.columns)
-                    try writer.append(" SET "); try writer.identifier(cycle.markColumn)
-                    switch (cycle.markValue, cycle.defaultValue) {
-                    case (nil, nil): break
-                    case (.some(let mark), .some(let value)):
-                        try writer.append(" TO "); try writer.cycleConstant(mark)
-                        try writer.append(" DEFAULT "); try writer.cycleConstant(value)
-                    default: throw .invalidStructure("CYCLE requires both mark and default constants")
-                    }
-                    try writer.append(" USING "); try writer.identifier(cycle.pathColumn)
-                }
+                try writer.cteSuffix(search: cte.search, cycle: cte.cycle)
             }
             try append(" ")
         }
@@ -900,8 +897,45 @@ extension SQLTextWriter {
         }
     }
 
+    private enum StatementEmission {
+        case statement(QueryStatement)
+        case definitions([SQLNamedStatement], Int)
+        case definitionEnd(SQLNamedStatement)
+        case space
+        case leave
+    }
+
     mutating func statement(_ statement: QueryStatement) throws(SQLSerializationError) {
-        try enter(); defer { depth -= 1 }
+        var work: [StatementEmission] = [.statement(statement)]
+        while let item = work.popLast() {
+            switch item {
+            case .leave: depth -= 1
+            case .space: try append(" ")
+            case .definitionEnd(let value):
+                try append(")"); try cteSuffix(search: value.search, cycle: value.cycle)
+            case .definitions(let values, let index):
+                guard index < values.count else { continue }
+                if index > 0 { try append(", ") }
+                let value = values[index]
+                try identifier(value.name)
+                if let columns = value.columns { try append(" ("); try identifiers(columns); try append(")") }
+                try append(" AS ")
+                if let hint = value.materialized { try append(hint == .materialized ? "MATERIALIZED " : "NOT MATERIALIZED ") }
+                try append("(")
+                work.append(.definitions(values, index + 1)); work.append(.definitionEnd(value)); work.append(.statement(value.statement))
+            case .statement(let value):
+                try enter(); work.append(.leave)
+                if case .with(let value) = value {
+                    guard !value.statements.isEmpty else { throw .invalidStructure("Empty WITH definitions") }
+                    try collection(value.statements.count)
+                    try append(value.recursive ? "WITH RECURSIVE " : "WITH ")
+                    work.append(.statement(value.body)); work.append(.space); work.append(.definitions(value.statements, 0))
+                } else { try statementLeaf(value) }
+            }
+        }
+    }
+
+    private mutating func statementLeaf(_ statement: QueryStatement) throws(SQLSerializationError) {
         switch statement {
         case .select(let query): try select(query)
         case .insert(let query):
@@ -921,6 +955,15 @@ extension SQLTextWriter {
             }
             if let conflict = query.onConflict {
                 try append(" ON CONFLICT ")
+                if let target = query.conflictTarget {
+                    switch target {
+                    case .columns(let columns, let predicate):
+                        try append("("); try identifiers(columns); try append(")")
+                        if let predicate { try append(" WHERE "); try expression(predicate) }
+                        try append(" ")
+                    case .constraint(let name): try append("ON CONSTRAINT "); try identifier(name); try append(" ")
+                    }
+                }
                 switch conflict {
                 case .doNothing: try append("DO NOTHING")
                 case .doUpdate(let values, let condition):
@@ -928,17 +971,58 @@ extension SQLTextWriter {
                     if let condition { try append(" WHERE "); try expression(condition) }
                 }
             }
-            try returning(query.returning)
+            try returning(query.returning, aliases: query.returningAliases)
         case .update(let query):
             try append("UPDATE "); try table(query.target); try append(" SET "); try assignments(query.assignments)
             if let source = query.from { try append(" FROM "); try self.source(source) }
             if let filter = query.filter { try append(" WHERE "); try expression(filter) }
-            try returning(query.returning)
+            try returning(query.returning, aliases: query.returningAliases)
         case .delete(let query):
             try append("DELETE FROM "); try table(query.target)
             if let source = query.using { try append(" USING "); try self.source(source) }
             if let filter = query.filter { try append(" WHERE "); try expression(filter) }
-            try returning(query.returning)
+            try returning(query.returning, aliases: query.returningAliases)
+        case .merge(let value):
+            guard !value.clauses.isEmpty else { throw .invalidStructure("Empty MERGE clauses") }
+            try append("MERGE INTO "); try table(value.target); try append(" USING "); try source(value.source)
+            try append(" ON "); try expression(value.condition)
+            try list(value.clauses, separator: "") { (writer: inout SQLTextWriter, clause: SQLMergeClause) throws(SQLSerializationError) -> Void in
+                switch clause.match {
+                case .matched: try writer.append(" WHEN MATCHED")
+                case .notMatchedByTarget: try writer.append(" WHEN NOT MATCHED BY TARGET")
+                case .notMatchedBySource: try writer.append(" WHEN NOT MATCHED BY SOURCE")
+                }
+                if let condition = clause.condition { try writer.append(" AND "); try writer.expression(condition) }
+                try writer.append(" THEN ")
+                switch clause.action {
+                case .update(let assignments): try writer.append("UPDATE SET "); try writer.assignments(assignments)
+                case .delete: try writer.append("DELETE")
+                case .doNothing: try writer.append("DO NOTHING")
+                case .insert(let columns, let values, let overriding):
+                    try writer.append("INSERT")
+                    if let columns { try writer.append(" ("); try writer.identifiers(columns); try writer.append(")") }
+                    if let overriding { try writer.append(overriding == .systemValue ? " OVERRIDING SYSTEM VALUE" : " OVERRIDING USER VALUE") }
+                    if let values {
+                        guard !values.isEmpty, columns == nil || columns?.count == values.count else { throw .invalidStructure("Invalid MERGE INSERT arity") }
+                        try writer.append(" VALUES (")
+                        try writer.list(values) { (writer: inout SQLTextWriter, value: Expression) throws(SQLSerializationError) -> Void in try writer.expression(value) }
+                        try writer.append(")")
+                    } else {
+                        guard columns == nil else { throw .invalidStructure("DEFAULT VALUES cannot specify columns") }
+                        try writer.append(" DEFAULT VALUES")
+                    }
+                }
+            }
+            try returning(value.returning, aliases: value.returningAliases)
+        case .truncate(let value):
+            guard !value.tables.isEmpty else { throw .invalidStructure("Empty TRUNCATE targets") }
+            try append("TRUNCATE TABLE ")
+            try list(value.tables) { (writer: inout SQLTextWriter, table: TableRef) throws(SQLSerializationError) -> Void in
+                guard table.alias == nil else { throw .invalidStructure("TRUNCATE target has alias") }; try writer.table(table)
+            }
+            try append(value.identity == .restart ? " RESTART IDENTITY" : " CONTINUE IDENTITY")
+            try append(value.references == .cascade ? " CASCADE" : " RESTRICT")
+        case .with: throw .invalidStructure("WITH must use statement continuation")
         case .createGraph(let value): try createGraph(value)
         case .dropGraph(let name): try append("DROP PROPERTY GRAPH "); try identifier(name)
         case .sparqlUpdate, .construct, .ask, .describe: throw .unsupportedLanguage("SPARQL statement")
@@ -947,11 +1031,49 @@ extension SQLTextWriter {
 
     private mutating func assignments(_ assignments: [Assignment]) throws(SQLSerializationError) {
         guard !assignments.isEmpty else { throw .invalidStructure("Empty assignment list") }
-        try list(assignments) { (writer: inout SQLTextWriter, assignment: Assignment) throws(SQLSerializationError) -> Void in try writer.identifier(assignment.column); try writer.append(" = "); try writer.expression(assignment.value) }
+        try list(assignments) { (writer: inout SQLTextWriter, assignment: Assignment) throws(SQLSerializationError) -> Void in
+            guard !assignment.columns.isEmpty else { throw .invalidStructure("Empty assignment targets") }
+            if assignment.columns.count == 1 { try writer.identifier(assignment.columns[0]) }
+            else { try writer.append("("); try writer.identifiers(assignment.columns); try writer.append(")") }
+            try writer.append(" = "); try writer.expression(assignment.value)
+        }
     }
 
-    private mutating func returning(_ items: [ProjectionItem]?) throws(SQLSerializationError) {
-        if let items { try append(" RETURNING "); try projectionItems(items) }
+    private mutating func returning(_ items: [ProjectionItem]?, aliases: SQLReturningAliases?) throws(SQLSerializationError) {
+        guard let items else {
+            guard aliases == nil else { throw .invalidStructure("RETURNING aliases require projections") }
+            return
+        }
+        guard !items.isEmpty else { throw .invalidStructure("Empty RETURNING") }
+        try append(" RETURNING ")
+        if let aliases {
+            guard aliases.old != nil || aliases.new != nil else { throw .invalidStructure("Empty RETURNING aliases") }
+            try append("WITH (")
+            if let name = aliases.old { try append("OLD AS "); try identifier(name) }
+            if let name = aliases.new {
+                if aliases.old != nil { try append(", ") }
+                try append("NEW AS "); try identifier(name)
+            }
+            try append(") ")
+        }
+        try projectionItems(items)
+    }
+
+    private mutating func cteSuffix(search: CTESearchClause?, cycle: CTECycleClause?) throws(SQLSerializationError) {
+        if let search {
+            try append(search.order == .depthFirst ? " SEARCH DEPTH FIRST BY " : " SEARCH BREADTH FIRST BY ")
+            try identifiers(search.columns); try append(" SET "); try identifier(search.sequenceColumn)
+        }
+        if let cycle {
+            try append(" CYCLE "); try identifiers(cycle.columns); try append(" SET "); try identifier(cycle.markColumn)
+            switch (cycle.markValue, cycle.defaultValue) {
+            case (nil, nil): break
+            case (.some(let mark), .some(let value)):
+                try append(" TO "); try cycleConstant(mark); try append(" DEFAULT "); try cycleConstant(value)
+            default: throw .invalidStructure("CYCLE requires both mark and default constants")
+            }
+            try append(" USING "); try identifier(cycle.pathColumn)
+        }
     }
 }
 

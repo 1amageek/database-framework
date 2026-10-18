@@ -320,6 +320,7 @@ struct CanonicalQueryTypeBinder {
         var scoped = self
         scoped.permitsAggregates = false
         scoped.permitsWindows = false
+        if case .sql(.composite) = type { scoped.allowsRowSubquery = true }
         return try scoped.bindAssignment(expression, to: type, occurrence: occurrence)
     }
 
@@ -1326,6 +1327,12 @@ struct CanonicalQueryTypeBinder {
         }
         if let selected = try bindCollectionFunction(function, expression: expression) { return selected }
         guard !function.finalArrayIsVariadic else { throw mismatch("unsupported VARIADIC signature") }
+        if name == "merge_action" {
+            guard ActiveSQLStatementReads.mergeReturning, function.arguments.isEmpty else {
+                throw DatabaseExpressionEvaluationError.unsupportedFunction(name)
+            }
+            return node(expression, .sql(.text), false, [])
+        }
         if let selected = try bindSessionFunction(function, expression: expression) { return selected }
         if let selected = try bindTemporalFunction(function, expression: expression) { return selected }
         if let selected = try bindScalarFunction(function, expression: expression) { return selected }

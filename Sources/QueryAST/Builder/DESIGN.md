@@ -629,3 +629,32 @@ The canonical serializer emits the dedicated DEFAULT marker and INSERT identity
 OVERRIDING policy without converting either into an ordinary function. Session
 function spellings remain semantic built-in calls. Parser round trips preserve
 all policy values; unsupported representations fail explicitly.
+
+### S14 mutation emission
+
+Consume [Query's declarations](../../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md#s14-mutation-declaration-carriage)
+and [Parser's grammar](../Parser/DESIGN.md#s14-complete-mutation-grammar).
+Builder owns canonical bounded text, not binding or effect ordering. There is
+no second Kit SQL writer or mutation model.
+
+Emit a scalar Assignment as one identifier and a tuple as its parenthesized
+ordered names with one RHS. Preserve SELECT/FROM/USING, DEFAULT and OVERRIDING.
+Emit conflict columns/inference WHERE or ON CONSTRAINT before DO; action WHERE
+stays after SET. Emit RETURNING WITH aliases before ordered projections,
+preserving exact names, duplicates, qualified OLD/NEW star and merge_action().
+
+Statement WITH emits definitions and main body in order, preserving RECURSIVE
+and SELECT hints/SEARCH/CYCLE. Pure SELECT WITH uses the existing SelectQuery
+writer. Never flatten a write into SELECT or discard an unreferenced body.
+MERGE preserves ordered match classes/conditions/actions; plain NOT MATCHED
+canonically emits NOT MATCHED BY TARGET. DEFAULT VALUES is distinct from a
+VALUES list. TRUNCATE emits all schema-qualified targets and represented
+identity/reference choices, including defaults.
+
+Invalid intrinsic shape or unsupported metadata fails SQLSerializationError;
+no partial text is returned. Full structural admission and checked text growth
+share existing output/nesting budgets across WITH, expressions, names and
+punctuation. SPARQL explicitly rejects the new SQL forms and retains its
+existing behavior. S14-SYN01...04 are owned by Parser's table; Builder adds
+construction/text/parse witnesses, malformed-AST rejection and exact/one-past
+output limits. Runtime effect proof remains Engine-owned.

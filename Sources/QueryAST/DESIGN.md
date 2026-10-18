@@ -196,3 +196,15 @@ Consume the [frozen Query carriage](../../../database-kit/Sources/DatabaseKit/Qu
 | SPARQL rewrite provenance / cumulative structure count | Existing `Mutex<State>` / `Mutex<UInt64>` on all targets | Existing `withLock` entry points; no I/O or callback inside lock; rewritten immutable output owns transferred values |
 
 S10 introduces no target-dependent state or conformance branch. Native and formal-target runtime witnesses retain their own proof subjects; syntax parsing alone does not establish portable runtime behavior.
+
+### S14 mutation text adaptation
+
+[Parser](Parser/DESIGN.md#s14-complete-mutation-grammar) and
+[Builder](Builder/DESIGN.md#s14-mutation-emission) consume
+[Query declarations](../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md#s14-mutation-declaration-carriage)
+and the [SQL authority](../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s14-mutation-semantics).
+They preserve complete M01–M08 syntax, parameter children and UTF-8 source
+occurrences under existing cumulative budgets. QueryAST owns no writable-CTE
+cache, snapshot, mutation image or retained-output lease. Its invocation-local
+state and identical target ownership/conformance contracts remain unchanged.
+Syntax evidence does not prove effects, authorization, rollback or publication.

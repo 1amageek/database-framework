@@ -194,6 +194,11 @@ struct TransactionMutationJournal: Sendable {
         }
     }
 
+    func currentModel(for identity: EntityReference) -> PersistedModel? {
+        guard let index = lookup[identity] else { return nil }
+        return entries[index].currentModel
+    }
+
     func currentVersion(for identity: EntityReference) throws -> ByteString? {
         guard let index = lookup[identity], let model = entries[index].currentModel else { return nil }
         return try PersistableVersionTokenCodec.digest(fields: model.fields)

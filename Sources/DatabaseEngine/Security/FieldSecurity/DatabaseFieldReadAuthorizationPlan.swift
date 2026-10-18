@@ -157,7 +157,13 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
             let names: [String]?
             var dependencies: [String: Set<String>] = [:]
         }
-        var commonTableColumns: [CanonicalSourceName: CommonTableColumns] = [:]
+        var commonTableColumns: [CanonicalSourceName: CommonTableColumns] = {
+            var declarations: [CanonicalSourceName: CommonTableColumns] = [:]
+            for relation in ActiveSQLStatementReads.scope?.relationColumns ?? [] {
+                declarations[CanonicalSourceName(relation.name)] = CommonTableColumns(names: relation.columns?.map { $0.name })
+            }
+            return declarations
+        }()
 
         mutating func collect(
             _ query: SelectQuery,

@@ -77,6 +77,25 @@ extension SQLSequenceRequest {
         return kind
     }
 
+    /// Stages only identities owned by the complete TRUNCATE table closure.
+    package func restartOwnedIdentities(relationIDs: [String], step: Int,
+        transaction: DatabaseTransaction) async throws {
+        let catalog = try context.readPolicy().sqlCatalog.catalog
+        let storage = try context.executionStorage()
+        let store = SQLSequenceStore(root: storage.systemRoot)
+        for sequence in catalog.sequences {
+            try meter.consume(at: .mutationPlanning)
+            guard let owner = sequence.ownedBy,
+                  relationIDs.contains(where: { SQLConstraintCompiler.same($0, owner.relationID) }),
+                  let relation = catalog.relations.first(where: { SQLConstraintCompiler.same($0.id, owner.relationID) }),
+                  let column = relation.columns.first(where: { SQLConstraintCompiler.same($0.id, owner.columnID) }),
+                  case .identity(let identity) = column.policy,
+                  SQLConstraintCompiler.same(identity.sequenceID, sequence.id) else { continue }
+            try transaction.storageAccess.setValue(forkHead(step: step, start: sequence.start),
+                for: store.headKey(sequence.id))
+        }
+    }
+
     private func references(_ column: SQLColumn, relation: SQLRelation,
         snapshot: SQLCatalogSnapshot, sequenceID: String
     ) throws -> Bool {

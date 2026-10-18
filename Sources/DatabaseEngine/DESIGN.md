@@ -73,6 +73,39 @@ QueryExecution receive a resolved Subspace rather than a computed prefix.
 
 ## Contracts and Invariants
 
+### S14 DML composition
+
+The M01–M08 declarations are owned by
+[Kit Query](../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md#s14-mutation-declaration-carriage).
+The Engine composes its direct children through their admitted contracts:
+
+```text
+SQLBlock: one statement graph and enclosing transaction
+    -> QueryExecution: prestatement sources and returned relations
+    -> Mutation: logical candidates, arbiters and actual transition images
+    -> Transaction: authorized persistence, relocation and table closure
+    -> SQLSequences: transactional owned-identity restart
+    -> SQLBlock: retained main outcome, authoritative close, publication
+```
+
+[QueryExecution](QueryExecution/DESIGN.md#s14-statement-read-and-mutation-projection-scope)
+owns snapshot and expression/projection inputs;
+[Mutation](Mutation/DESIGN.md#s14-sql-mutation-execution) owns logical action
+selection and collecting outcomes;
+[Transaction](Transaction/DESIGN.md#s14-sql-mutation-authority) owns the physical
+and authorization transition; and
+[SQLSequences](SQLSequences/DESIGN.md#s14-truncate-identity-composition) owns
+the restart head. Their composition and first-error/result lifecycle belong to
+[SQLBlock](SQLBlock/DESIGN.md#s14-mutation-bearing-statement-composition).
+No child grants another child new storage, field or integrity-action authority.
+Statement snapshots and RETURNING rows retain the exact request meter and
+generation; no collecting child result is independently publishable.
+
+The public semantic facade consumes the same Engine path. S14 adds no remote
+dispatch or per-backend SQL forwarding. S15 owns schema/index/view DDL and S17
+owns the public remote/text statement surface. Full FoundationDB, graph-enabled
+Database portable, MultiBase portable, URL integration and push remain S18.
+
 ### Assumptions
 
 - Storage point reads reject the supplied bound before exposing bytes.

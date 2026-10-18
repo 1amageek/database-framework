@@ -358,3 +358,92 @@ for exactly one statement and must be supplied as a complete pair. The public
 semantic block entry has no synthetic source map. Every SQL statement binds an
 admitted session scope for the complete mutation, including constraint and FK
 DEFAULT evaluation; assignment completion does not end that session scope.
+
+## S14 mutation-bearing statement composition
+
+This section supersedes the S12 mutation subset for S14 implementation. It is a
+design contract, not behavioral evidence. Kit owns `SQLWithStatement` and its
+ordered `SQLNamedStatement` declarations; existing SELECT-only `NamedSubquery`
+remains the nested demand-driven query owner. Mutation owns `SQLMutationOutcome`
+with direct statement count/effects and optional retained RETURNING rows.
+
+One mutation-bearing top-level statement opens one existing read session inside
+its already admitted transaction statement scope. QueryExecution's
+[statement read scope](../QueryExecution/DESIGN.md#s14-statement-read-and-mutation-projection-scope)
+prepares the complete source graph and captures every physical read before the
+first effect. Preparation includes main DML, all writable definitions, all
+reachable ordinary SELECT definitions, nested sources and expression subqueries;
+it binds metadata without evaluating lazy SELECT target expressions. Mutation
+supplies target layouts and demanded physical field coverage. A later missing
+capture is a typed preparation failure, never a postwrite storage read.
+
+For a DML or TRUNCATE main statement, that session uses Read's internal
+`withSQLMutationSession` entry bound to the exact enclosing writable transaction. Mutation-owned reads consume that existing
+write admission while retaining entity and field read checks; they do not demand
+an unrelated Base read grant. A SELECT main statement, including WITH writers
+whose main body is SELECT, still uses ordinary read-session admission. Each
+independent SELECT step in a mixed block also requires read admission; failure
+rolls back any preceding effects with the rest of the block. Session lifetime and checkpoint cleanup are shared by
+both entries and do not change aggregate publication.
+
+```text
+one SQLBlock statement boundary
+    -> bind declarations and demanded source coverage
+    -> authorize/capture all base sources
+    -> complete writable definitions once in dependency order
+         -> publish only private retained RETURNING relations
+    -> execute main SELECT or DML against old base + returned relations
+    -> await statement session close -> retain direct main outcome
+    -> later block steps -> transaction/schema/sequence close -> public result
+```
+
+An unreferenced writable definition still completes; repeated references and
+LIMIT 0 do not change its effect count. A writable definition without RETURNING
+may execute but scanning it fails. `WITH RECURSIVE` may combine a nonrecursive
+writable definition with a recursive SELECT. A writable self-reference or
+recursive dependency involving a writable definition fails before effects.
+The selected execution order follows declaration dependencies. Repeated writes
+to the same physical row identity by sibling/main mutation are rejected before the
+repeated effect is applied, with a typed product restriction rather than
+inventing PostgreSQL's undefined same-row ordering. Row-dependent target identity
+may become known only during execution; this failure rolls back the complete
+block and publishes no outcome. Alias, schema-name spelling and CTE name cannot
+hide physical target identity. Disjoint rows of the same table remain valid.
+Each prepared writable definition and main mutation receives one scope-local
+owner ordinal. Mutation claims the effective action's validated old identity and
+its new identity when relocation changes it, after its own cardinality checks
+and before applying that action batch. A physical key comprises entity,
+Directory partition path and encoded identifier. Repeated claims by the same
+owner preserve that DML statement's existing conflict/cardinality contract;
+claims by distinct owners fail and roll back the complete block.
+
+Main statement counts do not include CTE effects. `SQLBlockCollectedRows` preserves
+the canonical response's `affectedRows`, ordered columns, visible range, metadata
+and all claims. Final `.rows(QueryResponse)` includes that count after authoritative
+close; the existing public result algebra needs no new variant. Zero returned
+rows still retain bound columns and count zero. No intermediate projection,
+callback or count becomes public during an active transaction.
+
+TRUNCATE resolves the complete admitted logical relation list and delegates
+dependency closure and clearing to Transaction's `truncateSQLRelations`. Its
+outcome carries direct count and the effective relation IDs. RESTART IDENTITY
+passes those IDs to SQLSequences' owned-identity restart within the same data
+transaction; CONTINUE IDENTITY does not restart. Static compiled model witnesses
+and schema/catalog definitions remain intact. Failure at any later step rolls
+back all data/index/reference/Directory effects and transactional sequence heads.
+
+| Evidence | Required observable result |
+|---|---|
+| Unused, LIMIT 0 and multiply referenced writable CTE | One full mutation each; no demand-dependent effects |
+| Base table versus RETURNING in sibling/main query | Old base value and new/deleted output image respectively |
+| RETURNING consumed by INSERT SELECT | Atomic movement through retained positional rows |
+| Later statement/action/projection failure | Entire block rolled back and no earlier rows/counts published |
+| Empty/duplicate RETURNING metadata | Ordered labels/types and direct affected count preserved |
+| Restricted field and missing capture | Typed failure before effects; no read-authority widening |
+| TRUNCATE closure and identity restart rollback | Effective closure cleared atomically; owned sequence reset rolls back |
+
+The existing same-meter, deadline, cancellation, retry, checkpoint journal,
+commit-unknown and Ready rules remain authoritative. Per-statement registry
+owners are discarded before a checkpoint transition, while completed output
+claims remain held by the block until its final transition. Native, ordinary
+WASM and Embedded share the same immutable inputs and synchronized runtime state.

@@ -111,6 +111,134 @@ enabled Database and MultiBase portable integration remain S18 evidence.
 Changes revalidate Core entry, Read session copies, Mutation scalar admission,
 Base bindings and selected SQL execution together.
 
+## S14 SQL Mutation Authority
+
+This section fixes the transaction seams for M01–M08. It is a design contract;
+implementation and runtime evidence remain separate completion obligations.
+Mutation owns SQL statement preparation and row-image outcomes; Transaction
+owns admitted persistence, relocation, complete-table truncation and the
+physical/logical checkpoint. Ordinary `EntityMutationChange` continues to
+require its supplied identity to match its model.
+
+```text
+admitted SQL statement and schema lease
+  -> capture authorized target rows before writes
+  -> Mutation prepares canonical old/new changes under one request meter
+  -> Transaction applies ordinary save / delete / logical UPDATE relocation
+  -> maintain primary, indexes, projections, Directory and mutation journal
+  -> dispatch one logical old-to-new SQL referential action
+  -> retained canonical outcome -> authorized RETURNING projection
+  -> statement validation -> enclosing authoritative commit -> publish
+```
+
+The package target-capture seam is
+`scanSQLMutationModels(relation:partition:fields:maximumRows:workMeter:) async throws ->
+DatabaseRetainedPersistedModels`. It checks ordinary LIST admission, enumerates
+dynamic Directories only below the admitted root, reads serializably without
+snapshot mode, and checks GET against the complete demanded physical field set
+before returning each internal model. An explicit target `AnyDirectoryPath`
+selects exactly that Directory before a row scan opens; unrelated Directories
+are neither scanned nor admitted against the target's authorization or budget.
+An absent target partition retains whole-relation capture. Integrity validation
+continues to use its separate whole-relation scan, independently of a DML target
+selector. INSERT and MERGE INSERT require the canonical candidate placement to
+match an explicit target, while an UPDATE may relocate a selected old row into
+its canonical new placement. Hidden identifiers and unselected fields
+remain retained implementation state, never SQL output. A caller captures the
+complete immutable target set before writes and reuses it for that statement;
+it does not reload targets through GET after a mutation. The request meter
+bounds rows, payloads, enumeration and scan work before retention.
+
+### Ordinary logical UPDATE and relocation
+
+`relocatePersistedModel(old:new:precondition:within:)` is a package operation
+under the existing mutation operation identifier. The active runtime derives
+both exact identities. A changed identifier or dynamic Directory placement
+stays one logical UPDATE. The destination store is resolved through the same
+admitted root, schema lease and Partition authority. No node is moved across a
+Partition boundary and no storage authority is widened.
+
+The existing DataStore owner gains a dedicated `prepareRelocation` seam that
+prepares the old delete and destination write together. It validates the old
+precondition, requires destination absence, canonicalizes the new model and
+evaluates ordinary entity and field UPDATE policy once against old and new.
+Its private preparation factors do not evaluate CREATE or DELETE policy for
+this logical UPDATE. It neither constructs nor accepts S13's private
+`SQLReferentialActionAuthorization`; that capability remains exclusive to an
+actual matched integrity action. There is no public policy bypass token.
+
+Only after both preparations and retained ownership admission succeed does the
+transaction remove the old primary/index state and persist the new primary/
+index state. Projection and registered mutation maintenance run through their
+normal contracts. Both physical substeps suppress SQL referential dispatch;
+one final old-to-new UPDATE dispatches ON UPDATE semantics. No ON DELETE
+action is introduced by relocation. The journal records the physical identities
+for rollback and final validation while SQL command counts and RETURNING retain
+one direct UPDATE. Destination collision, old-version mismatch, policy denial,
+maintenance failure, cancellation and resource failure propagate and leave no
+publishable partial result. The existing checkpoint restores every physical
+and logical effect together; an ordinary transaction failure aborts its attempt.
+
+### Whole-table TRUNCATE
+
+`truncateSQLRelations(_:cascade:within:workMeter:)` returns the package value
+`DatabaseSQLTruncateOutcome(affectedRows:relationIDs:)`. Relation IDs are exact,
+deduplicated and returned in admitted catalog order. The affected-row count is
+the checked UInt64 sum of physical rows removed once, including CASCADE tables.
+SQLBlock owns table-name resolution and the CONTINUE/RESTART syntax decision.
+
+Before writes, Transaction computes the incoming foreign-key closure from the
+attempt catalog. RESTRICT fails if any referencing relation lies outside the
+explicit set, even when that table is empty. CASCADE includes all referencing
+relations transitively; cycles and duplicate explicit targets are processed
+once. It captures every table's rows and applies normal DELETE authorization
+without exposing a read result. SQL foreign-key ON DELETE actions are disabled
+for these removals: referential closure is a table-set operation and neither
+SET NULL nor SET DEFAULT nor row-level CASCADE is substituted for TRUNCATE.
+The normal primary, index, projection, registered-maintenance and journal paths
+remain responsible for physical consistency. Final constraint validation sees
+the complete cleared set. A late denial or failure aborts the statement/request;
+checkpoint rollback restores rows, indexes and the original logical journal.
+
+For RESTART, SQLBlock passes only the returned effective relation IDs to
+[SQLSequences](../SQLSequences/DESIGN.md#s14-truncate-identity-composition).
+The same caller transaction stages the owned identity incarnations after table
+closure is fixed. CONTINUE stages nothing. No catalog generation, schema change
+or unowned default-referenced sequence is implied by TRUNCATE.
+
+The affected state has one target-independent ownership contract:
+
+| Logical state | Native storage / isolation | WASM storage / isolation | Embedded storage / isolation | Read / mutation / close |
+|---|---|---|---|---|
+| Attempt, journal, scheduled/active identities and checkpoints | DatabaseTransaction actor | Same actor and stored types | Same actor and stored types | Admitted operation / actor mutation / authoritative close and invalidation |
+| Captured old/new images and outcomes | Immutable retained owners | Same retained owners | Same retained owners | Scoped borrow / prepared destination admission / final owner release |
+| Sequence replay and current-value history | SQLSequenceRequest actor | Same actor | Same actor | Actor effect methods / staged head write / awaited request close |
+| DataStore preparation | Immutable store and local prepared values | Same immutable/local values | Same immutable/local values | Scoped transaction access / actor-owned commit / transient claim release |
+
+No S14 conditional compilation changes stored state, Sendable conformance,
+callback isolation or owner lifetime. Source audits cover the affected actor,
+journal, operation gates, DataStore and sequence request paths before edits and
+at source completion. Exact target compilation and runtime evidence remain
+owned by the serial task verification lane.
+
+The native file-backed lane is owned by
+[SQLite S14 DML tests](../../../Tests/SQLiteTests/S14SQLDMLSQLiteTests.swift).
+Its two cases exercise writable DELETE RETURNING to INSERT SELECT with a
+normal indexed row relocation, and hidden row IDs with owned sequence
+TRUNCATE restart/continue rollback. Each closes the original container
+and restores the persisted schema from the same SQLite file before checking
+final rows and sequence state. These are native SQLite behavioral obligations;
+portable host tests do not substitute for this backend path.
+
+| Invariant | Required behavioral counterexample |
+|---|---|
+| Relocation uses ordinary UPDATE authority. | UPDATE-only principal succeeds; denied changed field fails; CREATE/DELETE permissions do not grant UPDATE. |
+| Old and new storage identities form one UPDATE. | Identifier and Directory change clear old rows/indexes, persist one destination, trigger ON UPDATE once and never ON DELETE; collision and late failure roll back. |
+| Target images stay immutable. | Multiple matching source rows cannot mutate the same captured target repeatedly; RETURNING uses canonical saved images without another GET. |
+| TRUNCATE owns a closed table set. | Empty external referencing table rejects RESTRICT; CASCADE cycles clear each relation once and never run SET NULL/DEFAULT actions. |
+| Row and owned-identity rollback agree. | Rollback after TRUNCATE RESTART restores rows and the prior sequence head; CONTINUE and unowned sequences retain their cursors. |
+| All claims are bounded and actor isolated. | One-past row/byte/work limits and cancellation release retained snapshots/outcomes and permit later valid work; no target-specific synchronization branch exists. |
+
 ## S12 Checkpoint Contract
 
 This section fixes the lower execution boundary for S12. Implementation and

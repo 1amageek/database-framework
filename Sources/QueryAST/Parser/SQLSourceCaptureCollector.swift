@@ -7,7 +7,7 @@ struct SQLSourceCaptureCollector {
         case identifierOverflow
     }
 
-    private enum Kind { case expression, literal, query, source, dataType, statement, valuesRow, grouping, groupingComponent, groupingSet, windowFunction, windowReference, namedWindow }
+    private enum Kind { case expression, literal, query, source, dataType, statement, valuesRow, grouping, groupingComponent, groupingSet, windowFunction, windowReference, namedWindow, mutationTarget, assignment, conflictTarget, conflictAction, returningAliases, namedStatement, mergeClause, mergeAction }
     private struct Child {
         let field: QueryOccurrenceField
         let index: UInt32?
@@ -434,7 +434,9 @@ struct SQLSourceCaptureCollector {
         ledger: inout QueryStructuralResourceLedger
     ) throws -> QueryOccurrenceID {
         if let statement {
-            if case .select = statement {} else {
+            switch statement {
+            case .select, .insert, .update, .delete, .with, .merge, .truncate: break
+            default:
                 pending.removeAll(keepingCapacity: true)
                 try recordNode(kind: .statement, children: [], start: start, end: end ?? start ?? 0, identifierEnd: nil, ledger: &ledger)
             }
@@ -492,5 +494,148 @@ struct SQLSourceCaptureCollector {
         let occurrence = try occurrences.append(parent: parent, field: field, index: index)
         if let annotation = nodes[node].annotation { annotations[occurrence] = annotation }
         return occurrence
+    }
+}
+
+extension SQLSourceCaptureCollector {
+    mutating func normalizeSelectDefinitions(count: Int, ledger: inout QueryStructuralResourceLedger) throws {
+        guard count >= 0, pending.count >= count else { throw CaptureError.inconsistentConstruction }
+        let base = pending.count - count
+        let originals = pending[base...]
+        var replacements: [Int] = []
+        for node in originals {
+            guard nodes[node].kind == .namedStatement else { throw CaptureError.inconsistentConstruction }
+            for edge in nodes[node].edges {
+                try ledger.consume(.retainedBytes, amount: UInt64(MemoryLayout<Int>.stride))
+                replacements.append(edges[edge].child)
+            }
+        }
+        pending.removeLast(count)
+        pending.append(contentsOf: replacements)
+    }
+
+    mutating func recordMutationTarget(start: Int, end: Int, ledger: inout QueryStructuralResourceLedger) throws {
+        try recordNode(kind: .mutationTarget, children: [], start: start, end: end, identifierEnd: end, ledger: &ledger)
+    }
+
+    mutating func recordAssignment(_ assignment: Assignment, start: Int, end: Int,
+                                   ledger: inout QueryStructuralResourceLedger) throws {
+        var children: [Child] = []
+        try child(.assignmentValue, into: &children, ledger: &ledger)
+        try recordNode(kind: .assignment, children: children, start: start, end: end, identifierEnd: nil, ledger: &ledger)
+    }
+
+    mutating func recordInsertSource(_ source: InsertSource, end: Int,
+                                     ledger: inout QueryStructuralResourceLedger) throws {
+        var children: [Child] = []
+        switch source {
+        case .values(let rows):
+            for index in rows.indices { try child(.valuesRow, index: index, kind: .valuesRow, into: &children, ledger: &ledger) }
+        case .select: try child(.subquery, kind: .query, into: &children, ledger: &ledger)
+        case .defaultValues: break
+        }
+        try recordNode(kind: .source, children: children, start: nil, end: end, identifierEnd: nil, ledger: &ledger)
+    }
+
+    mutating func recordConflictTarget(_ target: SQLConflictTarget, start: Int, end: Int,
+                                       ledger: inout QueryStructuralResourceLedger) throws {
+        var children: [Child] = []
+        if case .columns(_, .some) = target { try child(.conflictPredicate, into: &children, ledger: &ledger) }
+        try recordNode(kind: .conflictTarget, children: children, start: start, end: end, identifierEnd: nil, ledger: &ledger)
+    }
+
+    private func assignmentChildren(_ assignments: [Assignment], into children: inout [Child],
+                                    ledger: inout QueryStructuralResourceLedger) throws {
+        for index in assignments.indices { try child(.assignment, index: index, kind: .assignment, into: &children, ledger: &ledger) }
+    }
+
+    mutating func recordConflictAction(_ action: OnConflictAction, start: Int, end: Int,
+                                       ledger: inout QueryStructuralResourceLedger) throws {
+        var children: [Child] = []
+        if case .doUpdate(let assignments, let predicate) = action {
+            try assignmentChildren(assignments, into: &children, ledger: &ledger)
+            if predicate != nil { try child(.filter, into: &children, ledger: &ledger) }
+        }
+        try recordNode(kind: .conflictAction, children: children, start: start, end: end, identifierEnd: nil, ledger: &ledger)
+    }
+
+    mutating func recordReturningAliases(start: Int, end: Int, ledger: inout QueryStructuralResourceLedger) throws {
+        try recordNode(kind: .returningAliases, children: [], start: start, end: end, identifierEnd: nil, ledger: &ledger)
+    }
+
+    private func returningChildren(_ returning: [ProjectionItem]?, aliases: SQLReturningAliases?,
+                                   into children: inout [Child], ledger: inout QueryStructuralResourceLedger) throws {
+        if aliases != nil { try child(.returningAlias, kind: .returningAliases, into: &children, ledger: &ledger) }
+        for index in (returning ?? []).indices { try child(.returning, index: index, into: &children, ledger: &ledger) }
+    }
+
+    mutating func recordNamedStatement(_ value: SQLNamedStatement, start: Int, end: Int,
+                                       ledger: inout QueryStructuralResourceLedger) throws {
+        var children: [Child] = []
+        let kind: Kind
+        if case .select = value.statement { kind = .query } else { kind = .statement }
+        try child(.cteStatement, kind: kind, into: &children, ledger: &ledger)
+        if value.cycle?.markValue != nil { try child(.cteCycleMark, kind: .literal, into: &children, ledger: &ledger) }
+        if value.cycle?.defaultValue != nil { try child(.cteCycleDefault, kind: .literal, into: &children, ledger: &ledger) }
+        try recordNode(kind: .namedStatement, children: children, start: start, end: end, identifierEnd: nil, ledger: &ledger)
+    }
+
+    mutating func recordMergeAction(_ value: SQLMergeAction, start: Int, end: Int,
+                                    ledger: inout QueryStructuralResourceLedger) throws {
+        var children: [Child] = []
+        switch value {
+        case .insert(_, let values, _):
+            for index in (values ?? []).indices { try child(.valuesCell, index: index, into: &children, ledger: &ledger) }
+        case .update(let assignments): try assignmentChildren(assignments, into: &children, ledger: &ledger)
+        case .delete, .doNothing: break
+        }
+        try recordNode(kind: .mergeAction, children: children, start: start, end: end, identifierEnd: nil, ledger: &ledger)
+    }
+
+    mutating func recordMergeClause(_ value: SQLMergeClause, start: Int, end: Int,
+                                    ledger: inout QueryStructuralResourceLedger) throws {
+        var children: [Child] = []
+        if value.condition != nil { try child(.filter, into: &children, ledger: &ledger) }
+        try child(.mergeAction, kind: .mergeAction, into: &children, ledger: &ledger)
+        try recordNode(kind: .mergeClause, children: children, start: start, end: end, identifierEnd: nil, ledger: &ledger)
+    }
+
+    mutating func recordMutation(_ statement: QueryStatement, start: Int, end: Int,
+                                 ledger: inout QueryStructuralResourceLedger) throws {
+        var children: [Child] = []
+        switch statement {
+        case .insert(let value):
+            try child(.mutationTarget, kind: .mutationTarget, into: &children, ledger: &ledger)
+            try child(.source, kind: .source, into: &children, ledger: &ledger)
+            if value.conflictTarget != nil { try child(.conflictTarget, kind: .conflictTarget, into: &children, ledger: &ledger) }
+            if value.onConflict != nil { try child(.conflictAction, kind: .conflictAction, into: &children, ledger: &ledger) }
+            try returningChildren(value.returning, aliases: value.returningAliases, into: &children, ledger: &ledger)
+        case .update(let value):
+            try child(.mutationTarget, kind: .mutationTarget, into: &children, ledger: &ledger)
+            try assignmentChildren(value.assignments, into: &children, ledger: &ledger)
+            if value.from != nil { try child(.source, kind: .source, into: &children, ledger: &ledger) }
+            if value.filter != nil { try child(.filter, into: &children, ledger: &ledger) }
+            try returningChildren(value.returning, aliases: value.returningAliases, into: &children, ledger: &ledger)
+        case .delete(let value):
+            try child(.mutationTarget, kind: .mutationTarget, into: &children, ledger: &ledger)
+            if value.using != nil { try child(.source, kind: .source, into: &children, ledger: &ledger) }
+            if value.filter != nil { try child(.filter, into: &children, ledger: &ledger) }
+            try returningChildren(value.returning, aliases: value.returningAliases, into: &children, ledger: &ledger)
+        case .with(let value):
+            for index in value.statements.indices { try child(.cte, index: index, kind: .namedStatement, into: &children, ledger: &ledger) }
+            let kind: Kind
+            if case .select = value.body { kind = .query } else { kind = .statement }
+            try child(.withBody, kind: kind, into: &children, ledger: &ledger)
+        case .merge(let value):
+            try child(.mutationTarget, kind: .mutationTarget, into: &children, ledger: &ledger)
+            try child(.source, kind: .source, into: &children, ledger: &ledger)
+            try child(.mergeCondition, into: &children, ledger: &ledger)
+            for index in value.clauses.indices { try child(.mergeClause, index: index, kind: .mergeClause, into: &children, ledger: &ledger) }
+            try returningChildren(value.returning, aliases: value.returningAliases, into: &children, ledger: &ledger)
+        case .truncate(let value):
+            for index in value.tables.indices { try child(.truncateRelation, index: index, kind: .mutationTarget, into: &children, ledger: &ledger) }
+        default: throw CaptureError.inconsistentConstruction
+        }
+        try recordNode(kind: .statement, children: children, start: start, end: end, identifierEnd: nil, ledger: &ledger)
     }
 }

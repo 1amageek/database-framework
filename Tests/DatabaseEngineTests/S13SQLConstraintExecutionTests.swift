@@ -289,6 +289,15 @@ struct S13SQLConstraintExecutionTests {
         _ = try await execute(insert("hidden", a: .int(1), b: .int(2)), container)
         _ = try await execute(parentInsert("hidden-parent", a: 8, b: 9), container)
         _ = try await execute(insert("writer-child", a: .int(8), b: .int(9)), container, authorization: writer)
+        _ = try await execute(parentInsert("returning-parent", a: 10, b: 11), container)
+        let returningChild = QueryStatement.insert(InsertQuery(target: TableRef("items"), columns: ["id", "a", "b"],
+            source: .values([[.string("returning-child"), .int(10), .int(11)]]), returning: [.column("a")]))
+        await #expect(throws: SecurityError.self) { _ = try await execute(returningChild, container, authorization: writer) }
+        #expect(try await fields("returning-child", container) == nil)
+        let constantReturning = QueryStatement.insert(InsertQuery(target: TableRef("items"), columns: ["id", "a", "b"],
+            source: .values([[.string("returning-child"), .int(10), .int(11)]]), returning: [.expression(.int(1))]))
+        let constantEffects = try await execute(constantReturning, container, authorization: writer)
+        #expect(constantEffects.count == 1)
         await #expect(throws: SecurityError.self) { _ = try await fields("hidden-parent", container, entity: "Parent", authorization: writer) }
         await #expect(throws: SecurityError.self) { _ = try await fields("hidden", container, authorization: limited) }
         await #expect(throws: SQLConstraintError.violation(relation: "items", constraint: "u")) {
@@ -596,8 +605,9 @@ struct S13SQLConstraintExecutionTests {
         let executor = try executor(container)
         let work = meter()
         let result = try await container.testBaseContext(authorization: authorization).withTransaction(configuration: .batch) { transaction in
-            try await executor.executeSQL(statement, searchPath: .default, transaction: transaction, workMeter: work,
+            let outcome = try await executor.executeSQL(statement, searchPath: .default, transaction: transaction, workMeter: work,
                 temporalEnvironment: temporalEnvironment)
+            return outcome.effects.map { $0.effect }
         }
         #expect(work.retainedIntermediateRows == 0)
         #expect(work.retainedIntermediateBytes == 0)

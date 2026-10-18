@@ -734,6 +734,246 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
         }
     }
 
+    package func scanSQLMutationModels(
+        relation: SQLRelation, partition: AnyDirectoryPath? = nil,
+        fields: Set<String>, maximumRows: Int, workMeter: DatabaseWorkMeter
+    ) async throws -> DatabaseRetainedPersistedModels {
+        try await performOperation { _ in
+            guard maximumRows >= 0, maximumRows < Int.max else {
+                throw DatabaseTransactionError.invalidLimit(maximumRows)
+            }
+            try readPolicy.authorizeList(entityName: relation.entityName,
+                limit: maximumRows + 1, offset: nil, orderBy: nil)
+            let rows: DatabaseRetainedPersistedModels
+            if let partition {
+                let runtime = try entityRuntime(named: relation.entityName)
+                if let subspaces = try await openSubspaces(for: runtime.entity, partition: partition) {
+                    let (begin, end) = subspaces.items.subspace(relation.entityName).range()
+                    let storage = container.itemStorageFactory.make(transaction: storageAccess, blobsSubspace: subspaces.blobs)
+                    rows = try await Self.consumePersistedModels(storage: storage, begin: begin, end: end,
+                        startingAfter: nil, scanLimit: maximumRows + 1, expectedCount: 0, offset: 0,
+                        entity: relation.entityName, runtime: runtime, readPolicy: nil,
+                        authorizedFields: nil, workMeter: workMeter)
+                    guard rows.count <= maximumRows else {
+                        throw DatabaseEntityMutationError.changeLimitExceeded(actual: rows.count, maximum: maximumRows)
+                    }
+                } else {
+                    let empty = try DatabaseRetainedArrayBuilder<DatabaseRetainedPersistedModels.Entry?>(
+                        workMeter: workMeter, stage: .storageRow,
+                        layout: DatabaseRetainedArrayLayout.forElement(DatabaseRetainedPersistedModels.Entry?.self))
+                    rows = try DatabaseRetainedPersistedModels(buffer: empty.finish())
+                }
+            } else {
+                rows = try await sqlIntegrityRows(relation, meter: workMeter, maximumRows: maximumRows)
+            }
+            for entry in rows {
+                guard let entry else { continue }
+                try entry.withModel { model in try readPolicy.authorizeGet(model, fields: fields) }
+            }
+            return rows
+        }
+    }
+
+    package func applySQLMutation(_ change: DatabaseSQLMutationChange,
+        within operationID: UInt64) async throws -> DatabaseSQLMutationOutcome {
+        do {
+            try ensureActive(operationID, permitsMutation: true)
+            let runtime = try entityRuntime(named: change.newModel?.entity ?? change.oldModel?.entity ?? "")
+            let oldIdentity = try change.oldModel.map { try runtime.identity(for: $0) }
+            let newIdentity = try change.newModel.map { try runtime.identity(for: $0) }
+            let oldPrecondition: WritePrecondition
+            if let old = change.oldModel {
+                oldPrecondition = .matchesStored(version: try PersistableVersionTokenCodec.digest(fields: old.fields))
+            } else { oldPrecondition = .notExists }
+            let identity: EntityReference
+            switch change.kind {
+            case .insert:
+                guard let new = change.newModel, let target = newIdentity, change.oldModel == nil else {
+                    throw DatabaseEntityMutationError.emptyMutation
+                }
+                identity = target
+                try await persist(identity: target, new, precondition: .notExists,
+                    operationID: operationID, source: .requested)
+            case .update:
+                guard let old = change.oldModel, let new = change.newModel,
+                      let source = oldIdentity, let target = newIdentity else {
+                    throw DatabaseEntityMutationError.emptyMutation
+                }
+                identity = target
+                if source != target {
+                    try await relocatePersistedModel(old: old, new: new,
+                        precondition: oldPrecondition, within: operationID)
+                } else {
+                    try await persist(identity: target, new, precondition: oldPrecondition,
+                        operationID: operationID, source: .requested)
+                }
+            case .delete:
+                guard let old = change.oldModel, let target = oldIdentity, change.newModel == nil else {
+                    throw DatabaseEntityMutationError.emptyMutation
+                }
+                identity = target
+                try await remove(identity: target, old, precondition: oldPrecondition,
+                    operationID: operationID, source: .requested)
+            case .upsert:
+                throw DatabaseEntityMutationError.emptyMutation
+            }
+            let new = change.kind == .delete ? nil : mutationJournal.currentModel(for: identity)
+            return DatabaseSQLMutationOutcome(effect: EntityMutationEffect(kind: change.kind,
+                identity: identity, version: try new.map { try PersistableVersionTokenCodec.digest(fields: $0.fields) }),
+                oldModel: change.oldModel, newModel: new)
+        } catch {
+            recordCheckpointFailure(error)
+            throw error
+        }
+    }
+
+    package func relocatePersistedModel(old: PersistedModel, new: PersistedModel,
+        precondition: WritePrecondition, within operationID: UInt64) async throws {
+        try ensureActive(operationID, permitsMutation: true)
+        guard old.entity == new.entity else {
+            throw DatabaseEntityMutationError.entityTypeMismatch(expected: old.entity, actual: new.entity)
+        }
+        let runtime = try entityRuntime(named: old.entity)
+        let source = try runtime.identity(for: old)
+        let target = try runtime.identity(for: new)
+        guard source != target else {
+            try await persist(identity: target, new, precondition: precondition,
+                operationID: operationID, source: .requested)
+            return
+        }
+        guard activeMutationIdentities.insert(source) else {
+            throw DatabaseTransactionError.conflictingDerivedMutation(source)
+        }
+        defer { activeMutationIdentities.remove(source) }
+        guard activeMutationIdentities.insert(target) else {
+            throw DatabaseTransactionError.conflictingDerivedMutation(target)
+        }
+        defer { activeMutationIdentities.remove(target) }
+        scheduledDeletions.insert(source)
+        scheduledWrites.insert(target)
+        let sourceLocation = try resolve(source)
+        let targetLocation = try resolve(target)
+        let sourceStore = try await container.store(for: sourceLocation.entity,
+            path: sourceLocation.partition, readPolicy: readPolicy, transaction: storageAccess)
+        let targetStore = try await container.store(for: targetLocation.entity,
+            path: targetLocation.partition, readPolicy: readPolicy, transaction: storageAccess)
+        let prepared = try await sourceStore.prepareRelocation(old: old, new: new,
+            oldIdentity: source, newIdentity: target, destination: targetStore,
+            precondition: precondition, transaction: storageAccess, workMeter: sqlMeter())
+        defer {
+            prepared.deletion.transientReservation?.release()
+            prepared.write.transientReservation?.release()
+        }
+        if let relation = readPolicy.sqlCatalog.catalog.relations.first(where: {
+            SQLConstraintCompiler.same($0.entityName, new.entity)
+        }) {
+            try await validateSQLRowPolicies(prepared.write.result.canonicalModel,
+                relation: relation, meter: sqlMeter())
+        }
+        try updateMutationJournal(identity: source,
+            previousModel: prepared.deletion.persistedModel, currentModel: nil)
+        try updateMutationJournal(identity: target, previousModel: nil,
+            currentModel: prepared.write.result.canonicalModel)
+        try await sourceStore.commitPreparedDelete(prepared.deletion, transaction: storageAccess)
+        try await PolymorphicProjectionMaintainer(container: container).remove(
+            prepared.deletion.persistedModel, identifier: prepared.deletion.identifier, transaction: storageAccess)
+        try await targetStore.commitPreparedWrite(prepared.write, transaction: storageAccess)
+        try await PolymorphicProjectionMaintainer(container: container).update(
+            prepared.write.result, transaction: storageAccess)
+        let context = try makeMutationContext(operationID: operationID)
+        do {
+            try await mutationMaintenanceService.update(identity: source,
+                oldModel: prepared.deletion.persistedModel, newModel: nil, context: context)
+            try await mutationMaintenanceService.update(identity: target,
+                oldModel: nil, newModel: prepared.write.result.canonicalModel, context: context)
+            await context.closeAndWait()
+        } catch {
+            await context.closeAndWait()
+            throw error
+        }
+        try ensureActive(operationID, permitsMutation: true)
+        try await validateSQLConstraints(forceDeferred: false, rowBoundary: true)
+        activeMutationIdentities.remove(source)
+        activeMutationIdentities.remove(target)
+        try await applySQLReferentialActions(oldModel: prepared.deletion.persistedModel,
+            newModel: prepared.write.result.canonicalModel, operationID: operationID)
+    }
+
+    package func truncateSQLRelations(_ relations: [SQLRelation], cascade: Bool,
+        within operationID: UInt64, workMeter: DatabaseWorkMeter) async throws -> DatabaseSQLTruncateOutcome {
+        do {
+            try ensureActive(operationID, permitsMutation: true)
+            let catalog = readPolicy.sqlCatalog.catalog
+            let membershipLayout = try DatabaseRetainedArrayLayout.forElement(SQLCatalogName.self)
+            let membershipGrowth = try membershipLayout.growth(from: 0, toFit: catalog.relations.count)
+            let membershipClaim = try workMeter.reserveIntermediate(bytes:
+                try DatabaseIntermediateFootprint(bytes: membershipLayout.containerByteCount).adding(
+                    DatabaseIntermediateFootprint(bytes: membershipGrowth.additionalByteCount)).bytes,
+                at: .mutationPlanning)
+            defer { membershipClaim.release() }
+            var selected: [SQLCatalogName] = []
+            selected.reserveCapacity(membershipGrowth.capacity)
+            for relation in relations {
+                guard catalog.relations.contains(where: { $0 == relation }) else {
+                    throw SQLConstraintError.invalidDeclaration(relation: relation.id, reason: "TRUNCATE target is outside the admitted catalog")
+                }
+                try workMeter.consume(UInt64(selected.count), at: .mutationPlanning)
+                if !selected.contains(SQLCatalogName(relation.id)) { selected.append(SQLCatalogName(relation.id)) }
+            }
+            var changed = true
+            while changed {
+                changed = false
+                for relation in catalog.relations {
+                    for constraint in relation.constraints {
+                        try workMeter.consume(UInt64(selected.count) * 2 + 1, at: .mutationPlanning)
+                        guard case .foreignKey(let foreign) = constraint.kind,
+                              selected.contains(SQLCatalogName(foreign.referencedRelationID)),
+                              !selected.contains(SQLCatalogName(relation.id)) else { continue }
+                        guard cascade else {
+                            throw SQLConstraintError.violation(relation: relation.id, constraint: constraint.name)
+                        }
+                        selected.append(SQLCatalogName(relation.id))
+                        changed = true
+                    }
+                }
+            }
+            var snapshots = try DatabaseRetainedArrayBuilder<DatabaseRetainedPersistedModels>(
+                workMeter: workMeter, stage: .mutationPlanning,
+                layout: DatabaseRetainedArrayLayout.forElement(DatabaseRetainedPersistedModels.self))
+            var ids = try DatabaseRetainedArrayBuilder<String>(workMeter: workMeter,
+                stage: .mutationPlanning, layout: DatabaseRetainedArrayLayout.forElement(String.self))
+            var affected: UInt64 = 0
+            for relation in catalog.relations where selected.contains(SQLCatalogName(relation.id)) {
+                try workMeter.consume(at: .mutationPlanning)
+                let rows = try await sqlIntegrityRows(relation, meter: workMeter)
+                let (count, overflow) = affected.addingReportingOverflow(UInt64(rows.count))
+                guard !overflow else { throw DatabaseTransactionError.invalidLimit(Int.max) }
+                affected = count
+                try ids.append(footprint: DatabaseIntermediateFootprint(bytes: UInt64(relation.id.utf8.count)),
+                    make: { relation.id })
+                try snapshots.append(footprint: DatabaseIntermediateFootprint(), make: { rows })
+            }
+            for rows in try snapshots.finish().moveToSharedOwnership(at: .mutationPlanning) {
+                for entry in rows {
+                    guard let entry else { continue }
+                    try await entry.withModel { model in
+                        let runtime = try entityRuntime(named: model.entity)
+                        let identity = try runtime.identity(for: copy model)
+                        try await remove(identity: identity, copy model,
+                            precondition: .matchesStored(version: try PersistableVersionTokenCodec.digest(fields: model.fields)),
+                            operationID: operationID, source: .requested, dispatchSQLActions: false)
+                    }
+                }
+            }
+            let retainedIDs = ids.finish().moveRetainingReservation()
+            return DatabaseSQLTruncateOutcome(affectedRows: affected,
+                relationIDs: retainedIDs.elements, reservation: retainedIDs.reservation)
+        } catch {
+            recordCheckpointFailure(error)
+            throw error
+        }
+    }
+
     package func isDeletionScheduled(
         for identity: EntityReference,
         within operationID: UInt64
@@ -2040,7 +2280,7 @@ extension DatabaseTransaction {
     /// Integrity scans borrow only the admitted attempt's root and schema.
     /// They expose no rows or read capability to a caller and never apply user
     /// row filtering, which could hide a conflicting key or referenced row.
-    private func sqlIntegrityRows(_ relation: SQLRelation, meter: DatabaseWorkMeter) async throws -> DatabaseRetainedPersistedModels {
+    private func sqlIntegrityRows(_ relation: SQLRelation, meter: DatabaseWorkMeter, maximumRows: Int = Int.max) async throws -> DatabaseRetainedPersistedModels {
         let runtime = try entityRuntime(named: relation.entityName)
         var output = try DatabaseRetainedArrayBuilder<DatabaseRetainedPersistedModels.Entry?>(
             workMeter: meter, stage: .storageRow,
@@ -2064,9 +2304,12 @@ extension DatabaseTransaction {
                 let (begin, end) = subspaces.items.subspace(relation.entityName).range()
                 let storage = container.itemStorageFactory.make(transaction: storageAccess, blobsSubspace: subspaces.blobs)
                 let rows = try await Self.consumePersistedModels(storage: storage, begin: begin, end: end,
-                    startingAfter: nil, scanLimit: Int.max, expectedCount: 0, offset: 0,
+                    startingAfter: nil, scanLimit: maximumRows == Int.max ? Int.max : maximumRows - output.count + 1, expectedCount: 0, offset: 0,
                     entity: relation.entityName, runtime: runtime, readPolicy: nil, authorizedFields: nil, workMeter: meter)
                 for entry in rows {
+                    guard output.count < maximumRows else {
+                        throw DatabaseEntityMutationError.changeLimitExceeded(actual: maximumRows + 1, maximum: maximumRows)
+                    }
                     try output.append(footprint: DatabaseIntermediateFootprint(rows: 1), make: { entry })
                 }
             }

@@ -140,3 +140,48 @@ folding belongs to the parser; a quoted uppercase name is not a builtin alias.
 Semantic test fixtures construct those canonical identifiers directly. The
 existing selected binder's argument coercion and occurrence/arena forwarding
 remain authoritative before request effect dispatch.
+
+## S14 TRUNCATE Identity Composition
+
+SQLBlock resolves TRUNCATE targets and Transaction computes the complete
+foreign-key table closure. This component consumes only the resulting exact
+relation IDs and the admitted caller transaction. The package request seam is
+`restartOwnedIdentities(relationIDs:step:transaction:) async throws`.
+
+```text
+TRUNCATE effective table set
+  -> exact owned identity sequence IDs, deduplicated in catalog order
+  -> request-stable forkHead(step:start:)
+  -> stage head keys in the same caller transaction as row removals
+  -> commit exposes new incarnations / rollback restores old heads
+```
+
+RESTART selects sequence declarations whose `ownedBy` identifies an identity
+column of an effective relation and whose column identity policy references
+that same sequence. A default expression's NEXTVAL reference alone does not
+confer ownership. Unowned sequences, identity columns outside the effective
+set and CONTINUE mode receive no head write. Multiple columns referring to
+one sequence stage its head once. Restart uses each declaration's configured
+start; it changes no declaration, schema generation or catalog publication.
+
+The existing nonce/step incarnation mechanism keeps head selection stable
+through allocation-demand replay and storage retry. Head writes participate
+in the caller's physical checkpoint journal. NEXTVAL and SETVAL continue to
+allocate through independently committed cells and recovery markers after
+the original data attempt has authoritatively closed. Consumption on a staged
+incarnation can remain unreachable after rollback; it never changes the
+restored prior incarnation. CURRVAL/LASTVAL preserve the existing request
+history contract across SQL rollback. No new sequence cache or authority
+boundary is introduced.
+
+This is identity-sequence restart only. Hidden physical SQL row identity is
+owned by Mutation's logical request timeline and is independent of SQL
+sequence allocation. Compiled-model declared identifiers retain their model
+adaptation contract.
+
+SQL TRUNCATE tests must prove rollback of rows and owned heads together,
+CONTINUE behavior, CASCADE ownership closure, non-owned/default-only exclusion,
+restart with a nondefault start, and allocation-demand replay after restart.
+Existing sequence durability and nonrollback tests remain authoritative for
+ordinary NEXTVAL/SETVAL; this section does not reinterpret those effects as
+rollbackable allocations.

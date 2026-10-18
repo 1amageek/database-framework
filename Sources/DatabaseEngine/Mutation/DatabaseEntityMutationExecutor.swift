@@ -204,6 +204,44 @@ public struct DatabaseEntityMutationExecutor: Sendable {
             transaction: transaction, resultScope: .statement)
     }
 
+    /// Applies SQL actions without reloading their captured images through GET.
+    package func executeSQLChanges(
+        _ changes: DatabaseSharedRetainedArray<DatabaseSQLMutationChange>,
+        workMeter: DatabaseWorkMeter, transaction: DatabaseTransaction
+    ) async throws -> DatabaseSharedRetainedArray<DatabaseSQLMutationOutcome> {
+        guard changes.workMeter === workMeter else {
+            throw DatabaseEntityMutationError.workMeterMismatch
+        }
+        guard changes.count <= limits.maximumChanges else {
+            throw DatabaseEntityMutationError.changeLimitExceeded(actual: changes.count,
+                maximum: limits.maximumChanges)
+        }
+        return try await transaction.withEntityMutationOperation(workMeter: workMeter) { operationID in
+            var outcomes = try DatabaseRetainedArrayBuilder<DatabaseSQLMutationOutcome>(
+                workMeter: workMeter, stage: .mutationPlanning,
+                layout: DatabaseRetainedArrayLayout.forElement(DatabaseSQLMutationOutcome.self),
+                expectedCount: changes.count)
+            for change in changes {
+                try workMeter.consume(at: .mutationPlanning)
+                let outcome = try await transaction.applySQLMutation(change, within: operationID)
+                var footprint = try DatabaseEntityMutationFootprintMeter.footprint(
+                    of: outcome.effect.identity, workMeter: workMeter)
+                if let old = outcome.oldModel {
+                    footprint = try footprint.adding(DatabaseEntityMutationFootprintMeter.footprint(
+                        of: old, workMeter: workMeter))
+                }
+                if let new = outcome.newModel {
+                    footprint = try footprint.adding(DatabaseEntityMutationFootprintMeter.footprint(
+                        of: new, workMeter: workMeter))
+                }
+                footprint = try footprint.adding(DatabaseIntermediateFootprint(
+                    bytes: UInt64(outcome.effect.version?.count ?? 0)))
+                try outcomes.append(footprint: footprint, make: { outcome })
+            }
+            return try outcomes.finish().moveToSharedOwnership(at: .mutationPlanning)
+        }
+    }
+
     private enum ResultScope: Sendable { case transaction, statement }
 
     private func execute(

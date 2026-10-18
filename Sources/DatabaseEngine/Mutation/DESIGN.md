@@ -107,8 +107,8 @@ Boolean expressions before scanning or existing-row lookup and use the same
 selected scalar evaluator, including codepoint and C/POSIX text semantics.
 NULL predicates do not select a row. Omitted-field defaults,
 model adaptation, identity, preconditions and conflict policies remain owned by
-their existing paths. This work does not add INSERT SELECT, UPDATE FROM or
-RETURNING.
+their existing paths. The S09 implementation alone does not add INSERT SELECT, UPDATE FROM or
+RETURNING; the S14 contract below owns their subsequent composition.
 
 Explicit CAST inside an assignment retains its explicit context; only the outer
 target-field conversion uses assignment context. CHAR/VARCHAR assignment must
@@ -237,3 +237,270 @@ transaction or publication authority.
 Only Transaction constructs SQLReferentialActionAuthorization after matching an actual referencing row against a declared foreign key's old target key. The token retains the exact attempt owner, operation identifier, identity and schema lease. DatabaseDataStore validates that token before bypassing caller entity/field write policy for this one integrity action. Storage authority, Directory root and partition, preconditions, model canonicalization, index maintenance and transaction final validation remain unchanged. No public mutation API issues or accepts the token; hidden row values never leave the private integrity path. Ordinary saves and deletes pass no token and retain normal policy enforcement.
 
 SQL policy execution binds the immutable admitted session and explicit statement temporal environment around the entire mutation operation. Transaction row CHECK and cascading defaults inherit that same scope, including direct statement-executor callers. The scope confers no additional storage or identity authority.
+
+
+## S14 SQL Mutation Execution
+
+This section is the contract for S14 implementation, not a claim of behavioral
+completion. Its semantic authority is the Kit SQL profile; PostgreSQL 18 edge
+contracts and source observations are recorded in the workspace S14 discovery
+evidence. The generic SPI `execute` keeps its entity-identity conflict contract.
+The package SQL entry consumes logical SQL relation/column/constraint identities.
+
+### Ownership and interfaces
+
+| Owner | Input | Guarantee consumed by Mutation |
+|---|---|---|
+| Kit Query | INSERT, UPDATE, DELETE and MERGE declarations; ordered tuple targets; conflict target; transition aliases | Syntax retains every semantic child without executing it. |
+| QueryExecution | Statement read scope, source/SELECT plans, correlated expression evaluation, projection plans | Canonical typed positional rows and metadata; statement base snapshot and injected writable-CTE relations remain distinct. |
+| Transaction | Admitted physical target rows and ordinary requested changes | Existing authorization, preconditions, relocation, index/FK effects, journal/checkpoints and final validation remain authoritative. |
+| SQLConstraints | Declared key columns, null policy and canonical key/equality functions | Request-local arbiter lookup and all-constraint enforcement use the same SQL equality. |
+| SQLBlock | Immutable session/temporal environment, exact meter, caller-owned transaction | No public output until authoritative block close; main-statement count excludes writable-CTE effects. |
+
+`executeSQL` returns a Mutation-owned `SQLMutationOutcome`: statement effects,
+affected-row count and optional collecting canonical RETURNING relation. It does
+not return a public `QueryResponse` or mint a Ready admission. QueryExecution
+owns the relation's ordered columns, nullability, values and payload claims;
+SQLBlock owns promotion after transaction close. Output metadata is bound even
+when no target rows match. Existing SPI callers retain the effects-only result.
+
+Mutation requests source and correlated evaluation from the same QueryExecution
+statement scope rather than opening independent reads or recreating relational
+operators. Physical target identity is carried alongside the canonical target
+row, never inferred by comparing visible values or inserting a hidden visible
+column. A SQL source read remains subject to normal read authorization.
+RETURNING uses the admitted old image and the canonical image actually accepted
+by ordinary persistence, without an additional GET operation. This does not grant
+integrity-action authorization or bypass field-read authorization.
+
+```text
+immutable statement source view + catalog/schema lease + exact request meter
+    -> bind targets, predicates, casts, tuple widths and RETURNING metadata
+    -> retain target identities + source candidates
+    -> choose one logical action per effective target
+    -> evaluate old-row RHS / defaults / generated values
+    -> ordinary prepared mutation transaction path
+        -> data + indexes + FK actions + identity relocation + journal
+    -> project actual old/new/source images into collecting RETURNING relation
+    -> SQLBlock authoritative close -> publish command count and rows
+```
+
+### Input and action contracts
+
+| Form | Binding and candidate behavior | Failure boundary |
+|---|---|---|
+| INSERT VALUES / DEFAULT VALUES / SELECT | Explicit columns bind left-to-right; omitted list uses the first N declared columns; defaults evaluate per proposed row; empty SELECT inserts zero. Assignment casts and S13 identity/generated policies run before conflict matching. | Duplicate/unknown columns, excess or inconsistent arity, invalid destination signature fail before effects. Row-dependent conversion failure rolls back all data effects. |
+| UPDATE FROM | Join/filter against old target and source rows; choose one qualifying candidate per physical target. Every scalar/tuple RHS reads the same old target, independently of assignment order. | Multiple source matches do not produce a MERGE cardinality failure. Tuple subquery zero rows supplies NULLs, one row supplies its columns, more than one is a cardinality error. |
+| DELETE USING | Select TRUE join/filter candidates and delete each physical target once. | NULL predicate skips; duplicate join matches neither duplicate count nor output. |
+| MERGE | Freeze candidate match class once. Evaluate ordered clauses only in that class; first TRUE clause, including DO NOTHING, wins. BY TARGET supports source-only insertion; BY SOURCE supports target-only actions. | Illegal action/class and unreachable later same-class clauses fail before effects. Repeated effective UPDATE/DELETE of one physical target fails cardinality; harmless DO NOTHING does not mark it modified. Duplicate inserted logical keys retain uniqueness failure. |
+
+Target aliases hide the original target name. Joined source scopes remain
+available to action expressions where SQL permits them. Assignment DEFAULT is a
+policy request, not SQL NULL. Tuple RHS evaluates once, then each destination
+receives its own assignment conversion. UPDATE FROM nondeterminism is limited
+to selection of one allowed matching source; no output order is promised.
+
+### Conflict arbitration
+
+SQL INSERT uses actual logical PRIMARY KEY and UNIQUE declarations, independent
+of persisted entity identity. A bounded request-local composite-key collection
+is sufficient for existing catalog constraints; persistent, expression and
+partial index declarations remain S15-owned. The collection retains canonical
+key components using `SQLConstraintRows.key/equal`, exact column IDs and the
+constraint's NULLS DISTINCT/NOT DISTINCT policy. Keys containing NULL do not
+conflict under DISTINCT. No identity-key fallback is permitted.
+
+Column inference matches a complete declared key as an unordered exact-name
+set. ON CONSTRAINT resolves a declared constraint name. Only nondeferrable keys
+may arbitrate; effective SET CONSTRAINTS timing does not change eligibility.
+DO UPDATE requires a target; targetless DO NOTHING considers every eligible key.
+A conflict against an unselected constraint still fails ordinary validation.
+Inference predicates are bound in the admitted inference scope; unsupported
+partial/expression-index arbitration is a typed failure, never an unfiltered
+substitute key.
+
+The proposed row obtains defaults and stored generated values before arbitration.
+DO UPDATE SET/WHERE alone receive EXCLUDED, whose values are that proposed row.
+FALSE/NULL action WHERE performs no update/count/RETURNING. EXCLUDED is absent
+from RETURNING and conflict inference. The request-local key state includes
+prior proposed inserts and updates, so duplicate input is not missed. Repeated
+effective DO UPDATE on one target, including a prior insert, fails cardinality;
+already modified targets are rejected before evaluating a later action WHERE.
+Repeated candidates whose filters have all been FALSE may still perform one later
+update. A prior insert followed by a conflicting candidate fails cardinality even
+when that candidate filter would be FALSE. These boundaries match the pinned
+PostgreSQL 18.6 oracle; a blanket source-duplicate rejection is invalid. Ordinary constraint validation still owns
+unrelated uniqueness, checks and referential invariants.
+
+### RETURNING and affected rows
+
+INSERT and UPDATE use the final canonical new target; DELETE uses its admitted
+old target. Explicit OLD/NEW qualifications use transition images, NULL-extended
+when absent. Explicit transition aliases hide the corresponding default name.
+UPDATE FROM and DELETE USING retain the selected source through projection.
+MERGE also exposes its source, action-dependent target and `merge_action()`;
+the action function is rejected outside MERGE RETURNING. EXCLUDED does not leak.
+
+Star and expression projections use ordered positional metadata, so duplicate
+labels survive. Binding occurs before candidate enumeration, including empty
+sources, and all mixed MERGE actions share one nullable output schema. Matched
+no-op UPDATE counts one; skipped conflict/MERGE actions count zero. INSERT count
+includes conflict updates; cascades never inflate the statement count. Each
+effective requested action yields exactly one RETURNING row when requested.
+Later statement failure, cancellation or uncertain commit publishes no ready
+rows or definite successful count.
+
+### State, limits and verification
+
+All candidate rows, target memberships, key components, changes and RETURNING
+payloads are request-local retained owners on the exact meter. Capacity is
+admitted before allocation; shared source payloads retain their existing claims
+until destination admission. No global mutable registration, new synchronization
+primitive or Embedded-specific state branch is introduced. Target membership
+uses physical entity/partition/identifier identity. Within a writable WITH,
+QueryExecution allocates a distinct owner for each prepared CTE/main mutation.
+After statement-local conflict/MERGE cardinality validation, Mutation claims only
+effective old/new physical identities for that owner before applying changes.
+Disjoint rows in the same relation remain valid; an identity claimed by another
+CTE/main owner rejects the whole statement. A relation ID is not a row claim.
+Cancellation, budget failure,
+late expression failure and checkpoint rollback release temporary owners and
+restore ordinary transaction state.
+
+The Mutation behavioral owner is
+`Tests/DatabaseEngineTests/S14SQLMutationExecutionTests.swift`. It covers M01
+SELECT/default/omission/cast behavior; M02 old-row simultaneous and tuple
+cardinality/source multiplicity; M03 USING de-duplication; M04 ordered duplicate
+labels, empty metadata, source/transition images and exact count; M05 composite
+logical arbiters, null policy, EXCLUDED and repeated effects; M07 clause priority,
+all action classes and target cardinality. Existing statement assignment,
+mutation lifecycle and S13 constraints remain regression owners. Transaction
+owns hidden identity/relocation/FK authorization/checkpoint tests; QueryExecution
+owns shared statement source visibility and writable CTE scope; SQLBlock owns
+post-close publication, cross-statement counts and aggregate rollback. Native
+focused execution, affected-target/backend verification and portable compile/link
+are orchestrated once by the root task after the shared snapshot converges.
+
+
+### Frozen preparation and hidden identity seams
+
+Mutation owns the internal Sendable `SQLMutationPreparation` retained handoff.
+`prepareSQLReads(_:scope:transaction:workMeter:)` retains the complete admitted
+physical target snapshot through Transaction's
+`scanSQLMutationModels(relation:fields:maximumRows:workMeter:)`, constructs the
+old-target logical layout and prebinds required plans. It asks the same
+`SQLStatementReadScope.capture(_:outerLayout:)` to authorize/capture the original
+SELECT source and scalar-subquery roots. SQLBlock prepares every writable CTE
+and main statement before sealing the scope and before applying any mutation.
+`executeSQL` consumes the same preparation and read scope; it cannot acquire a
+fresh target/source snapshot after a sibling writes. Read fields supplied to
+Transaction include all predicate, assignment, RETURNING and conflict expression
+dependencies; hidden model images remain internal and confer no public read
+permission. QueryExecution owns correlated phase/type binding and projection.
+
+Mutation owns hidden physical row identity, independently of SQL sequences.
+`SQLMutationRequest` is a package actor initialized with the exact request meter
+outside the transaction retry loop. `beginAttempt()` resets its replay cursor.
+`allocateHiddenIdentity(relationID:column:statement:)` records one immutable
+allocation event and retains its admission claim; later attempts reuse the value
+only when the same statement, relation and physical field declaration recur at
+the same cursor. Divergent replay fails explicitly. `SQLMutationRuntime.request`
+and `statementIndex` are package TaskLocal bindings supplied by SQLBlock across
+all attempts; there is no global mutable registration.
+
+Allocation is eligible only for a schema-driven runtime
+(`compiledModelContract == nil`) whose physical identifier field is not mapped
+to a visible SQL column. The actual physical field declaration chooses the
+supported UUID, string or bytes representation. The random value is generated
+once per event, not once per retry; unsupported identifier types fail with a
+typed error. Mutation never fills an arbitrary missing field, changes a compiled
+model's declared identity, treats a visible SQL primary key as a hidden ID, or
+makes the hidden identifier visible through star/RETURNING. Its lifetime is one
+request and its ownership is one actor on every target. Transaction remains the
+owner of identity validation, placement and ordinary persistence.
+
+
+### S14 target synchronization review
+
+| Logical state | Native / WASM / Embedded storage | Isolation and entry | Release |
+|---|---|---|---|
+| Hidden identifier timeline/cursor | Same `SQLMutationRequest` event array and cursor | Actor `beginAttempt` / `allocateHiddenIdentity`; TaskLocal carries the actor reference | Request actor lifetime; event reservations retain allocated values |
+| Target membership and planned actions | Same invocation-local admitted `SQLMutationArray` | One statement task; no escaping mutable reference or callback | Statement execution returns or throws |
+| Prepared target/source/RETURNING frames | Same immutable retained owners | Prepared once before scope seal; reads borrow retained canonical rows | Last preparation/output owner |
+
+The source audit finds no Embedded/Synchronization availability branch,
+`nonisolated(unsafe)`, unchecked conformance or target-conditioned Sendable
+contract in the new Mutation path. The existing generic SPI remains scalar and
+rejects WITH/MERGE/TRUNCATE before effects. Both prepared and scope-owning SQL
+entries use the same SQL outcome and logical-arbiter implementation. Runtime
+and cross-target evidence remain owned by the root verification lanes.
+
+
+### Explicit target Partition selection
+
+The resolved target Partition is part of Mutation's input contract.
+`prepareSQLReads` passes `entity.partition` to Transaction's admitted target scan,
+so UPDATE, DELETE and MERGE select old rows only inside an explicitly named
+Partition. An absent explicit Partition retains the dynamic all-Directory SQL
+scan contract. SQL target resolution therefore leaves an omitted selector nil;
+the generic entity SPI retains its explicit dynamic-Partition requirement.
+Candidate placement still comes from the complete runtime identity derived from
+the model's declared dynamic fields. Selecting an old Partition does not restrict a subsequent UPDATE
+from relocating its new image through the ordinary transaction path.
+
+INSERT and MERGE INSERT apply defaults and model adaptation, derive the complete
+candidate identity, then validate an explicitly supplied target Partition against
+that candidate through `DatabaseEntityMutationExecutor.resolveReference(_:model:)`.
+A mismatch remains the existing typed identity/Partition failure before conflict
+selection or physical mutation. Without an explicit target Partition, the
+candidate's complete canonical identity determines placement.
+
+
+### INSERT reads and RETURNING authorization
+
+A plain INSERT without ON CONFLICT has no old target candidates. Preparation
+retains an empty target batch without LIST/GET on existing target rows; INSERT
+SELECT and scalar-subquery source reads keep their own admitted read contracts.
+Logical UNIQUE/FK validation remains inside Transaction's integrity authority.
+ON CONFLICT, UPDATE, DELETE and MERGE retain their actual target-read contract.
+
+RETURNING records separate current/OLD/NEW physical field demands. After ordinary
+mutation produces canonical transition images, Mutation calls the scope's admitted
+`DatabaseReadPolicy.authorizeGet(_:fields:)` for each actual image and its demanded
+fields before projection. A missing transition contributes NULL and no row read;
+a constant projection has no target-field demand. Read denial aborts the statement
+and publishes neither rows nor a successful count. This authorization never adds
+LIST on unrelated existing rows or broadens caller authority.
+
+
+### SQL mutation session ownership
+
+The scope-owning SQL entry joins its supplied, already write-admitted
+`DatabaseTransaction` through Read's `withSQLMutationSession` factory. The factory
+validates that exact transaction, container, root and generation and retains the
+ordinary session cleanup contract. It does not request an independent Base read
+grant merely to execute the mutation. The statement's real source LIST/GET and
+RETURNING field checks remain governed by the captured read policy; ordinary
+query entry points keep their read-admission factory.
+
+
+### Bounded async row and candidate advances
+
+Mutation applies the existing [SQLRelations owned-advance scheduling
+contract](../QueryExecution/SQLRelations/DESIGN.md) at two operation boundaries:
+`sqlRow` converts one captured/RETURNING model image, and `sqlMatches` evaluates
+one candidate predicate, including the absent predicate's TRUE result. Each
+boundary yields before its operation and before returning, checking the same
+meter's cancellation/deadline after resumption. Error unwind yields and preserves
+the original failure. This bounds synchronous per-row continuation accumulation
+on the supported WASM runtime without changing stack capacity or depth limits.
+
+Both boundaries remain in the same task, session and transaction scope, with the
+same ordered values, authorization and resource reservations. The async
+`Entry.withModel` borrow already retains its payload lease across awaited row
+conversion, so cooperative suspension remains within that owner lifetime.
+Checkpoint checks charge no work units. The original statement coordinator and
+its action/projection bodies remain intact; no duplicate row codec or target
+conditional is introduced. The unchanged cumulative ordinary/Embedded runtime
+input owns proof of bounded execution under the default stack and resource
+limits.

@@ -70,12 +70,17 @@ struct SQLBlockExecutionTests {
         defer { await container.shutdown() }
         let context = container.testBaseContext()
         _ = try await context.executeStatement(insert("seed", "original"), options: options())
-        await #expect(throws: DatabaseEntityMutationError.self) {
+        await #expect {
             try await context.executeSQLBlock(SQLBlock(steps: [
                 .statement(insert("before", "uncommitted")), .savepoint("point"),
                 .statement(insert("seed", "duplicate")), .rollbackTo("point"),
                 .statement(insert("after", "must-not-run"))
             ]), options: options())
+        } throws: { error in
+            guard case DatabaseContextError.preconditionFailed(let identity, .notExists, _) = error else {
+                return false
+            }
+            return identity.entity == BlockItem.persistableType
         }
         #expect(try await context.model(for: "before", as: BlockItem.self) == nil)
         #expect(try await context.model(for: "after", as: BlockItem.self) == nil)
@@ -149,12 +154,12 @@ struct SQLBlockExecutionTests {
         expectCommand(try await context.executeStatement(insert("one", "single"), options: options()), .insert, 1)
         let row = try await context.executeStatement(parse("SELECT title FROM public.\"BlockItem\""), options: options())
         #expect(try rows(row).rows.first?.values == [.primitive(.string("single"))])
-        // FIXME(INCOMPLETE_IMPLEMENTATION): S14 must implement RETURNING before this public semantic statement can succeed.
-        await #expect(throws: DatabaseEntityStatementMutationError.unsupportedStatement(
-            "DELETE RETURNING is not representable by mutation effects")) {
-            try await context.executeStatement(parse("DELETE FROM \"BlockItem\" RETURNING id"), options: options())
-        }
-        #expect(try await context.model(for: "one", as: BlockItem.self)?.title == "single")
+        let deleted = try rows(await context.executeStatement(
+            parse("DELETE FROM \"BlockItem\" RETURNING id"), options: options()))
+        #expect(deleted.affectedRows == 1)
+        #expect(deleted.columns.map(\.name) == ["id"])
+        #expect(deleted.rows.first?.values == [.primitive(.string("one"))])
+        #expect(try await context.model(for: "one", as: BlockItem.self) == nil)
     }
 
     @Test("Zero output rows remain valid for reads and reject DML before effects")

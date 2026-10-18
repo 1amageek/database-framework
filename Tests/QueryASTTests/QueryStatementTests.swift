@@ -88,7 +88,7 @@ struct SQLDMLStatementTests {
 
         if case .doUpdate(let assignments, _) = insert.onConflict {
             #expect(assignments.count == 1)
-            #expect(assignments[0].column == "name")
+            #expect(assignments[0].columns == ["name"])
         } else {
             Issue.record("Expected DO UPDATE")
         }

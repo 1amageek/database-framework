@@ -9,7 +9,7 @@ struct SQLParserMutationTests {
         let statement = try SQLParser().parse("""
             INSERT INTO app.Event (id, title)
             VALUES (:firstID, 'First'), (:secondID, 'Second')
-            ON CONFLICT DO UPDATE SET title = 'Updated' WHERE id = :firstID
+            ON CONFLICT (id) DO UPDATE SET title = 'Updated' WHERE id = :firstID
             RETURNING id, title AS eventTitle
             """)
 
@@ -91,7 +91,7 @@ struct SQLParserMutationTests {
         }
         #expect(query.target.table == "event")
         #expect(query.target.alias == "event")
-        #expect(query.assignments.map(\.column) == ["title", "revision"])
+        #expect(query.assignments.map(\.columns) == [["title"], ["revision"]])
         #expect(query.from == .aliased(.table(TableRef(table: "importrow")), name: "row"))
         #expect(query.filter != nil)
         #expect(try projectionAlias(#require(query.returning?.first)) == "id")

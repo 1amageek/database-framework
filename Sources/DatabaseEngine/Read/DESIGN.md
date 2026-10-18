@@ -62,6 +62,27 @@ ReadPolicy -> sealed authorization -> ReadSession closure
 - A scoped range cursor uses the StorageKit state-owned validation contract;
   Read supplies the scope lease and does not wrap a second cursor state.
 
+### SQL mutation session admission
+
+The internal `withSQLMutationSession(context:transaction:workMeter:_:)` entry
+borrows an already admitted writable DatabaseTransaction for mutation-owned
+source, expression and RETURNING work. It requires the exact active transaction
+object, context, principal, root and schema binding; MultiBase additionally
+requires the binding's existing write admission. It does not require a second
+Base read grant. Existing entity LIST/GET and physical field authorization still
+apply to every demanded source and transition image; constraint-integrity reads
+retain their separate Transaction contract.
+
+The ordinary `withSession` entry continues to require read admission. A
+SELECT main statement, including a WITH whose main body is SELECT, uses that
+entry. SQLBlock and Mutation may select the mutation entry only when the main
+statement is DML or TRUNCATE and its enclosing writable transaction is already
+admitted. Ordinary SELECT definitions consumed by that mutation are internal
+reads; independently requested SELECT steps retain ordinary read admission. Both entries share one private session
+lifecycle, meter/root validation, checkpoint registration, scoped read-only
+storage facade and awaited invalidation/cleanup. No returned value grants an
+independent read session or extends the producing transaction's lifetime.
+
 ## Runtime Flows
 
 ```text

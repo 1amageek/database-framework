@@ -1902,3 +1902,122 @@ boundaries. This does not widen the package's retained-row output contract or
 introduce a target-specific synchronization path. The existing SQL constraint
 execution regressions exercise nested unique/FK row borrows and cascading writes;
 actual compile and behavior evidence belongs to the task's focused harness.
+
+### S14 statement read and mutation projection scope
+
+This section defines the implementation contract; it is not passing execution
+evidence. SQLBlock owns the enclosing statement/transaction lifecycle and Mutation
+owns candidate identity, effects and transition images. QueryExecution owns one
+internal `SQLStatementReadScope` for their selected relational work. It consumes
+the already admitted context, read session, SQL resolution, temporal environment
+and exact meter; holding this scope or a retained relation grants no authority.
+
+```text
+statement graph + admitted source occurrences
+    -> bind output and original field/list requirements
+    -> authorize and capture every physical read before the first write
+    -> immutable retained source frames
+        + selected source/assignment/correlated evaluation
+        + eager mutable CTE -> retained RETURNING relation
+        + demand-driven ordinary SELECT CTE
+    -> retained main statement outcome
+    -> SQLBlock's authoritative close -> public output
+```
+
+Physical capture uses the existing authorized read session and retained physical
+fetch/catalog-alignment path. Each entry records its catalog relation identity,
+partitions, originating authorization query/source occurrence, admitted physical
+column coverage and retained canonical rows. Context, root, principal, generation,
+session/transaction and meter must match before reuse. Equal table names alone
+never permit reuse or combine authority. Capture does not replace an original
+query's permission requirement with a wildcard request. Missing coverage after
+the write phase begins is a typed failure, never a lazy storage fetch or widening.
+Row-policy predicates are preserved by the original admission and applied before
+the retained entry is exposed. Retained bytes/rows and registry growth are charged
+before allocation on the same meter.
+
+The existing `CanonicalQueryBindingResources` retains the originating SELECT
+through one metered, immutable `SQLStatementReadOrigin` reference per
+statement-scope query. A derived resources owner shares parameter/resolution
+owners and adds that query's origin. The binding environment keeps its original
+stored layout; child frames copy the existing resources reference and preserve
+the exact query used for source authorization. They do not embed a second
+SELECT value or an additional stored origin reference in every recursive frame.
+Ordinary SELECT binding without a statement read scope stores no source-origin
+owner. This preserves the admitted nesting depth on the native cooperative
+thread stack and uses the same immutable owner on WASM and Embedded; changing a
+test runner's stack limit is not part of this contract.
+
+The recursive source dispatcher owns only source selection, its existing work
+charge and located failure mapping. Table-function signature selection, its
+scalar binder and output-schema construction run in a separate non-inlined leaf
+helper. Those temporaries end at that leaf and are not reserved in every live
+JOIN dispatch frame. The existing 60-deep JOIN regression owns this stack bound;
+the helper preserves the same signature, field scope, meter and error semantics.
+
+The scope's internal seams are `select(query, outer:)`, `relation(source, readQuery:, outer:)`,
+`bindExpression(expression, layout:)`, `bindAssignment(expression, to:, layout:)`,
+`bindProjection(items, layout:)`, `evaluate(bound, on:)`, and
+`project(plan, rows:, affectedRows:)`. They reuse the canonical binder, selected
+evaluator, correlated-subquery machinery and retained row builders. Source and
+expression preparation must enumerate all physical reads before any effect;
+Mutation supplies the old-target/source layouts required to bind correlated
+expressions. Target identity remains a Transaction/Mutation-owned value and is
+never inferred from visible SQL columns.
+
+Mutation's `prepareSQLReads(_:scope:transaction:workMeter:) async throws ->
+SQLMutationPreparation` retains target models, field/layout requirements and
+prebound plans. It invokes `capture(_:outerLayout:)` for each original SELECT
+source and scalar-subquery root. SQLBlock prepares every writable definition
+and the main mutation before `seal()` changes the scope to its write phase.
+`executeSQL(_:searchPath:preparation:readScope:preconditions:transaction:workMeter:temporalEnvironment:)`
+then consumes those same prepared owners. A preparation is not reusable with a
+foreign statement scope, transaction, catalog generation or meter.
+The required `readQuery` is the same retained original authorization query used
+by capture; source equality alone never selects another occurrence's snapshot.
+`relationLayout(_:outerLayout:)` binds only source metadata during preparation
+and does not evaluate lazy SELECT targets or fetch rows.
+
+Private lexical relation declarations carry bound ordered columns and optional
+retained RETURNING rows. They are resolved ahead of catalog names only in their
+lexical statement scope; ordinary nested SELECT CTEs retain their existing
+shadowing and demand rules. Fusion's graph walker and field dependency collector
+recognize those declarations as ephemeral relations, while physical dependencies
+are authorized at their producing statements. No synthetic SELECT, AST literal
+or public logical-source handle substitutes for authorization. A declaration
+without RETURNING has no readable relation and attempting to scan it fails.
+
+The physical producer path consumes the captured frame, reframing its alias with
+retained payload claims. Direct-table and access-path shortcuts may not reread
+mutable storage while this scope is active. Selected subqueries inherit the same
+scope and prestatement frames; changed images become visible only through the
+declared RETURNING relation. This scope adds no backend snapshot API and does not
+change ordinary SELECT's read behavior outside a mutation-bearing statement.
+
+| Logical state | Native / ordinary WASM / Embedded | Access and release |
+|---|---|---|
+| Captured physical frames | Same immutable retained owners | Original admitted source occurrence; released at statement scope end |
+| Lexical output declarations | Same immutable descriptors and retained rows | Sequential statement preparation/publication; no public handles |
+| Preparation/write phase | Same scope-owned synchronized state | All reads captured before phase transition; no target-specific raw state |
+| Selected projection payloads | Same metered leases and builders | Result retains every source/transition claim until final transfer |
+
+The implemented state owners use this shared-state matrix on every target:
+
+| Owner and storage | Read entry | Mutation entry | Close/release |
+|---|---|---|---|
+| `SQLStatementReadScope.state: Mutex<State>` | Exact declaration and source-occurrence lookup | Prewrite registration/capture, one seal, direct-target claim and retained preparation claim | Marks closed, detaches the registry, then awaits CTE close outside the lock |
+| `SQLStatementSourceSnapshot.value: Mutex<CanonicalRelation?>` | Scope-identity/meter-checked retained frame lookup | Exactly one prewrite installation | Bound plans/rows retain immutable claims; registry detach never invalidates output values |
+| `SQLStatementRelation.state: Mutex<State>` | Scope-identity-checked independent consumer creation | One completed RETURNING frame or one SELECT cache attachment | Detaches rows/cache before awaiting actor close |
+| `SQLCTECache` and producer actors | Existing protocol `next` | Existing serial gate across suspension | Existing awaited close; scope owns final cache close |
+
+All locks protect short memory-only operations; no awaited operation, physical
+read, projection or consumer callback executes under a lock. TaskLocal bindings
+select the current immutable context and never replace synchronization. The
+same declarations and Sendable contracts compile on native, ordinary WASM and
+Embedded; this implementation introduces no conditional synchronization path.
+
+Focused evidence must distinguish old base rows from new RETURNING rows, capture
+two aliases without cross-authorizing fields, reject forbidden columns before
+effects, retain empty/duplicate output metadata, evaluate a correlated RHS once,
+and release all owners on later failure/cancellation. Lower producer tests alone
+do not prove SQLBlock publication or a portable target's compiled runtime path.

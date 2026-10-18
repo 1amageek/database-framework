@@ -673,3 +673,49 @@ General sequence/constraint DDL and textual transaction controls retain the S15
 and S16 ownership boundary; S13 semantic block steps do not claim that grammar.
 Round-trip tests verify the new syntax, strict malformed/trailing input rejection
 and the existing structural/source-location budgets.
+
+### S14 complete mutation grammar
+
+Parser consumes [Query's declarations](../../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md#s14-mutation-declaration-carriage)
+and [SQL meaning](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s14-mutation-semantics).
+It owns grammar, original token positions and construction provenance; it does
+not select arbiters, evaluate rows, retain snapshots or execute effects.
+
+| Grammar | Required adaptation |
+|---|---|
+| INSERT | Preserve VALUES/default cells, SELECT, DEFAULT VALUES, omitted columns, OVERRIDING and target aliases. ON CONFLICT optionally parses parenthesized columns and inference WHERE, or ON CONSTRAINT exact name, before its distinct action/WHERE. |
+| UPDATE | SET accepts scalar targets and parenthesized target tuples with one row/subquery RHS; FROM/correlation retain ordinary source/expression grammar. DEFAULT remains a dedicated marker. |
+| DELETE | Preserve USING and RETURNING source/expression grammar. |
+| RETURNING | All four mutations parse columns/expressions/star, qualified OLD/NEW and optional WITH (OLD AS name, NEW AS name), admitting either alias or both in either order. Store aliases separately from ordered projections. Duplicate OLD/NEW specification, missing AS/name, empty aliases/list and trailing input fail. |
+| WITH | One definition grammar retains SELECT materialization/SEARCH/CYCLE. SELECT-only definitions and SELECT body normalize to existing SelectQuery; otherwise form SQLWithStatement. Definitions/main admit SELECT/INSERT/UPDATE/DELETE/MERGE. Preserve RECURSIVE and writable definitions without RETURNING; dependency legality remains binding-owned. |
+| MERGE | Parse target/USING source/ON and ordered WHEN MATCHED, NOT MATCHED [BY TARGET], NOT MATCHED BY SOURCE with optional AND condition; actions INSERT columns/OVERRIDING/VALUES or DEFAULT VALUES, UPDATE SET, DELETE, DO NOTHING. Preserve RETURNING/aliases. Binding owns action legality/reachability. |
+| TRUNCATE | Optional TABLE, nonempty comma-separated schema-qualified names, optional CONTINUE/RESTART IDENTITY and RESTRICT/CASCADE. Preserve semantic defaults. Aliases/inheritance and ignored suffixes fail. |
+
+One tuple RHS remains one Expression; parsing never duplicates a subquery or
+expands defaults. Existing nested SELECT CTEs retain their owner; writable
+WITH is statement composition, not an implicit SQL block. Unsupported nested
+writes fail typed rather than being discarded or disguised as SELECT.
+
+Mutation constructors capture children before finishing their statement.
+Replace the current non-SELECT path that drops all descendant provenance.
+[Query occurrence roles](../../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md#intrinsic-admission-and-traversal)
+address targets, assignments, conflict inference/action, output, CTE/body,
+MERGE and TRUNCATE. Equal repeated expressions keep distinct construction
+addresses and original UTF-8 ranges; no equality search reconstructs them.
+Parameter errors follow the same field/index path used by semantic binding.
+
+Before growth, one invocation ledger admits tokens, names, wrappers, children,
+edges, collections, retained bytes and nesting, including WITH and batches.
+Parser reuse resets pending captures and parameter state after every result.
+State remains invocation-local with the same ownership/conformance on all
+targets; no shared or unsafe state is added.
+
+| Case | Falsifiable local evidence |
+|---|---|
+| S14-SYN01 | Every M01–M08 form, quoted/folded name and MERGE discriminator stabilizes under parse/serialize/parse; pure SELECT CTE representation stays unchanged. |
+| S14-SYN02 | Missing target/action/operand/AS/name, malformed tuple/conflict/CTE/MERGE/TRUNCATE, duplicate alias marker and trailing text fail at the offending UTF-8 token. |
+| S14-SYN03 | Repeated equal parameters/expressions in every new child retain distinct occurrences and exact ranges, including non-ASCII names and parser reuse after failure. |
+| S14-SYN04 | Exact/one-past source/node/collection/name/nesting limits cover complete mutations and mixed WITH without quota resets. |
+
+Parser/Builder tests own these cases; Engine/public semantic execution
+separately proves committed effects, snapshot visibility, output and rollback.
