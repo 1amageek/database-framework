@@ -22,6 +22,14 @@ public struct SQLSerializer: SQLSerializing {
         }
     }
 
+    public func serialize(_ block: SQLBlock) throws(SQLSerializationError) -> String {
+        do { try QueryStructuralValidator.validate(block, limits: limits) }
+        catch { throw .invalidStructure(error.description) }
+        return try emit { (writer: inout SQLTextWriter) throws(SQLSerializationError) -> Void in
+            try writer.collection(block.steps.count)
+            for step in block.steps { try writer.blockStep(step) }
+        }
+    }
     public func serialize(_ statement: QueryStatement) throws(SQLSerializationError) -> String {
         try validateMutation(statement)
         return try emit { (writer: inout SQLTextWriter) throws(SQLSerializationError) -> Void in try writer.statement(statement) }

@@ -47,8 +47,12 @@ struct S15PhysicalDDLSQLiteTests {
         #expect(rolledBack.indexPhysicalFingerprint == before.indexPhysicalFingerprint)
         #expect(rolledBack.executionRuntimeFingerprint == before.executionRuntimeFingerprint)
         #expect(try await rows(first).rows.map(\.values) == textRows)
-        await #expect(throws: SQLConstraintError.violation(relation: relation.id, constraint: index.name)) {
+        await #expect {
             _ = try await run(first, [insert([.string("2")])])
+        } throws: { error in
+            guard let failure = error as? SQLConstraintError,
+                  case .violation(let kind, let actualRelation, let actualConstraint, _, _, _) = failure else { return false }
+            return kind == .unique && actualRelation == relation.id && actualConstraint == index.name
         }
         #expect(try await rows(first).rows.map(\.values) == textRows)
 
@@ -104,8 +108,12 @@ struct S15PhysicalDDLSQLiteTests {
         let persisted = try await rows(restored)
         #expect(persisted.columns.map(\.type) == [.sql(.integer), .sql(.integer)])
         #expect(persisted.rows.map(\.values) == integerRows)
-        await #expect(throws: SQLConstraintError.violation(relation: relation.id, constraint: index.name)) {
+        await #expect {
             _ = try await run(restored, [insert([.int(2)])])
+        } throws: { error in
+            guard let failure = error as? SQLConstraintError,
+                  case .violation(let kind, let actualRelation, let actualConstraint, _, _, _) = failure else { return false }
+            return kind == .unique && actualRelation == relation.id && actualConstraint == index.name
         }
         #expect(try await rows(restored).rows.map(\.values) == integerRows)
         _ = try await run(restored, [insert([.int(8)])])

@@ -2,6 +2,7 @@ import DatabaseKit
 
 /// Pure SQL text generation with one cumulative invocation budget.
 public protocol SQLSerializing: Sendable {
+    func serialize(_ block: SQLBlock) throws(SQLSerializationError) -> String
     func serialize(_ statement: QueryStatement) throws(SQLSerializationError) -> String
     func serialize(_ statements: [QueryStatement]) throws(SQLSerializationError) -> String
     func serialize(_ query: SelectQuery) throws(SQLSerializationError) -> String

@@ -923,7 +923,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
                               selected.contains(SQLCatalogName(foreign.referencedRelationID)),
                               !selected.contains(SQLCatalogName(relation.id)) else { continue }
                         guard cascade else {
-                            throw SQLConstraintError.violation(relation: relation.id, constraint: constraint.name)
+                            throw SQLConstraintError.violation(kind: .foreignKey, relation: relation, constraint: constraint.name, catalog: readPolicy.sqlCatalog.catalog)
                         }
                         selected.append(SQLCatalogName(relation.id))
                         changed = true
@@ -2443,17 +2443,17 @@ extension DatabaseTransaction {
                         let row = try await sqlRow(model, relation: relation, meter: meter)
                         switch constraint.kind {
                         case .notNull(let id):
-                            if SQLConstraintRows.nullCount(row, ids: [id], relation: relation) != 0 { throw SQLConstraintError.violation(relation: relation.id, constraint: constraint.name) }
+                            if SQLConstraintRows.nullCount(row, ids: [id], relation: relation) != 0 { throw SQLConstraintError.violation(kind: .notNull, relation: relation, constraint: constraint.name, column: relation.columns.first { SQLConstraintCompiler.same($0.id, id) }?.name, catalog: catalog) }
                         case .check:
                             guard let check else {
                                 throw SQLConstraintError.invalidDeclaration(relation: relation.id, reason: "CHECK binding is missing")
                             }
                             let value = try await DatabaseContext.evaluateCanonicalScalar(check, on: row,
                                 temporalEnvironment: environment, session: try sqlPolicySession(meter: meter), workMeter: meter)
-                            if case .primitive(.bool(false)) = value.value { throw SQLConstraintError.violation(relation: relation.id, constraint: constraint.name) }
+                            if case .primitive(.bool(false)) = value.value { throw SQLConstraintError.violation(kind: .check, relation: relation, constraint: constraint.name, catalog: catalog) }
                         case .unique(let ids, let nulls):
                             let count = SQLConstraintRows.nullCount(row, ids: ids, relation: relation)
-                            if primary && count != 0 { throw SQLConstraintError.violation(relation: relation.id, constraint: constraint.name) }
+                            if primary && count != 0 { throw SQLConstraintError.violation(kind: .notNull, relation: relation, constraint: constraint.name, column: relation.columns.enumerated().first { ids.contains($0.element.id) && row.values[$0.offset].isNull }?.element.name, catalog: catalog) }
                             if onlyPrimaryNulls { return }
                             if count != 0 && nulls == .distinct { return }
                             let key = try SQLConstraintRows.key(row, ids: ids, relation: relation, environment: environment, workMeter: meter)
@@ -2464,7 +2464,7 @@ extension DatabaseTransaction {
                                     if nulls == .distinct && SQLConstraintRows.nullCount(otherRow, ids: ids, relation: relation) != 0 { return }
                                     let otherKey = try SQLConstraintRows.key(otherRow, ids: ids, relation: relation, environment: environment, workMeter: meter)
                                     if try SQLConstraintRows.equal(key, otherKey, workMeter: meter) {
-                                        throw SQLConstraintError.violation(relation: relation.id, constraint: constraint.name)
+                                        throw SQLConstraintError.violation(kind: .unique, relation: relation, constraint: constraint.name, catalog: catalog)
                                     }
                                 }
                             }
@@ -2472,7 +2472,7 @@ extension DatabaseTransaction {
                             let nullCount = SQLConstraintRows.nullCount(row, ids: foreign.columnIDs, relation: relation)
                             if nullCount > 0 {
                                 if foreign.match == .simple || nullCount == foreign.columnIDs.count { return }
-                                throw SQLConstraintError.violation(relation: relation.id, constraint: constraint.name)
+                                throw SQLConstraintError.violation(kind: .foreignKey, relation: relation, constraint: constraint.name, catalog: catalog)
                             }
                             guard let target = catalog.relations.first(where: { SQLConstraintCompiler.same($0.id, foreign.referencedRelationID) }),
                                   let targetIDs = foreign.referencedColumnIDs ?? target.primaryKeyColumnIDs else {
@@ -2490,7 +2490,7 @@ extension DatabaseTransaction {
                                 }
                                 if found { break }
                             }
-                            if !found { throw SQLConstraintError.violation(relation: relation.id, constraint: constraint.name) }
+                            if !found { throw SQLConstraintError.violation(kind: .foreignKey, relation: relation, constraint: constraint.name, catalog: catalog) }
                         }
                     }
                 }
@@ -2500,7 +2500,7 @@ extension DatabaseTransaction {
                     guard let entry else { continue }
                     try await entry.withModel { model in
                         try await validateSQLRowPolicies(model, relation: relation, meter: meter,
-                            previousRelation: previousRelation, checks: false)
+                            previousRelation: previousRelation, checks: false, catalogOverride: catalog)
                     }
                 }
             }
@@ -2542,7 +2542,7 @@ extension DatabaseTransaction {
                         if SQLConstraintRows.nullCount(row, ids: foreign.columnIDs, relation: source) > 0 { return }
                         let key = try SQLConstraintRows.key(row, ids: foreign.columnIDs, relation: source, environment: environment, workMeter: meter)
                         guard try SQLConstraintRows.equal(key, oldKey, workMeter: meter) else { return }
-                        if action == .restrict { throw SQLConstraintError.violation(relation: source.id, constraint: constraint.name) }
+                        if action == .restrict { throw SQLConstraintError.violation(kind: .foreignKey, relation: source, constraint: constraint.name, catalog: catalog) }
                         let runtime = try entityRuntime(named: source.entityName)
                         let identity = try runtime.identity(for: copy model)
                         if action == .cascade, newModel == nil {
@@ -2692,7 +2692,8 @@ extension DatabaseTransaction {
     }
 
     private func validateSQLRowPolicies(_ model: borrowing PersistedModel, relation: SQLRelation,
-        meter: DatabaseWorkMeter, previousRelation: SQLRelation? = nil, checks: Bool = true) async throws {
+        meter: DatabaseWorkMeter, previousRelation: SQLRelation? = nil, checks: Bool = true,
+        catalogOverride: SQLCatalog? = nil) async throws {
         let hasRowChecks = checks && relation.constraints.contains {
             switch $0.kind { case .notNull, .check: return true; default: return false }
         }
@@ -2701,6 +2702,7 @@ extension DatabaseTransaction {
             switch column.policy { case .generated, .identity: return true; case .input: return false }
         }
         guard hasRowChecks || hasColumnPolicies else { return }
+        let catalog = catalogOverride ?? readPolicy.sqlCatalog.catalog
         let environment = makeSQLTemporalEnvironment()
         let row = try await sqlRow(model, relation: relation, meter: meter)
         if hasRowChecks {
@@ -2709,13 +2711,13 @@ extension DatabaseTransaction {
                 switch constraint.kind {
                 case .notNull(let id):
                     if SQLConstraintRows.nullCount(row, ids: [id], relation: relation) != 0 {
-                        throw SQLConstraintError.violation(relation: relation.id, constraint: constraint.name)
+                        throw SQLConstraintError.violation(kind: .notNull, relation: relation, constraint: constraint.name, column: relation.columns.first { SQLConstraintCompiler.same($0.id, id) }?.name, catalog: catalog)
                     }
                 case .check(let expression):
                     let result = try await DatabaseContext.evaluateCanonicalScalar(binder.bindPredicate(expression), on: row,
                         temporalEnvironment: environment, session: try sqlPolicySession(meter: meter), workMeter: meter)
                     if case .primitive(.bool(false)) = result.value {
-                        throw SQLConstraintError.violation(relation: relation.id, constraint: constraint.name)
+                        throw SQLConstraintError.violation(kind: .check, relation: relation, constraint: constraint.name, catalog: catalog)
                     }
                 default: break
                 }
@@ -2726,7 +2728,7 @@ extension DatabaseTransaction {
         for (slot, column) in relation.columns.enumerated() {
             if previousRelation?.columns.contains(column) == true { continue }
             if case .identity = column.policy, row.values[slot].isNull {
-                throw SQLConstraintError.violation(relation: relation.id, constraint: column.name)
+                throw SQLConstraintError.violation(kind: .notNull, relation: relation, constraint: nil, column: column.name, catalog: catalog)
             }
             guard case .generated = column.policy, case .field = column.backing,
                   let type = row.layout.types[slot] else { continue }
@@ -2737,7 +2739,7 @@ extension DatabaseTransaction {
                 matches = try CanonicalSQLValueSemantics.compareValues(row.values[slot], expected.values[slot],
                     leftType: type, rightType: type, environment: environment, workMeter: meter) == .equal
             }
-            if !matches { throw SQLConstraintError.violation(relation: relation.id, constraint: column.name) }
+            if !matches { throw SQLConstraintError.violation(kind: .generatedValue, relation: relation, constraint: nil, column: column.name, catalog: catalog) }
         }
     }
 }

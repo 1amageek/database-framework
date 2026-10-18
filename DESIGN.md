@@ -315,3 +315,13 @@ and [QueryAST](Sources/QueryAST/DESIGN.md). Their children own declaration
 adaptation, immutable statement reads, mutation outcomes, ordinary authorization
 and transactional table/identity changes. The package facade retains its
 post-closure result contract; no new storage or transport owner is introduced.
+
+
+### S16 module composition
+
+DatabaseEngine now consumes the pure QueryAST Builder contract only for canonical
+SQL text returned by information_schema and EXPLAIN. QueryAST remains below that
+use with dependencies only on Kit/Types; it has no Engine or storage dependency.
+This does not reverse specialized feature ownership or move parsing, authorization
+or execution into the serializer. The corresponding module contract is
+[QueryAST](Sources/QueryAST/DESIGN.md#s16-canonical-catalog-text-consumption).

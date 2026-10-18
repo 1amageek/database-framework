@@ -51,6 +51,7 @@ extension SQLCatalogCodec {
         }
         try writer.writeCount(value.bindings.count)
         for binding in value.bindings {
+            writer.writeUInt8(binding.kind == .catalog ? 0 : 1)
             writer.writeBool(binding.schema != nil)
             if let schema = binding.schema { try writer.writeString(schema) }
             try writer.writeString(binding.table); try writer.writeString(binding.relationID)
@@ -73,9 +74,15 @@ extension SQLCatalogCodec {
             let type = try QueryIRWireFormat.decodeColumnType(reader.readBytes(), limits: queryLimits(reader.limits))
             columns.append(try SQLViewColumn(id: id, name: name, type: type, isNullable: reader.readBool()))
         }
-        let bindingCount = try count(from: &reader, minimumBytes: 13)
+        let bindingCount = try count(from: &reader, minimumBytes: 14)
         var bindings: [SQLViewSourceBinding] = []; bindings.reserveCapacity(bindingCount)
         for _ in 0..<bindingCount {
+            let kind: SQLViewSourceKind
+            switch try reader.readUInt8() {
+            case 0: kind = .catalog
+            case 1: kind = .informationSchema
+            default: throw StorageFrameError.invalidValue
+            }
             let schema = try reader.readBool() ? reader.readString() : nil
             let table = try reader.readString(), relation = try reader.readString()
             let count = try count(from: &reader, minimumBytes: 8)
@@ -85,7 +92,7 @@ extension SQLCatalogCodec {
                 let type = try QueryIRWireFormat.decodeColumnType(reader.readBytes(), limits: queryLimits(reader.limits))
                 selected.append(try SQLViewColumnBinding(id: id, name: name, type: type))
             }
-            bindings.append(try SQLViewSourceBinding(schema: schema, table: table, relationID: relation, columns: selected))
+            bindings.append(try SQLViewSourceBinding(kind: kind, schema: schema, table: table, relationID: relation, columns: selected))
         }
         return try SQLViewDefinition(query: query, columns: columns, bindings: bindings)
     }

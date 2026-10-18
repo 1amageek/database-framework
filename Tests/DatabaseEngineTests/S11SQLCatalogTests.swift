@@ -133,7 +133,7 @@ struct S11SQLCatalogTests {
         #expect(throws: SQLCatalogBindingError.digestMismatch) { _ = try SQLCatalogCodec.decode(ByteString(bytes)) }
         let unknown = try StorageFrameEncoder.encode { writer throws(StorageFrameError) in
             writer.writeUInt32(0x434C_5153)
-            writer.writeUInt16(3)
+            writer.writeUInt16(4)
             try writer.writeBytes(snapshot.physicalSchemaFingerprint.bytes)
             try writer.writeCount(0)
             try writer.writeCount(0)

@@ -329,3 +329,12 @@ current declared application schema remains authoritative for application-owned
 entities. An application declaration that conflicts with a retained SQL-owned
 physical contract fails explicitly; it cannot silently take over ownership.
 Application reconciliation preserves SQL-owned declarations and dependencies.
+
+### S16 typed virtual view source persistence
+
+Format 4 adds the explicit `SQLViewSourceKind` discriminator to every durable
+view-source binding. Catalog and informationSchema identity domains remain
+disjoint; the latter is validated by SQLInformationSchema against its real
+virtual descriptor and canonical typed column declarations. The discriminator
+participates in bounded codec admission, canonical bytes and digest. Old frames
+and unknown tags fail explicitly during initial-development format evolution.

@@ -752,3 +752,19 @@ transaction control and SET CONSTRAINTS remain outside this grammar.
 
 `SQLDDLSyntaxTests` owns these parser/writer witnesses. Full SQL D01–D12
 execution and durable publication remain Engine-owned completion evidence.
+
+### S16 request operation grammar
+
+`parseBlock` and `parseBlockWithSource` adapt operational SQL through the same lexer and ordinary statement grammar. The [canonical S16 contract](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s16-block-operations-and-diagnostics) owns accepted operations and envelope rules. One invocation ledger bounds all steps, captures, and COPY bytes. Inline STDIN bodies are scanned as bounded raw UTF-8 bytes after the command terminator; SQL lexing resumes only after the exact line terminator. Annotated blocks retain absolute step/body ranges and an optional ordinary-statement occurrence root per step; controls do not invent QueryStatement nodes.
+
+At the parser output ownership boundary, an inline COPY body is detached from
+the source ArraySlice after its byte count is admitted by that ledger. The
+single payload copy creates an exact, self-contained ByteString owner, so the
+returned block does not retain unrelated source bytes or an owner whose full
+allocation is unknown. Source admission remains independent of aggregate
+semantic-byte admission. SQLCopyDecoder can then reserve the actual retained
+payload extent through ByteString.retainedByteCount without substituting a
+visible slice length for an unknown allocation. Empty bodies retain zero bytes;
+raw contents, CRLF and absolute source ranges are unchanged. The existing
+S16SQLBlockSyntaxTests.inlineCopy case checks contents and exact owner extent;
+the public text-block COPY execution tests own runtime admission evidence.

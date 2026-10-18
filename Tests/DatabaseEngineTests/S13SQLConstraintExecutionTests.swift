@@ -17,8 +17,12 @@ struct S13SQLConstraintExecutionTests {
         defer { await container.shutdown() }
         _ = try await execute(insert("one", a: .int(1), b: .int(2)), container)
         _ = try await execute(insert("two", a: .int(1), b: .int(3)), container)
-        await #expect(throws: SQLConstraintError.violation(relation: "items", constraint: "items_pkey")) {
+        await #expect {
             _ = try await execute(insert("different-identity", a: .int(1), b: .int(2)), container)
+        } throws: { error in
+            guard let failure = error as? SQLConstraintError,
+                  case .violation(let kind, let actualRelation, let actualConstraint, _, _, _) = failure else { return false }
+            return kind == .unique && actualRelation == "items" && actualConstraint == "items_pkey"
         }
         #expect(try await fields("different-identity", container) == nil)
         await #expect(throws: SQLConstraintError.self) { _ = try await execute(insert("null", a: .literal(.null), b: .int(4)), container) }
@@ -44,9 +48,13 @@ struct S13SQLConstraintExecutionTests {
             if nulls == .distinct {
                 _ = try await execute(insert("two", a: .literal(.null), b: .int(2)), container)
             } else {
-                await #expect(throws: SQLConstraintError.violation(relation: "items", constraint: "u")) {
+                await #expect {
                     _ = try await execute(insert("two", a: .literal(.null), b: .int(2)), container)
-                }
+                } throws: { error in
+            guard let failure = error as? SQLConstraintError,
+                  case .violation(let kind, let actualRelation, let actualConstraint, _, _, _) = failure else { return false }
+            return kind == .unique && actualRelation == "items" && actualConstraint == "u"
+        }
             }
         }
     }
@@ -58,13 +66,21 @@ struct S13SQLConstraintExecutionTests {
         defer { await container.shutdown() }
         _ = try await execute(insert("unknown", a: .literal(.null), b: .int(1)), container)
         _ = try await execute(insert("positive", a: .int(1), b: .int(1)), container)
-        await #expect(throws: SQLConstraintError.violation(relation: "items", constraint: "positive")) {
+        await #expect {
             _ = try await execute(insert("negative", a: .int(-1), b: .int(1)), container)
+        } throws: { error in
+            guard let failure = error as? SQLConstraintError,
+                  case .violation(let kind, let actualRelation, let actualConstraint, _, _, _) = failure else { return false }
+            return kind == .check && actualRelation == "items" && actualConstraint == "positive"
         }
         let nonNull = try await makeContainer([relation(primary: nil, constraints: [constraint("required", kind: .notNull(columnID: "a"))])])
         defer { await nonNull.shutdown() }
-        await #expect(throws: SQLConstraintError.violation(relation: "items", constraint: "required")) {
+        await #expect {
             _ = try await execute(insert("null", a: .literal(.null), b: .int(1)), nonNull)
+        } throws: { error in
+            guard let failure = error as? SQLConstraintError,
+                  case .violation(let kind, let actualRelation, let actualConstraint, _, _, _) = failure else { return false }
+            return kind == .notNull && actualRelation == "items" && actualConstraint == "required"
         }
     }
 
@@ -79,7 +95,11 @@ struct S13SQLConstraintExecutionTests {
             let swap = QueryStatement.update(UpdateQuery(target: TableRef("items"),
                 assignments: [Assignment(column: "a", value: .subtract(.int(3), .col("a")))]))
             if timing == .immediate {
-                await #expect(throws: SQLConstraintError.violation(relation: "items", constraint: "u")) { _ = try await execute(swap, container) }
+                await #expect { _ = try await execute(swap, container) } throws: { error in
+            guard let failure = error as? SQLConstraintError,
+                  case .violation(let kind, let actualRelation, let actualConstraint, _, _, _) = failure else { return false }
+            return kind == .unique && actualRelation == "items" && actualConstraint == "u"
+        }
                 #expect(try await fields("one", container)?["a"] == .int64(1))
             } else {
                 _ = try await execute(swap, container)
@@ -96,19 +116,27 @@ struct S13SQLConstraintExecutionTests {
         let context = container.testBaseContext()
         let executor = try executor(container)
         let work = meter()
-        await #expect(throws: SQLConstraintError.violation(relation: "items", constraint: "u")) {
+        await #expect {
             try await context.withTransaction(configuration: .batch) { transaction in
                 _ = try await executor.executeSQL(insert("one", a: .int(1), b: .int(0)), searchPath: .default, transaction: transaction, workMeter: work)
                 _ = try await executor.executeSQL(insert("two", a: .int(1), b: .int(0)), searchPath: .default, transaction: transaction, workMeter: work)
             }
+        } throws: { error in
+            guard let failure = error as? SQLConstraintError,
+                  case .violation(let kind, let actualRelation, let actualConstraint, _, _, _) = failure else { return false }
+            return kind == .unique && actualRelation == "items" && actualConstraint == "u"
         }
         #expect(try await fields("one", container) == nil)
-        await #expect(throws: SQLConstraintError.violation(relation: "items", constraint: "u")) {
+        await #expect {
             try await context.withTransaction(configuration: .batch) { transaction in
                 _ = try await executor.executeSQL(insert("one", a: .int(1), b: .int(0)), searchPath: .default, transaction: transaction, workMeter: work)
                 _ = try await executor.executeSQL(insert("two", a: .int(1), b: .int(0)), searchPath: .default, transaction: transaction, workMeter: work)
                 try await transaction.setSQLConstraintsDeferred(false, names: ["u"])
             }
+        } throws: { error in
+            guard let failure = error as? SQLConstraintError,
+                  case .violation(let kind, let actualRelation, let actualConstraint, _, _, _) = failure else { return false }
+            return kind == .unique && actualRelation == "items" && actualConstraint == "u"
         }
     }
 
@@ -126,9 +154,13 @@ struct S13SQLConstraintExecutionTests {
             try await transaction.setSQLConstraintsDeferred(true, names: ["u"])
             _ = try await executor.executeSQL(insert("abandoned", a: .int(1), b: .int(0)), searchPath: .default, transaction: transaction, workMeter: work)
             try await transaction.rollback(to: checkpoint)
-            await #expect(throws: SQLConstraintError.violation(relation: "items", constraint: "u")) {
+            await #expect {
                 _ = try await executor.executeSQL(insert("must-fail", a: .int(1), b: .int(0)), searchPath: .default, transaction: transaction, workMeter: work)
-            }
+            } throws: { error in
+            guard let failure = error as? SQLConstraintError,
+                  case .violation(let kind, let actualRelation, let actualConstraint, _, _, _) = failure else { return false }
+            return kind == .unique && actualRelation == "items" && actualConstraint == "u"
+        }
             try await transaction.rollback(to: checkpoint)
             _ = try await executor.executeSQL(insert("survives", a: .int(2), b: .int(0)), searchPath: .default, transaction: transaction, workMeter: work)
         }
@@ -197,13 +229,21 @@ struct S13SQLConstraintExecutionTests {
             _ = try await execute(insert("null", a: .literal(.null), b: .literal(.null)), container)
             if match == .simple { _ = try await execute(insert("partial", a: .int(1), b: .literal(.null)), container) }
             else {
-                await #expect(throws: SQLConstraintError.violation(relation: "items", constraint: "fk")) {
+                await #expect {
                     _ = try await execute(insert("partial", a: .int(1), b: .literal(.null)), container)
-                }
+                } throws: { error in
+            guard let failure = error as? SQLConstraintError,
+                  case .violation(let kind, let actualRelation, let actualConstraint, _, _, _) = failure else { return false }
+            return kind == .foreignKey && actualRelation == "items" && actualConstraint == "fk"
+        }
             }
-            await #expect(throws: SQLConstraintError.violation(relation: "items", constraint: "fk")) {
+            await #expect {
                 _ = try await execute(insert("missing", a: .int(9), b: .int(9)), container)
-            }
+            } throws: { error in
+            guard let failure = error as? SQLConstraintError,
+                  case .violation(let kind, let actualRelation, let actualConstraint, _, _, _) = failure else { return false }
+            return kind == .foreignKey && actualRelation == "items" && actualConstraint == "fk"
+        }
         }
     }
 
@@ -236,7 +276,11 @@ struct S13SQLConstraintExecutionTests {
                 _ = try await execute(deletion, container)
                 #expect(try await fields("child", container) == nil)
             } else {
-                await #expect(throws: SQLConstraintError.violation(relation: "items", constraint: "fk")) { _ = try await execute(deletion, container) }
+                await #expect { _ = try await execute(deletion, container) } throws: { error in
+            guard let failure = error as? SQLConstraintError,
+                  case .violation(let kind, let actualRelation, let actualConstraint, _, _, _) = failure else { return false }
+            return kind == .foreignKey && actualRelation == "items" && actualConstraint == "fk"
+        }
                 #expect(try await fields("child", container) != nil)
                 #expect(try await fields("p", container, entity: "Parent") != nil)
             }
@@ -251,9 +295,13 @@ struct S13SQLConstraintExecutionTests {
         let generation = container.schemaGeneration
         let candidate = try SQLCatalog(namespaces: [SQLNamespace(id: "public", name: "public")],
             relations: [relation(primary: nil, constraints: [constraint("positive", kind: .check(.greaterThan(.col("a"), .int(0))))])])
-        await #expect(throws: SQLConstraintError.violation(relation: "items", constraint: "positive")) {
+        await #expect {
             _ = try await container.publishSQLCatalog(candidate, expectedGeneration: generation,
                 idempotencyKey: "invalid-existing", authorization: TestBaseEnvironment.authorization)
+        } throws: { error in
+            guard let failure = error as? SQLConstraintError,
+                  case .violation(let kind, let actualRelation, let actualConstraint, _, _, _) = failure else { return false }
+            return kind == .check && actualRelation == "items" && actualConstraint == "positive"
         }
         #expect(container.schemaGeneration == generation)
         #expect(container.sqlCatalog.relations[0].constraints.isEmpty)
@@ -300,8 +348,12 @@ struct S13SQLConstraintExecutionTests {
         #expect(constantEffects.count == 1)
         await #expect(throws: SecurityError.self) { _ = try await fields("hidden-parent", container, entity: "Parent", authorization: writer) }
         await #expect(throws: SecurityError.self) { _ = try await fields("hidden", container, authorization: limited) }
-        await #expect(throws: SQLConstraintError.violation(relation: "items", constraint: "u")) {
+        await #expect {
             _ = try await execute(insert("duplicate", a: .int(1), b: .int(2)), container, authorization: limited)
+        } throws: { error in
+            guard let failure = error as? SQLConstraintError,
+                  case .violation(let kind, let actualRelation, let actualConstraint, _, _, _) = failure else { return false }
+            return kind == .unique && actualRelation == "items" && actualConstraint == "u"
         }
         _ = try await execute(.delete(DeleteQuery(target: TableRef("parents"))), container, authorization: limited)
         #expect(try await fields("hidden", container) == nil)
@@ -368,8 +420,12 @@ struct S13SQLConstraintExecutionTests {
                 columns: ["id", "a", "b"], source: .values([[.string(id), .int(value), .int(partition)]])))
         }
         _ = try await execute(partitionInsert("one", value: 7, partition: 1), container)
-        await #expect(throws: SQLConstraintError.violation(relation: "items", constraint: "u")) {
+        await #expect {
             _ = try await execute(partitionInsert("two", value: 7, partition: 2), container)
+        } throws: { error in
+            guard let failure = error as? SQLConstraintError,
+                  case .violation(let kind, let actualRelation, let actualConstraint, _, _, _) = failure else { return false }
+            return kind == .unique && actualRelation == "items" && actualConstraint == "u"
         }
         _ = try await execute(partitionInsert("valid", value: 8, partition: 2), container)
     }
@@ -394,7 +450,11 @@ struct S13SQLConstraintExecutionTests {
                 #expect(try await fields("child", container)?["a"] == .int64(9))
                 #expect(try await fields("child", container)?["b"] == .int64(9))
             } else {
-                await #expect(throws: SQLConstraintError.violation(relation: "items", constraint: "fk")) { _ = try await execute(deletion, container) }
+                await #expect { _ = try await execute(deletion, container) } throws: { error in
+            guard let failure = error as? SQLConstraintError,
+                  case .violation(let kind, let actualRelation, let actualConstraint, _, _, _) = failure else { return false }
+            return kind == .foreignKey && actualRelation == "items" && actualConstraint == "fk"
+        }
                 #expect(try await fields("p", container, entity: "Parent") != nil)
                 #expect(try await fields("child", container)?["a"] == .int64(1))
             }
@@ -414,10 +474,14 @@ struct S13SQLConstraintExecutionTests {
             _ = try await executor.executeSQL(parentInsert("p", a: 1, b: 2), searchPath: .default, transaction: transaction, workMeter: work)
         }
         #expect(try await fields("child", container) != nil)
-        await #expect(throws: SQLConstraintError.violation(relation: "items", constraint: "fk")) {
+        await #expect {
             try await container.testBaseContext().withTransaction(configuration: .batch) { transaction in
                 _ = try await executor.executeSQL(insert("orphan", a: .int(8), b: .int(9)), searchPath: .default, transaction: transaction, workMeter: work)
             }
+        } throws: { error in
+            guard let failure = error as? SQLConstraintError,
+                  case .violation(let kind, let actualRelation, let actualConstraint, _, _, _) = failure else { return false }
+            return kind == .foreignKey && actualRelation == "items" && actualConstraint == "fk"
         }
         #expect(try await fields("orphan", container) == nil)
         #expect(work.retainedIntermediateBytes == 0)
@@ -492,10 +556,14 @@ struct S13SQLConstraintExecutionTests {
         let catalog = try SQLCatalog(namespaces: container.sqlCatalog.namespaces, relations: [parentRelation(), invalid], sequences: container.sqlCatalog.sequences)
         let generation = container.schemaGeneration
         let work = meter()
-        await #expect(throws: SQLConstraintError.violation(relation: "items", constraint: "new_check")) {
+        await #expect {
             try await container.testBaseContext().withCheckpointTransaction(checkpointLimits: checkpoints, workMeter: work) { transaction in
                 _ = try await transaction.stageSQLCatalog(catalog, expectedGeneration: generation, idempotencyKey: "new-invalid-check")
             }
+        } throws: { error in
+            guard let failure = error as? SQLConstraintError,
+                  case .violation(let kind, let actualRelation, let actualConstraint, _, _, _) = failure else { return false }
+            return kind == .check && actualRelation == "items" && actualConstraint == "new_check"
         }
         #expect(container.schemaGeneration == generation)
         #expect(container.sqlCatalog.relations.first { $0.id == "items" }?.constraints == [deferred])
@@ -559,6 +627,30 @@ struct S13SQLConstraintExecutionTests {
 
     private func parentInsert(_ id: String, a: Int64, b: Int64) -> QueryStatement {
         .insert(InsertQuery(target: TableRef("parents"), columns: ["id", "a", "b"], source: .values([[.string(id), .int(a), .int(b)]])))
+    }
+
+    @Test("S16 constraint metadata survives rollback with exact catalog names")
+    func diagnosticMetadataSurvivesRollback() async throws {
+        let column = try SQLColumn(id: "opaque-column", name: "値", fieldNumber: 2)
+        let constraint = try constraint("misleading_unique_name", kind: .notNull(columnID: column.id))
+        let relation = try SQLRelation(id: "opaque-relation", namespaceID: "public", name: "表", entityName: "Item",
+            columns: [SQLColumn(id: "id", name: "id", fieldNumber: 1), column], constraints: [constraint])
+        let container = try await makeContainer([relation])
+        defer { await container.shutdown() }
+        do {
+            _ = try await execute(.insert(InsertQuery(target: TableRef("表"), columns: ["id", "値"],
+                source: .values([[.string("rejected"), .literal(.null)]]))), container)
+            Issue.record("Expected not-null constraint failure")
+        } catch {
+            let diagnostic = SQLDiagnostics.diagnostic(for: error)
+            #expect(diagnostic.sqlState == "23502")
+            #expect(diagnostic.schema == "public")
+            #expect(diagnostic.table == "表")
+            #expect(diagnostic.column == "値")
+            #expect(diagnostic.constraint == "misleading_unique_name")
+            #expect(diagnostic.position == nil)
+        }
+        #expect(try await fields("rejected", container) == nil)
     }
 
     private func relation(primary: [String]?, constraints: [SQLConstraint] = []) throws -> SQLRelation {

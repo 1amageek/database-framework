@@ -17,8 +17,12 @@ struct S13SQLMultiBasePublicationTests {
         try await save("first", value: 1, base: fixture.first, container: container)
         try await save("bad", value: -1, base: fixture.second, container: container)
         let old = container.acquirePublishedSchemaLease()
-        await #expect(throws: SQLConstraintError.violation(relation: "items", constraint: "positive")) {
+        await #expect {
             _ = try await publish(positiveCatalog(), key: "invalid-second", container: container)
+        } throws: { error in
+            guard let failure = error as? SQLConstraintError,
+                  case .violation(let kind, let actualRelation, let actualConstraint, _, _, _) = failure else { return false }
+            return kind == .check && actualRelation == "items" && actualConstraint == "positive"
         }
         #expect(container.schemaGeneration == old.generation)
         #expect(container.sqlCatalog == old.sqlCatalog.catalog)
@@ -83,8 +87,12 @@ struct S13SQLMultiBasePublicationTests {
             try #require(try await container.baseCatalog.load(fixture.second, transaction: transaction))
         }
         _ = try await container.retireBase(fixture.second, expectedRevision: record.revision)
-        await #expect(throws: SQLConstraintError.violation(relation: "items", constraint: "positive")) {
+        await #expect {
             _ = try await publish(positiveCatalog(), key: "retired-invalid", container: container)
+        } throws: { error in
+            guard let failure = error as? SQLConstraintError,
+                  case .violation(let kind, let actualRelation, let actualConstraint, _, _, _) = failure else { return false }
+            return kind == .check && actualRelation == "items" && actualConstraint == "positive"
         }
     }
 
@@ -147,10 +155,14 @@ struct S13SQLMultiBasePublicationTests {
         try await context(fixture.first, container: container).withCheckpointTransaction(
             checkpointLimits: limits(), workMeter: work) { transaction in
             let checkpoint = try await transaction.createCheckpoint()
-            await #expect(throws: SQLConstraintError.violation(relation: "items", constraint: "positive")) {
+            await #expect {
                 _ = try await transaction.stageSQLCatalog(positiveCatalog(), expectedGeneration: old.generation,
                     idempotencyKey: "staged-rejected")
-            }
+            } throws: { error in
+            guard let failure = error as? SQLConstraintError,
+                  case .violation(let kind, let actualRelation, let actualConstraint, _, _, _) = failure else { return false }
+            return kind == .check && actualRelation == "items" && actualConstraint == "positive"
+        }
             try await transaction.rollback(to: checkpoint)
             try await transaction.release(checkpoint)
         }

@@ -401,10 +401,15 @@ internal struct TransactionRunner: Sendable {
                         throw Self.commitUnknownError()
                     }
                     let cancellationError = CancellationError()
-                    if let cancellationGate, !cancellationGate.hasStarted {
+                    if let cancellationGate {
+                        let cancellationStarted = cancellationGate.hasStarted
                         if let cleanupError = await cancellationGate.cancel(
-                            preserving: cancellationError
+                            preserving: cancellationStarted ? operationError : cancellationError
                         ) {
+                            // The statement/request deadline already retained this gate's failure.
+                            if cancellationStarted, operationError is StorageTransactionCleanupError {
+                                throw operationError
+                            }
                             throw cleanupError
                         }
                     }
@@ -486,7 +491,9 @@ internal struct TransactionRunner: Sendable {
             return try await ActiveTransactionContext.withActiveTransaction(
                 transaction
             ) { access in
-                try await operation(access)
+                try await ActiveTransactionCancellation.$request.withValue({ error in
+                    await cancellationGate.cancel(preserving: error)
+                }) { try await operation(access) }
             }
         }
 
@@ -500,7 +507,9 @@ internal struct TransactionRunner: Sendable {
                 do {
                     let value = try await ActiveTransactionContext
                         .withActiveTransaction(transaction) { access in
-                            try await operation(access)
+                            try await ActiveTransactionCancellation.$request.withValue({ error in
+                                await cancellationGate.cancel(preserving: error)
+                            }) { try await operation(access) }
                     }
                     guard raceState.selectOperation() else { return .lostRace }
                     return .value(value)

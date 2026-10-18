@@ -229,10 +229,11 @@ struct TransactionRunnerRetryTests {
 
     @Test("Portable deadline cannot discard an authoritative commit success")
     func portableDeadlineAfterCommitDispatchPreservesSuccess() async throws {
+        let clock = CommitDispatchClock()
         let engine = RecordingTransactionEngine(
-            commitBehavior: .delayedSuccess(.milliseconds(30))
+            commitBehavior: .successAfterClockAdvance(clock, .milliseconds(30))
         )
-        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: engine), clock: SystemStorageClock())
+        let runner = TransactionRunner(transactionExecutor: StorageTransactionExecutor(engine: engine), clock: clock)
 
         let result = try await runner.run(
             configuration: TransactionConfiguration(
@@ -244,6 +245,8 @@ struct TransactionRunnerRetryTests {
         }
 
         #expect(result == "committed")
+        #expect(clock.now == StorageInstant(durationSinceReference: .milliseconds(30)))
+        #expect(clock.waiterCount == 0)
         #expect(engine.snapshot.commits == 1)
         #expect(engine.snapshot.cancellations == 0)
     }
@@ -709,9 +712,62 @@ private final class FlakyCreateTransactionEngine: StorageEngine, Sendable {
     }
 }
 
+/// Time remains fixed until an already-dispatched commit explicitly advances it.
+private final class CommitDispatchClock: StorageMonotonicClock, Sendable {
+    private struct Waiter: Sendable {
+        let identifier: UInt64
+        let deadline: StorageInstant
+        let continuation: AsyncStream<Void>.Continuation
+    }
+    private struct State: Sendable {
+        var instant = StorageInstant(durationSinceReference: .zero)
+        var nextIdentifier: UInt64 = 0
+        var waiters: [Waiter] = []
+    }
+    private let state = Mutex(State())
+    var now: StorageInstant { state.withLock { $0.instant } }
+    var waiterCount: Int { state.withLock { $0.waiters.count } }
+
+    func advance(by duration: Duration) {
+        let completed = state.withLock { state in
+            let instant = state.instant.advanced(by: duration)
+            state.instant = instant
+            let completed = state.waiters.filter { $0.deadline <= instant }
+            state.waiters.removeAll { $0.deadline <= instant }
+            return completed
+        }
+        for waiter in completed { waiter.continuation.finish() }
+    }
+
+    func sleep(until deadline: StorageInstant) async throws(StorageClockError) {
+        let (stream, continuation) = AsyncStream<Void>.makeStream()
+        let identifier = state.withLock { state -> UInt64? in
+            guard state.instant < deadline else { return nil }
+            let identifier = state.nextIdentifier
+            let next = identifier.addingReportingOverflow(1)
+            precondition(!next.overflow, "Test clock waiter identifier exhausted")
+            state.nextIdentifier = next.partialValue
+            state.waiters.append(Waiter(identifier: identifier, deadline: deadline, continuation: continuation))
+            return identifier
+        }
+        guard let identifier else { continuation.finish(); return }
+        await withTaskCancellationHandler {
+            for await _ in stream { }
+        } onCancel: {
+            let waiter = self.state.withLock { state -> Waiter? in
+                guard let index = state.waiters.firstIndex(where: { $0.identifier == identifier }) else { return nil }
+                return state.waiters.remove(at: index)
+            }
+            waiter?.continuation.finish()
+        }
+        if Task.isCancelled { throw .cancelled }
+    }
+}
+
 private enum RecordingCommitBehavior: Sendable {
     case success
     case delayedSuccess(Duration)
+    case successAfterClockAdvance(CommitDispatchClock, Duration)
     case storageFailure(StorageError)
     case cancellation
 }
@@ -927,6 +983,9 @@ private final class RecordingTransaction: Transaction, Sendable {
             try await underlying.commit()
         case .delayedSuccess(let delay):
             try await Task.sleep(for: delay)
+            try await underlying.commit()
+        case .successAfterClockAdvance(let clock, let duration):
+            clock.advance(by: duration)
             try await underlying.commit()
         case .storageFailure(let error):
             throw error

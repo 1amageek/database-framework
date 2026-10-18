@@ -4,7 +4,7 @@ import DatabaseWire
 
 enum SQLCatalogCodec {
     private static let magic: UInt32 = 0x434C_5153
-    private static let version: UInt16 = 3
+    private static let version: UInt16 = 4
     private static let digestFootprint = ByteString(repeating: 0, count: SHA256Accumulator.digestByteCount)
 
     @discardableResult

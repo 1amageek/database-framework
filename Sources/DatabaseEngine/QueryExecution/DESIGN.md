@@ -2021,3 +2021,21 @@ two aliases without cross-authorizing fields, reject forbidden columns before
 effects, retain empty/duplicate output metadata, evaluate a correlated RHS once,
 and release all owners on later failure/cancellation. Lower producer tests alone
 do not prove SQLBlock publication or a portable target's compiled runtime path.
+
+### S16 virtual SQL metadata
+
+[SQLInformationSchema](../SQLInformationSchema/DESIGN.md) owns virtual relation
+descriptors and catalog-derived rows. Read owns visibility decisions: known
+permission denial hides metadata; operational failure propagates. QueryExecution
+retains the descriptor explicitly and bypasses physical source/list admission,
+statement physical capture and physical fast paths while preserving ordinary
+relational operators and typed empty results.
+The renderer supplies an admitted immutable row and payload lease.
+QueryExecution retains that lease and admits alias storage rather than charging
+the renderer-owned text payload again; source-column subsets preserve the same
+ownership contract.
+
+S16 diagnostic admission preserves typed grouping, windowing and function-arity
+failures at their binder branches. Their SQLSTATE classification is owned by
+[SQLDiagnostics](../SQLDiagnostics/DESIGN.md), never inferred from operation text.
+Existing occurrence-addressed binding wrappers retain these exact causes.

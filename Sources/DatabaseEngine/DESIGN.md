@@ -526,3 +526,38 @@ to be independent durability. The same injected engine and selected Partition
 lease own allocator transactions. Ordinary and portable targets retain the same
 actor synchronization and Sendable contracts. SQL checkpoint state remains
 Transaction-owned; irreversible consumption remains sequence-owned.
+
+
+## S16 Operational SQL Composition
+
+The immutable meaning of O01-O08 is fixed by the
+[Kit SQL contract](../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s16-block-operations-and-diagnostics).
+This module composes the existing admitted single-transaction SQLBlock owner,
+QueryExecution, Mutation, SQLCatalog and Read policy. Operational text is parsed
+by QueryAST and enters through Database; Server/Client/CLI dispatch remains S17.
+
+| Direct owner | Contract consumed |
+|---|---|
+| [SQLBlock](SQLBlock/DESIGN.md) | Ordered control/settings/prepared execution, same request meter and authoritative terminal commit/rollback. |
+| [SQLCopy](SQLCopy/DESIGN.md) | Bounded text/csv byte transfer through admitted read/mutation callbacks. |
+| [SQLExplain](SQLExplain/DESIGN.md) | Actual shared bound/access plan and measured execution through the ordinary statement path. |
+| [SQLInformationSchema](SQLInformationSchema/DESIGN.md) | Admitted catalog projections filtered by Read-owned metadata visibility. |
+| [SQLDiagnostics](SQLDiagnostics/DESIGN.md) | Typed error classification and retained runtime cause, without inventing direct-IR source positions. |
+
+```text
+Kit block -> SQLBlock -> existing transaction / statement scope / meter
+                         +-> selected query / mutation / schema operations
+                         +-> COPY format owner / EXPLAIN plan owner
+                         +-> catalog projections -> Read policy
+             -> authoritative close -> typed ordered output or retained failure
+```
+
+New component designs are established by their implementation owners before
+source changes. The existing transaction, field policy, storage and readiness
+contracts remain assumptions; operational syntax cannot bypass them. Successful
+ROLLBACK uses an explicit terminal path whose success requires confirmed physical
+rollback and cleanup. Statement timeout composes with the cumulative request
+deadline. No new process-global state or target-specific isolation is introduced.
+Native focused and complete affected targets, exact portable runtime cases and
+canonical changed-backend tests reject violations; S18 closes integrated URL and
+production-backend evidence rather than treating a declaration as support.

@@ -803,14 +803,14 @@ struct CanonicalQueryTypeBinder {
         case .function(let function):
             return try bindFunction(function, expression: expression)
         case .aggregate(let aggregate):
-            guard permitsAggregates else { throw mismatch("aggregate in forbidden expression phase") }
+            guard permitsAggregates else { throw DatabaseExpressionEvaluationError.groupingViolation }
             return try bindAggregate(aggregate, expression: expression)
         case .window(let call):
-            guard permitsWindows else { throw mismatch("window in forbidden expression phase") }
+            guard permitsWindows else { throw DatabaseExpressionEvaluationError.windowingViolation }
             return try bindWindow(call, expression: expression)
         case .grouping(let arguments):
             guard permitsAggregates, !arguments.isEmpty, arguments.count <= 31 else {
-                throw mismatch("GROUPING arguments or expression phase")
+                throw DatabaseExpressionEvaluationError.groupingViolation
             }
             var scoped = self
             scoped.permitsAggregates = false
@@ -1254,7 +1254,7 @@ struct CanonicalQueryTypeBinder {
         default: return nil
         }
         let candidates = signatures.filter { $0.count == arguments.count }
-        guard !candidates.isEmpty else { throw mismatch(name) }
+        guard !candidates.isEmpty else { throw DatabaseExpressionEvaluationError.invalidFunctionArity(function: name) }
         let inputs: [CanonicalBoundExpression?] = try arguments.enumerated().map { index, argument in
             try isContextualUnknown(argument) ? nil : childBinder(.argument, index).bind(argument)
         }
@@ -1364,7 +1364,7 @@ struct CanonicalQueryTypeBinder {
         default: throw DatabaseExpressionEvaluationError.unsupportedFunction(name)
         }
         let candidates = signatures.filter { $0.count == function.arguments.count }
-        guard !candidates.isEmpty else { throw mismatch(name) }
+        guard !candidates.isEmpty else { throw DatabaseExpressionEvaluationError.invalidFunctionArity(function: name) }
         let inputs: [CanonicalBoundExpression?] = try function.arguments.enumerated().map { index, argument in
             if try isContextualUnknown(argument) { return nil }
             return try childBinder(.argument, index).bind(argument)
@@ -1397,7 +1397,7 @@ struct CanonicalQueryTypeBinder {
         default: return nil
         }
         let candidates = signatures.filter { $0.count == function.arguments.count }
-        guard !candidates.isEmpty else { throw mismatch(function.name) }
+        guard !candidates.isEmpty else { throw DatabaseExpressionEvaluationError.invalidFunctionArity(function: function.name) }
         let inputs: [CanonicalBoundExpression?] = try function.arguments.enumerated().map { index, argument in
             if try isContextualUnknown(argument) { return nil }
             return try childBinder(.argument, index).bind(argument)
@@ -1485,7 +1485,7 @@ struct CanonicalQueryTypeBinder {
         default: return nil
         }
         let candidates = signatures.filter { $0.count == function.arguments.count }
-        guard !candidates.isEmpty else { throw mismatch(name) }
+        guard !candidates.isEmpty else { throw DatabaseExpressionEvaluationError.invalidFunctionArity(function: name) }
         let inputs: [CanonicalBoundExpression?] = try function.arguments.enumerated().map { index, argument in
             if try isContextualUnknown(argument) { return nil }
             return try childBinder(.argument, index).bind(argument)
@@ -2681,7 +2681,7 @@ extension CanonicalQueryTypeBinder {
         default: arity = 1...1
         }
         guard arity.contains(call.arguments.count), !ordered || call.withinGroup?.count == 1 else {
-            throw mismatch("aggregate argument count")
+            throw DatabaseExpressionEvaluationError.invalidFunctionArity(function: call.function.rawValue)
         }
         var scoped = self
         scoped.permitsWindows = false
@@ -2840,7 +2840,7 @@ extension CanonicalQueryTypeBinder {
         defer { if !successful { claim?.release() } }
         for (index, definition) in definitions.enumerated() {
             guard !scoped.windowDefinitions.contains(where: { $0.name == definition.name }) else {
-                throw mismatch("duplicate named window")
+                throw DatabaseExpressionEvaluationError.windowingViolation
             }
             let selected = try scoped.childBinder(.namedWindow, index).childBinder(.windowReference)
                 .bindWindowSpecification(definition.specification, identity: index, name: definition.name)
@@ -2858,10 +2858,10 @@ extension CanonicalQueryTypeBinder {
         let inherited: CanonicalBoundWindowDefinition?
         if let inheritedName = specification.inheritedName {
             guard let definition = windowDefinitions.first(where: { $0.name == inheritedName }) else {
-                throw mismatch("unknown or forward named window")
+                throw DatabaseExpressionEvaluationError.windowingViolation
             }
             guard specification.partitionBy.isEmpty, definition.frame == nil,
-                  specification.orderBy.isEmpty || definition.orderBy.isEmpty else { throw mismatch("illegal named window copy") }
+                  specification.orderBy.isEmpty || definition.orderBy.isEmpty else { throw DatabaseExpressionEvaluationError.windowingViolation }
             inherited = definition
         } else { inherited = nil }
         let claim = try workMeter?.reserveIntermediate(bytes: UInt64(MemoryLayout<CanonicalBoundWindowDefinition>.stride), at: .bindingCandidate)
@@ -2898,7 +2898,7 @@ extension CanonicalQueryTypeBinder {
         }
         guard position(frame.start) != 4, position(frame.end) != 0,
               position(frame.start) <= position(frame.end),
-              frame.mode != .groups || !orderBy.isEmpty else { throw mismatch("window frame bounds or GROUPS ordering") }
+              frame.mode != .groups || !orderBy.isEmpty else { throw DatabaseExpressionEvaluationError.windowingViolation }
         func offset(_ bound: WindowFrameBound, field: QueryOccurrenceField) throws -> CanonicalBoundExpression? {
             let expression: Expression
             switch bound {
@@ -2931,11 +2931,11 @@ extension CanonicalQueryTypeBinder {
             while let node = pending.popLast() {
                 try workMeter?.consume(at: .bindingCandidate)
                 guard node.columnSlot == nil, node.wholeRow == nil, node.subqueryBinding == nil else {
-                    throw mismatch("window frame offset cannot reference a row or subquery")
+                    throw DatabaseExpressionEvaluationError.windowingViolation
                 }
                 switch node.expression {
                 case .aggregate, .window, .grouping, .subquery, .arraySubquery, .exists, .inSubquery:
-                    throw mismatch("window frame offset expression phase")
+                    throw DatabaseExpressionEvaluationError.windowingViolation
                 default: break
                 }
                 for child in node.children { try CanonicalBindingStorage.append(child, to: &pending, reservation: claim) }
@@ -2953,7 +2953,7 @@ extension CanonicalQueryTypeBinder {
         let definition: CanonicalBoundWindowDefinition
         switch call.reference {
         case .named(let name):
-            guard let selected = windowDefinitions.first(where: { $0.name == name }) else { throw mismatch("unknown named window") }
+            guard let selected = windowDefinitions.first(where: { $0.name == name }) else { throw DatabaseExpressionEvaluationError.windowingViolation }
             definition = selected
         case .specification(let specification):
             definition = try reference.bindWindowSpecification(specification,
@@ -2984,7 +2984,7 @@ extension CanonicalQueryTypeBinder {
             case .nthValue: arity = 2...2
             case .lag, .lead: arity = 1...3
             }
-            guard arity.contains(inputs.count) else { throw mismatch("window function argument count") }
+            guard arity.contains(inputs.count) else { throw DatabaseExpressionEvaluationError.invalidFunctionArity(function: function.rawValue) }
             let navigationPair: [CanonicalBoundExpression]?
             if [.lag, .lead].contains(function), inputs.count == 3 {
                 navigationPair = try scoped.bindCommon([inputs[0], inputs[2]], defaultType: .sql(.text),

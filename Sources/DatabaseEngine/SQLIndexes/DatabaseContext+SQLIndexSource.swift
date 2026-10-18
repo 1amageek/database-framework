@@ -3,12 +3,11 @@ import DatabaseTypes
 import StorageKit
 
 extension DatabaseContext {
-    func sqlIndexSourceRows(tableRef: TableRef, options: ReadExecutionContext,
-        transaction: DatabaseReadTransaction, authorizationQuery: SelectQuery,
-        authorizationRequirement: DatabaseListReadAuthorizationRequirement) async throws -> EntityTableRows? {
+    /// Uses the ordinary read's exact catalog-index choice without opening or pulling rows.
+    func selectedSQLIndex(tableRef: TableRef, options: ReadExecutionContext,
+        authorizationQuery: SelectQuery) throws -> SQLIndex? {
         guard authorizationQuery.accessPath == nil, let resolution = options.sqlResolution else { return nil }
-        let resolved = try resolution.resolve(tableRef)
-        let relation = resolved.declaration
+        let relation = try resolution.resolve(tableRef).declaration
         let catalog = resolution.snapshot.catalog
         let meter = options.workMeter
         var selected: SQLIndex?
@@ -32,7 +31,17 @@ extension DatabaseContext {
                 break
             }
         }
-        guard let selected else { return nil }
+        return selected
+    }
+
+    func sqlIndexSourceRows(tableRef: TableRef, options: ReadExecutionContext,
+        transaction: DatabaseReadTransaction, authorizationQuery: SelectQuery,
+        authorizationRequirement: DatabaseListReadAuthorizationRequirement) async throws -> EntityTableRows? {
+        guard authorizationQuery.accessPath == nil, let resolution = options.sqlResolution else { return nil }
+        let resolved = try resolution.resolve(tableRef)
+        let meter = options.workMeter
+        guard let selected = try selectedSQLIndex(tableRef: tableRef, options: options,
+            authorizationQuery: authorizationQuery) else { return nil }
         // Exact retirement may already have committed before an old admitted
         // catalog acquires its storage snapshot. The shared floor rejects it.
         try await container.requireSQLWriterGeneration(resolution.policy.schemaGeneration,

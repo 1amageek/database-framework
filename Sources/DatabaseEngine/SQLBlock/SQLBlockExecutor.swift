@@ -26,15 +26,22 @@ public struct SQLBlockExecutor: Sendable {
     package func execute(
         _ block: SQLBlock, parameters: [QueryParameter] = [], options: SQLBlockExecutionOptions,
         workMeter meter: DatabaseWorkMeter, executionDeadline deadline: TransactionExecutionDeadline,
-        occurrences: QueryOccurrenceArena? = nil, occurrence: QueryOccurrenceID? = nil
+        occurrences: QueryOccurrenceArena? = nil, occurrence: QueryOccurrenceID? = nil,
+        occurrenceRoots: [QueryOccurrenceID?]? = nil, failurePosition: SQLBlockFailurePosition? = nil
     ) async throws -> SQLBlockResult {
-        guard (occurrences == nil) == (occurrence == nil),
-              occurrences == nil || block.steps.count == 1 else { throw SQLBlockExecutionError.unsupportedStatement }
+        if let roots = occurrenceRoots {
+            guard occurrences != nil, occurrence == nil, roots.count == block.steps.count else {
+                throw SQLBlockExecutionError.unsupportedStatement
+            }
+        } else {
+            guard (occurrences == nil) == (occurrence == nil),
+                  occurrences == nil || block.steps.count == 1 else { throw SQLBlockExecutionError.unsupportedStatement }
+        }
         let temporal = context.inheritedSQLTemporalEnvironment ?? context.makeSQLTemporalEnvironment()
         let boxed = try await context.withDataOperation {
             try await context.withSQLTemporalStatement(environment: temporal) {
                 try await executeAdmitted(block, parameters: parameters, options: options,
-                    workMeter: meter, deadline: deadline, occurrences: occurrences, occurrence: occurrence)
+                    workMeter: meter, deadline: deadline, occurrences: occurrences, occurrence: occurrence, occurrenceRoots: occurrenceRoots, failurePosition: failurePosition)
             }
         }
         try meter.checkpoint(at: .resultMaterialization)
@@ -45,15 +52,13 @@ public struct SQLBlockExecutor: Sendable {
     private func executeAdmitted(
         _ block: SQLBlock, parameters: [QueryParameter], options: SQLBlockExecutionOptions,
         workMeter meter: DatabaseWorkMeter, deadline: TransactionExecutionDeadline,
-        occurrences: QueryOccurrenceArena?, occurrence: QueryOccurrenceID?
+        occurrences: QueryOccurrenceArena?, occurrence: QueryOccurrenceID?, occurrenceRoots: [QueryOccurrenceID?]?, failurePosition: SQLBlockFailurePosition?
     ) async throws -> DatabaseReadResultBox<Collecting> {
         let clock = context.container.monotonicClock
         try QueryStructuralValidator.validate(block, parameters: parameters, limits: options.structuralLimits)
         let binder = try QueryParameterBinder(parameters: parameters, structuralLimits: options.structuralLimits)
-        for step in block.steps {
-            try meter.consume(at: .bindingCandidate)
-            if case .statement(let statement) = step { try binder.validate(statement) }
-        }
+        try binder.validate(block)
+        try validateTransactionControls(block)
         let timeline = try SQLBlockStatementTimeline(count: block.steps.count, workMeter: meter)
         let requiredAccess: Security.Access = try requiredAccess(for: block, workMeter: meter)
         let ddlRequest = SQLDDLRequest()
@@ -71,14 +76,23 @@ public struct SQLBlockExecutor: Sendable {
                             return try await context.withCheckpointTransaction(requiredAccess: requiredAccess,
                                 configuration: options.configuration, checkpointLimits: options.checkpointLimits,
                                 workMeter: meter, executionDeadline: deadline) { transaction in
+                                failurePosition?.reset()
                                 await request.beginAttempt()
                                 await mutations.beginAttempt()
                                 let collecting = try await collect(block, parameters: parameters, options: options,
                                     binder: binder, transaction: transaction, timeline: timeline, workMeter: meter, ddlRequest: ddlRequest,
-                                    occurrences: occurrences, occurrence: occurrence)
-                                return DatabaseReadResultBox(consume collecting)
+                                    occurrences: occurrences, occurrence: occurrence, occurrenceRoots: occurrenceRoots, failurePosition: failurePosition)
+                                let boxed = DatabaseReadResultBox(consume collecting)
+                                if case .transaction(.rollback) = block.steps.last {
+                                    throw RollbackDemand(result: boxed)
+                                }
+                                return boxed
                             }
+                        } catch let demand as RollbackDemand {
+                            try ensureDatabaseTaskIsActive()
+                            return demand.result
                         } catch let demand as SQLSequenceAllocationDemand {
+                            failurePosition?.reset()
                             // Only the unwrapped private demand proves rollback and close succeeded.
                             // Composite cleanup failures never enter this independent allocator path.
                             try await request.allocate(demand)
@@ -109,11 +123,11 @@ public struct SQLBlockExecutor: Sendable {
         _ block: SQLBlock, parameters: [QueryParameter], options: SQLBlockExecutionOptions,
         binder: QueryParameterBinder, transaction: DatabaseTransaction,
         timeline: SQLBlockStatementTimeline, workMeter: DatabaseWorkMeter, ddlRequest: SQLDDLRequest,
-        occurrences: QueryOccurrenceArena?, occurrence: QueryOccurrenceID?
+        occurrences: QueryOccurrenceArena?, occurrence: QueryOccurrenceID?, occurrenceRoots: [QueryOccurrenceID?]?, failurePosition: SQLBlockFailurePosition?
     ) async throws -> Collecting {
-        var results = try DatabaseRetainedArrayBuilder<CollectedStatement>(workMeter: workMeter,
+        var results = try DatabaseRetainedArrayBuilder<SQLBlockStatementOutcome>(workMeter: workMeter,
             stage: .resultMaterialization,
-            layout: try DatabaseRetainedArrayLayout.forElement(CollectedStatement.self),
+            layout: try DatabaseRetainedArrayLayout.forElement(SQLBlockStatementOutcome.self),
             expectedCount: block.steps.count)
         let outputFootprint = try DatabaseIntermediateCollectionMeter.arrayFootprint(
             count: block.steps.count, element: SQLStatementResult.self)
@@ -121,36 +135,132 @@ public struct SQLBlockExecutor: Sendable {
         let checkpointFootprint = try DatabaseIntermediateCollectionMeter.arrayFootprint(
             count: block.steps.count, element: NamedCheckpoint.self)
         let checkpointClaim = try workMeter.reserveIntermediate(bytes: checkpointFootprint.bytes, at: .mutationPlanning)
+        let inherited = context.makeSQLTemporalEnvironment()
+        let defaults = SQLBlockSettings(searchPath: options.searchPath, temporal: inherited.configuration)
+        var settings = defaults
+        let prepared = SQLPreparedRequest()
         var checkpoints: [NamedCheckpoint] = []
         checkpoints.reserveCapacity(block.steps.count)
         defer { withExtendedLifetime(checkpointClaim) {} }
 
         for (index, step) in block.steps.enumerated() {
+            let stepOccurrence = occurrenceRoots.map { $0[index] } ?? occurrence
+            do {
             try workMeter.consume(at: .mutationPlanning)
             let admission = try results.prepareAppend(footprint: DatabaseIntermediateFootprint(), at: .resultMaterialization)
-            let result: CollectedStatement
+            let result: SQLBlockStatementOutcome
             switch step {
             case .statement(let statement):
-                let instant = timeline.instant(at: index, clock: context.container.wallClock)
-                let catalog = await transaction.currentSQLSchemaLease().sqlCatalog.catalog
-                let effectivePath = try ddlRequest.searchPath(options.searchPath, catalog: catalog)
-                let effectiveOptions = SQLBlockExecutionOptions(checkpointLimits: options.checkpointLimits, budget: options.budget,
-                    structuralLimits: options.structuralLimits, searchPath: effectivePath, configuration: options.configuration)
-                let session = try await transaction.makeSQLSessionBinding(searchPath: effectivePath, workMeter: workMeter)
-                result = try await ActiveSQLSession.$binding.withValue(session) {
-                    try await transaction.withStatementScope {
-                        let inherited = context.makeSQLTemporalEnvironment()
-                        let temporal = SQLTemporalEnvironment(transactionInstant: inherited.transactionInstant,
-                            statementInstant: instant, wallClock: inherited.wallClock, configuration: inherited.configuration)
-                        return try await SQLMutationRuntime.$statementIndex.withValue(index) {
-                          try await SQLSequenceRuntime.$statementIndex.withValue(index) {
-                            try await context.withSQLTemporalStatement(environment: temporal) {
-                                try await execute(statement, parameters: parameters, options: effectiveOptions,
-                                    binder: binder, transaction: transaction, temporal: temporal, workMeter: workMeter, ddlRequest: ddlRequest, stepIndex: index,
-                                    occurrences: occurrences, occurrence: occurrence)
-                            }
-                          }
+                result = try await withinStatement(index: index, settings: settings, options: options,
+                    timeline: timeline, transaction: transaction, workMeter: workMeter, ddlRequest: ddlRequest) { effective, temporal in
+                    try await execute(statement, parameters: parameters, options: effective,
+                        binder: binder, transaction: transaction, temporal: temporal, workMeter: workMeter,
+                        ddlRequest: ddlRequest, stepIndex: index, occurrences: occurrences, occurrence: stepOccurrence)
+                }
+            case .transaction(let control):
+                switch control {
+                case .begin: result = .command(.begin, nil)
+                case .commit: result = .command(.commit, nil)
+                case .rollback: result = .command(.rollback, nil)
+                }
+            case .setting(let command):
+                switch command {
+                case .set(let name, let expression, _):
+                    let evaluated = try await withinStatement(index: index, settings: settings, options: options,
+                        timeline: timeline, transaction: transaction, workMeter: workMeter, ddlRequest: ddlRequest) { effective, temporal in
+                        try await evaluateExpressions([expression], parameters: parameters, options: effective,
+                            transaction: transaction, temporal: temporal, workMeter: workMeter,
+                            ddlRequest: ddlRequest, stepIndex: index)
+                    }
+                    guard case .rows(let rows) = evaluated, rows.visibleRange.count == 1 else {
+                        throw SQLBlockExecutionError.invalidSettingValue(name)
+                    }
+                    let value = rows.rows.withElement(at: rows.visibleRange.lowerBound) { $0.values[0] }
+                    let inherited = context.makeSQLTemporalEnvironment()
+                    let environment = SQLTemporalEnvironment(transactionInstant: inherited.transactionInstant,
+                        statementInstant: timeline.instant(at: index, clock: inherited.wallClock),
+                        wallClock: inherited.wallClock, configuration: settings.temporal)
+                    try settings.set(name, value: value, environment: environment, workMeter: workMeter)
+                    result = .command(.set, nil)
+                case .reset(let name, _):
+                    settings.reset(name, defaults: defaults)
+                    result = .command(.reset, nil)
+                case .show(let name):
+                    let names = name.map { [$0] } ?? SQLBlockSettings.names
+                    let state = settings
+                    let query = SelectQuery(projection: name == nil
+                        ? [.column("column1", as: "name"), .column("column2", as: "setting")]
+                        : [.column("column1", as: SQLBlockSettings.label(names[0]))],
+                        source: .values(names.map { selected in
+                            name == nil ? [.string(SQLBlockSettings.label(selected)), .string(state.text(selected))]
+                                : [.string(state.text(selected))]
+                        }))
+                    result = try await withinStatement(index: index, settings: settings, options: options,
+                        timeline: timeline, transaction: transaction, workMeter: workMeter, ddlRequest: ddlRequest) { effective, temporal in
+                        try await execute(.select(query), parameters: [], options: effective,
+                            binder: QueryParameterBinder(parameters: [], structuralLimits: effective.structuralLimits),
+                            transaction: transaction, temporal: temporal, workMeter: workMeter,
+                            ddlRequest: ddlRequest, stepIndex: index, occurrences: nil, occurrence: nil)
+                    }
+                }
+            case .prepare(let definition):
+                result = try await withinStatement(index: index, settings: settings, options: options,
+                    timeline: timeline, transaction: transaction, workMeter: workMeter, ddlRequest: ddlRequest) { effective, temporal in
+                    try await prepared.prepare(definition, context: context, transaction: transaction,
+                        options: effective, temporal: temporal, workMeter: workMeter,
+                        occurrences: occurrences, occurrence: stepOccurrence)
+                    return .command(.prepare, nil)
+                }
+            case .execute(let invocation):
+                result = try await withinStatement(index: index, settings: settings, options: options,
+                    timeline: timeline, transaction: transaction, workMeter: workMeter, ddlRequest: ddlRequest) { effective, temporal in
+                    let values: [QueryValue]
+                    let argumentOutcome: SQLBlockStatementOutcome?
+                    if invocation.arguments.isEmpty { values = []; argumentOutcome = nil }
+                    else {
+                        let arguments = try await evaluateExpressions(invocation.arguments, parameters: parameters,
+                            options: effective, transaction: transaction, temporal: temporal, workMeter: workMeter,
+                            ddlRequest: ddlRequest, stepIndex: index)
+                        argumentOutcome = arguments
+                        guard case .rows(let rows) = arguments, rows.visibleRange.count == 1 else {
+                            throw SQLBlockExecutionError.unsupportedStatement
                         }
+                        values = rows.rows.withElement(at: rows.visibleRange.lowerBound) { $0.values }
+                    }
+                    defer { withExtendedLifetime(argumentOutcome) {} }
+                    let lease = await transaction.currentSQLSchemaLease()
+                    let call = try await prepared.execution(invocation, arguments: values,
+                        schemaGeneration: lease.generation, searchPath: effective.searchPath, schemaIdentity: lease.sqlCatalog.digest,
+                        temporal: temporal, workMeter: workMeter)
+                    defer { withExtendedLifetime(call) {} }
+                    let callBinder = try QueryParameterBinder(parameters: call.parameters, structuralLimits: effective.structuralLimits)
+                    return try await execute(call.statement, parameters: call.parameters, options: effective,
+                        binder: callBinder, transaction: transaction, temporal: temporal, workMeter: workMeter,
+                        ddlRequest: ddlRequest, stepIndex: index, occurrences: nil, occurrence: nil)
+                }
+            case .deallocate(let name):
+                try prepared.deallocate(name)
+                result = .command(.deallocate, nil)
+            case .explain(let explanation):
+                result = try await withinStatement(index: index, settings: settings, options: options,
+                    timeline: timeline, transaction: transaction, workMeter: workMeter, ddlRequest: ddlRequest) { effective, temporal in
+                    try await SQLExplainExecutor(context: context, transaction: transaction, options: effective,
+                        temporal: temporal, workMeter: workMeter).execute(explanation, parameters: parameters, occurrences: occurrences, occurrence: stepOccurrence) { statement, supplied in
+                        try await execute(statement, parameters: supplied, options: effective,
+                            binder: QueryParameterBinder(parameters: supplied, structuralLimits: effective.structuralLimits),
+                            transaction: transaction, temporal: temporal, workMeter: workMeter,
+                            ddlRequest: ddlRequest, stepIndex: index, occurrences: occurrences, occurrence: stepOccurrence)
+                    }
+                }
+            case .copy(let command):
+                result = try await withinStatement(index: index, settings: settings, options: options,
+                    timeline: timeline, transaction: transaction, workMeter: workMeter, ddlRequest: ddlRequest) { effective, temporal in
+                    try await SQLCopyExecutor(context: context, transaction: transaction, options: effective,
+                        temporal: temporal, workMeter: workMeter).execute(command, parameters: parameters) { statement, supplied in
+                        try await execute(statement, parameters: supplied, options: effective,
+                            binder: QueryParameterBinder(parameters: supplied, structuralLimits: effective.structuralLimits),
+                            transaction: transaction, temporal: temporal, workMeter: workMeter,
+                            ddlRequest: ddlRequest, stepIndex: index, occurrences: occurrences, occurrence: stepOccurrence)
                     }
                 }
             case .setConstraints(let control):
@@ -159,30 +269,48 @@ public struct SQLBlockExecutor: Sendable {
                 case .all: names = nil
                 case .named(let selected): names = selected
                 }
-                try await transaction.setSQLConstraintsDeferred(control.deferred, names: names)
-                result = .command(.setConstraints, nil)
+                result = try await withinStatement(index: index, settings: settings, options: options,
+                    timeline: timeline, transaction: transaction, workMeter: workMeter, ddlRequest: ddlRequest) { _, _ in
+                    try await transaction.setSQLConstraintsDeferred(control.deferred, names: names)
+                    return .command(.setConstraints, nil)
+                }
             case .sequence(let command):
                 guard let request = SQLSequenceRuntime.request else { throw SQLSequenceExecutionError.requestRequired }
-                result = try await transaction.withStatementScope {
+                result = try await withinStatement(index: index, settings: settings, options: options,
+                    timeline: timeline, transaction: transaction, workMeter: workMeter, ddlRequest: ddlRequest) { _, _ in
                     let kind = try await request.administer(command, step: index, transaction: transaction)
                     return .command(kind, nil)
                 }
             case .savepoint(let name):
-                let checkpoint = try await transaction.createCheckpoint()
-                checkpoints.append(NamedCheckpoint(name: name, token: checkpoint))
+                let checkpoint = try await withinCheckpointControl(index: index, settings: settings,
+                    timeline: timeline) { try await transaction.createCheckpoint() }
+                checkpoints.append(NamedCheckpoint(name: name, token: checkpoint, settings: settings))
                 result = .command(.savepoint, nil)
             case .rollbackTo(let name):
-                let position = try checkpointIndex(name, in: checkpoints, workMeter: workMeter)
-                try await transaction.rollback(to: checkpoints[position].token)
+                let selected = checkpoints
+                let position = try await withinCheckpointControl(index: index, settings: settings, timeline: timeline) {
+                    let position = try checkpointIndex(name, in: selected, workMeter: workMeter)
+                    try await transaction.rollback(to: selected[position].token)
+                    return position
+                }
+                settings = checkpoints[position].settings
                 checkpoints.removeSubrange((position + 1)..<checkpoints.count)
                 result = .command(.rollbackTo, nil)
             case .release(let name):
-                let position = try checkpointIndex(name, in: checkpoints, workMeter: workMeter)
-                try await transaction.release(checkpoints[position].token)
+                let selected = checkpoints
+                let position = try await withinCheckpointControl(index: index, settings: settings, timeline: timeline) {
+                    let position = try checkpointIndex(name, in: selected, workMeter: workMeter)
+                    try await transaction.release(selected[position].token)
+                    return position
+                }
                 checkpoints.removeSubrange(position..<checkpoints.count)
                 result = .command(.release, nil)
             }
             results.append(result, using: consume admission)
+            } catch {
+                failurePosition?.record(index)
+                throw error
+            }
         }
         try await SQLDDLExecutor(context: context, transaction: transaction, options: options, workMeter: workMeter,
             parameters: parameters, request: ddlRequest).cleanupTemporaryObjects(step: block.steps.count)
@@ -193,8 +321,8 @@ public struct SQLBlockExecutor: Sendable {
         _ statement: QueryStatement, parameters: [QueryParameter], options: SQLBlockExecutionOptions,
         binder: QueryParameterBinder, transaction: DatabaseTransaction,
         temporal: SQLTemporalEnvironment, workMeter: DatabaseWorkMeter, ddlRequest: SQLDDLRequest, stepIndex: Int,
-        occurrences: QueryOccurrenceArena?, occurrence: QueryOccurrenceID?
-    ) async throws -> CollectedStatement {
+        occurrences: QueryOccurrenceArena?, occurrence: QueryOccurrenceID?, recordsOutputRows: Bool = true
+    ) async throws -> SQLBlockStatementOutcome {
         switch statement {
         case .ddl:
             guard case .ddl(let command) = try binder.bind(statement) else { throw SQLBlockExecutionError.unsupportedStatement }
@@ -216,13 +344,13 @@ public struct SQLBlockExecutor: Sendable {
                     throw DatabaseWorkLimitError.maximumRows(stage: .resultMaterialization,
                         consumed: workMeter.consumedRows, requested: .max, maximum: options.budget.maximumRows)
                 }
-                try workMeter.recordOutputRows(count)
+                if recordsOutputRows { try workMeter.recordOutputRows(count) }
                 return rows
             }
             return .rows(boxed)
         case .insert, .update, .delete, .merge, .truncate, .with:
             let bound = try binder.bind(statement)
-            let operation: @Sendable (DatabaseReadSession) async throws -> sending CollectedStatement = { session in
+            let operation: @Sendable (DatabaseReadSession) async throws -> sending SQLBlockStatementOutcome = { session in
                 let resolution = try session.makeSQLReadResolution(searchPath: options.searchPath, workMeter: workMeter)
                 let execution = ReadExecutionContext(options: ReadExecutionOptions(budget: options.budget),
                     monotonicClock: context.container.monotonicClock, workMeter: workMeter,
@@ -353,7 +481,7 @@ public struct SQLBlockExecutor: Sendable {
         }
     }
 
-    private func orderedDefinitions(_ with: SQLWithStatement, scope: SQLStatementReadScope,
+    func orderedDefinitions(_ with: SQLWithStatement, scope: SQLStatementReadScope,
         workMeter: DatabaseWorkMeter) throws -> [SQLNamedStatement] {
         guard with.recursive else { return with.statements }
         let names = CanonicalSourceNames(with.statements.map { $0.name })
@@ -390,7 +518,7 @@ public struct SQLBlockExecutor: Sendable {
 
     private func run(_ prepared: PreparedStatement, scope: SQLStatementReadScope,
         transaction: DatabaseTransaction, options: SQLBlockExecutionOptions,
-        temporal: SQLTemporalEnvironment, workMeter: DatabaseWorkMeter) async throws -> CollectedStatement {
+        temporal: SQLTemporalEnvironment, workMeter: DatabaseWorkMeter) async throws -> SQLBlockStatementOutcome {
         switch prepared {
         case .select(let query):
             let result = try await scope.select(query)
@@ -444,7 +572,33 @@ public struct SQLBlockExecutor: Sendable {
 
     private func requiredAccess(for block: SQLBlock, workMeter: DatabaseWorkMeter) throws -> Security.Access {
         var access: Security.Access = []
-        for step in block.steps {
+        for (stepIndex, original) in block.steps.enumerated() {
+            let step: SQLBlockStep
+            switch original {
+            case .execute(let invocation):
+                var definition: SQLPrepare?
+                lookup: for prior in block.steps[..<stepIndex].reversed() {
+                    try workMeter.consume(at: .bindingCandidate)
+                    switch prior {
+                    case .prepare(let value) where value.name.utf8.elementsEqual(invocation.name.utf8):
+                        definition = value
+                        break lookup
+                    case .deallocate(nil): break lookup
+                    case .deallocate(.some(let name)) where name.utf8.elementsEqual(invocation.name.utf8):
+                        break lookup
+                    default: break
+                    }
+                }
+                if let definition { step = .statement(definition.statement) }
+                else { step = original }
+            case .explain(let explanation) where explanation.options.analyze:
+                step = .statement(explanation.statement)
+            case .copy(let command):
+                if command.direction == .from { access.insert(.write) }
+                if case .query(let query) = command.target { step = .statement(.select(query)) }
+                else { step = original }
+            default: step = original
+            }
             switch step {
             case .sequence: access.insert(.administer)
             case .statement(let statement):
@@ -478,6 +632,79 @@ public struct SQLBlockExecutor: Sendable {
         return access.isEmpty ? .read : access
     }
 
+    private func validateTransactionControls(_ block: SQLBlock) throws {
+        var began = false
+        var terminal = false
+        for (index, step) in block.steps.enumerated() {
+            guard case .transaction(let control) = step else { continue }
+            switch control {
+            case .begin:
+                guard index == 0, !began else { throw SQLBlockExecutionError.invalidTransactionControl }
+                began = true
+            case .commit, .rollback:
+                guard index == block.steps.count - 1, !terminal else { throw SQLBlockExecutionError.invalidTransactionControl }
+                terminal = true
+            }
+        }
+        guard !began || terminal else { throw SQLBlockExecutionError.invalidTransactionControl }
+    }
+
+    private func withinCheckpointControl<Value: Sendable>(index: Int, settings: SQLBlockSettings,
+        timeline: SQLBlockStatementTimeline, operation: @escaping @Sendable () async throws -> Value
+    ) async throws -> Value {
+        let clock = context.container.monotonicClock
+        return try await SQLBlockStatementDeadline.run(milliseconds: settings.statementTimeoutMilliseconds,
+            clock: clock, deadline: timeline.deadline(at: index,
+                milliseconds: settings.statementTimeoutMilliseconds, clock: clock), operation: operation)
+    }
+
+    private func withinStatement(index: Int, settings: SQLBlockSettings,
+        options: SQLBlockExecutionOptions, timeline: SQLBlockStatementTimeline,
+        transaction: DatabaseTransaction, workMeter: DatabaseWorkMeter, ddlRequest: SQLDDLRequest,
+        operation: @escaping @Sendable (SQLBlockExecutionOptions, SQLTemporalEnvironment) async throws -> SQLBlockStatementOutcome
+    ) async throws -> SQLBlockStatementOutcome {
+        let instant = timeline.instant(at: index, clock: context.container.wallClock)
+        let statementDeadline = timeline.deadline(at: index, milliseconds: settings.statementTimeoutMilliseconds,
+            clock: context.container.monotonicClock)
+        let catalog = await transaction.currentSQLSchemaLease().sqlCatalog.catalog
+        let path = try ddlRequest.searchPath(settings.searchPath, catalog: catalog)
+        let effective = SQLBlockExecutionOptions(checkpointLimits: options.checkpointLimits, budget: options.budget,
+            structuralLimits: options.structuralLimits, searchPath: path, configuration: options.configuration)
+        let session = try await transaction.makeSQLSessionBinding(searchPath: path, workMeter: workMeter)
+        return try await SQLBlockStatementDeadline.run(milliseconds: settings.statementTimeoutMilliseconds,
+            clock: context.container.monotonicClock,
+            deadline: statementDeadline) {
+            try await ActiveSQLSession.$binding.withValue(session) {
+                try await transaction.withStatementScope {
+                    let inherited = context.makeSQLTemporalEnvironment()
+                    let temporal = SQLTemporalEnvironment(transactionInstant: inherited.transactionInstant,
+                        statementInstant: instant, wallClock: inherited.wallClock, configuration: settings.temporal)
+                    return try await SQLMutationRuntime.$statementIndex.withValue(index) {
+                        try await SQLSequenceRuntime.$statementIndex.withValue(index) {
+                            try await context.withSQLTemporalStatement(environment: temporal) {
+                                try await operation(effective, temporal)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func evaluateExpressions(_ expressions: [Expression], parameters: [QueryParameter],
+        options: SQLBlockExecutionOptions, transaction: DatabaseTransaction, temporal: SQLTemporalEnvironment,
+        workMeter: DatabaseWorkMeter, ddlRequest: SQLDDLRequest, stepIndex: Int) async throws -> SQLBlockStatementOutcome {
+        try await execute(.select(SelectQuery(projection: expressions.map { .expression($0) }, source: .values([[]]))),
+            parameters: parameters, options: options,
+            binder: QueryParameterBinder(parameters: parameters, structuralLimits: options.structuralLimits),
+            transaction: transaction, temporal: temporal, workMeter: workMeter, ddlRequest: ddlRequest,
+            stepIndex: stepIndex, occurrences: nil, occurrence: nil, recordsOutputRows: false)
+    }
+
+    private struct RollbackDemand: Error, Sendable {
+        let result: DatabaseReadResultBox<Collecting>
+    }
+
     private func checkpointIndex(_ name: String, in checkpoints: [NamedCheckpoint],
         workMeter: DatabaseWorkMeter) throws -> Int {
         for index in checkpoints.indices.reversed() {
@@ -491,15 +718,12 @@ public struct SQLBlockExecutor: Sendable {
     private struct NamedCheckpoint: Sendable {
         let name: String
         let token: DatabaseTransactionCheckpoint
+        let settings: SQLBlockSettings
     }
 
-    private enum CollectedStatement: Sendable {
-        case rows(SQLBlockCollectedRows)
-        case command(SQLCommandKind, UInt64?)
-    }
 
     private struct Collecting: ~Copyable, Sendable {
-        let statements: DatabaseRetainedBuffer<CollectedStatement>
+        let statements: DatabaseRetainedBuffer<SQLBlockStatementOutcome>
         let outputClaim: DatabaseIntermediateReservation
     }
 
@@ -516,6 +740,8 @@ public struct SQLBlockExecutor: Sendable {
                 try collecting.statements.withElement(at: index) { value in
                     switch value {
                     case .command(let kind, let count): results.append(.command(kind, affectedRows: count))
+                    case .copy(let value, let reservation):
+                        withExtendedLifetime(reservation) { results.append(.copy(value)) }
                     case .rows(let rows):
                         // Public ownership requires one final positional Array; the collecting shared backing remains charged throughout this transfer.
                         let output = rows.rows.materializePage(rows.visibleRange)

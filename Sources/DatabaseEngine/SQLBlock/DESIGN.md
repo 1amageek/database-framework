@@ -473,3 +473,104 @@ commit. Failure relies on the outer authoritative rollback, so no private
 namespace or physical generation becomes durable. No process or cross-request
 session state is introduced. TRUNCATE invokes the same read-only view/MV rejection
 contract as ordinary mutations before physical target resolution.
+
+
+## S16 Request Controls
+
+The S16 operation contract is owned by [Kit SQL](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s16-block-operations-and-diagnostics).
+SQLBlock validates terminal placement before entering storage. BEGIN is optional
+and first-only; a present BEGIN requires a last COMMIT or ROLLBACK. A last
+ROLLBACK transfers collecting results through a private typed demand. Only the
+unwrapped demand after TransactionRunner completed rollback and close can become
+success; combined cleanup failures and cancellation remain failures. No schema
+publication is prepared for that path.
+
+Attempt-local settings contain search path, temporal configuration and statement
+timeout. Named checkpoints snapshot settings; rollback-to restores the selected
+snapshot, release keeps current settings. Prepared definitions belong to the
+attempt rather than checkpoint state. Both end on retry and request close.
+A statement timeout races the same statement task with the injected monotonic
+clock, cancels and joins the loser, retains first-entry step deadlines across retries, and remains subordinate to the original
+request deadline and exact meter. Zero disables only the statement overlay.
+
+```text
+request admission -> terminal-order validation -> one transaction attempt
+    -> settings / prepared registry -> statement scope -> ordinary executor
+    -> EXPLAIN / COPY -> same ordinary executor closure
+    -> last COMMIT -> authoritative commit + close
+    -> last ROLLBACK -> private demand -> authoritative rollback + close
+    -> post-close cancellation/meter check -> Ready -> caller-owned outcomes
+```
+
+The orchestration seam is internal `SQLBlockStatementOutcome`; it retains rows,
+command metadata or COPY bytes with their reservations. EXPLAIN and COPY call
+an injected ordinary-statement closure rather than public executeSQL, so no
+second admission, independent transaction or early Ready value is created.
+Verification owners are S16SQLBlock and S16Preparation behavioral tests for
+terminal rejection, real rollback/close, savepoint settings restoration,
+request-local lifetime, preparation without effects and deadline cancellation.
+
+
+### S16 prepared binding ownership
+
+`SQLPreparedRequest` is an attempt-local synchronized owner retained by the sequential
+block coordinator. Its registry is never checkpointed and cannot escape the
+attempt. `SQLPreparedAnalysis` binds the complete definition with NULL carriers
+and one shared `CanonicalParameterBindingState`, collecting declared and
+contextual types without evaluating a selected expression, default or sequence.
+Mutation's analysis seam binds the same assignment/RETURNING contracts without
+capturing rows. EXECUTE validates exact name, arity, argument types, catalog
+generation, catalog digest and byte-exact search path before returning the ordinary
+statement and its independent parameter vector. Selected canonical assignment
+conversion consumes already evaluated argument carriers; its invocation retains
+conversion leases through ordinary execution. DEALLOCATE removes retained definitions and
+claims; a fresh attempt creates an empty registry.
+
+
+| S16 mutable state | Native / WASM / Embedded owner | Access and release |
+|---|---|---|
+| Settings and checkpoint snapshots | Same attempt-local values; retained text/path claims | Sequential collect loop; rollback restores snapshot, attempt end releases claims. |
+| Prepared definitions | Same `Mutex<[Definition]>` registry | Atomic exact-name lookup/install/remove; analysis and awaits run outside lock; registry ends with attempt. |
+| Statement deadline winner | Same strong `Selection` reference owner containing one `Mutex<Bool>` on Native / WASM / Embedded | Both structured tasks capture the owner and atomically select through `claim()`; one bounded owner per race is released only after both tasks join; await and I/O remain outside the lock. |
+| Retry-stable statement deadlines | Same `Mutex<[StorageInstant?]>` | Captured outside lock, installed once; request end releases metered array. |
+| Physical cancellation | Existing runner `Mutex<Task<...>?>` | Task-local request delegates exactly-once cancel; no raw transaction authority crosses the boundary. |
+
+The optional package `SQLBlockFailurePosition` owns only a Mutex-protected step
+index for text-adapter fallback positions. Each attempt clears it; a terminal
+step failure records its index only after statement cleanup has unwound. Closing
+or publication failures outside a step retain no invented step position. Native
+semantic failures remain unchanged and retain their original typed identity.
+
+| Text failure fallback | Same `Mutex<Int?>` on Native / WASM / Embedded | Attempt reset and terminal step record; text adapter reads after failure; request end releases owner. |
+
+
+| Prepared state | Native / WASM / Embedded storage and isolation | Read / mutation entry | Owner release |
+|---|---|---|---|
+| Definitions and binding identities | Same `Mutex<[Definition]>` | `execution` / `prepare` insertion and `deallocate` use `withLock` | Attempt scope ends; retry constructs a fresh owner |
+| Definition parameter inference | Same `CanonicalParameterBindingState` Mutex | Canonical binding / finalization | Analysis ends after the immutable type vector is retained |
+| Converted invocation parameters | Immutable invocation with payload leases | Selected scalar assignment / ordinary executor | Statement completion releases invocation claims |
+
+
+### S16 review regressions B1/B3/B4
+
+Access admission resolves each EXECUTE against its preceding request prefix,
+using exact prepared-name identity and treating matching DEALLOCATE or ALL as
+a lookup barrier. PREPARE alone does not execute its body or grant write access.
+The runtime registry continues to own missing and duplicate name failures.
+
+Checkpoint controls apply the retry-stable statement deadline directly around
+Transaction's checkpoint transition, outside `withStatementScope`; nesting that
+scope would prevent the checkpoint restoration barrier from draining.
+
+S16SQLBlockReviewRegressionTests owns live-definition reuse with named/ALL
+DEALLOCATE, physical checkpoint creation/rollback/release held beyond the
+statement deadline, and caller cancellation while timeout-owned cancellation
+is suspended and then fails. It uses a forwarding InMemory transaction decorator
+for actual checkpoint and cancellation lifecycles rather than a replacement
+SQL interpreter.
+
+
+| Review repair state | Native / WASM / Embedded owner | Entry and terminal boundary |
+|---|---|---|
+| Live prepared access | Immutable request prefix, no retained mutable registry | Exact-byte reverse lookup stops at matching/ALL deallocation; runtime registry owns declaration errors. |
+| Checkpoint statement deadline | Existing timeline `Mutex<[StorageInstant?]>` and deadline winner `Selection` owning `Mutex<Bool>` | Direct checkpoint control wrapper; no statement scope; producer and cancellation join before return. |

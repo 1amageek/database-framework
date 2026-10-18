@@ -84,8 +84,8 @@ sidecar and binder diagnostic integration remain explicit S03 work.
 semantic result plus sparse source sidecar; [Builder](Builder/DESIGN.md#s03-typed-text-and-qualified-serialization)
 preserves unknown/typed text, exact qualification and typed NULL CAST edges.
 Both consume [Kit's semantic occurrence/model contract](../../../database-kit/Sources/DatabaseKit/Query/DESIGN.md#s03-semantic-carriage-and-occurrence-addresses).
-Database composes source mapping with Engine failures; Engine gains no QueryAST
-dependency. The same returned semantic tree/provenance is used after normalization.
+Database composes source mapping with Engine failures; S03 introduced no
+Engine-to-QueryAST dependency. The same returned semantic tree/provenance is used after normalization.
 S03-C10/C11 prove occurrence-safe local positions and bounded retained state;
 S16 owns final remote diagnostic presentation.
 
@@ -208,3 +208,17 @@ occurrences under existing cumulative budgets. QueryAST owns no writable-CTE
 cache, snapshot, mutation image or retained-output lease. Its invocation-local
 state and identical target ownership/conformance contracts remain unchanged.
 Syntax evidence does not prove effects, authorization, rollback or publication.
+
+
+### S16 canonical catalog text consumption
+
+DatabaseEngine consumes only Builder's existing canonical SQL emission for
+information_schema view/default/generated definitions and EXPLAIN output. This
+acyclic module dependency avoids a second dialect serializer or a process-global
+formatting service. QueryAST continues to depend only on Kit/Types and never
+imports Engine, storage, authorization or runtime. Parsing and source adaptation
+remain Database-owned entry work, not a second Engine SQL interpreter. The
+SQLInformationSchema owner records the exact canonical emission used by each
+metadata column; typed serialization failures propagate and cannot become empty
+or synthetic definitions. Standard and Embedded builds must include and execute
+this added module edge on the fixed toolchain/SDK.

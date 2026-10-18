@@ -961,8 +961,45 @@ extension DatabaseEntityStatementMutationExecutor {
         return try await executor.prepareSQL(input, scope: scope, transaction: transaction, workMeter: workMeter)
     }
 
-    private func prepareSQL(_ input: QueryStatement, scope: SQLStatementReadScope,
-        transaction: DatabaseTransaction, workMeter: DatabaseWorkMeter) async throws -> SQLMutationPreparation {
+    private struct SQLStatementBinding {
+        let table: TableRef
+        let source: DataSource?
+        let returning: [ProjectionItem]?
+        let aliases: SQLReturningAliases?
+        let expressions: [Expression]
+        let insertSourceQuery: SelectQuery?
+        let entity: ResolvedEntity
+        let relation: SQLRelation
+        let layout: CanonicalSourceLayout
+        let sourceLayout: CanonicalSourceLayout?
+        let joined: CanonicalSourceLayout
+        let layoutClaim: DatabaseIntermediateReservation
+    }
+
+    /// Resolves and types the ordinary DML path without capturing or evaluating rows.
+    func analyzeSQL(_ input: QueryStatement, scope: SQLStatementReadScope,
+        transaction: DatabaseTransaction, workMeter: DatabaseWorkMeter) async throws -> [QueryColumn] {
+        try QueryStructuralValidator.validate(input, limits: scope.execution.queryStructuralLimits)
+        var executor = self
+        executor.temporalEnvironment = scope.temporalEnvironment ?? transaction.makeSQLTemporalEnvironment()
+        let (catalog, schema) = try await transaction.sqlPolicyCatalog()
+        executor.sqlCatalog = catalog
+        executor.sqlSchema = schema
+        executor.sqlSession = try await transaction.makeSQLSessionBinding(searchPath: scope.searchPath, workMeter: workMeter)
+        let binding = try executor.bindSQL(input, scope: scope, workMeter: workMeter)
+        _ = try executor.sqlPreparationBindings(input, entity: binding.entity,
+            targetLayout: binding.layout, joinedLayout: binding.joined, scope: scope)
+        let returningLayout = try executor.sqlReturningRow(current: executor.sqlNullRow(binding.layout), old: nil, new: nil,
+            source: binding.sourceLayout.map(executor.sqlNullRow), aliases: binding.aliases,
+            merge: { if case .merge = input { return true }; return false }(), action: nil, workMeter: workMeter).layout
+        return try binding.returning.map {
+            try scope.bindProjection($0, layout: returningLayout,
+                allowingMergeAction: { if case .merge = input { return true }; return false }()).columns
+        } ?? []
+    }
+
+    private func bindSQL(_ input: QueryStatement, scope: SQLStatementReadScope,
+        workMeter: DatabaseWorkMeter) throws -> SQLStatementBinding {
         let table: TableRef
         let source: DataSource?
         let returning: [ProjectionItem]?
@@ -1017,10 +1054,22 @@ extension DatabaseEntityStatementMutationExecutor {
         let layout = CanonicalSourceLayout(slots: columns.map { .init(name: $0.name, scope: table.effectiveName) },
             scopes: [table.effectiveName], reservation: layoutClaim, types: columns.map { Optional($0.type) },
             nullability: columns.map { $0.isNullable })
-        var readClaims = try payloadBuilder(workMeter: workMeter)
-        try readClaims.append(footprint: DatabaseIntermediateFootprint(), make: { DatabaseQueryPayloadLease(retaining: layoutClaim) })
         let sourceLayout = try source.map { try scope.relationLayout($0, outerLayout: layout) }
         let joined = try sourceLayout.map { try sqlNullRow(layout).merged(with: sqlNullRow($0)).layout } ?? layout
+        return SQLStatementBinding(table: table, source: source, returning: returning, aliases: aliases,
+            expressions: expressions, insertSourceQuery: insertSourceQuery, entity: entity, relation: relation,
+            layout: layout, sourceLayout: sourceLayout, joined: joined, layoutClaim: layoutClaim)
+    }
+
+    private func prepareSQL(_ input: QueryStatement, scope: SQLStatementReadScope,
+        transaction: DatabaseTransaction, workMeter: DatabaseWorkMeter) async throws -> SQLMutationPreparation {
+        let binding = try bindSQL(input, scope: scope, workMeter: workMeter)
+        let table = binding.table, source = binding.source, returning = binding.returning, aliases = binding.aliases
+        let expressions = binding.expressions, insertSourceQuery = binding.insertSourceQuery
+        let entity = binding.entity, relation = binding.relation, layout = binding.layout
+        let sourceLayout = binding.sourceLayout, joined = binding.joined
+        var readClaims = try payloadBuilder(workMeter: workMeter)
+        try readClaims.append(footprint: DatabaseIntermediateFootprint(), make: { DatabaseQueryPayloadLease(retaining: binding.layoutClaim) })
         let demandProjection = expressions.map { ProjectionItem.expression($0) } + (returning ?? [])
         let referenceQuery = SelectQuery(projection: demandProjection, source: .table(table))
         var fields = Set<String>()

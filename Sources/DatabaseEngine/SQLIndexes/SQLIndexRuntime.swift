@@ -65,7 +65,7 @@ enum SQLIndexRuntime {
                     let other = try await decodeKey(bytes, compiled: compiled, physicalSchema: physicalSchema,
                         environment: environment, workMeter: meter)
                     if try key.equal(to: other, workMeter: meter) {
-                        throw SQLConstraintError.violation(relation: relation.id, constraint: index.name)
+                        throw SQLConstraintError.violation(kind: .unique, relation: relation, constraint: index.name, catalog: catalog)
                     }
                 }
             }

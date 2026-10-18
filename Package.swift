@@ -129,6 +129,7 @@ let package = Package(
             name: "DatabaseEngine",
             dependencies: [
                 "DatabaseMath",
+                "QueryAST",
                 .product(name: "DatabaseTypes", package: "database-types"),
                 .product(name: "DatabaseWire", package: "database-kit"),
                 .product(name: "DatabaseKit", package: "database-kit"),
@@ -159,6 +160,10 @@ let package = Package(
                 "SQLCatalog/DESIGN.md",
                 "SQLConstraints/DESIGN.md",
                 "SQLDDL/DESIGN.md",
+                "SQLDiagnostics/DESIGN.md",
+                "SQLInformationSchema/DESIGN.md",
+                "SQLExplain/DESIGN.md",
+                "SQLCopy/DESIGN.md",
                 "SQLIndexes/DESIGN.md",
                 "SQLSequences/DESIGN.md",
                 "SQLViews/DESIGN.md",
@@ -594,6 +599,7 @@ let package = Package(
         .testTarget(
             name: "DatabaseEngineTests",
             dependencies: [
+                "QueryAST",
                 "DatabaseEngine",
                 "DatabaseRuntime",
                 .target(

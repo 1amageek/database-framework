@@ -476,3 +476,29 @@ A DML RETURNING result remains `.rows(QueryResponse)` and preserves its direct
 nor materializes a result before the Engine's transaction, read session, required
 schema/sequence work and request leases have authoritatively closed. Textual DML
 admission and remote operation publication retain their separate later owners.
+
+
+### S16 text block and diagnostic adaptation
+
+`executeSQLBlock(String,parameters:options:)` parses one bounded text request with
+QueryAST's SQLParsedBlock, then invokes Engine's existing block executor once.
+The same request meter and monotonic deadline include parsing and execution.
+Aligned step roots preserve absolute occurrence addresses; no per-statement public
+execution or independent transaction is introduced. Existing SELECT and semantic
+entry contracts remain available. The text overload returns Engine's typed ordered
+block outcome, including request-contained COPY data after authoritative close.
+
+The adapter owns PostgreSQL-style one-based Unicode scalar source positions.
+QueryAST/Engine continue to report zero-based UTF-8 ranges. A byte offset must be
+within the original UTF-8 source and on a scalar boundary; otherwise position is
+absent. Direct semantic input never acquires a fabricated text position. Parser
+cases map by typed case, Engine causes use SQLDiagnostics, and SQLExecutionFailure
+retains the original typed error, including mandatory-cleanup composites. No
+localized message parsing or runtime reflection decides SQLSTATE.
+
+Tests execute multi-statement text, explicit rollback, prepared values, inline
+COPY, own-DDL catalog reads and EXPLAIN through this facade. Separate tests cover
+multibyte/CRLF/batch source positions, original constraint identity after rollback,
+syntax/unsupported/resource classification and unchanged semantic error behavior.
+Standard and Embedded source graphs retain the same immutable parsed input and
+Engine isolation contracts; target proof remains local to the exact graph run.

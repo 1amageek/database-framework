@@ -139,7 +139,6 @@ struct SQLDDLSyntaxTests {
             "REFRESH MATERIALIZED VIEW CONCURRENTLY m",
             "CREATE VIEW v AS SELECT 1 WITH CHECK OPTION",
             "DROP TABLE t CASCADE extra",
-            "SET CONSTRAINTS ALL DEFERRED",
         ] {
             #expect(throws: (any Error).self) { _ = try SQLParser().parse(sql) }
         }

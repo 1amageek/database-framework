@@ -141,6 +141,24 @@ package struct DatabaseReadPolicy: Sendable {
         self.authorization = authorization
     }
 
+    /// Metadata visibility is authority-owned; only known denials hide names.
+    func permitsSQLMetadata(entityName: String, fields: Set<String>? = nil) throws -> Bool {
+        do {
+            try withAuthorization {
+                if let fields {
+                    try securityDelegate?.evaluateFieldRead(entity: entityName, fields: fields)
+                } else {
+                    try securityDelegate?.evaluateList(entity: entityName, limit: nil, offset: nil, orderBy: nil)
+                }
+            }
+            return true
+        } catch is SecurityError { return false }
+        catch let error as FieldSecurityError {
+            if case .readNotAllowed = error { return false }
+            throw error
+        }
+    }
+
     package func authorizeCanonicalListAccess(
         entityName: String,
         selectQuery: SelectQuery,

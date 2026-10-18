@@ -85,6 +85,7 @@ enum FusionPreflight {
                 )
             }
         } visitTable: { tableRef, query in
+            if try sqlResolution?.informationSchemaRelation(tableRef) != nil { return }
             if let sqlResolution {
                 let definition: SQLViewDefinition?
                 let id: String?

@@ -82,8 +82,8 @@ struct SQLTemporalConfigurationTests {
             provenance: ByteString(utf8: "IANA 2026e test UTC"),
             limits: .init(maximumInputBytes: 1_000, maximumRetainedBytes: 4_000, maximumTransitions: 10))
         let rule = try provider.rules(named: "Supplied/UTC", workMeter: workMeter())
-        let configuration = try SQLTemporalConfiguration(timeZone: .named(rule), rulesProvider: provider,
-            limits: .init(maximumAbbreviations: 0, maximumRetainedBytes: 0))
+        let configuration = try SQLTemporalConfiguration(timeZone: .named(name: "Supplied/UTC", rules: rule), rulesProvider: provider,
+            limits: .init(maximumAbbreviations: 0, maximumRetainedBytes: 12))
         let retainedProvider = try #require(configuration.rulesProvider)
         let retainedRule = try retainedProvider.rules(named: "supplied/utc", workMeter: workMeter())
         for second: Int64 in [-2_208_988_800, 1_704_067_200, 4_102_444_800] {
@@ -95,6 +95,31 @@ struct SQLTemporalConfigurationTests {
         #expect(throws: SQLTimeZoneError.unknownZone) {
             try retainedProvider.rules(named: "Host/Timezone", workMeter: workMeter())
         }
+    }
+
+    @Test("Named zone identity rejects malformed names and admits exact retained bytes")
+    func namedZoneIdentityAdmission() throws {
+        let provider = try SQLTimeZoneDatabase(definitions: [.init(name: "Supplied/UTC", tzif: SQLTimeZoneFixtures.utc())],
+            provenance: ByteString(utf8: "UTC fixture"),
+            limits: .init(maximumInputBytes: 1_000, maximumRetainedBytes: 4_000, maximumTransitions: 10))
+        let rules = try provider.rules(named: "Supplied/UTC", workMeter: workMeter())
+        for name in ["", "Supplied/\0UTC"] {
+            #expect(throws: SQLTimeZoneError.malformedData) {
+                try SQLTemporalConfiguration(timeZone: .named(name: name, rules: rules),
+                    limits: .init(maximumAbbreviations: 0, maximumRetainedBytes: 12))
+            }
+        }
+        #expect(throws: SQLTimeZoneError.admissionExceeded) {
+            try SQLTemporalConfiguration(timeZone: .named(name: "Supplied/UTC", rules: rules),
+                limits: .init(maximumAbbreviations: 0, maximumRetainedBytes: 11))
+        }
+        let admitted = try SQLTemporalConfiguration(timeZone: .named(name: "Supplied/UTC", rules: rules),
+            limits: .init(maximumAbbreviations: 0, maximumRetainedBytes: 12))
+        #expect(admitted.retainedByteCount == 12)
+        let copy = admitted.replacing(timeZone: admitted.timeZone)
+        guard case .named(let name, _) = copy.timeZone else { Issue.record("Expected retained named zone"); return }
+        #expect(name == "Supplied/UTC")
+        #expect(copy.retainedByteCount == 12)
     }
 
     private func workMeter(work: UInt64 = 1_000) -> DatabaseWorkMeter {

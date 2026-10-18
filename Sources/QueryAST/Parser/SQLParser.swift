@@ -6,6 +6,7 @@
 /// - ISO/IEC 9075-16:2023 (SQL/PGQ)
 
 import DatabaseKit
+import DatabaseTypes
 
 /// SQL Parser for converting SQL strings to AST
 public final class SQLParser {
@@ -4950,5 +4951,347 @@ extension SQLParser {
 
     private func ddlSyntax(_ message: String) -> ParseError {
         .invalidSyntax(message: message, position: tokenStart)
+    }
+}
+
+// MARK: - Request Block Parsing
+
+extension SQLParser {
+    /// Parses a complete operational request using one cumulative resource ledger.
+    public func parseBlock(_ sql: String) throws -> SQLBlock {
+        try parseOperationalBlock(sql).block
+    }
+
+    /// Source roots align with block steps; control-only steps have no statement root.
+    public func parseBlockWithSource(_ sql: String) throws -> SQLParsedBlock {
+        capturesSource = true
+        defer { capturesSource = false }
+        let parsed = try parseOperationalBlock(sql)
+        let snapshot = sourceCapture!.snapshot
+        return SQLParsedBlock(block: parsed.block, occurrences: snapshot.occurrences,
+                              roots: parsed.roots, sourceMap: snapshot.sourceMap,
+                              stepRanges: parsed.ranges, copyDataRanges: parsed.bodies)
+    }
+
+    private func parseOperationalBlock(_ sql: String) throws ->
+        (block: SQLBlock, roots: [QueryOccurrenceID?], ranges: [SQLSourceRange], bodies: [SQLSourceRange?]) {
+        try resetParserState(for: sql)
+        return try withStructuralErrorPrecedence {
+            advance()
+            var steps: [SQLBlockStep] = []
+            var roots: [QueryOccurrenceID?] = []
+            var ranges: [SQLSourceRange] = []
+            var bodies: [SQLSourceRange?] = []
+            while currentToken != .eof {
+                if isSymbol(";") { advance(); continue }
+                try admitCollectionElement()
+                let start = tokenStart
+                let checkpoint = sourceCapture?.pendingCheckpoint ?? 0
+                let step = try parseBlockStep()
+                let commandEnd = previousTokenEnd
+                var body: SQLSourceRange?
+                let complete: SQLBlockStep
+                if case .copy(let copy) = step, copy.direction == .from {
+                    guard isSymbol(";") else { throw ddlSyntax("COPY FROM STDIN requires a semicolon and inline data") }
+                    let payload = try parseCopyBody()
+                    body = payload.range
+                    complete = .copy(SQLCopyCommand(target: copy.target, direction: copy.direction,
+                                                    options: copy.options, data: payload.data))
+                } else {
+                    complete = step
+                    guard currentToken == .eof || isSymbol(";") else { throw ddlSyntax("Expected statement separator") }
+                    if isSymbol(";") { advance() }
+                }
+                var statement: QueryStatement?
+                switch complete {
+                case .statement(let value): statement = value
+                case .prepare(let value): statement = value.statement
+                case .explain(let value): statement = value.statement
+                case .copy(let value): if case .query(let query) = value.target { statement = .select(query) }
+                default: break
+                }
+                var root: QueryOccurrenceID?
+                if let statement, sourceCapture != nil {
+                    guard let index = UInt32(exactly: steps.count) else { throw SQLSourceCaptureCollector.CaptureError.identifierOverflow }
+                    root = try sourceCapture!.finishStatement(index: index, statement: statement,
+                        start: start, end: commandEnd, ledger: &structuralLedger)
+                } else {
+                    try sourceCapture?.discardPending(after: checkpoint)
+                }
+                if capturesSource {
+                    try structuralLedger.consume(.retainedBytes, amount: UInt64(MemoryLayout<SQLSourceRange>.stride * 2 + MemoryLayout<QueryOccurrenceID?>.stride))
+                }
+                steps.append(complete)
+                roots.append(root)
+                ranges.append(SQLSourceRange(start: start, end: commandEnd))
+                bodies.append(body)
+            }
+            return (try SQLBlock(steps: steps, limits: structuralLimits), roots, ranges, bodies)
+        }
+    }
+
+    private func parseBlockStep() throws -> SQLBlockStep {
+        try structuralLedger.consume(.totalNodes)
+        if consumeContextualWord("BEGIN") {
+            _ = consumeContextualWord("WORK") || consumeContextualWord("TRANSACTION")
+            return .transaction(.begin)
+        }
+        if consumeContextualWord("START") {
+            try expectContextualWord("TRANSACTION"); return .transaction(.begin)
+        }
+        if consumeContextualWord("COMMIT") || consumeContextualWord("END") {
+            _ = consumeContextualWord("WORK") || consumeContextualWord("TRANSACTION")
+            return .transaction(.commit)
+        }
+        let rollback = consumeContextualWord("ROLLBACK")
+        if rollback || consumeContextualWord("ABORT") {
+            _ = consumeContextualWord("WORK") || consumeContextualWord("TRANSACTION")
+            if rollback && consumeContextualWord("TO") {
+                _ = consumeContextualWord("SAVEPOINT")
+                return .rollbackTo(try parseRequiredIdentifier("savepoint name"))
+            }
+            return .transaction(.rollback)
+        }
+        if consumeContextualWord("SAVEPOINT") { return .savepoint(try parseRequiredIdentifier("savepoint name")) }
+        if consumeContextualWord("RELEASE") {
+            _ = consumeContextualWord("SAVEPOINT")
+            return .release(try parseRequiredIdentifier("savepoint name"))
+        }
+        if consumeContextualWord("SET") {
+            if consumeContextualWord("CONSTRAINTS") {
+                let selection: SQLConstraintSelection
+                if consumeContextualWord("ALL") { selection = .all }
+                else {
+                    var names: [String] = []
+                    repeat {
+                        try admitCollectionElement(); names.append(try parseRequiredIdentifier("constraint name"))
+                        if !isSymbol(",") { break }; advance()
+                    } while true
+                    selection = .named(names)
+                }
+                let deferred = consumeContextualWord("DEFERRED")
+                if !deferred { try expectContextualWord("IMMEDIATE") }
+                return .setConstraints(try SQLSetConstraints(selection: selection, deferred: deferred))
+            }
+            let scope = blockSettingScope()
+            let timeZoneSyntax = withLookahead { consumeContextualWord("TIME") && consumeContextualWord("ZONE") }
+            let name = try blockSettingName()
+            if !consumeContextualWord("TO"), !timeZoneSyntax { try expect("=") }
+            if consumeContextualWord("DEFAULT") { return .setting(.reset(name, scope: scope)) }
+            let value: Expression
+            if name == .searchPath {
+                let scalarString = currentToken.isString
+                var names: [Expression] = []
+                repeat {
+                    try admitCollectionElement()
+                    if case .string(let text) = currentToken { advance(); names.append(.literal(.sqlUnknownString(text))) }
+                    else { names.append(.literal(.sqlUnknownString(try parseRequiredIdentifier("search path schema")))) }
+                    if !isSymbol(",") { break }; advance()
+                } while true
+                value = scalarString && names.count == 1 ? names[0] : .array(names)
+            } else if case .identifier(let text) = currentToken, !tokenIsQuoted {
+                advance(); value = .literal(.sqlUnknownString(text))
+            } else { value = try parseExpression() }
+            guard blockSettingConstant(value) else { throw ddlSyntax("SQL settings require constant values") }
+            return .setting(.set(name: name, value: value, scope: scope))
+        }
+        if consumeContextualWord("SHOW") {
+            return .setting(.show(consumeContextualWord("ALL") ? nil : try blockSettingName()))
+        }
+        if consumeContextualWord("RESET") {
+            let scope = blockSettingScope()
+            return .setting(.reset(consumeContextualWord("ALL") ? nil : try blockSettingName(), scope: scope))
+        }
+        if consumeContextualWord("PREPARE") {
+            let name = try parseRequiredIdentifier("prepared statement name")
+            var types: [DataType] = []
+            if isSymbol("(") {
+                advance()
+                repeat {
+                    try admitCollectionElement(); types.append(try parseDataType())
+                    if !isSymbol(",") { break }; advance()
+                } while true
+                try expect(")")
+            }
+            // Type declarations are not descendants of the prepared statement's root.
+            try sourceCapture?.discardPending(after: 0)
+            let oldStyle = positionalParameterStyle
+            let oldPosition = anonymousParameterPosition
+            positionalParameterStyle = nil; anonymousParameterPosition = 0
+            defer { positionalParameterStyle = oldStyle; anonymousParameterPosition = oldPosition }
+            try expectContextualWord("AS")
+            return .prepare(SQLPrepare(name: name, parameterTypes: types, statement: try blockOrdinaryStatement()))
+        }
+        if consumeContextualWord("EXECUTE") {
+            let name = try parseRequiredIdentifier("prepared statement name")
+            var arguments: [Expression] = []
+            if isSymbol("(") {
+                advance()
+                if !isSymbol(")") {
+                    repeat {
+                        try admitCollectionElement(); arguments.append(try parseExpression())
+                        if !isSymbol(",") { break }; advance()
+                    } while true
+                }
+                try expect(")")
+            }
+            return .execute(SQLExecute(name: name, arguments: arguments))
+        }
+        if consumeContextualWord("DEALLOCATE") {
+            _ = consumeContextualWord("PREPARE")
+            return .deallocate(consumeContextualWord("ALL") ? nil : try parseRequiredIdentifier("prepared statement name"))
+        }
+        if consumeContextualWord("EXPLAIN") { return .explain(try blockExplain()) }
+        if consumeContextualWord("COPY") { return .copy(try blockCopy()) }
+        return .statement(try parseStatement())
+    }
+
+    private func blockSettingScope() -> SQLSettingScope {
+        if consumeContextualWord("LOCAL") { return .local }
+        _ = consumeContextualWord("SESSION"); return .session
+    }
+
+    private func blockSettingName() throws -> SQLSettingName {
+        if consumeContextualWord("SEARCH_PATH") { return .searchPath }
+        if consumeContextualWord("TIMEZONE") { return .timeZone }
+        if consumeContextualWord("TIME") { try expectContextualWord("ZONE"); return .timeZone }
+        if consumeContextualWord("STATEMENT_TIMEOUT") { return .statementTimeout }
+        throw ddlSyntax("Unsupported SQL setting")
+    }
+
+    private func blockSettingConstant(_ expression: Expression) -> Bool {
+        switch expression {
+        case .literal: return true
+        case .cast(let value, _): return blockSettingConstant(value)
+        case .array(let values): return values.allSatisfy(blockSettingConstant)
+        default: return false
+        }
+    }
+
+    private func blockOrdinaryStatement() throws -> QueryStatement {
+        let statement = try parseStatement()
+        switch statement {
+        case .select, .insert, .update, .delete, .with, .merge: return statement
+        default: throw ddlSyntax("Expected an ordinary SELECT or DML statement")
+        }
+    }
+
+    private func blockBoolean() throws -> Bool {
+        if consumeContextualWord("TRUE") || consumeContextualWord("ON") { return true }
+        if consumeContextualWord("FALSE") || consumeContextualWord("OFF") { return false }
+        if case .number(let number) = currentToken, number == "0" || number == "1" { advance(); return number == "1" }
+        throw ddlSyntax("Expected boolean option")
+    }
+
+    private func blockExplain() throws -> SQLExplain {
+        var analyze = false, verbose = false
+        var format = SQLExplainFormat.text
+        var seen: Set<String> = []
+        let parenthesized = isSymbol("(")
+        if parenthesized { advance() }
+        while true {
+            let key: String
+            if consumeContextualWord("ANALYZE") || consumeContextualWord("ANALYSE") { key = "analyze" }
+            else if consumeContextualWord("VERBOSE") { key = "verbose" }
+            else if parenthesized, consumeContextualWord("FORMAT") { key = "format" }
+            else { break }
+            guard seen.insert(key).inserted else { throw ddlSyntax("Duplicate EXPLAIN option") }
+            if key == "format" {
+                if consumeContextualWord("JSON") { format = .json }
+                else { try expectContextualWord("TEXT"); format = .text }
+            } else {
+                let explicit = withLookahead {
+                    consumeContextualWord("TRUE") || consumeContextualWord("FALSE") || consumeContextualWord("ON") || consumeContextualWord("OFF") || { if case .number = currentToken { return true }; return false }()
+                }
+                let value = explicit ? try blockBoolean() : true
+                if key == "analyze" { analyze = value } else { verbose = value }
+            }
+            if parenthesized {
+                if !isSymbol(",") { break }; advance()
+                guard !isSymbol(")") else { throw ddlSyntax("Expected EXPLAIN option") }
+            }
+        }
+        if parenthesized { try expect(")") }
+        return SQLExplain(statement: try blockOrdinaryStatement(), options: SQLExplainOptions(analyze: analyze, verbose: verbose, format: format))
+    }
+
+    private func blockCopy() throws -> SQLCopyCommand {
+        let target: SQLCopyTarget
+        if isSymbol("(") {
+            advance(); let query = try parseSelectQuery(); try expect(")"); target = .query(query)
+        } else {
+            let table = try ddlName()
+            target = .table(table, columns: isSymbol("(") ? try ddlColumns() : [])
+        }
+        let direction: SQLCopyDirection
+        if consumeContextualWord("FROM") { direction = .from; try expectContextualWord("STDIN") }
+        else { try expectContextualWord("TO"); direction = .to; try expectContextualWord("STDOUT") }
+        let with = consumeContextualWord("WITH")
+        let parenthesized = isSymbol("(")
+        if parenthesized { advance() }
+        var format = SQLCopyFormat.text
+        var delimiter: String?, null: String?, quote: String?, escape: String?
+        var header = false
+        var seen: Set<String> = []
+        while true {
+            let key: String
+            if consumeContextualWord("FORMAT") { key = "format" }
+            else if consumeContextualWord("CSV") { key = "csv" }
+            else if consumeContextualWord("DELIMITER") { key = "delimiter" }
+            else if consumeContextualWord("NULL") { key = "null" }
+            else if consumeContextualWord("HEADER") { key = "header" }
+            else if consumeContextualWord("QUOTE") { key = "quote" }
+            else if consumeContextualWord("ESCAPE") { key = "escape" }
+            else { break }
+            guard seen.insert(key == "csv" ? "format" : key).inserted else { throw ddlSyntax("Duplicate COPY option") }
+            _ = consumeContextualWord("AS")
+            switch key {
+            case "csv": format = .csv
+            case "format":
+                if consumeContextualWord("CSV") { format = .csv }
+                else { try expectContextualWord("TEXT"); format = .text }
+            case "header":
+                let explicit = withLookahead { consumeContextualWord("TRUE") || consumeContextualWord("FALSE") || consumeContextualWord("ON") || consumeContextualWord("OFF") }
+                header = explicit ? try blockBoolean() : true
+            default:
+                guard case .string(let value) = currentToken else { throw ddlSyntax("COPY option requires a string") }
+                advance()
+                switch key { case "delimiter": delimiter = value; case "null": null = value; case "quote": quote = value; default: escape = value }
+            }
+            if parenthesized {
+                if !isSymbol(",") { break }; advance()
+                guard !isSymbol(")") else { throw ddlSyntax("Expected COPY option") }
+            }
+        }
+        if parenthesized { try expect(")") }
+        else if with && seen.isEmpty { throw ddlSyntax("WITH requires COPY options") }
+        return SQLCopyCommand(target: target, direction: direction,
+            options: try SQLCopyOptions(format: format, delimiter: delimiter, null: null, header: header, quote: quote, escape: escape))
+    }
+
+    private func parseCopyBody() throws -> (data: ByteString, range: SQLSourceRange) {
+        // The lexer has consumed only the semicolon; payload bytes never become SQL tokens.
+        var cursor = position
+        while cursor < sourceBytes.count && (sourceBytes[cursor] == 32 || sourceBytes[cursor] == 9) { cursor += 1 }
+        if cursor < sourceBytes.count && sourceBytes[cursor] == 13 { cursor += 1 }
+        guard cursor < sourceBytes.count && sourceBytes[cursor] == 10 else { throw ddlSyntax("COPY data must start on the following line") }
+        cursor += 1
+        let start = cursor
+        while cursor <= sourceBytes.count {
+            let line = cursor
+            while cursor < sourceBytes.count && sourceBytes[cursor] != 10 { cursor += 1 }
+            let end = cursor > line && sourceBytes[cursor - 1] == 13 ? cursor - 1 : cursor
+            if end - line == 2 && sourceBytes[line] == 92 && sourceBytes[line + 1] == 46 {
+                try structuralLedger.consume(.retainedBytes, amount: UInt64(line - start))
+                // Detach at the output boundary so COPY retains only its preadmitted, measurable payload.
+                let data = ByteString(sourceBytes[start..<line]).detached()
+                position = cursor < sourceBytes.count ? cursor + 1 : cursor
+                advance()
+                return (data, SQLSourceRange(start: start, end: line))
+            }
+            guard cursor < sourceBytes.count else { throw ParseError.unexpectedEndOfInput(expected: "COPY terminator \\.", position: cursor) }
+            cursor += 1
+        }
+        throw ddlSyntax("Missing COPY terminator")
     }
 }

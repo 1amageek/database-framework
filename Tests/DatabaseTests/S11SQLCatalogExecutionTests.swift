@@ -217,9 +217,13 @@ struct S11SQLCatalogExecutionTests {
                 name: "keyed", entityName: "S11PhysicalA", columns: columns, primaryKeyColumnIDs: key)])
             if index == 1 {
                 let generation = container.schemaGeneration
-                await #expect(throws: SQLConstraintError.violation(relation: "keyed", constraint: "keyed_pkey")) {
+                await #expect {
                     try await publish(catalog, in: container, key: "key-\(index)")
-                }
+                } throws: { error in
+            guard let failure = error as? SQLConstraintError,
+                  case .violation(let kind, let actualRelation, let actualConstraint, _, _, _) = failure else { return false }
+            return kind == .unique && actualRelation == "keyed" && actualConstraint == "keyed_pkey"
+        }
                 #expect(container.schemaGeneration == generation)
                 let replacement = try PersistedModel(entity: "S11PhysicalA", fields: [
                     PersistableField(number: 1, name: "id", value: .string("b")),

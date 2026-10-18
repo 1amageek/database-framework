@@ -1602,33 +1602,38 @@ private enum CanonicalPartitionRoutingMode: Sendable {
 
 /// An immutable preflighted source tree consumed by relational materialization.
 final class CanonicalSourceBindingPlan: Sendable {
-    fileprivate let statementRelation: SQLStatementRelation?
-    fileprivate let statementSnapshot: SQLStatementSourceSnapshot?
-    fileprivate let source: DataSource
-    fileprivate let schema: CanonicalRelationSchema
-    fileprivate let children: [CanonicalSourceBindingPlan]
-    fileprivate let viewQuery: SelectQuery?
-    fileprivate let queryPlan: CanonicalBoundSelect?
-    fileprivate let recursiveSelf: CanonicalRecursiveSelfBinding?
-    fileprivate let tableFunction: CanonicalBoundTableFunction?
-    fileprivate let sqlRelation: SQLCatalogResolvedRelation?
-    fileprivate let condition: CanonicalBoundExpression?
-    fileprivate let valueBindings: [[CanonicalBoundExpression]]
-    fileprivate let query: SelectQuery?
-    fileprivate let binding: CanonicalQueryBindingEnvironment
-    fileprivate let namedSubqueries: [NamedSubquery]
-    fileprivate let reservation: DatabaseIntermediateReservation
-    fileprivate let bindingFrames: [CanonicalSourceLayout]
+    let statementRelation: SQLStatementRelation?
+    let statementSnapshot: SQLStatementSourceSnapshot?
+    let source: DataSource
+    let schema: CanonicalRelationSchema
+    let children: [CanonicalSourceBindingPlan]
+    let viewQuery: SelectQuery?
+    let queryPlan: CanonicalBoundSelect?
+    let recursiveSelf: CanonicalRecursiveSelfBinding?
+    let tableFunction: CanonicalBoundTableFunction?
+    let informationSchema: SQLInformationSchemaRelation?
+    let informationSchemaOrdinals: [Int]
+    let sqlRelation: SQLCatalogResolvedRelation?
+    let condition: CanonicalBoundExpression?
+    let valueBindings: [[CanonicalBoundExpression]]
+    let query: SelectQuery?
+    let binding: CanonicalQueryBindingEnvironment
+    let namedSubqueries: [NamedSubquery]
+    let reservation: DatabaseIntermediateReservation
+    let bindingFrames: [CanonicalSourceLayout]
 
     fileprivate init(source: DataSource, schema: CanonicalRelationSchema,
         children: [CanonicalSourceBindingPlan] = [], queryPlan: CanonicalBoundSelect? = nil,
         viewQuery: SelectQuery? = nil, sqlRelation: SQLCatalogResolvedRelation? = nil,
+        informationSchema: SQLInformationSchemaRelation? = nil, informationSchemaOrdinals: [Int] = [],
         recursiveSelf: CanonicalRecursiveSelfBinding? = nil, tableFunction: CanonicalBoundTableFunction? = nil,
         statementRelation: SQLStatementRelation? = nil, statementSnapshot: SQLStatementSourceSnapshot? = nil,
         condition: CanonicalBoundExpression? = nil, query: SelectQuery? = nil, valueBindings: [[CanonicalBoundExpression]] = [],
         binding: CanonicalQueryBindingEnvironment, namedSubqueries: [NamedSubquery],
         reservation: DatabaseIntermediateReservation, bindingFrames: [CanonicalSourceLayout]? = nil) {
         self.viewQuery = viewQuery
+        self.informationSchema = informationSchema
+        self.informationSchemaOrdinals = informationSchemaOrdinals
         self.sqlRelation = sqlRelation
         self.statementRelation = statementRelation; self.statementSnapshot = statementSnapshot
         self.recursiveSelf = recursiveSelf; self.tableFunction = tableFunction
@@ -1640,7 +1645,7 @@ final class CanonicalSourceBindingPlan: Sendable {
 
     fileprivate func owning(_ query: SelectQuery) -> CanonicalSourceBindingPlan {
         CanonicalSourceBindingPlan(source: source, schema: schema, children: children,
-            queryPlan: queryPlan, viewQuery: viewQuery, sqlRelation: sqlRelation, recursiveSelf: recursiveSelf, tableFunction: tableFunction,
+            queryPlan: queryPlan, viewQuery: viewQuery, sqlRelation: sqlRelation, informationSchema: informationSchema, informationSchemaOrdinals: informationSchemaOrdinals, recursiveSelf: recursiveSelf, tableFunction: tableFunction,
             statementRelation: statementRelation, statementSnapshot: statementSnapshot,
             condition: condition, query: query, valueBindings: valueBindings, binding: binding,
             namedSubqueries: namedSubqueries, reservation: reservation, bindingFrames: bindingFrames)
@@ -1934,14 +1939,16 @@ extension DatabaseContext {
     func boundFusionRelationalQueries(
         _ queries: [SelectQuery],
         parameters: [QueryParameter],
-        options: ReadExecutionContext
+        options: ReadExecutionContext,
+        parameterState: CanonicalParameterBindingState? = nil,
+        occurrences: QueryOccurrenceArena? = nil, occurrence: QueryOccurrenceID? = nil
     ) throws -> [CanonicalBoundSelect] {
         let arrayFootprint = try DatabaseIntermediateCollectionMeter.arrayFootprint(
             count: queries.count, element: CanonicalBoundSelect.self)
         let claim = try options.workMeter.reserveIntermediate(bytes: arrayFootprint.bytes, at: .bindingCandidate)
-        let state = try CanonicalParameterBindingState(parameters: parameters, workMeter: options.workMeter)
+        let state = try parameterState ?? CanonicalParameterBindingState(parameters: parameters, workMeter: options.workMeter)
         var binding = try CanonicalQueryBindingEnvironment(parameters: state, workMeter: options.workMeter,
-            occurrences: nil, occurrence: nil, allowingSPARQLFunctions: false, sqlResolution: options.sqlResolution)
+            occurrences: occurrences, occurrence: occurrence, allowingSPARQLFunctions: false, sqlResolution: options.sqlResolution)
         binding.planReservation = claim
         var plans: [CanonicalBoundSelect] = []
         plans.reserveCapacity(queries.count)
@@ -1951,7 +1958,7 @@ extension DatabaseContext {
                 at: .bindingCandidate)
             plans.append(try bindCanonicalQuery(query, inherited: [], outerSchemas: [], binding: binding))
         }
-        try state.finalize()
+        if parameterState == nil { try state.finalize() }
         return plans
     }
 
@@ -3251,6 +3258,9 @@ extension DatabaseContext {
         allowsOuterReferences: Bool = false
     ) async throws -> any SQLRelationProducer {
         let meter = context.options.workMeter
+        if plan.informationSchema != nil {
+            return statementFrameProducer(try informationSchemaRows(plan, workMeter: meter), schema: plan.schema, meter: meter)
+        }
         if let declaration = plan.statementRelation, let scope = ActiveSQLStatementReads.scope {
             return reframedProducer(try await declaration.consumer(scope: scope), schema: plan.schema, meter: meter)
         }
@@ -3368,7 +3378,7 @@ extension DatabaseContext {
         let right: ColumnRef
     }
 
-    private func selectedJoinHashKey(clause: JoinClause, plan: CanonicalSourceBindingPlan,
+    func selectedJoinHashKey(clause: JoinClause, plan: CanonicalSourceBindingPlan,
         meter: DatabaseWorkMeter
     ) throws -> (@Sendable (CanonicalSourceRow, Bool) throws -> SQLJoinRowProducer.HashKey?)? {
         switch clause.type {
@@ -3412,7 +3422,7 @@ extension DatabaseContext {
 
     private func isPhysicalJoinInput(_ plan: CanonicalSourceBindingPlan) -> Bool {
         switch plan.source {
-        case .table: return plan.queryPlan == nil
+        case .table: return plan.queryPlan == nil && plan.informationSchema == nil
         case .aliased: return plan.children.count == 1 && isPhysicalJoinInput(plan.children[0])
         default: return false
         }
@@ -3857,7 +3867,7 @@ extension DatabaseContext {
         }
     }
 
-    private func selectedPlanIsVolatile(_ plan: CanonicalBoundSelect) -> Bool {
+    func selectedPlanIsVolatile(_ plan: CanonicalBoundSelect) -> Bool {
         func expression(_ value: CanonicalBoundExpression) -> Bool {
             if case .function(let call) = value.expression,
                ["clock_timestamp", "nextval", "currval", "lastval", "setval"].contains(call.name.lowercased()) { return true }
@@ -3920,7 +3930,7 @@ extension DatabaseContext {
         // it must not replace the requirement already admitted for that request.
         var listAuthorizationRequirement = admittedListAuthorizationRequirement
         if listAuthorizationRequirement == nil, sourcePlan.queryPlan == nil, sourcePlan.recursiveSelf == nil,
-           sourcePlan.statementRelation == nil,
+           sourcePlan.statementRelation == nil, sourcePlan.informationSchema == nil,
            case .table(let table) = selectQuery.source {
             listAuthorizationRequirement = try DatabaseReadPolicy.listRequirement(
                 entityName: sourcePlan.sqlRelation?.entity.name ?? table.table, selectQuery: selectQuery, schema: try readPolicy().schema, sqlResolution: options.sqlResolution)
@@ -3947,7 +3957,7 @@ extension DatabaseContext {
         default: fixedPagination = true
         }
         let directTable: Bool
-        if case .table = selectQuery.source, sourcePlan.queryPlan == nil, sourcePlan.recursiveSelf == nil,
+        if case .table = selectQuery.source, sourcePlan.queryPlan == nil, sourcePlan.recursiveSelf == nil, sourcePlan.informationSchema == nil,
            ActiveSQLStatementReads.scope == nil,
            selectQuery.subqueries == nil, selectQuery.groupBy == nil, selectQuery.having == nil,
            selectQuery.quantifier == .all, !canonicalQueryRequiresWindows(selectQuery), fixedPagination, !selectedPlanIsVolatile(boundPlan),
@@ -3961,6 +3971,9 @@ extension DatabaseContext {
         }
 
         if let accessPath = selectQuery.accessPath {
+            guard sourcePlan.informationSchema == nil else {
+                throw CanonicalReadError.unsupportedSource("Information schema relations have no physical access path")
+            }
             return try await executeAccessPathRows(
                 selectQuery,
                 accessPath: accessPath,
@@ -4022,7 +4035,7 @@ extension DatabaseContext {
         }
 
         if case .table = selectQuery.source,
-           sourcePlan.queryPlan == nil,
+           sourcePlan.queryPlan == nil, sourcePlan.informationSchema == nil,
            selectQuery.subqueries == nil,
            selectQuery.groupBy == nil,
            selectQuery.having == nil,
@@ -5103,6 +5116,9 @@ extension DatabaseContext {
         allowsOuterReferences: Bool = false,
         cteEnvironment: SQLCTEEnvironment = SQLCTEEnvironment()
     ) async throws -> CanonicalRelation {
+        if sourcePlan.informationSchema != nil {
+            return try informationSchemaRows(sourcePlan, workMeter: options.workMeter)
+        }
         if let declaration = sourcePlan.statementRelation, let scope = ActiveSQLStatementReads.scope {
             let producer = try await declaration.consumer(scope: scope)
             return try await drainSQLProducer(reframedProducer(producer,
@@ -10174,7 +10190,7 @@ extension DatabaseContext {
     ) throws -> CanonicalBoundSelect {
         try validateCanonicalGroupedBinding(resolved, plan: plan, source: source, binding: binding)
         let owned = CanonicalSourceBindingPlan(source: source.source, schema: source.schema,
-            children: source.children, queryPlan: source.queryPlan, viewQuery: source.viewQuery, sqlRelation: source.sqlRelation, recursiveSelf: source.recursiveSelf, tableFunction: source.tableFunction,
+            children: source.children, queryPlan: source.queryPlan, viewQuery: source.viewQuery, sqlRelation: source.sqlRelation, informationSchema: source.informationSchema, informationSchemaOrdinals: source.informationSchemaOrdinals, recursiveSelf: source.recursiveSelf, tableFunction: source.tableFunction,
             statementRelation: source.statementRelation, statementSnapshot: source.statementSnapshot, condition: source.condition,
             query: resolved, valueBindings: source.valueBindings, binding: scopedBinding,
             namedSubqueries: namedSubqueries, reservation: reservation,
@@ -10210,7 +10226,7 @@ extension DatabaseContext {
                 try binding.workMeter.consume(at: .bindingCandidate)
                 switch value.source {
                 case .table(let table):
-                    guard value.queryPlan == nil,
+                    guard value.queryPlan == nil, value.informationSchema == nil,
                           let runtime = try readPolicy().entityRuntime(named: value.sqlRelation?.entity.name ?? table.table),
                           let fields = runtime.groupingIdentityFields else { return nil }
                     var slots: [Int] = []
@@ -10504,6 +10520,7 @@ extension DatabaseContext {
         children: [CanonicalSourceBindingPlan] = [], queryPlan: CanonicalBoundSelect? = nil,
         recursiveSelf: CanonicalRecursiveSelfBinding? = nil, tableFunction: CanonicalBoundTableFunction? = nil,
         statementRelation: SQLStatementRelation? = nil, viewQuery: SelectQuery? = nil,
+        informationSchema: SQLInformationSchemaRelation? = nil, informationSchemaOrdinals: [Int] = [],
         condition: CanonicalBoundExpression? = nil, valueBindings: [[CanonicalBoundExpression]] = [],
         namedSubqueries: [NamedSubquery], outerSchemas: [CanonicalRelationSchema],
         binding: CanonicalQueryBindingEnvironment, reservation claim: DatabaseIntermediateReservation
@@ -10511,20 +10528,20 @@ extension DatabaseContext {
         try claim.reserveAdditional(bytes: UInt64(schema.layout.slots.count) * 512
             + UInt64(valueBindings.reduce(0) { $0 + $1.count }) * 1024, at: .bindingCandidate)
         let sqlRelation: SQLCatalogResolvedRelation?
-        if case .table(let table) = source, queryPlan == nil, recursiveSelf == nil, statementRelation == nil {
+        if case .table(let table) = source, queryPlan == nil, recursiveSelf == nil, statementRelation == nil, informationSchema == nil {
             sqlRelation = try binding.sqlResolution?.resolve(table)
             if let sqlRelation {
                 try claim.reserveAdditional(bytes: UInt64(sqlRelation.columns.count) * 128 + 128, at: .bindingCandidate)
             }
         } else { sqlRelation = nil }
         let snapshot: SQLStatementSourceSnapshot?
-        if case .table(let table) = source, queryPlan == nil, recursiveSelf == nil, statementRelation == nil,
+        if case .table(let table) = source, queryPlan == nil, recursiveSelf == nil, statementRelation == nil, informationSchema == nil,
            let scope = ActiveSQLStatementReads.scope, !ActiveSQLStatementReads.metadataOnly {
             guard let origin = binding.statementReadQuery else { throw SQLStatementReadError.uncapturedSource }
             snapshot = try scope.physicalSource(table, query: origin.query, sqlResolution: binding.sqlResolution)
         } else { snapshot = nil }
         return CanonicalSourceBindingPlan(source: source, schema: schema, children: children,
-            queryPlan: queryPlan, viewQuery: viewQuery, sqlRelation: sqlRelation, recursiveSelf: recursiveSelf, tableFunction: tableFunction,
+            queryPlan: queryPlan, viewQuery: viewQuery, sqlRelation: sqlRelation, informationSchema: informationSchema, informationSchemaOrdinals: informationSchemaOrdinals, recursiveSelf: recursiveSelf, tableFunction: tableFunction,
             statementRelation: statementRelation, statementSnapshot: snapshot,
             condition: condition, valueBindings: valueBindings, binding: binding,
             namedSubqueries: namedSubqueries, reservation: claim,
@@ -10594,6 +10611,16 @@ extension DatabaseContext {
                 columns: columns.map { $0.name }, types: columns.map { .some($0.type) },
                 nullability: columns.map { $0.isNullable })])
             return try admittedCanonicalSource(source, schema: schema, statementRelation: relation,
+                namedSubqueries: namedSubqueries, outerSchemas: outerSchemas, binding: binding, reservation: claim)
+        } else if let resolution = binding.sqlResolution,
+                  let descriptor = try resolution.informationSchemaRelation(table) {
+            let selected = try resolution.informationSchemaColumns(table, descriptor: descriptor)
+            let columns = selected.columns
+            schema = try CanonicalRelationSchema(scopes: [CanonicalRelationScope(name: table.effectiveName,
+                columns: columns.map { $0.name }, types: columns.map { .some($0.type) },
+                nullability: columns.map { $0.isNullable })])
+            return try admittedCanonicalSource(source, schema: schema, informationSchema: descriptor,
+                informationSchemaOrdinals: selected.ordinals,
                 namedSubqueries: namedSubqueries, outerSchemas: outerSchemas, binding: binding, reservation: claim)
         } else if let resolution = binding.sqlResolution, let view = try resolution.ordinaryView(table) {
             let columns = try resolution.viewColumns(table, definition: view.definition)
@@ -10680,7 +10707,7 @@ extension DatabaseContext {
             outerSchemas: outerSchemas, binding: binding, reservation: claim)
     }
 
-    private func canonicalSourceIsImplicitlyLateral(_ source: DataSource) -> Bool {
+    func canonicalSourceIsImplicitlyLateral(_ source: DataSource) -> Bool {
         switch source {
         case .tableFunction: return true
         case .aliased(let child, _, _): return canonicalSourceIsImplicitlyLateral(child)
@@ -11011,6 +11038,39 @@ extension DatabaseContext {
             }, coalescedColumns: layout.coalescedColumns,
             types: unscoped.map { layout.types[$0] }, nullability: unscoped.map { layout.nullability[$0] },
             visibleSlots: layout.visibleSlots, physicalLayout: layout)
+    }
+
+    private func informationSchemaRows(_ plan: CanonicalSourceBindingPlan,
+        workMeter: DatabaseWorkMeter) throws -> CanonicalRelation {
+        guard let descriptor = plan.informationSchema, let resolution = plan.binding.sqlResolution else {
+            throw DatabaseTransactionError.invalidOperationContext
+        }
+        try resolution.validate(readPolicy())
+        var rows = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(workMeter: workMeter,
+            stage: .bindingCandidate, layout: DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self))
+        try descriptor.forEachRow(resolution: resolution) { sourceRow in
+            let sourceValues = sourceRow.values
+            let footprint = try CanonicalRelationalFootprintMeter.positionalValueAliasArrayFootprint(
+                count: plan.informationSchemaOrdinals.count, valueAt: { sourceValues[plan.informationSchemaOrdinals[$0]] },
+                annotations: [:], version: nil, workMeter: workMeter, stage: .bindingCandidate)
+                .adding(DatabaseIntermediateCollectionMeter.arrayFootprint(count: 1, element: DatabaseQueryPayloadLease.self))
+                .adding(DatabaseIntermediateCollectionMeter.arrayFootprint(
+                    count: plan.schema.layout.frameScopes.reduce(0) { $0 + $1.count }, element: Bool.self))
+            let admission = try rows.prepareAppend(footprint: footprint)
+            let values: [QueryValue]
+            if plan.informationSchemaOrdinals.elementsEqual(sourceValues.indices) { values = sourceValues }
+            else {
+                // A durable source can retain a strict original-column subset.
+                values = try plan.informationSchemaOrdinals.map { ordinal in
+                    guard sourceValues.indices.contains(ordinal) else { throw SQLViewExecutionError.missingColumn(relation: descriptor.rawValue, column: "selected ordinal") }
+                    return sourceValues[ordinal]
+                }
+            }
+            rows.append(CanonicalSourceRow(values: values, layout: plan.schema.layout,
+                payloadLeases: [sourceRow.payloadLease]), using: admission)
+        }
+        return CanonicalRelation(schema: plan.schema,
+            rows: try rows.finish().moveToSharedOwnership(at: .bindingCandidate))
     }
 
     private func tableRelationSchema(
@@ -11598,7 +11658,7 @@ extension DatabaseContext {
     private func statementBinding(_ scope: SQLStatementReadScope) throws -> CanonicalQueryBindingEnvironment {
         try scope.validate()
         return try CanonicalQueryBindingEnvironment(
-            parameters: CanonicalParameterBindingState(parameters: scope.parameters, workMeter: scope.execution.workMeter),
+            parameters: SQLPreparedAnalysisRuntime.parameters ?? CanonicalParameterBindingState(parameters: scope.parameters, workMeter: scope.execution.workMeter),
             workMeter: scope.execution.workMeter, occurrences: nil, occurrence: nil,
             allowingSPARQLFunctions: false, sqlResolution: scope.execution.sqlResolution)
     }
@@ -11609,7 +11669,7 @@ extension DatabaseContext {
             let binding = try statementBinding(scope)
             let plan = try bindCanonicalQuery(query, inherited: [],
                 outerSchemas: outerLayout.map { [try relationSchema(for: $0)] } ?? [], binding: binding)
-            try binding.parameters.finalize()
+            if SQLPreparedAnalysisRuntime.parameters == nil { try binding.parameters.finalize() }
             return plan
         }
     }
@@ -11688,7 +11748,7 @@ extension DatabaseContext {
             if predicate { result = try binder.bindPredicate(expression) }
             else if let destination { result = try binder.bindScalarAssignment(expression, to: destination) }
             else { result = try binder.bindScalarExpression(expression) }
-            try binding.parameters.finalize()
+            if SQLPreparedAnalysisRuntime.parameters == nil { try binding.parameters.finalize() }
             return result
         }
     }
@@ -11699,7 +11759,7 @@ extension DatabaseContext {
             let binding = try statementBinding(scope)
             let binder = try typeBinder(schema: relationSchema(for: layout), namedSubqueries: [], queryBinding: binding)
             let plan = try binder.bindProjection(items)
-            try binding.parameters.finalize()
+            if SQLPreparedAnalysisRuntime.parameters == nil { try binding.parameters.finalize() }
             return CanonicalBoundSelect(columns: plan.columns, projection: plan.projection, filter: nil,
                 groupBy: [], having: nil, orderBy: [], metadataLease: plan.metadataLease,
                 bindingMetadata: plan.bindingMetadata, projectionLayout: layout)
@@ -11933,12 +11993,29 @@ extension DatabaseContext {
                   source.recursiveSelf == nil, source.statementRelation == nil else { continue }
             if source.queryPlan != nil && source.viewQuery == nil { continue }
             let allColumns: [SQLViewColumnBinding]
-            let relationID = try resolution.sqlObjectID(table)
-            if let view = try resolution.ordinaryView(table) {
+            let relationID: String
+            let kind: SQLViewSourceKind
+            if let descriptor = source.informationSchema {
+                kind = .informationSchema
+                relationID = descriptor.rawValue
+                let columns = try resolution.informationSchemaColumns(table, descriptor: descriptor).columns
+                allColumns = try columns.enumerated().map { index, column in
+                    guard source.informationSchemaOrdinals.indices.contains(index),
+                          descriptor.columnNames.indices.contains(source.informationSchemaOrdinals[index]) else {
+                        throw SQLViewExecutionError.missingColumn(relation: relationID, column: column.name)
+                    }
+                    return try SQLViewColumnBinding(id: descriptor.columnNames[source.informationSchemaOrdinals[index]],
+                        name: column.name, type: column.type)
+                }
+            } else if let view = try resolution.ordinaryView(table) {
+                kind = .catalog
+                relationID = try resolution.sqlObjectID(table)
                 allColumns = try resolution.viewColumns(table, definition: view.definition).map {
                     try SQLViewColumnBinding(id: $0.id, name: $0.name, type: $0.type)
                 }
             } else {
+                kind = .catalog
+                relationID = try resolution.sqlObjectID(table)
                 allColumns = try resolution.resolve(table).columns.map {
                     try SQLViewColumnBinding(id: $0.declaration.id, name: $0.declaration.name, type: $0.type)
                 }
@@ -11953,10 +12030,10 @@ extension DatabaseContext {
             }) {
                 let previous = bindings[index]
                 let ids = Set((previous.columns + columns).map { SQLCatalogName($0.id) })
-                bindings[index] = try SQLViewSourceBinding(schema: table.schema, table: table.table,
+                bindings[index] = try SQLViewSourceBinding(kind: kind, schema: table.schema, table: table.table,
                     relationID: relationID, columns: allColumns.filter { ids.contains(SQLCatalogName($0.id)) })
             } else {
-                try CanonicalBindingStorage.append(SQLViewSourceBinding(schema: table.schema, table: table.table,
+                try CanonicalBindingStorage.append(SQLViewSourceBinding(kind: kind, schema: table.schema, table: table.table,
                     relationID: relationID, columns: columns), to: &bindings, reservation: claim)
             }
         }

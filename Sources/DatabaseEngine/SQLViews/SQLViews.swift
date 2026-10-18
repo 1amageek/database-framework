@@ -15,6 +15,10 @@ enum SQLViews {
             guard let definition = byID[key] else { throw SQLViewExecutionError.missingDependency(id) }
             for binding in definition.bindings {
                 let columns: [(id: String, type: QueryColumnType)]
+                if binding.kind == .informationSchema {
+                    _ = try SQLInformationSchemaRelation.validating(binding)
+                    continue
+                }
                 if let nested = byID[SQLCatalogName(binding.relationID)] {
                     try visit(binding.relationID)
                     columns = nested.columns.map { ($0.id, $0.type) }
@@ -73,6 +77,7 @@ enum SQLViews {
             changed = false
             for (id, definition) in definitions where !affected.contains(SQLCatalogName(id)) {
                 let depends = definition.bindings.contains { binding in
+                    guard binding.kind == .catalog else { return false }
                     if affected.contains(SQLCatalogName(binding.relationID)) { return true }
                     return removedColumns.first(where: {
                         SQLCatalogName($0.key) == SQLCatalogName(binding.relationID)

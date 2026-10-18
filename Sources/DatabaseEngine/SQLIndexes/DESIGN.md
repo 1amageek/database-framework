@@ -88,6 +88,11 @@ payloads, uniqueness, cancellation and work/memory limits remain explicit errors
 Builds and unique scans use the request work meter and non-snapshot reads so
 concurrent changes participate in the backend conflict/isolation contract.
 
+The ordinary reader and SQLExplain both consume `selectedSQLIndex`; it performs
+the same catalog binding and partial-predicate selection without opening a
+directory or pulling an index row. EXPLAIN never substitutes a syntax-derived
+index choice.
+
 ## Verification and Change Impact
 
 S15SQLIndexTests owns compiler, semantic key, persistence and exact-retirement

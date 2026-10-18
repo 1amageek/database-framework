@@ -5,7 +5,7 @@ public struct SQLTemporalConfiguration: Sendable {
     public enum TimeZone: Sendable {
         case utc
         case fixed(offsetSeconds: Int32)
-        case named(SQLTimeZoneRules)
+        case named(name: String, rules: SQLTimeZoneRules)
     }
 
     /// One caller-supplied fixed binding, independent of IANA designations.
@@ -57,9 +57,15 @@ public struct SQLTemporalConfiguration: Sendable {
         limits: Limits
     ) throws(SQLTimeZoneError) {
         let size = abbreviations.count.multipliedReportingOverflow(by: Self.bindingStride)
-        guard !size.overflow,
+        let zoneBytes: Int
+        if case .named(let name, _) = timeZone {
+            try Self.validateZoneName(name)
+            zoneBytes = name.utf8.count
+        } else { zoneBytes = 0 }
+        let retained = size.partialValue.addingReportingOverflow(zoneBytes)
+        guard !size.overflow, !retained.overflow,
               UInt64(abbreviations.count) <= limits.maximumAbbreviations,
-              UInt64(size.partialValue) <= limits.maximumRetainedBytes else {
+              UInt64(retained.partialValue) <= limits.maximumRetainedBytes else {
             throw .admissionExceeded
         }
         for index in abbreviations.indices {
@@ -98,7 +104,14 @@ public struct SQLTemporalConfiguration: Sendable {
         self.fixedBindings = fixedBindings
     }
 
-    public var retainedByteCount: Int { fixedBindings.count }
+    public var retainedByteCount: Int {
+        if case .named(let name, _) = timeZone { return fixedBindings.count + name.utf8.count }
+        return fixedBindings.count
+    }
+
+    static func validateZoneName(_ name: String) throws(SQLTimeZoneError) {
+        guard !name.isEmpty, !name.utf8.contains(0) else { throw .malformedData }
+    }
 
     public func fixedOffset(
         forAbbreviation name: String,

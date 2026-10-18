@@ -228,3 +228,28 @@ text leases, pushdown and portable results. S06-M01...M06 belong to Mutation.
 Rules and Formatting child designs own their detailed case matrices. S06-C01
 through C11 are verified through public SQL and persistence in addition to
 focused kernel tests; reference oracle results alone do not close them.
+
+
+### S16 named-zone identity
+
+A named invocation zone is `TimeZone.named(name:rules:)`: the exact supplied
+identifier and immutable rules travel together. The identifier changes only
+when the selected zone changes, so temporal evaluation consumes rules while
+SHOW consumes the retained identifier. Configuration initialization rejects
+empty or NUL-containing names and admits their UTF-8 bytes together with fixed
+abbreviation bytes under the existing retained-byte limit. Runtime provider
+lookup validates the same intrinsic identifier before lookup and retains its
+name under the calling query's meter. Immutable `replacing(timeZone:)` preserves
+the selected name/rules pair, provider and fixed abbreviations.
+
+```text
+supplied identifier -> validation + provider lookup -> named(name, rules)
+    -> configuration admission / immutable statement copy
+        -> temporal evaluator consumes rules
+        -> SHOW TimeZone consumes the exact name
+```
+
+SQLTemporalConfigurationTests owns invalid-name and exact/one-past retention
+checks; S16SQLBlockTests owns preconfigured named SHOW through the real block
+entry. Existing temporal gap/fold/day arithmetic tests retain their selected
+provider identifiers and verify the unchanged rules path.

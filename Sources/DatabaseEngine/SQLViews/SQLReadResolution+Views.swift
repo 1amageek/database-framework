@@ -1,14 +1,17 @@
 import DatabaseKit
 
 extension SQLReadResolution {
-    private func sourceBinding(_ table: TableRef) -> SQLViewSourceBinding? {
+    func sourceBinding(_ table: TableRef) -> SQLViewSourceBinding? {
         viewBindings?.first { CanonicalSourceName.equal($0.schema, table.schema)
             && CanonicalSourceName.equal($0.table, table.table) }
     }
 
     /// Resolves the shared namespace before classifying a view or physical source.
     func sqlObjectID(_ table: TableRef) throws -> String {
-        if let binding = sourceBinding(table) { return binding.relationID }
+        if let binding = sourceBinding(table) {
+            guard binding.kind == .catalog else { throw SQLViewExecutionError.readOnly(table.table) }
+            return binding.relationID
+        }
         if viewBindings != nil { throw SQLViewExecutionError.missingDependency(table.table) }
         let namespaces: [String]
         if let schema = table.schema {
@@ -42,16 +45,19 @@ extension SQLReadResolution {
     }
 
     func ordinaryView(_ table: TableRef) throws -> SQLView? {
+        if try informationSchemaRelation(table) != nil { return nil }
         let id = try sqlObjectID(table)
         return snapshot.catalog.views.first { SQLCatalogName($0.id) == SQLCatalogName(id) }
     }
 
     func materializedView(_ table: TableRef) throws -> SQLMaterializedView? {
+        if try informationSchemaRelation(table) != nil { return nil }
         let id = try sqlObjectID(table)
         return snapshot.catalog.materializedViews.first { SQLCatalogName($0.id) == SQLCatalogName(id) }
     }
 
     func rejectReadOnlyMutation(_ table: TableRef) throws {
+        if try informationSchemaRelation(table) != nil { throw SQLViewExecutionError.readOnly(table.table) }
         let id = try sqlObjectID(table)
         if snapshot.catalog.views.contains(where: { SQLCatalogName($0.id) == SQLCatalogName(id) })
             || snapshot.catalog.materializedViews.contains(where: { SQLCatalogName($0.id) == SQLCatalogName(id)

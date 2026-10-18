@@ -51,6 +51,7 @@ extension DBConfiguration {
         name: String? = nil,
         databaseIdentifier: String? = nil,
         storageEngine: any StorageEngine,
+        sqlTemporal: SQLTemporalConfiguration = .utc,
         itemStorage: ItemStorageConfiguration = .v1,
         logging: DatabaseLoggingConfiguration = .disabled,
         metrics: DatabaseMetricsConfiguration = .disabled
@@ -85,6 +86,7 @@ extension DBConfiguration {
             storageTopology: topology,
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
+            sqlTemporal: sqlTemporal,
             testingBaseID: baseID,
             testingPrincipal: principal,
             itemStorage: itemStorage,
@@ -100,6 +102,7 @@ extension DBConfiguration {
             ),
             monotonicClock: TestProcessMonotonicClock(),
             wallClock: FixedTestWallClock(),
+            sqlTemporal: sqlTemporal,
             itemStorage: itemStorage,
             logging: logging,
             metrics: metrics

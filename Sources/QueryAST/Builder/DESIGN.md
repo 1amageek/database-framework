@@ -670,3 +670,7 @@ versus WITH NO DATA. Invalid intrinsic shape fails before output; output growth
 is checked before mutation. No writer allocates catalog identity or evaluates
 a schema expression. Parser round trips and budget boundaries own syntax proof;
 Engine owns observable effects.
+
+### S16 canonical operational blocks
+
+The [canonical S16 contract](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s16-block-operations-and-diagnostics) owns operational values. The serializer validates the complete SQLBlock and emits each step with the existing statement/expression/type writer and one cumulative budget. COPY STDIN payloads preserve exact bytes and use a line terminator; nonrepresentable inline bodies fail explicitly. Round trips cover controls, settings, prepared statements, EXPLAIN and text/CSV COPY.

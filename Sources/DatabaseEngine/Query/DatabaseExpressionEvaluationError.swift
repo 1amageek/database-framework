@@ -5,6 +5,9 @@ public enum DatabaseExpressionEvaluationError: Error, Sendable, Equatable, Custo
     case ambiguousColumn(String)
     case unboundParameter
     case typeMismatch(operation: String)
+    case groupingViolation
+    case windowingViolation
+    case invalidFunctionArity(function: String)
     case divisionByZero
     case inexactDecimalResult
     case numericOverflow
@@ -35,6 +38,12 @@ public enum DatabaseExpressionEvaluationError: Error, Sendable, Equatable, Custo
             return "Expression contains a parameter that was not bound"
         case .typeMismatch(let operation):
             return "Expression operands are incompatible with \(operation)"
+        case .groupingViolation:
+            return "SQL grouping expression is invalid in this phase"
+        case .windowingViolation:
+            return "SQL window expression or definition is invalid"
+        case .invalidFunctionArity(let function):
+            return "SQL function '\(function)' has an invalid argument count"
         case .divisionByZero:
             return "Expression divides by zero"
         case .inexactDecimalResult:

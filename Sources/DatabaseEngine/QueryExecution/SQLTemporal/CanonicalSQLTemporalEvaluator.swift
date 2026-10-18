@@ -95,7 +95,7 @@ enum CanonicalSQLTemporalEvaluator {
         switch environment.configuration.timeZone {
         case .utc: return utcDesignation
         case .fixed(let seconds): return SQLTimeZoneRules.Designation(offsetSeconds: seconds, abbreviation: ByteString())
-        case .named(let rules):
+        case .named(_, let rules):
             do { return try rules.designation(at: instant, workMeter: workMeter) }
             catch let error as SQLTimeZoneError { throw DatabaseExpressionEvaluationError.timeZone(error) }
         }
@@ -112,7 +112,7 @@ enum CanonicalSQLTemporalEvaluator {
         switch zone {
         case .utc: return 0
         case .fixed(let seconds): return seconds
-        case .named(let rules):
+        case .named(_, let rules):
             do { return try rules.offset(at: instant, workMeter: workMeter) }
             catch let error as SQLTimeZoneError { throw DatabaseExpressionEvaluationError.timeZone(error) }
         }
@@ -123,7 +123,7 @@ enum CanonicalSQLTemporalEvaluator {
         switch zone {
         case .utc: return 0
         case .fixed(let seconds): return seconds
-        case .named(let rules):
+        case .named(_, let rules):
             // A supplied offset has the full Int32 domain. Enumerate every UTC
             // interval which could contain this local time, without a one-hour
             // transition or two-candidate assumption.
@@ -180,7 +180,10 @@ enum CanonicalSQLTemporalEvaluator {
         guard let provider = environment.configuration.rulesProvider else {
             throw DatabaseExpressionEvaluationError.timeZone(.rulesUnavailable)
         }
-        do { return .named(try provider.rules(named: name, workMeter: workMeter)) }
+        do {
+            try SQLTemporalConfiguration.validateZoneName(name)
+            return .named(name: name, rules: try provider.rules(named: name, workMeter: workMeter))
+        }
         catch let error as SQLTimeZoneError { throw DatabaseExpressionEvaluationError.timeZone(error) }
     }
 

@@ -325,6 +325,10 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
             let fields: [SourceBinding.Field]?
             if let sqlResolution {
                 do {
+                    if let descriptor = try sqlResolution.informationSchemaRelation(table) {
+                        return collectingOrdering ? orderingBindings(names: try sqlResolution.informationSchemaColumns(table, descriptor: descriptor).columns.map { $0.name },
+                            dependencies: [:], qualifiers: [table.effectiveName]) : []
+                    }
                     let definition: SQLViewDefinition?
                     let viewID: String?
                     if let view = try sqlResolution.ordinaryView(table) { definition = view.definition; viewID = view.id }
@@ -911,7 +915,12 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
             case .table(let table):
                 if table.schema == nil, let declaration = commonTableColumns[CanonicalSourceName(table.table)] { return declaration.names }
                 if let sqlResolution {
-                    do { return try sqlResolution.resolve(table).columns.map { $0.declaration.name } }
+                    do {
+                        if let descriptor = try sqlResolution.informationSchemaRelation(table) {
+                            return try sqlResolution.informationSchemaColumns(table, descriptor: descriptor).columns.map { $0.name }
+                        }
+                        return try sqlResolution.resolve(table).columns.map { $0.declaration.name }
+                    }
                     catch { return nil } // Collection reports the same source failure before admission.
                 }
                 return schema.entity(named: table.table)?.allFields

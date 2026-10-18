@@ -209,8 +209,8 @@ struct SQLTemporalKernelTests {
             ("Australia/Lord_Howe", "2024-10-06 02:15", "2024-10-05 15:45+00"),
             ("Australia/Lord_Howe", "2024-04-07 01:45", "2024-04-06 15:15+00")] {
             let rules = try database.rules(named: name, workMeter: workMeter)
-            let configuration = try SQLTemporalConfiguration(timeZone: .named(rules), rulesProvider: database,
-                limits: .init(maximumAbbreviations: 0, maximumRetainedBytes: 0))
+            let configuration = try SQLTemporalConfiguration(timeZone: .named(name: name, rules: rules), rulesProvider: database,
+                limits: .init(maximumAbbreviations: 0, maximumRetainedBytes: UInt64(name.utf8.count)))
             let base = try environment()
             let env = SQLTemporalEnvironment(transactionInstant: base.transactionInstant, statementInstant: base.statementInstant, wallClock: base.wallClock, configuration: configuration)
             let actual = try CanonicalSQLTemporalEvaluator.cast(.primitive(.string(input)), from: .sql(.text), to: .sql(.timestamp(withTimeZone: true)), context: .explicit, environment: env, workMeter: workMeter)
@@ -226,7 +226,7 @@ struct SQLTemporalKernelTests {
         let rules = try database.rules(named: "America/New_York", workMeter: workMeter)
         let base = try environment()
         let env = SQLTemporalEnvironment(transactionInstant: base.transactionInstant, statementInstant: base.statementInstant, wallClock: base.wallClock,
-            configuration: try SQLTemporalConfiguration(timeZone: .named(rules), rulesProvider: database, limits: .init(maximumAbbreviations: 0, maximumRetainedBytes: 0)))
+            configuration: try SQLTemporalConfiguration(timeZone: .named(name: "America/New_York", rules: rules), rulesProvider: database, limits: .init(maximumAbbreviations: 0, maximumRetainedBytes: 16)))
         let start = try cast("2024-03-09 12:00-05", .timestamp(withTimeZone: true))
         let day = try CanonicalSQLTemporalEvaluator.interval(cast("1 day", .interval()))
         let hours = try CanonicalSQLTemporalEvaluator.interval(cast("24 hours", .interval()))

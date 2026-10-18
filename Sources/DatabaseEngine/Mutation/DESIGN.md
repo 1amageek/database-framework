@@ -531,3 +531,24 @@ its action/projection bodies remain intact; no duplicate row codec or target
 conditional is introduced. The unchanged cumulative ordinary/Embedded runtime
 input owns proof of bounded execution under the default stack and resource
 limits.
+
+
+### S16 effect-free statement analysis
+
+SQLBlock PREPARE and EXPLAIN use Mutation's `analyzeSQL` binding seam. It
+shares the same target resolution, assignment, conflict, MERGE and RETURNING
+binding with ordinary preparation, and stops before source capture, target
+scan, default evaluation or mutation. The caller owns the admitted read scope
+and shared parameter inference; Mutation returns ordered RETURNING metadata.
+Ordinary `prepareSQLReads` composes that binding with real source capture and
+keeps its existing execution contract.
+
+```text
+PREPARE / EXPLAIN -> admitted catalog + shared parameter scope
+    -> Mutation name/type binding -> metadata
+ordinary DML -> same binding -> capture -> effects -> retained outcome
+```
+
+S16Preparation tests must reject invalid unused definitions and prove that
+analysis creates no rows or sequence effects; existing S14 tests own ordinary
+mutation regression behavior.

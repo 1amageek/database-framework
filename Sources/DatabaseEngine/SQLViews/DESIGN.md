@@ -127,3 +127,21 @@ writing, so this guard does not introduce a cross-domain metadata transaction.
 No target-specific state, isolation, Sendable conformance or cleanup branch is
 introduced. The task's exact Native, ordinary WASM and Embedded runtime lanes
 own verification of these unchanged shared-state primitives.
+
+### S16 virtual metadata source composition
+
+`SQLViewSourceBinding.kind` separates catalog identities from
+[SQLInformationSchema](../SQLInformationSchema/DESIGN.md) descriptor identities.
+The catalog kind retains existing stable relation/view IDs. The informationSchema
+kind stores the exact descriptor name and consumed canonical column IDs, names
+and types. Candidate validation checks descriptor and column existence/type;
+physical dependency closure considers only catalog bindings. Runtime expansion
+uses captured kind/identity before caller search paths and preserves the original
+source column order through explicit bound source ordinals. Virtual row production
+applies current invoker metadata policy; no definer privilege is retained.
+
+Format 4 catalog persistence encodes the source discriminator in each binding,
+participating in canonical digest and bounded declaration admission. Unknown
+discriminators and old frame versions fail explicitly. S16SQLInformationSchemaTests
+owns creation, execution under changed search paths, checkpoint rollback,
+reopen, typed binding rejection and metadata-policy propagation.

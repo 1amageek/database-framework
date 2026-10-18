@@ -380,3 +380,12 @@ column membership use the exact UTF-8 identity defined by
 ordering dependency collection before lowering to physical requirements.
 Normalized-equivalent logical names must not merge permissions, shadow a
 source, or suppress a required physical field read.
+
+### S16 virtual SQL metadata
+
+[SQLInformationSchema](../SQLInformationSchema/DESIGN.md) owns virtual relation
+descriptors and catalog-derived rows. Read owns visibility decisions: known
+permission denial hides metadata; operational failure propagates. QueryExecution
+retains the descriptor explicitly and bypasses physical source/list admission,
+statement physical capture and physical fast paths while preserving ordinary
+relational operators and typed empty results.

@@ -62,8 +62,12 @@ struct S15CoreSQLIndexGenerationTests {
         #expect(restoredLease.sqlCatalog.catalog == original.sqlCatalog.catalog)
         #expect(restoredLease.indexPhysicalFingerprint == original.indexPhysicalFingerprint)
         #expect(restoredLease.indexPhysicalLayouts == original.indexPhysicalLayouts)
-        await #expect(throws: SQLConstraintError.violation(relation: index.relationID, constraint: index.name)) {
+        await #expect {
             try await execute(insert(id: "duplicate", value: "retained"), in: restored)
+        } throws: { error in
+            guard let failure = error as? SQLConstraintError,
+                  case .violation(let kind, let actualRelation, let actualConstraint, _, _, _) = failure else { return false }
+            return kind == .unique && actualRelation == index.relationID && actualConstraint == index.name
         }
         let rows = try await restored.testBaseContext().query(SelectQuery(projection: [.column("id")],
             source: .table(TableRef("S15CoreItem"))))

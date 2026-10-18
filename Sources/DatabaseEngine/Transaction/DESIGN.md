@@ -612,3 +612,37 @@ from a stale statement TaskLocal after an earlier DDL statement.
 `S15SchemaStagingTests` owns pre-DDL writes, candidate visibility, physical
 checkpoint rollback and failed-conversion rollback. Final publication remains the
 existing outer commit owner's responsibility.
+
+
+### S16 statement deadline cancellation
+
+TransactionRunner supplies the current attempt with an internal task-local
+cancellation request. The closure delegates to its existing exactly-once
+cancellation gate; SQLBlock never acquires the raw storage transaction or
+commit/cancel authority. A statement deadline requests cancellation through this
+owner, joins its statement task and propagates both primary timeout and mandatory
+cleanup failure. The same gate handles request timeout, task cancellation and
+error rollback, so concurrent cancellation requests share one authoritative close.
+The closure exists only within the admitted attempt and uses the same Mutex task
+owner on Native, WASM and Embedded.
+
+
+### S16 cancellation outcome preservation
+
+If caller cancellation arrives after the shared cancellation gate starts,
+TransactionRunner joins the same authoritative gate outcome. A completed
+operation/mandatory-cleanup composite retains its original primary cause and
+cancellation failure; a fresh CancellationError does not replace that evidence.
+No second backend cancellation is dispatched. S16SQLBlockReviewRegressionTests
+holds backend cancellation, cancels the caller, then releases a typed backend
+failure to distinguish this contract from ordinary cancellation success.
+
+
+| Review repair state | Native / WASM / Embedded owner | Entry and terminal boundary |
+|---|---|---|
+| Authoritative backend cancellation | Existing `Mutex<Task<TransactionCancellationOutcome, Never>?>` | Runner always joins `cancel(preserving:)` on caller cancellation; the same stored task runs backend cancel once. |
+| Existing cancellation failure | Immutable typed error value | A direct `StorageTransactionCleanupError` is rethrown intact after gate join; other operation/cleanup values remain the new wrapper's operationError. |
+
+No target conditional changes storage, Sendable conformance or cancellation
+entry points. Task-local requests retain the same gate; no callback, backend
+operation or await executes inside its Mutex critical section.
