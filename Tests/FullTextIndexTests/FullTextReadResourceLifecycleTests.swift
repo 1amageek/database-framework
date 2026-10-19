@@ -268,10 +268,30 @@ struct FullTextReadResourceLifecycleTests {
         )
         try await context.save()
 
+        let retryQuery = try context.search(
+            FullTextReadResourceArticle.self
+        )
+        .fullText(FullTextReadResourceArticle.fields.body)
+        .terms(["small"], mode: .all)
+        .toSelectQuery()
+        // Retained footprints follow platform type layouts, so the budget is
+        // the small read's measured peak rather than a fixed byte count.
+        let calibration = ReadExecutionContext(
+            monotonicClock: container.monotonicClock
+        )
+        let calibratedRetry = try await context.executeCanonicalQuery(
+            retryQuery,
+            execution: calibration
+        )
+        #expect(calibratedRetry.rows.count == 1)
+        let maximumIntermediateBytes = calibration.workMeter.peakIntermediateBytes
+        #expect(maximumIntermediateBytes > 0)
+        #expect(maximumIntermediateBytes < 120_000)
+
         let execution = ReadExecutionContext(
             options: ReadExecutionOptions(
                 budget: ExecutionBudget(
-                    maximumIntermediateBytes: 8_000
+                    maximumIntermediateBytes: maximumIntermediateBytes
                 )
             ),
             monotonicClock: container.monotonicClock
@@ -293,8 +313,8 @@ struct FullTextReadResourceLifecycleTests {
                 stage: .storageRow,
                 consumed: _,
                 requested: _,
-                maximum: 8_000
-            ) = error as? DatabaseWorkLimitError else {
+                maximum: let maximum
+            ) = error as? DatabaseWorkLimitError, maximum == maximumIntermediateBytes else {
                 return false
             }
             return true
@@ -302,12 +322,6 @@ struct FullTextReadResourceLifecycleTests {
         #expect(execution.workMeter.retainedIntermediateRows == 0)
         #expect(execution.workMeter.retainedIntermediateBytes == 0)
 
-        let retryQuery = try context.search(
-            FullTextReadResourceArticle.self
-        )
-        .fullText(FullTextReadResourceArticle.fields.body)
-        .terms(["small"], mode: .all)
-        .toSelectQuery()
         let retry = try await context.executeCanonicalQuery(
             retryQuery,
             execution: execution

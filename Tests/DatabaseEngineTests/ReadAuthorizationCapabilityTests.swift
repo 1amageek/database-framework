@@ -520,13 +520,16 @@ private struct BorrowedOperationSPARQLExecutor: SPARQLSourceExecutor {
         options: ReadExecutionContext,
         partitions: FieldObject
     ) async throws -> Bool {
-        let task = Task {
-            try await session.transaction.getValue(
-                for: readCapabilityProbeKey,
-                snapshot: false
-            )
+        // Publishes the child before it can reach the barrier, so a reader that
+        // observed the barrier always finds it.
+        readTask.withLock { slot in
+            slot = Task {
+                try await session.transaction.getValue(
+                    for: readCapabilityProbeKey,
+                    snapshot: false
+                )
+            }
         }
-        readTask.withLock { $0 = task }
         await readBarrier.waitUntilEntered()
         return true
     }
@@ -886,16 +889,19 @@ struct ReadAuthorizationCapabilityTests {
                 workMeter: workMeter
             ) { snapshot in
                 escapedSession.withLock { $0 = snapshot.session }
-                let task = Task {
-                    try await snapshot.session.executeSPARQLAsk(
-                        AskQuery(pattern: .basic([])),
-                        options: ReadExecutionContext(
-                            monotonicClock: container.monotonicClock,
-                            workMeter: workMeter
+                // Publishes the child before it can reach the barrier, so a reader that
+                // observed the barrier always finds it.
+                featureTask.withLock { slot in
+                    slot = Task {
+                        try await snapshot.session.executeSPARQLAsk(
+                            AskQuery(pattern: .basic([])),
+                            options: ReadExecutionContext(
+                                monotonicClock: container.monotonicClock,
+                                workMeter: workMeter
+                            )
                         )
-                    )
+                    }
                 }
-                featureTask.withLock { $0 = task }
                 await barrier.waitUntilEntered()
             }
         }

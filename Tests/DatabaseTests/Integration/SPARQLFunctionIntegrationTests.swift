@@ -92,8 +92,10 @@ struct SPARQLFunctionIntegrationTests {
             ],
             version: Schema.Version(1, 0, 0)
         )
+        // SQL reads require the published physical catalog, which only the
+        // production open persists.
         let container = try await DBContainer.open(
-            testing: schema,
+            for: schema,
             configuration: .testing(storageEngine: database),
             runtimeConfiguration: try DatabaseFrameworkRuntime.configuration(
                 executionIdentity: DatabaseExecutionRuntimeIdentity(

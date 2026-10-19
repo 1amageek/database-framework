@@ -79,13 +79,28 @@ struct S13SQLCascadeCollisionTests {
             limits: try DatabaseEntityMutationLimits(maximumChanges: 64, maximumPreconditions: 64))
         let work = DatabaseWorkMeter(budget: ExecutionBudget(maximumRows: 1_000, maximumWorkUnits: 100_000,
             maximumIntermediateRows: 1_000, maximumIntermediateBytes: 8_000_000), monotonicClock: SystemStorageClock())
-        defer {
-            #expect(work.retainedIntermediateRows == 0)
-            #expect(work.retainedIntermediateBytes == 0)
+        do {
+            _ = try await container.testBaseContext().withTransaction(configuration: .batch) { transaction in
+                try await executor.executeSQL(statement, searchPath: .default, transaction: transaction, workMeter: work)
+            }
+        } catch {
+            try await expectReleasedRetention(work)
+            throw error
         }
-        _ = try await container.testBaseContext().withTransaction(configuration: .batch) { transaction in
-            try await executor.executeSQL(statement, searchPath: .default, transaction: transaction, workMeter: work)
+        try await expectReleasedRetention(work)
+    }
+
+    /// Claims are released when their last owner is destroyed; the concurrency
+    /// runtime may drop its copy of a returned result shortly after return, so
+    /// release is awaited within a bound, and a leak still fails.
+    private func expectReleasedRetention(_ work: DatabaseWorkMeter) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while work.retainedIntermediateRows != 0 || work.retainedIntermediateBytes != 0,
+              ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(1))
         }
+        #expect(work.retainedIntermediateRows == 0)
+        #expect(work.retainedIntermediateBytes == 0)
     }
 
     private func fields(_ id: String, entity: String, container: DBContainer) async throws -> FieldObject? {

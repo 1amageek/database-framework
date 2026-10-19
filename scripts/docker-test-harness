@@ -688,6 +688,7 @@ start_foundationdb() {
     --label database-framework.test-run="$RUN_IDENTIFIER" \
     --env FDB_NETWORKING_MODE=container \
     --env FDB_PORT=4500 \
+    --tmpfs /var/fdb/data:rw,size="$FOUNDATIONDB_DATA_TMPFS_SIZE" \
     "$FOUNDATIONDB_IMAGE" > "$RUN_RESULT_DIRECTORY/service-create.txt"
   wait_for_probe "FoundationDB coordinator port" \
     "$DOCKER_BIN" run --rm \

@@ -164,6 +164,14 @@ complete exact-count real-service lane, including explicit concurrency tests,
 zero backend failures and authoritative teardown. Other backend lanes retain
 their existing case scheduling.
 
+The service traces of the 2026-10-14 full-lane runs show ratekeeper holding
+TPSLimit at 0 with `WorstFreeSpaceTLog` 0: the transaction log shared the
+Docker VM filesystem, which had about 5.6% free space, below the ratekeeper
+free-space ratio. Every GRV then waited or failed (1051, 1031) regardless of
+case admission. The disposable service therefore keeps `/var/fdb/data` on a
+run-owned tmpfs bounded by `FOUNDATIONDB_DATA_TMPFS_SIZE`, so free-space
+throttling depends on that bound rather than on the host disk's fill level.
+
 The user deferred the full FoundationDB regression to S18. The serial-case
 lane's first startup executed zero cases before the Docker runtime stalled;
 its scheduling change has no successful full-lane runtime evidence yet.
