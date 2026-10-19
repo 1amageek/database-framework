@@ -144,7 +144,7 @@ extension SQLAggregateEvaluator {
         let root = try plan.add(object ? .object(members) : .array(elements))
         let value: QueryValue
         if binary { value = .jsonb(try plan.jsonb(root)) }
-        else { value = .json(try plan.json(root, style: .builder)) }
+        else { value = .json(try plan.json(root, style: object ? .objectAggregate : .builder)) }
         let result = try SQLJSONMemory.retain(value, meter: memory.meter)
         return try retained(result.value, lease: result.lease, memory: memory)
     }

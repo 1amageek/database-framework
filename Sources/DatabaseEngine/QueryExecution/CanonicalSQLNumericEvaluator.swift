@@ -151,6 +151,10 @@ enum CanonicalSQLNumericEvaluator {
                 }
                 guard let result = Int64(exactly: a) else { throw DatabaseExpressionEvaluationError.numericOverflow }
                 return try integerResult(result, type: type)
+            case "mod":
+                // MOD is the function form of the integer % operator.
+                guard values.count == 2 else { throw mismatch(name) }
+                return try arithmetic(.modulo, values, type: type, workMeter: workMeter)
             default: throw DatabaseExpressionEvaluationError.unsupportedFunction(name)
             }
         case .decimal:

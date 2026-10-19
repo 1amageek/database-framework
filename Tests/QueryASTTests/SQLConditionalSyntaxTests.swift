@@ -139,7 +139,7 @@ struct SQLConditionalSyntaxTests {
             catch let error as SQLParser.ParseError {
                 switch error {
                 case .unexpectedToken(_, _, let position), .unexpectedEndOfInput(_, let position),
-                     .invalidSyntax(_, let position), .literalError(_, let position): #expect(position == expected)
+                     .invalidSyntax(_, let position), .literalError(_, let position, _): #expect(position == expected)
                 case .unsupportedFeature: Issue.record("Expected positioned syntax failure")
                 }
             }

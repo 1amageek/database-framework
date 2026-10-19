@@ -1,0 +1,260 @@
+-- T01-T12 types, values and type resolution.
+
+### T01 success query t01-integer-widths-and-division
+--query
+SELECT 32767::smallint AS s, 7 / 2 AS idiv, -7 / 2 AS negdiv, 7 % 3 AS remainder, 2::smallint + 3::smallint AS ssum, 1::smallint + 1 AS promoted, 9223372036854775807::bigint AS maxbig
+
+### T01 boundary query t01-negative-minimum
+--query
+SELECT (-2147483648)::integer AS minint, (-32768)::smallint AS minsmall
+
+### T01 failure query t01-min-negation-overflow
+--query
+SELECT -(-2147483648)::integer
+
+### T01 failure query t01-min-division-overflow
+--query
+SELECT (-2147483648)::integer / -1
+
+### T01 failure block t01-assignment-overflow
+--setup
+CREATE TABLE narrow(value smallint);
+--query
+INSERT INTO narrow VALUES (40000);
+--post
+SELECT count(*) AS total FROM narrow
+
+### T02 success query t02-numeric-arithmetic
+--query
+SELECT 10.5::numeric * 2 AS product, 1::numeric / 7 AS seventh, 2::numeric / 3 * 3 AS roundtrip, 0.1::numeric + 0.20 AS sum_scale, 5::numeric % 3 AS modulo
+
+### T02 boundary query t02-rounding-and-typmod
+--query
+SELECT round(2.5::numeric) AS half_up, round(-2.5::numeric) AS neg_half, round(1234.5678::numeric, -2) AS neg_scale, 9.995::numeric(4,2) AS carry, round(0.5::numeric, 0) AS zero_scale
+
+### T02 boundary query t02-integer-aggregate-types
+--setup
+CREATE TABLE amounts(i integer, b bigint);
+INSERT INTO amounts VALUES (1, 1), (2, 2), (4, 4);
+--query
+SELECT sum(i) AS isum, sum(b) AS bsum, avg(i) AS iavg, avg(b) AS bavg FROM amounts
+
+### T02 boundary query t02-large-intermediate-average
+--setup
+CREATE TABLE big(value numeric);
+INSERT INTO big VALUES (99999999999999999999999999999999999999), (99999999999999999999999999999999999999);
+--query
+SELECT avg(value) AS mean FROM big
+
+### T02 failure query t02-division-by-zero
+--query
+SELECT 1::numeric / 0
+
+### T02 failure query t02-typmod-overflow
+--query
+SELECT 123.45::numeric(4,2)
+
+### T03 success query t03-float-arithmetic
+--query
+SELECT 1.5::real * 2 AS r, 1::double precision / 3 AS d, 0.1::float8 + 0.2::float8 AS sum, '1e-310'::float8 > 0 AS subnormal, 3.0::real = 3::integer AS equal
+
+### T03 boundary query t03-float-aggregates
+--query
+SELECT sum(x) AS s, avg(x) AS a, max(x) AS m FROM (VALUES (1.5::float8), (2.25), (NULL)) v(x)
+
+### T03 failure query t03-float-overflow
+--query
+SELECT '1e400'::float8
+
+### T03 failure query t03-float-division-zero
+--query
+SELECT 1.0::float8 / 0
+
+### T04 success query t04-boolean-and-null
+--query
+SELECT true AND NULL AS a, false AND NULL AS b, NULL::boolean IS UNKNOWN AS c, NOT NULL::boolean AS d, NULL::text IS NULL AS e, 'yes'::boolean AS f, 'off'::boolean AS g
+
+### T04 boundary query t04-typed-null-columns
+--query
+SELECT NULL::integer AS i, NULL::text AS t, NULL::boolean AS b WHERE false
+
+### T04 failure query t04-invalid-boolean
+--query
+SELECT 'maybe'::boolean
+
+### T05 success query t05-character-types
+--query
+SELECT 'ab'::char(4) AS fixed, length('ab'::char(4)) AS trimmed_len, 'abcdef'::varchar(3) AS truncated, 'ab  '::varchar(5) AS spaced, 'a'::char(3) = 'a   '::char(3) AS pad_equal
+
+### T05 boundary query t05-collation-c-order ordered
+--query
+SELECT s FROM (VALUES ('b'), ('B'), ('a'), ('A'), ('_')) v(s) ORDER BY s COLLATE "C"
+
+### T05 failure block t05-assignment-too-long
+--setup
+CREATE TABLE codes(code varchar(3));
+--query
+INSERT INTO codes VALUES ('abcd');
+--post
+SELECT count(*) AS total FROM codes
+
+### T05 boundary block t05-assignment-trailing-spaces-fit
+--setup
+CREATE TABLE codes(code varchar(3));
+--query
+INSERT INTO codes VALUES ('abc   ');
+--post
+SELECT code, length(code) AS n FROM codes
+
+### T06 success query t06-bytea-uuid
+--query
+SELECT '\xdeadbeef'::bytea AS b, length('\xdeadbeef'::bytea) AS n, 'A0EEBC99-9C0B-4EF8-BB6D-6BB9BD380A11'::uuid AS u, '{a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11}'::uuid AS braced
+
+### T06 boundary query t06-bytewise-order ordered
+--query
+SELECT b FROM (VALUES ('\x01'::bytea), ('\x00ff'::bytea), ('\x00'::bytea), (''::bytea)) v(b) ORDER BY b
+
+### T06 failure query t06-invalid-hex
+--query
+SELECT '\x0g'::bytea
+
+### T06 failure query t06-invalid-uuid
+--query
+SELECT 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a1'::uuid
+
+### T07 success query t07-temporal-values
+--query
+SELECT DATE '2024-02-28' + 1 AS next_day, TIMESTAMP '2024-01-31 10:00' + INTERVAL '1 month' AS month_end, TIMESTAMPTZ '2024-03-10 12:00:00+09' AS tz, TIME '23:59:59.999999' AS late, DATE '2024-03-01' - DATE '2024-02-01' AS days
+
+### T07 boundary query t07-dst-and-zones
+--query
+SELECT TIMESTAMPTZ '2024-03-10 01:30:00 America/New_York' + INTERVAL '1 hour' AS across_dst, TIMESTAMP '2024-03-10 02:30:00' AT TIME ZONE 'America/New_York' AS gap, TIMESTAMPTZ '2024-06-01 00:00:00+00' AT TIME ZONE 'Asia/Tokyo' AS local
+
+### T07 failure query t07-invalid-zone
+--query
+SELECT TIMESTAMPTZ '2024-01-01 00:00:00 Not/AZone'
+
+### T07 failure query t07-day-out-of-range
+--query
+SELECT DATE '2024-04-31'
+
+### T08 success query t08-interval-components
+--query
+SELECT INTERVAL '1 year 2 months 3 days 04:05:06.5' AS full_value, INTERVAL '-1 day +2 hours' AS mixed, INTERVAL '1 month' - INTERVAL '30 days' AS not_zero, INTERVAL '25 hours' AS hours
+
+### T08 boundary query t08-interval-comparison
+--query
+SELECT INTERVAL '1 month' = INTERVAL '30 days' AS month_equal, INTERVAL '1 day' = INTERVAL '24 hours' AS day_equal, DATE '2024-01-31' + INTERVAL '1 month' AS clipped
+
+### T08 failure query t08-invalid-interval
+--query
+SELECT INTERVAL '1 fortnight'
+
+### T09 success query t09-array-operations
+--query
+SELECT ARRAY[1, 2] || 3 AS appended, (ARRAY[[1, 2], [3, 4]])[2][1] AS element, (ARRAY[1, 2, 3])[2:3] AS slice, ARRAY[1, 2] @> ARRAY[2] AS contains, ARRAY[1, 2] && ARRAY[3] AS overlaps, ARRAY[1, NULL] = ARRAY[1, NULL] AS null_equal
+
+### T09 boundary query t09-lower-bounds-and-empty
+--query
+SELECT '[0:1]={7,8}'::integer[] AS shifted, array_lower('[0:1]={7,8}'::integer[], 1) AS lower_bound, ('[0:1]={7,8}'::integer[])[0] AS first, '{}'::integer[] AS empty, cardinality('{}'::integer[]) AS n
+
+### T09 failure query t09-non-rectangular
+--query
+SELECT ARRAY[[1, 2], [3]]
+
+### T10 success query t10-json-and-jsonb
+--query
+SELECT '{"b": 1, "a": [1, 2], "a": 3}'::json AS lexical, '{"b": 1, "a": [1, 2], "a": 3}'::jsonb AS normalized, 'null'::jsonb AS json_null, NULL::jsonb IS NULL AS sql_null
+
+### T10 boundary query t10-jsonb-whitespace-numbers
+--query
+SELECT ' { "x" : 1.50 , "y":[ ] } '::jsonb AS normalized, ' { "x" : 1.50 } '::json AS preserved, '1e2'::jsonb AS exponent
+
+### T10 failure query t10-malformed-json
+--query
+SELECT '{"a": }'::jsonb
+
+### T11 success query t11-unknown-and-overloads
+--query
+SELECT '1' + 2 AS unknown_to_int, 'abc' || 1 AS text_concat, abs(-2.5) AS numeric_abs, abs(-2) AS integer_abs, 1 + 1.5 AS promoted
+
+### T11 failure query t11-ambiguous-overload
+--query
+SELECT '1' + '2'
+
+### T11 failure query t11-undefined-function
+--query
+SELECT no_such_function(1)
+
+### T11 boundary query t11-set-operation-common-type
+--query
+SELECT v FROM (SELECT 1 AS v UNION ALL SELECT 2.5) u WHERE false
+
+### T12 success query t12-shared-equality-join-group
+--setup
+CREATE TABLE a(v numeric);
+CREATE TABLE b(v integer);
+INSERT INTO a VALUES (1.0), (2.00), (NULL);
+INSERT INTO b VALUES (1), (2), (NULL);
+--query
+SELECT a.v AS av, b.v AS bv FROM a JOIN b ON a.v = b.v
+
+### T12 boundary query t12-null-groups-and-distinct
+--query
+SELECT v, count(*) AS n FROM (VALUES (1.0::numeric), (1.00), (NULL), (NULL)) t(v) GROUP BY v
+
+### T12 boundary block t12-index-matches-scan
+--setup
+CREATE TABLE indexed(v numeric, label text);
+INSERT INTO indexed VALUES (1.50, 'a'), (2, 'b'), (1.5, 'c');
+CREATE INDEX indexed_v ON indexed(v);
+--query
+SELECT label FROM indexed WHERE v = 1.5 ORDER BY label;
+
+### T12 failure query t12-incomparable-types
+--query
+SELECT ARRAY[1] = 1
+
+### T03 boundary query t03-real-integer-comparison
+--query
+SELECT 3.0::real = 3::integer AS mixed, 3.0::real = 3.0::real AS same, 3::integer::real AS widened, 3::integer = 3.0::real AS reversed, 2.5::real > 2 AS greater, 0.1::real = 0.1::float8 AS precision
+
+### T11 boundary query t11-text-concatenation-forms
+--query
+SELECT 'abc' || 1 AS unknown_int, 1 || 'abc' AS int_unknown, 'v' || 2.50 AS numeric_text, 'd' || DATE '2024-01-02' AS date_text, 'n' || NULL::integer AS null_operand
+
+### T03 boundary query t03-subnormal-double
+--query
+SELECT '1e-310'::float8 AS v, '1e-310'::float8 > 0 AS positive, '1e-310'::float8 = 0 AS zero, 1e-310::float8 > 0 AS literal_positive, '1e-310'::float8 * 1e10 AS scaled
+
+### T03 boundary query t03-subnormal-after-real
+--query
+SELECT 1.5::real * 2 AS r, '1e-310'::float8 > 0 AS positive
+
+### T03 boundary query t03-subnormal-after-double-sum
+--query
+SELECT 0.1::float8 + 0.2::float8 AS sum, '1e-310'::float8 > 0 AS positive
+
+### T03 boundary query t03-subnormal-value-after-real
+--query
+SELECT 1.5::real * 2 AS r, '1e-310'::float8 AS v
+
+### T03 boundary query t03-subnormal-after-integer
+--query
+SELECT 1 + 1 AS i, '1e-310'::float8 > 0 AS positive
+
+### T03 boundary query t03-subnormal-literal-after-real
+--query
+SELECT 1.5::real * 2 AS r, 1e-310::float8 > 0 AS positive
+
+### T03 boundary query t03-subnormal-against-float-zero
+--query
+SELECT 1 AS i, '1e-310'::float8 > 0::float8 AS positive
+
+### T03 boundary query t03-subnormal-against-numeric-zero
+--query
+SELECT 1 AS i, '1e-310'::float8 > 0.0 AS positive
+
+### T03 boundary query t03-tiny-normal-after-integer
+--query
+SELECT 1 AS i, '1e-300'::float8 > 0 AS positive, '2.5'::float8 > 0 AS ordinary

@@ -1,0 +1,148 @@
+-- L01-L08 lexical forms, parameters, statement structure and casts.
+
+### L01 success query l01-folded-and-quoted
+--setup
+CREATE TABLE "Mixed"(value integer, "Case" integer);
+INSERT INTO "Mixed" VALUES (1, 2);
+--query
+SELECT value, "Case", "Mixed".value AS qualified FROM "Mixed"
+
+### L01 failure query l01-quoted-lookup-is-case-sensitive
+--setup
+CREATE TABLE "Mixed"(value integer);
+--query
+SELECT value FROM mixed
+
+### L01 boundary query l01-escaped-quote-identifier
+--setup
+CREATE TABLE "a""b"("c""d" integer);
+INSERT INTO "a""b" VALUES (7);
+--query
+SELECT "c""d" AS "x""y" FROM "a""b"
+
+### L01 failure query l01-ambiguous-column
+--setup
+CREATE TABLE left_side(id integer);
+CREATE TABLE right_side(id integer);
+--query
+SELECT id FROM left_side, right_side
+
+### L01 failure query l01-reserved-word-unquoted
+--query
+SELECT 1 FROM select
+
+### L02 success query l02-string-forms
+--query
+SELECT 'it''s' AS ordinary, E'tab\tend' AS escaped, U&'d\0061t\+000061' AS unicode, $$dollar 'q'$$ AS dollar, $tag$a$$b$tag$ AS tagged
+
+### L02 failure query l02-invalid-unicode-escape
+--query
+SELECT U&'\zz'
+
+### L02 failure query l02-unterminated-string dynamic
+--query
+SELECT 'open
+
+### L02 boundary query l02-multibyte-and-empty
+--query
+SELECT '' AS empty, '猫😀' AS text, length('猫😀') AS characters, octet_length('猫😀') AS bytes
+
+### L03 success query l03-literal-types
+--query
+SELECT 2147483647 AS int4, 2147483648 AS int8, 9223372036854775808 AS numeric, 1.50 AS scaled, 1e3 AS exponent, -2147483648 AS negative
+
+### L03 boundary query l03-exact-exponent-decimal
+--query
+SELECT 1.23e-5 AS small, 12.3e+2 AS large, 0.1 + 0.2 AS exact
+
+### L03 failure query l03-integer-cast-overflow
+--query
+SELECT 2147483648::integer
+
+### L04 success query l04-typed-literals
+--query
+SELECT DATE '2024-02-29' AS d, TIME '13:04:05' AS t, TIMESTAMP '2024-01-02 03:04:05' AS ts, INTERVAL '1 day 2 hours' AS i, UUID 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11' AS u, '\x00ff'::bytea AS b, ARRAY[1,2] AS a
+
+### L04 failure query l04-invalid-date
+--query
+SELECT DATE '2023-02-29'
+
+### L04 failure query l04-invalid-uuid
+--query
+SELECT UUID 'not-a-uuid'
+
+### L04 boundary query l04-row-constructor
+--query
+SELECT ROW(1, 'a') = ROW(1, 'a') AS same, (1, NULL::integer) IS NULL AS partly_null
+
+### L05 success block l05-positional-parameters-in-expressions
+--setup
+CREATE TABLE items(id integer, label text);
+INSERT INTO items VALUES (1, 'one'), (2, 'two');
+--query
+PREPARE lookup(integer, text) AS SELECT label || $2 AS tagged, $1 + 1 AS next FROM items WHERE id = $1 LIMIT $1;
+EXECUTE lookup(2, '!');
+
+### L05 failure block l05-missing-parameter-type
+--query
+PREPARE untyped AS SELECT $1;
+EXECUTE untyped;
+
+### L05 boundary block l05-explicit-parameter-type
+--setup
+CREATE TABLE items(id integer, label text);
+INSERT INTO items VALUES (1, 'one'), (2, 'two');
+--query
+PREPARE typed(integer) AS SELECT label FROM items WHERE id = $1;
+EXECUTE typed(2);
+--post
+SELECT count(*) AS total FROM items
+
+### L06 success block l06-multi-statement-and-comments
+--setup
+CREATE TABLE items(value text);
+--query
+/* outer /* nested */ still comment */ INSERT INTO items VALUES ('a;b');
+-- line comment ; with semicolon
+INSERT INTO items VALUES ($$c;d$$);
+--post
+SELECT value FROM items ORDER BY value
+
+### L06 failure query l06-unterminated-comment dynamic
+--query
+SELECT 1 /* never closed
+
+### L06 boundary query l06-semicolon-in-quoted-identifier
+--query
+SELECT 1 AS ";"
+
+### L07 success query l07-cast-forms
+--query
+SELECT CAST('12' AS integer) AS c1, '12'::smallint AS c2, 3.14159::numeric(5,2) AS c3, 'abc'::varchar(2) AS c4, '1.5'::real AS c5
+
+### L07 failure query l07-invalid-numeric-typmod
+--query
+SELECT 1::numeric(2,3)
+
+### L07 failure query l07-zero-varchar-length
+--query
+SELECT 'a'::varchar(0)
+
+### L07 boundary query l07-timestamp-precision
+--query
+SELECT TIMESTAMP(0) '2024-01-01 00:00:00.5' AS rounded, TIME(3) '01:02:03.123456' AS milliseconds
+
+### L08 success query l08-cte-lateral-roundtrip
+--setup
+CREATE TABLE items(id integer);
+INSERT INTO items VALUES (1), (2);
+--query
+WITH doubled AS (SELECT id * 2 AS v FROM items) SELECT d.v, l.n FROM doubled d, LATERAL (SELECT d.v + 1 AS n) l ORDER BY d.v
+
+### L08 failure query l08-incomplete-select-alias
+--query
+SELECT 1 AS
+
+### L08 boundary query l08-operator-precedence
+--query
+SELECT 2 + 3 * 4 AS a, (2 + 3) * 4 AS b, -2 * -3 AS c, NOT true AND false AS d, (1 < 2) = true AS e

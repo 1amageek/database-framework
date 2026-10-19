@@ -241,7 +241,7 @@ struct SQLBindingExecutionTests {
                         _ = try await context.executeSQL(sql)
                         Issue.record("Expected an out-of-range SQL output ordinal to reject binding")
                     } catch let failure as SQLBindingSourceFailure {
-                        guard case .read(.unsupportedSelectQuery("Output ordinal is outside the projection")) = failure.cause else {
+                        guard case .read(.invalidQueryStructure(.columnReference, "Output ordinal is outside the projection")) = failure.cause else {
                             Issue.record("Expected the typed invalid output ordinal failure")
                             return
                         }

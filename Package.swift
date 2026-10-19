@@ -885,6 +885,8 @@ let package = Package(
                 .product(name: "DatabaseKitFoundation", package: "database-kit"),
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
+            // The differential corpus and PostgreSQL oracle are read by path.
+            exclude: ["SQLDifferential"],
             swiftSettings: [
                 .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
                 .define("SQLITE", .when(platforms: nativeRuntimePlatforms, traits: ["SQLite"]))

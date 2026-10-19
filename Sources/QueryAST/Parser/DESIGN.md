@@ -141,6 +141,17 @@ typed meaning. Function/custom-type qualification preserves exact schema and
 terminal components; a quoted dotted identifier is one name. Qualified custom
 input remains CAST input until binding resolves it. Bare NULL may normalize to
 a valid resolved target; typed NULL preserves its CAST edge and incoming type.
+The canonical AST cannot distinguish a folded constant cast from a constant
+without cast syntax, and canonical SQL spells every typed constant as a CAST, so
+the default parse leaves such an item unaliased and canonical SQL round-trips
+unchanged. SQL text execution entries (the Database facade and Server statement
+admission) opt into `preservesCastOutputNames`: a folded cast that spans a whole
+unaliased projection item, optionally parenthesized and never under a unary
+sign, then keeps the cast's output name as the item alias. `SQLCastOutputName`
+is the single type-name mapping that the Engine binder also applies to casts
+that stay structural. A rejected constant,
+type modifier or option value throws `literalError` with its
+`SQLConstantFailure` class; the SQL diagnostic owner maps that class to SQLSTATE.
 
 An immutable annotated parse result owns statement, Kit arena/root and sparse
 occurrence-to-source ranges. Existing parse/parseSelect consume the same grammar

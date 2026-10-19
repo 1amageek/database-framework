@@ -1,0 +1,269 @@
+-- O01-O08 request blocks, checkpoints, settings, PREPARE, EXPLAIN, COPY,
+-- information_schema and SQLSTATE classification. Session persistence beyond
+-- one request is an accepted product difference and is not compared here.
+
+### O01 success script o01-begin-commit-read-your-writes
+--setup
+CREATE TABLE items(v integer);
+--query
+BEGIN;
+INSERT INTO items VALUES (1);
+SELECT count(*) AS inside FROM items;
+COMMIT;
+--post
+SELECT count(*) AS committed FROM items
+
+### O01 success script o01-start-end-forms
+--setup
+CREATE TABLE items(v integer);
+--query
+START TRANSACTION;
+INSERT INTO items VALUES (1);
+END;
+--post
+SELECT v FROM items ORDER BY v
+
+### O01 boundary script o01-abort-form
+--setup
+CREATE TABLE items(v integer);
+--query
+BEGIN;
+INSERT INTO items VALUES (2);
+ABORT;
+--post
+SELECT count(*) AS total FROM items
+
+### O01 boundary script o01-rollback-discards
+--setup
+CREATE TABLE items(v integer);
+--query
+BEGIN;
+INSERT INTO items VALUES (1);
+ROLLBACK;
+--post
+SELECT count(*) AS total FROM items
+
+### O01 failure script o01-error-aborts-transaction
+--setup
+CREATE TABLE items(v integer PRIMARY KEY);
+--query
+BEGIN;
+INSERT INTO items VALUES (1);
+INSERT INTO items VALUES (1);
+COMMIT;
+--post
+SELECT count(*) AS total FROM items
+
+### O02 success script o02-savepoint-rollback-to
+--setup
+CREATE TABLE items(v integer);
+--query
+BEGIN;
+INSERT INTO items VALUES (1);
+SAVEPOINT a;
+INSERT INTO items VALUES (2);
+ROLLBACK TO a;
+INSERT INTO items VALUES (3);
+COMMIT;
+--post
+SELECT v FROM items ORDER BY v
+
+### O02 boundary script o02-nested-and-release
+--setup
+CREATE TABLE items(v integer);
+--query
+BEGIN;
+SAVEPOINT outer_point;
+INSERT INTO items VALUES (1);
+SAVEPOINT inner_point;
+INSERT INTO items VALUES (2);
+RELEASE inner_point;
+ROLLBACK TO outer_point;
+INSERT INTO items VALUES (3);
+COMMIT;
+--post
+SELECT v FROM items ORDER BY v
+
+### O02 failure script o02-unknown-savepoint
+--query
+BEGIN;
+ROLLBACK TO never_created;
+COMMIT;
+
+### O02 failure script o02-released-savepoint
+--query
+BEGIN;
+SAVEPOINT a;
+RELEASE a;
+RELEASE a;
+COMMIT;
+
+### O02 boundary script o02-catalog-rollback-to
+--query
+BEGIN;
+SAVEPOINT before_table;
+CREATE TABLE transient(v integer);
+ROLLBACK TO before_table;
+SELECT count(*) AS tables FROM information_schema.tables WHERE table_name = 'transient';
+COMMIT;
+
+### O03 success block o03-set-show-reset
+--query
+SET LOCAL TimeZone TO 'Asia/Tokyo';
+SELECT TIMESTAMPTZ '2024-01-01 00:00:00+00'::text AS rendered;
+
+### O03 boundary block o03-search-path-and-reset
+--query
+CREATE SCHEMA app;
+SET LOCAL search_path TO app, public;
+RESET search_path;
+SET LOCAL TimeZone TO 'UTC';
+SHOW TimeZone;
+
+### O03 failure block o03-invalid-zone
+--query
+SET LOCAL TimeZone TO 'Not/AZone';
+
+### O03 failure block o03-invalid-timeout
+--query
+SET LOCAL statement_timeout TO 'soon';
+
+### O04 success block o04-prepare-execute-deallocate
+--setup
+CREATE TABLE items(id integer, label text);
+INSERT INTO items VALUES (1, 'a'), (2, 'b');
+--query
+PREPARE pick(integer) AS SELECT label FROM items WHERE id = $1;
+DEALLOCATE pick;
+PREPARE pick(integer) AS SELECT label || '!' AS marked FROM items WHERE id = $1;
+EXECUTE pick(2);
+
+### O04 failure block o04-execute-missing
+--query
+EXECUTE never_prepared;
+
+### O04 failure block o04-wrong-argument-count
+--query
+PREPARE pick(integer) AS SELECT $1;
+EXECUTE pick(1, 2);
+
+### O04 boundary block o04-prepared-dml
+--setup
+CREATE TABLE items(id integer);
+--query
+PREPARE add(integer) AS INSERT INTO items VALUES ($1);
+EXECUTE add(5);
+EXECUTE add(6);
+SELECT id FROM items ORDER BY id;
+
+### O05 success block o05-explain-accepted
+--setup
+CREATE TABLE items(id integer);
+--query
+EXPLAIN SELECT id FROM items WHERE id = 1;
+EXPLAIN (FORMAT JSON, VERBOSE) SELECT id FROM items;
+SELECT 1 AS planned;
+
+### O05 boundary block o05-explain-analyze-executes
+--setup
+CREATE TABLE items(id integer);
+--query
+EXPLAIN ANALYZE INSERT INTO items VALUES (1);
+SELECT count(*) AS inserted FROM items;
+
+### O05 failure block o05-explain-invalid-statement
+--query
+EXPLAIN SELECT missing_column;
+
+### O06 success block o06-copy-to-stdout-csv shape
+--setup
+CREATE TABLE items(id integer, label text);
+INSERT INTO items VALUES (1, 'a,b'), (2, NULL);
+--query
+COPY (SELECT id, label FROM items ORDER BY id) TO STDOUT WITH (FORMAT CSV, HEADER);
+SELECT count(*) AS total FROM items;
+
+### O06 failure block o06-copy-unknown-format
+--setup
+CREATE TABLE items(id integer);
+--query
+COPY items TO STDOUT WITH (FORMAT xml);
+
+### O07 success query o07-information-schema-tables-columns
+--setup
+CREATE TABLE items(id integer PRIMARY KEY, label varchar(10) NOT NULL, note text);
+--query
+SELECT column_name, data_type, is_nullable, character_maximum_length FROM information_schema.columns WHERE table_name = 'items'
+
+### O07 success query o07-information-schema-constraints
+--setup
+CREATE TABLE parent(id integer PRIMARY KEY);
+CREATE TABLE child(id integer UNIQUE, pid integer REFERENCES parent(id));
+--query
+SELECT tc.table_name, tc.constraint_type, kcu.column_name FROM information_schema.table_constraints tc JOIN information_schema.key_column_usage kcu ON kcu.constraint_name = tc.constraint_name AND kcu.table_name = tc.table_name WHERE tc.table_name IN ('parent', 'child')
+
+### O07 boundary query o07-information-schema-views-sequences
+--setup
+CREATE TABLE items(id integer);
+CREATE VIEW item_view AS SELECT id FROM items;
+CREATE SEQUENCE item_seq;
+--query
+SELECT (SELECT count(*) FROM information_schema.views WHERE table_name = 'item_view') AS views, (SELECT count(*) FROM information_schema.sequences WHERE sequence_name = 'item_seq') AS sequences, (SELECT count(*) FROM information_schema.tables WHERE table_name = 'missing') AS missing
+
+### O07 failure query o07-information-schema-unknown-column
+--query
+SELECT no_such_column FROM information_schema.tables
+
+### O08 failure query o08-syntax
+--query
+SELECT FROM WHERE
+
+### O08 failure query o08-undefined-table
+--query
+SELECT * FROM missing_table
+
+### O08 failure query o08-datatype-mismatch
+--query
+SELECT 'a'::text + 1
+
+### O08 failure query o08-cardinality
+--query
+SELECT (VALUES (1), (2))
+
+### O08 failure block o08-not-null-violation
+--setup
+CREATE TABLE items(v integer NOT NULL);
+--query
+INSERT INTO items VALUES (NULL);
+
+### O08 failure query o08-numeric-out-of-range
+--query
+SELECT 99999::smallint
+
+### O08 failure query o08-invalid-text-representation
+--query
+SELECT 'x'::integer
+
+### O08 boundary query o08-success-state
+--query
+SELECT 1 AS ok
+
+### O06 boundary block o06-copy-empty-result shape
+--setup
+CREATE TABLE items(id integer);
+--query
+COPY (SELECT id FROM items) TO STDOUT;
+SELECT count(*) AS total FROM items;
+
+### O08 success block o08-successful-block-state
+--setup
+CREATE TABLE items(v integer);
+--query
+INSERT INTO items VALUES (1);
+SELECT v FROM items;
+
+### O03 success block o03-show-search-path
+--query
+CREATE SCHEMA app;
+SET LOCAL search_path TO app, public;
+SHOW search_path;

@@ -19,6 +19,21 @@ enum SQLConstantError: Error, Sendable, Equatable, CustomStringConvertible {
         }
     }
 
+    var failure: SQLConstantFailure {
+        switch self {
+        case .invalidNumeric, .invalidConstant: return .invalidRepresentation
+        case .numericOutOfRange: return .outOfRange
+        case .unsupportedConstant: return .unsupported
+        case .resourceLimit: return .resourceLimit
+        case .value(let error):
+            switch error {
+            case .numericOutOfRange, .intervalOutOfRange, .timeOutOfRange: return .outOfRange
+            case .resourceLimit, .arithmeticOverflow, .unknownRetainedByteCount: return .resourceLimit
+            default: return .invalidRepresentation
+            }
+        }
+    }
+
     var description: String {
         switch self {
         case .invalidNumeric(let reason), .invalidConstant(let reason),

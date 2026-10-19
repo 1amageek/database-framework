@@ -1,5 +1,6 @@
 import DatabaseTypes
 import DatabaseKit
+import QueryAST
 
 /// SQL-only typing for the currently executable canonical expression forms.
 /// The relation owner supplies name lookup and subquery binding before reads.
@@ -650,6 +651,9 @@ struct CanonicalQueryTypeBinder {
              .multiply(let lhs, let rhs), .divide(let lhs, let rhs),
              .modulo(let lhs, let rhs):
             if case .subtract = expression, let selected = try bindCollectionBinary(expression, left: lhs, right: rhs) { return selected }
+            if Self.isUntypedLiteral(lhs), Self.isUntypedLiteral(rhs) {
+                throw DatabaseExpressionEvaluationError.ambiguousOperator("arithmetic on two untyped literals")
+            }
             var known: [CanonicalBoundExpression?] = []
             if let temporal = try bindTemporalArithmetic(expression, operands: [lhs, rhs], inputs: &known) { return temporal }
             let inputs = try bindInputs([lhs, rhs], defaultType: .sql(.bigint), known: known)
@@ -700,14 +704,34 @@ struct CanonicalQueryTypeBinder {
             return node(expression, .sql(.boolean), children.contains { $0.isNullable }, children)
         case .concatenate(let lhs, let rhs):
             if let selected = try bindCollectionBinary(expression, left: lhs, right: rhs) { return selected }
-            let inputs = try bindInputs([lhs, rhs])
-            if inputs.allSatisfy({ Self.isBytes($0.type) }) {
-                return node(expression, .sql(.blob), inputs.contains { $0.isNullable },
-                    try inputs.map { try coerce($0, to: .sql(.blob)) })
+            let operands = [lhs, rhs]
+            let known: [CanonicalBoundExpression?] = try operands.indices.map { index in
+                try isContextualUnknown(operands[index]) ? nil : childBinder(.operand, index).bind(operands[index])
             }
-            guard inputs.allSatisfy({ Self.isText($0.type) }) else { throw mismatch("concatenation") }
-            return node(expression, .sql(.text), inputs.contains { $0.isNullable },
-                try inputs.map { try coerce($0, to: .sql(.text)) })
+            // bytea || bytea: an unknown side takes the known bytea type.
+            if known.contains(where: { $0 != nil }), known.allSatisfy({ $0.map { Self.isBytes($0.type) } ?? true }) {
+                let children = try operands.indices.map { index -> CanonicalBoundExpression in
+                    guard let input = known[index] else {
+                        return try childBinder(.operand, index).bind(operands[index], contextualType: .sql(.blob))
+                    }
+                    return try coerce(input, to: .sql(.blob))
+                }
+                return node(expression, .sql(.blob), children.contains { $0.isNullable }, children)
+            }
+            // text || anynonarray: an unknown side is text and the other side's
+            // value is rendered as text; two non-text operands have no operator.
+            guard known.contains(where: { $0.map { Self.isText($0.type) } ?? true }) else {
+                throw DatabaseExpressionEvaluationError.unsupportedFunction("||")
+            }
+            let children = try operands.indices.map { index -> CanonicalBoundExpression in
+                guard let input = known[index] else {
+                    return try childBinder(.operand, index).bind(operands[index], contextualType: .sql(.text))
+                }
+                if Self.isText(input.type) { return try coerce(input, to: .sql(.text)) }
+                guard Self.arrayElement(input.type) == nil else { throw mismatch("concatenation") }
+                return try textOutput(input)
+            }
+            return node(expression, .sql(.text), children.contains { $0.isNullable }, children)
         case .between(let operand, let low, let high):
             let children = try bindComparison([operand, low, high])
             let mode = Self.comparisonMode([operand, low, high])
@@ -1856,15 +1880,6 @@ struct CanonicalQueryTypeBinder {
         }
     }
 
-    func commonSourceType(_ types: [QueryColumnType]) throws -> QueryColumnType {
-        if types.allSatisfy({ Self.numericKind($0) != nil }),
-           types.contains(where: { Self.numericKind($0) == .decimal }),
-           types.contains(where: { Self.numericKind($0) == .floating }) {
-            return .sql(.decimal(precision: nil, scale: nil))
-        }
-        return try commonType(types)
-    }
-
     func commonType(_ types: [QueryColumnType]) throws -> QueryColumnType {
         guard let first = types.first else { return .sql(.text) }
         if types.allSatisfy({ $0 == first }) { return first }
@@ -2202,6 +2217,23 @@ struct CanonicalQueryTypeBinder {
         throw DatabaseExpressionEvaluationError.invalidCast("unsupported source-to-target conversion")
     }
 
+    /// An untyped string or NULL literal; two of them leave an operator ambiguous.
+    private static func isUntypedLiteral(_ expression: DatabaseKit.Expression) -> Bool {
+        switch expression {
+        case .literal(.null), .literal(.sqlUnknownString), .literal(.queryValue(.primitive(.null), type: nil)): return true
+        default: return false
+        }
+    }
+
+    /// Renders a non-text operand as text through an explicit cast.
+    private func textOutput(_ child: CanonicalBoundExpression) throws -> CanonicalBoundExpression {
+        try validateCast(from: child.type, to: .sql(.text), context: .explicit)
+        return CanonicalBoundExpression(expression: .cast(child.expression, targetType: .text), type: .sql(.text),
+            isNullable: child.isNullable, children: [child], occurrence: child.occurrence,
+            subqueryBinding: child.subqueryBinding, castContext: .explicit,
+            comparisonMode: child.comparisonMode, collation: child.collation, bindingMetadata: bindingMetadata)
+    }
+
     private func coerce(_ child: CanonicalBoundExpression, to type: QueryColumnType) throws -> CanonicalBoundExpression {
         guard child.type != type else { return child }
         guard Self.permitsImplicit(from: child.type, to: type),
@@ -2291,7 +2323,7 @@ struct CanonicalQueryTypeBinder {
             switch Self.trimmed(text).lowercased() {
             case "true", "t", "yes", "y", "on", "1": value = .primitive(.bool(true))
             case "false", "f", "no", "n", "off", "0": value = .primitive(.bool(false))
-            default: throw mismatch("boolean input")
+            default: throw DatabaseExpressionEvaluationError.invalidCast("boolean input")
             }
         case .sql(.smallint), .sql(.integer), .sql(.bigint),
              .primitive(.int8, false), .primitive(.int16, false), .primitive(.int32, false), .primitive(.int64, false),
@@ -2524,29 +2556,60 @@ struct CanonicalQueryTypeBinder {
         return false
     }
 
+    /// Names an unaliased output column with PostgreSQL's FigureColname rules.
     static func outputName(_ expression: DatabaseKit.Expression, index: Int) -> String {
+        figuredName(expression)?.name ?? "?column?"
+    }
+
+    /// A name and its strength: 2 for a referenced name, 1 for a fallback keyword or type.
+    private static func figuredName(_ expression: DatabaseKit.Expression) -> (name: String, strength: Int)? {
         switch expression {
-        case .column(let column): return column.column
-        case .field(_, let name): return name
-        case .grouping: return "grouping"
+        case .column(let column): return (column.column, 2)
+        case .field(_, let name): return (name, 2)
+        case .arrayAccess(let base, _), .collate(let base, _): return figuredName(base)
+        case .function(let call): return (call.name, 2)
+        case .grouping: return ("grouping", 2)
         case .window(let call):
             switch call.function {
-            case .aggregate(let aggregate): return aggregate.function.rawValue
-            case .analytic(let function, _): return function.rawValue
+            case .aggregate(let aggregate): return (aggregate.function.rawValue, 2)
+            case .analytic(let function, _): return (function.rawValue, 2)
             }
         case .aggregate(let aggregate):
             switch aggregate {
-            case .sql(let call): return call.function.rawValue
-            case .count: return "count"
-            case .sum: return "sum"
-            case .avg: return "avg"
-            case .min: return "min"
-            case .max: return "max"
-            case .groupConcat: return "group_concat"
-            case .sample: return "sample"
-            case .arrayAgg: return "array_agg"
+            case .sql(let call): return (call.function.rawValue, 2)
+            case .count: return ("count", 2)
+            case .sum: return ("sum", 2)
+            case .avg: return ("avg", 2)
+            case .min: return ("min", 2)
+            case .max: return ("max", 2)
+            case .groupConcat: return ("group_concat", 2)
+            case .sample: return ("sample", 2)
+            case .arrayAgg: return ("array_agg", 2)
             }
-        default: return "column\(index)"
+        case .currentValue(let kind, _):
+            switch kind {
+            case .date: return ("current_date", 2)
+            case .time: return ("current_time", 2)
+            case .timestamp: return ("current_timestamp", 2)
+            case .localTime: return ("localtime", 2)
+            case .localTimestamp: return ("localtimestamp", 2)
+            }
+        case .cast(let operand, let type):
+            if let inner = figuredName(operand), inner.strength > 1 { return inner }
+            return (SQLCastOutputName.name(for: type), 1)
+        case .caseWhen: return ("case", 1)
+        case .array, .arraySubquery: return ("array", 2)
+        case .row: return ("row", 2)
+        case .coalesce: return ("coalesce", 2)
+        case .nullIf: return ("nullif", 2)
+        case .greatest: return ("greatest", 2)
+        case .least: return ("least", 2)
+        case .exists: return ("exists", 2)
+        case .subquery(let query):
+            guard case .expression(let inner, let alias)? = query.projection.first else { return nil }
+            if let alias { return (alias, 2) }
+            return figuredName(inner)
+        default: return nil
         }
     }
 

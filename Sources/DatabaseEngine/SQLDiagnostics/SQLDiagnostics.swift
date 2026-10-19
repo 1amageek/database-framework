@@ -38,6 +38,7 @@ public enum SQLDiagnostics {
         if let error = error as? QueryStructuralValidationError {
             switch error {
             case .resourceLimitExceeded, .invalidResourceClaim: return make("54000", .resource, error.description)
+            case .invalidSQLSequenceOptions: return make("22023", .data, error.description)
             case .invalidQueryValue(let cause): return queryValue(cause)
             default: return make("42601", .syntax, error.description)
             }
@@ -153,9 +154,21 @@ public enum SQLDiagnostics {
             default: return make("XX000", .internalError, "SQL sequence execution failed")
             }
         }
+        if let error = error as? SQLCatalogError {
+            switch error {
+            case .invalidSequenceType, .invalidSequenceIncrement, .invalidSequenceBounds, .invalidSequenceStart:
+                return make("22023", .data, "Invalid SQL sequence options")
+            case .duplicateNamespaceName(let name): return make("42P06", .name, "SQL schema already exists", schema: name)
+            case .duplicateRelationName(_, let name), .duplicateSequenceName(_, let name):
+                return make("42P07", .name, "SQL relation already exists", table: name)
+            case .duplicateColumnName(let name): return make("42701", .name, "SQL column already exists", column: name)
+            case .duplicateConstraintName(let name): return make("42710", .name, "SQL constraint already exists", constraint: name)
+            default: return make("XX000", .internalError, "SQL catalog validation failed")
+            }
+        }
         if let error = error as? SQLViewExecutionError {
             switch error {
-            case .readOnly(let name): return make("42809", .type, "SQL view is read-only", table: name)
+            case .readOnly(let name): return make("55000", .transaction, "SQL view is read-only", table: name)
             case .notPopulated(let name): return make("55000", .transaction, "Materialized view is not populated", table: name)
             case .missingDependency(let name): return make("42P01", .name, "SQL view dependency is missing", table: name)
             case .missingColumn(let relation, let column): return make("42703", .name, "SQL view column is missing", table: relation, column: column)
@@ -184,6 +197,9 @@ public enum SQLDiagnostics {
         case .generatedAssignment(_, let column), .identityAssignment(_, let column):
             return make("428C9", .constraint, "SQL column cannot be assigned", column: column)
         case .invalidDeclaration: return make("42601", .syntax, "Invalid SQL constraint declaration")
+        case .truncateReferenced(_, let constraint, let schema, let table):
+            return make("0A000", .constraint, "SQL relation is referenced by a foreign key", schema: schema,
+                table: table, constraint: constraint)
         }
     }
 
@@ -194,6 +210,15 @@ public enum SQLDiagnostics {
         case .invalidScalarSubquery, .invalidMembershipSubquery: return make("21000", .cardinality, "SQL subquery has invalid cardinality")
         case .incompatibleLiteralType: return make("42804", .type, "Incompatible SQL literal type")
         case .paginationValueExceedsRuntimeRange: return make("54000", .resource, "SQL pagination exceeds runtime range")
+        case .invalidQueryStructure(let violation, let reason):
+            switch violation {
+            case .columnReference: return make("42P10", .name, reason)
+            case .columnCount: return make("42601", .syntax, reason)
+            case .recursion: return make("42P19", .syntax, reason)
+            case .limitRowCount: return make("2201W", .data, reason)
+            case .offsetRowCount: return make("2201X", .data, reason)
+            case .duplicateAlias: return make("42712", .name, reason)
+            }
         case .unsupportedSource, .unsupportedSelectQuery, .unsupportedExpression, .unsupportedAccessPath, .executorNotRegistered:
             return make("0A000", .unsupported, "Unsupported SQL query feature")
         default: return make("XX000", .internalError, "SQL read execution failed")
@@ -212,7 +237,10 @@ public enum SQLDiagnostics {
         case .divisionByZero: return make("22012", .numeric, error.description)
         case .numericOverflow, .numericUnderflow, .nonFiniteValue, .inexactDecimalResult: return make("22003", .numeric, error.description)
         case .numericDomain: return make("22000", .numeric, error.description)
-        case .unsupportedExpression, .unsupportedFunction, .unsupportedPattern: return make("0A000", .unsupported, error.description)
+        // A name or signature outside the function catalog does not exist for SQL.
+        case .unsupportedFunction: return make("42883", .name, error.description)
+        case .ambiguousOperator: return make("42725", .type, error.description)
+        case .unsupportedExpression, .unsupportedPattern: return make("0A000", .unsupported, error.description)
         case .invalidPattern: return make("2201B", .data, error.description)
         case .invalidCast: return make("22P02", .data, error.description)
         case .invalidTemporalInput: return make("22007", .data, error.description)

@@ -72,6 +72,29 @@ struct SQLParserConstructorTests {
         #expect(try expressions("SELECT BYTEA '\\x00ff'") == [.literal(.queryValue(.primitive(.bytes([0, 255])), type: .sql(.blob)))])
     }
 
+    @Test("A folded cast spanning an unaliased projection item keeps the cast's output name")
+    func foldedCastOutputNames() throws {
+        let sql = "SELECT '1'::int, (CAST(2 AS text)), -1::int, CAST(3 AS text) AS named, CAST(4 AS text) || 'x', NUMERIC '1.5'"
+        func aliases(_ query: SelectQuery) -> [String?] {
+            query.projection.map {
+                guard case .expression(_, let alias) = $0 else { return "*" }
+                return alias
+            }
+        }
+        let named = try SQLParser(preservesCastOutputNames: true).parseSelect(sql)
+        #expect(aliases(named) == ["int4", "text", nil, "named", nil, "numeric"])
+        // The canonical parse keeps folded constants unaliased so canonical SQL round-trips.
+        let canonical = try SQLParser().parseSelect(sql)
+        #expect(aliases(canonical) == [nil, nil, nil, "named", nil, nil])
+        func projectedExpressions(_ query: SelectQuery) -> [Expression?] {
+            query.projection.map {
+                guard case .expression(let expression, _) = $0 else { return nil }
+                return expression
+            }
+        }
+        #expect(projectedExpressions(named) == projectedExpressions(canonical))
+    }
+
     @Test("Temporal lexical input preserves typmods without host timezone conversion")
     func temporalTypedInput() throws {
         #expect(try expressions("SELECT DATE '2026-10-15', TIME(3) WITH TIME ZONE '10:20:30+09', TIMESTAMP(6) WITHOUT TIME ZONE '2026-10-15 10:20:30'") == [
@@ -112,7 +135,7 @@ struct SQLParserConstructorTests {
             ("SELECT 'é', NULL::NUMERIC(2,-1001)", "NUMERIC scale must be in -1000...1000", 30),
         ]
         for (sql, message, position) in failures {
-            #expect(throws: SQLParser.ParseError.invalidSyntax(message: message, position: position)) {
+            #expect(throws: SQLParser.ParseError.literalError(message: message, position: position, failure: .invalidTypeModifier)) {
                 _ = try SQLParser().parseSelect(sql)
             }
         }

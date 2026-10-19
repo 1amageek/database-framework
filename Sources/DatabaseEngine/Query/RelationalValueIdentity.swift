@@ -289,7 +289,11 @@ private struct RelationalExactNumericValue {
     }
 
     func compare(to other: Self) -> Int {
-        if digits == [0], other.digits == [0] { return 0 }
+        let zero = digits == [0], otherZero = other.digits == [0]
+        if zero, otherZero { return 0 }
+        // Zero has no leading power; every nonzero value is ordered by its sign.
+        if zero { return other.isNegative ? 1 : -1 }
+        if otherZero { return isNegative ? -1 : 1 }
         if isNegative != other.isNegative { return isNegative ? -1 : 1 }
 
         let leftLeadingPower = Int64(digits.count - 1) - scale

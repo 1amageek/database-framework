@@ -30,8 +30,7 @@ extension SelectQuery {
         }
         func outputName(_ item: (expression: Expression, alias: String?), index: Int) -> String {
             if let alias = item.alias { return alias }
-            if case .column(let column) = item.expression { return column.column }
-            return "column\(index)"
+            return CanonicalQueryTypeBinder.outputName(item.expression, index: index)
         }
         func conservativeInputs() -> [Expression] {
             if sqlResolution != nil { return items?.map { $0.expression } ?? [] }

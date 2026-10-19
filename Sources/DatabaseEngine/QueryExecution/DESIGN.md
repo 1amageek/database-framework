@@ -836,9 +836,10 @@ Numeric values contribute their exact decimal value for comparison without
 converting result payloads or displayScale through the primitive evaluator.
 BETWEEN and membership preserve SQL three-valued reduction and retain the
 innermost failing occurrence. Raw primitive and RDF execution remain separate.
-SQL source alignment remains the existing independently
-owned checked exact identity contract; changing scalar common type does not
-change VALUES/set source-carrier normalization.
+SQL source alignment (VALUES, set operations and CTE columns) selects the same
+PostgreSQL common type as scalar resolution, so a floating input makes a numeric
+source real or double precision; the source carrier then converts each value
+through its checked exact identity contract.
 
 Scale selection and overloads follow the retained REL_18_6 reference linked by
 SQL. In particular divide/AVG use normalized base10000 leading weights/digits;
@@ -1500,7 +1501,7 @@ not coalesce independent volatile target occurrences.
 | Omitted keys | Each group retains active-key metadata. Evaluating an omitted selected grouping expression yields typed NULL, including expressions nested in projection/HAVING/order/window arguments. It must not leak the representative row's source value. |
 | GROUPING | One to 31 arguments must match selected grouping expressions; return integer bits with the rightmost argument at bit zero. Arguments select grouping metadata and are not evaluated as row expressions. |
 | Aliases/ordinals | Keep S03 input-name priority, expanded projection ordinals, ambiguity and selected occurrence reuse. An aggregate/window ordinal is not a legal group key. |
-| Functional dependency | Admit an explicitly registered base entity's actual primary identity key and its source-slot lineage. A full key present in every applicable set may determine other columns from that base relation. Do not infer keys from a field name or propagate unproven dependency through derived/CTE/set/join outputs. |
+| Functional dependency | Admit an explicitly registered base entity's actual primary identity key, or a SQL relation's nondeferrable PRIMARY KEY columns, and its source-slot lineage. A full key present in every applicable set may determine other columns from that base relation. Do not infer keys from a field name or propagate unproven dependency through derived/CTE/set/join outputs. |
 | Grouped validity | Reject nongrouped/unproven source columns before reading, including wildcard/outer references and empty sources. Scalar subqueries keep lexical shadowing and the same grouping validation boundaries. |
 | Phase legality | WHERE/JOIN/GROUP keys reject aggregate/window calls; HAVING rejects windows. Aggregate arguments cannot contain aggregates or windows. Window arguments may contain a grouped aggregate but cannot contain another window. A window aggregate itself does not turn an otherwise ungrouped SELECT into one global group. |
 

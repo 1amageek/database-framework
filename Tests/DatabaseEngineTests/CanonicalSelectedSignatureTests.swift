@@ -167,7 +167,9 @@ struct CanonicalSelectedSignatureTests {
             #expect(selected.type == .sql(.real))
             #expect(selected.children.map(\.type) == [.sql(.real), .sql(.real)])
         }
-        #expect(try binder().commonSourceType([.sql(numeric), .sql(.real)]) == .sql(numeric))
+        // Set-operation and VALUES sources use PostgreSQL's common type: a floating input wins.
+        #expect(try binder().commonType([.sql(numeric), .sql(.real)]) == .sql(.real))
+        #expect(try binder().commonType([.sql(numeric), .sql(.doublePrecision)]) == .sql(.doublePrecision))
         let nullIf = try binder().bind(.nullIf(null(.smallint), null(.integer)))
         #expect(nullIf.type == .sql(.smallint))
         #expect(nullIf.children.map(\.type) == [.sql(.smallint), .sql(.integer)])

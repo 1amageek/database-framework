@@ -224,7 +224,7 @@ struct CanonicalSourceRow: Sendable {
 
     func merged(with other: CanonicalSourceRow) throws -> CanonicalSourceRow {
         guard Set(layout.scopes).isDisjoint(with: other.layout.scopes) else {
-            throw CanonicalReadError.unsupportedSelectQuery("JOIN inputs require distinct source aliases")
+            throw CanonicalReadError.invalidQueryStructure(.duplicateAlias, "JOIN inputs require distinct source aliases")
         }
         let leftUnscoped = layout.slots.indices.filter { layout.slots[$0].scope == nil }
         let rightUnscoped = other.layout.slots.indices.filter { other.layout.slots[$0].scope == nil }
@@ -455,7 +455,7 @@ struct CanonicalRelationSchema: Sendable, Equatable {
         physicalLayout: CanonicalSourceLayout? = nil
     ) throws {
         guard CanonicalSourceNames(scopes.map { $0.name }).count == scopes.count else {
-            throw CanonicalReadError.unsupportedSelectQuery("A relation contains duplicate source aliases")
+            throw CanonicalReadError.invalidQueryStructure(.duplicateAlias, "A relation contains duplicate source aliases")
         }
         guard coalescedColumns.isSubset(of: CanonicalSourceNames(unscopedColumns)) else {
             throw CanonicalReadError.unsupportedSelectQuery("Coalesced JOIN columns require a visible merged slot")
@@ -584,7 +584,7 @@ struct CanonicalRelationSchema: Sendable, Equatable {
             let binder = CanonicalQueryTypeBinder(columns: [], resolveColumn: { reference in
                 throw DatabaseExpressionEvaluationError.missingColumn(reference.displayName)
             }, wildcardSlots: { _ in [] })
-            return try binder.commonSourceType([leftType, rightType])
+            return try binder.commonType([leftType, rightType])
         }
         return try CanonicalRelationSchema(
             unscopedColumns: columns + left.map { unscopedColumns[$0] } + right.map { other.unscopedColumns[$0] },
@@ -3493,7 +3493,7 @@ extension DatabaseContext {
     ) throws -> CanonicalRelation {
         let logical = source.schema.layout.visibleSlots
         guard logical.count == schema.layout.slots.count else {
-            throw CanonicalReadError.unsupportedSelectQuery("Source alias output arity differs")
+            throw CanonicalReadError.invalidQueryStructure(.columnReference, "Source alias output arity differs")
         }
         var builder = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(workMeter: workMeter,
             stage: .bindingCandidate, layout: DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self), expectedCount: source.rows.count)
@@ -3624,7 +3624,8 @@ extension DatabaseContext {
                 if value.value.isNull { return nil }
                 guard case .primitive(let scalar) = value.value,
                       let integer = scalar.int64Value, integer >= 0 else {
-                    throw CanonicalReadError.unsupportedSelectQuery("SQL \(name) must be a nonnegative bigint")
+                    throw CanonicalReadError.invalidQueryStructure(name == "OFFSET" ? .offsetRowCount : .limitRowCount,
+                        "SQL \(name) must be a nonnegative bigint")
                 }
                 return UInt64(integer)
             }
@@ -3862,7 +3863,7 @@ extension DatabaseContext {
                     isVolatileSubquery: selectedPlanIsVolatile)
             }) { remaining.remove(index) }
             else if !remaining.isEmpty {
-                throw CanonicalReadError.unsupportedSelectQuery("DISTINCT ON expressions must match initial ORDER BY expressions")
+                throw CanonicalReadError.invalidQueryStructure(.columnReference, "DISTINCT ON expressions must match initial ORDER BY expressions")
             }
         }
     }
@@ -5044,7 +5045,7 @@ extension DatabaseContext {
                 guard allowed[member]?.contains(name) == true else { throw DatabaseReadSessionError.authorizationMismatch }
                 candidates.append(field.queryType ?? .primitive(field.type, isArray: field.isArray))
             }
-            return try binder.commonSourceType(candidates)
+            return try binder.commonType(candidates)
         }
         let nullability = names.map { name in
             group.memberTypeNames.contains { declarations[$0]?.fieldMapByName[name]?.isOptional != false }
@@ -8525,7 +8526,7 @@ extension DatabaseContext {
         let items = try expandedProjectionItems(projection, sourceSchema: sourceSchema)
         if case .literal(.int(let position)) = expression {
             guard position > 0, let ordinal = Int(exactly: position), ordinal <= items.count else {
-                throw CanonicalReadError.unsupportedSelectQuery("Output ordinal is outside the projection")
+                throw CanonicalReadError.invalidQueryStructure(.columnReference, "Output ordinal is outside the projection")
             }
             return ordinal - 1
         }
@@ -9170,27 +9171,11 @@ extension DatabaseContext {
         for expression: DatabaseKit.Expression,
         index: Int
     ) -> String {
-        switch expression {
-        case .column(let column):
-            return column.column
-        case .variable(let variable):
+        if case .variable(let variable) = expression {
             let name = variable.name
             return name.hasPrefix("?") || name.hasPrefix("$") ? String(name.dropFirst()) : name
-        case .aggregate(let aggregate):
-            switch aggregate {
-            case .count: return "count"
-            case .sum: return "sum"
-            case .avg: return "avg"
-            case .min: return "min"
-            case .max: return "max"
-            case .groupConcat: return "group_concat"
-            case .sample: return "sample"
-            case .arrayAgg: return "array_agg"
-            case .sql(let call): return call.function.rawValue
-            }
-        default:
-            return "column\(index)"
         }
+        return CanonicalQueryTypeBinder.outputName(expression, index: index)
     }
 
     private func canonicalUniqueRows(
@@ -9544,7 +9529,7 @@ extension DatabaseContext {
             let plan = try bindCanonicalQuery(definition.query, inherited: visible, outerSchemas: outerSchemas,
                 binding: scoped.child(.cte, index: UInt32(index)))
             guard definition.columns == nil || (definition.columns?.count ?? 0) <= plan.columns.count else {
-                throw CanonicalReadError.unsupportedSelectQuery("CTE column count differs from its query")
+                throw CanonicalReadError.invalidQueryStructure(.columnReference, "CTE column count differs from its query")
             }
             let item = try CanonicalBoundCTE.create(identity: index, definition: definition, plan: plan,
                 referenceCount: 1, isVolatile: selectedPlanIsVolatile(plan), workMeter: binding.workMeter)
@@ -9603,7 +9588,7 @@ extension DatabaseContext {
                 let plan = try bindCanonicalQuery(definition.query, inherited: named,
                     outerSchemas: outerSchemas, binding: child)
                 guard definition.columns == nil || (definition.columns?.count ?? 0) <= plan.columns.count else {
-                    throw CanonicalReadError.unsupportedSelectQuery("CTE column count differs from its query")
+                    throw CanonicalReadError.invalidQueryStructure(.columnReference, "CTE column count differs from its query")
                 }
                 item = try CanonicalBoundCTE.create(identity: index, definition: definition, plan: plan,
                     referenceCount: 1, isVolatile: selectedPlanIsVolatile(plan), workMeter: binding.workMeter)
@@ -9623,10 +9608,10 @@ extension DatabaseContext {
         guard case .setOperation(.union, let quantifier, let seedQuery, let termQuery) = query.source,
               query.projection == [.wildcard()], query.filter == nil, query.groupBy == nil,
               query.having == nil, query.orderBy == nil, query.pagination == QueryPagination() else {
-            throw CanonicalReadError.unsupportedSelectQuery("A recursive CTE requires a seed UNION a recursive term")
+            throw CanonicalReadError.invalidQueryStructure(.recursion, "A recursive CTE requires a seed UNION a recursive term")
         }
         guard !referencedTableNames(in: seedQuery, among: [definition.name]).contains(definition.name) else {
-            throw CanonicalReadError.unsupportedSelectQuery("A recursive reference is not allowed in its seed")
+            throw CanonicalReadError.invalidQueryStructure(.recursion, "A recursive reference is not allowed in its seed")
         }
         try validateCanonicalRecursiveTerm(termQuery, name: definition.name, workMeter: binding.workMeter)
         let prelude = try bindCanonicalQueryScope(query, inherited: inherited, outerSchemas: outerSchemas, binding: binding)
@@ -9649,7 +9634,7 @@ extension DatabaseContext {
         var term = try bindCanonicalQuery(termQuery, inherited: prelude.named,
             outerSchemas: outerSchemas, binding: termBinding)
         guard term.columns.count == seed.columns.count else {
-            throw CanonicalReadError.unsupportedSelectQuery("Recursive term arity differs from the seed")
+            throw CanonicalReadError.invalidQueryStructure(.columnCount, "Recursive term arity differs from the seed")
         }
         for index in seed.columns.indices {
             guard CanonicalQueryTypeBinder.recursiveColumnTypesAgree(seed.columns[index].type, term.columns[index].type) else {
@@ -9692,12 +9677,12 @@ extension DatabaseContext {
 
     private func validateCanonicalRecursiveTerm(_ query: SelectQuery, name: String, workMeter: DatabaseWorkMeter) throws {
         guard !canonicalQueryRequiresAggregation(query) else {
-            throw CanonicalReadError.unsupportedSelectQuery("Aggregates and grouping are not allowed in a recursive term")
+            throw CanonicalReadError.invalidQueryStructure(.recursion, "Aggregates and grouping are not allowed in a recursive term")
         }
         var count = 0
         func nested(_ child: SelectQuery) throws {
             if referencedTableNames(in: child, among: [name]).contains(name) {
-                throw CanonicalReadError.unsupportedSelectQuery("A recursive reference is not allowed in a subquery")
+                throw CanonicalReadError.invalidQueryStructure(.recursion, "A recursive reference is not allowed in a subquery")
             }
         }
         func expression(_ value: Expression) throws {
@@ -9719,7 +9704,7 @@ extension DatabaseContext {
             try workMeter.consume(at: .bindingCandidate)
             switch value {
             case .table(let table) where table.schema == nil && CanonicalSourceName.equal(table.table, name):
-                guard !nullable else { throw CanonicalReadError.unsupportedSelectQuery("A recursive reference is not allowed on a nullable join side") }
+                guard !nullable else { throw CanonicalReadError.invalidQueryStructure(.recursion, "A recursive reference is not allowed on a nullable join side") }
                 count += 1
             case .aliased(let child, _, _): try source(child, nullable: nullable)
             case .join(let join):
@@ -9742,7 +9727,7 @@ extension DatabaseContext {
         if case .distinctOn(let keys) = query.quantifier { for key in keys { try expression(key) } }
         if case .count(.expression(let value), _) = query.pagination.limit { try expression(value) }
         if case .expression(let value) = query.pagination.offset { try expression(value) }
-        guard count == 1 else { throw CanonicalReadError.unsupportedSelectQuery("A recursive term requires exactly one working-table reference") }
+        guard count == 1 else { throw CanonicalReadError.invalidQueryStructure(.recursion, "A recursive term requires exactly one working-table reference") }
     }
 
     private func bindCanonicalRecursiveGenerated(_ definition: NamedSubquery, columns: inout [QueryColumn],
@@ -9812,7 +9797,7 @@ extension DatabaseContext {
             }
             if !isUnknown(mark) { known.append(selected.columns[0].type) }
             if !isUnknown(fallback) { known.append(selected.columns[1].type) }
-            let markType = try binder.commonSourceType(known)
+            let markType = try binder.commonType(known)
             try binder.requireSQLComparison(markType, operation: "CYCLE mark")
             func constant(_ literal: Literal, position: QueryOccurrenceField) throws -> QueryValue {
                 let value = try binder.bindSourceValue(.literal(literal), to: markType,
@@ -10226,6 +10211,20 @@ extension DatabaseContext {
                 try binding.workMeter.consume(at: .bindingCandidate)
                 switch value.source {
                 case .table(let table):
+                    // A nondeferrable SQL PRIMARY KEY is a full logical key of its
+                    // base relation, as PostgreSQL's functional grouping requires.
+                    if value.queryPlan == nil, value.informationSchema == nil,
+                       let relation = value.sqlRelation, let keyIDs = relation.declaration.primaryKeyColumnIDs,
+                       !keyIDs.isEmpty, (relation.declaration.primaryKeyConstraint?.timing ?? .immediate) == .immediate {
+                        var slots: [Int] = []
+                        for id in keyIDs {
+                            guard let column = relation.columns.first(where: { $0.declaration.id == id }) else { return nil }
+                            let matches = value.schema.layout.matching(ColumnRef(table: table.effectiveName, column: column.declaration.name))
+                            guard matches.count == 1, let slot = matches.first else { return nil }
+                            try CanonicalBindingStorage.append(slot, to: &slots, reservation: lineageClaim)
+                        }
+                        return slots
+                    }
                     guard value.queryPlan == nil, value.informationSchema == nil,
                           let runtime = try readPolicy().entityRuntime(named: value.sqlRelation?.entity.name ?? table.table),
                           let fields = runtime.groupingIdentityFields else { return nil }
@@ -10393,7 +10392,7 @@ extension DatabaseContext {
         }
         let width = known.first?.count ?? 0
         guard known.allSatisfy({ $0.count == width }) else {
-            throw CanonicalReadError.unsupportedSelectQuery("VALUES expanded row arity differs")
+            throw CanonicalReadError.invalidQueryStructure(.columnCount, "VALUES expanded row arity differs")
         }
         func contextualNull(_ value: CanonicalBoundExpression) -> Bool {
             if case .field = value.expression, let ordinal = value.fieldOrdinal,
@@ -10410,7 +10409,7 @@ extension DatabaseContext {
             for row in known where !contextualNull(row[column].bound) {
                 try CanonicalBindingStorage.append(row[column].bound.type, to: &inputs, reservation: scratch)
             }
-            try CanonicalBindingStorage.append(binder.commonSourceType(inputs), to: &types, reservation: scratch)
+            try CanonicalBindingStorage.append(binder.commonType(inputs), to: &types, reservation: scratch)
         }
         for row in known {
             var selected: [CanonicalBoundExpression] = []
@@ -10785,7 +10784,7 @@ extension DatabaseContext {
         }
         let schema: CanonicalRelationSchema
         var children: [CanonicalSourceBindingPlan] = []
-        guard lhs.columns.count == rhs.columns.count else { throw CanonicalReadError.unsupportedSelectQuery("Set operation input arity differs") }
+        guard lhs.columns.count == rhs.columns.count else { throw CanonicalReadError.invalidQueryStructure(.columnCount, "Set operation input arity differs") }
         children = [CanonicalSourceBindingPlan(source: .subquery(left), schema: try outputSchema(lhs.columns), queryPlan: lhs, binding: binding.child(.setLeft), namedSubqueries: namedSubqueries, reservation: claim),
             CanonicalSourceBindingPlan(source: .subquery(right), schema: try outputSchema(rhs.columns), queryPlan: rhs, binding: binding.child(.setRight), namedSubqueries: namedSubqueries, reservation: claim)]
         let binder = try typeBinder(schema: CanonicalRelationSchema(), namedSubqueries: namedSubqueries, queryBinding: binding)
@@ -10793,7 +10792,7 @@ extension DatabaseContext {
             var inputs: [QueryColumnType] = []
             if !queryColumnIsContextualNull(left, ordinal: index, namedSubqueries: namedSubqueries, queryBinding: binding) { inputs.append(lhs.columns[index].type) }
             if !queryColumnIsContextualNull(right, ordinal: index, namedSubqueries: namedSubqueries, queryBinding: binding) { inputs.append(rhs.columns[index].type) }
-            let type = try binder.commonSourceType(inputs)
+            let type = try binder.commonType(inputs)
             if quantifier == .distinct || operation != .union { try binder.requireSQLComparison(type, operation: "set operation") }
             return type
         }
@@ -10826,7 +10825,7 @@ extension DatabaseContext {
 
     private func aliasedColumnNames(_ names: [String], overrides: [String]?) throws -> [String] {
         guard let overrides else { return names }
-        guard overrides.count <= names.count else { throw CanonicalReadError.unsupportedSelectQuery("Source column alias count exceeds its output arity") }
+        guard overrides.count <= names.count else { throw CanonicalReadError.invalidQueryStructure(.columnReference, "Source column alias count exceeds its output arity") }
         return overrides + names.dropFirst(overrides.count)
     }
 
@@ -11116,7 +11115,7 @@ extension DatabaseContext {
             throw DatabaseExpressionEvaluationError.missingColumn(reference.displayName)
         }, wildcardSlots: { _ in [] })
         let types = try names.map { name -> QueryColumnType? in
-            try binder.commonSourceType(entities.compactMap { entity in
+            try binder.commonType(entities.compactMap { entity in
                 entity.fieldMapByName[name].map { $0.queryType ?? .primitive($0.type, isArray: $0.isArray) }
             })
         }
@@ -11149,7 +11148,7 @@ extension DatabaseContext {
         let output = rows.owner.columns
         let names = explicitColumns ?? output.map { $0.name }
         guard names.count == output.count else {
-            throw CanonicalReadError.unsupportedSelectQuery("CTE output arity differs from its declaration")
+            throw CanonicalReadError.invalidQueryStructure(.columnReference, "CTE output arity differs from its declaration")
         }
         let schema: CanonicalRelationSchema
         if let alias {
@@ -11311,7 +11310,7 @@ extension DatabaseContext {
                                                     outerSchemas: outerSchemas)
             let slots = schema.layout.visibleSlots
             guard slots.count == firstSlots.count else {
-                throw CanonicalReadError.unsupportedSelectQuery("Set operation input arity differs")
+                throw CanonicalReadError.invalidQueryStructure(.columnCount, "Set operation input arity differs")
             }
             for (ordinal, slot) in slots.enumerated() {
                 guard let type = schema.layout.types[slot] else {
@@ -11323,7 +11322,7 @@ extension DatabaseContext {
                 nullability[ordinal] = nullability[ordinal] || schema.layout.nullability[slot]
             }
         }
-        let selectedTypes = try types.map { try binder.commonSourceType($0) }
+        let selectedTypes = try types.map { try binder.commonType($0) }
         if requiresEquality {
             for type in selectedTypes { try binder.requireSQLComparison(type, operation: "set equality") }
         }
@@ -11410,7 +11409,7 @@ extension DatabaseContext {
         let sourceSlots = relation.schema.layout.visibleSlots
         let outputSlots = outputLayout.visibleSlots
         guard sourceSlots.count == outputSlots.count else {
-            throw CanonicalReadError.unsupportedSelectQuery("Set operation input arity differs")
+            throw CanonicalReadError.invalidQueryStructure(.columnCount, "Set operation input arity differs")
         }
         guard outputLayout.reservation?.workMeter === workMeter,
               relation.rows.workMeter === workMeter,

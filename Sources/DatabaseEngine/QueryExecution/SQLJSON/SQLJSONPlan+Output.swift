@@ -2,7 +2,8 @@ import DatabaseKit
 import DatabaseTypes
 
 extension SQLJSONPlan {
-    enum Style: Equatable { case compact, builder, jsonb }
+    /// `objectAggregate` is JSON_OBJECT_AGG's root form: builder members inside `{ ` and ` }`.
+    enum Style: Equatable { case compact, builder, jsonb, objectAggregate }
     private enum BuildVisit { case enter(Int, UInt64), array(Int), object([Member]) }
     private enum RenderVisit { case entry(Int, Int, Style), text(String), key(String) }
 
@@ -188,9 +189,11 @@ extension SQLJSONPlan {
                         }
                     }
                 case .object(let members, let compact):
-                    let objectStyle = compact ? Style.compact : style
+                    let aggregateRoot = style == .objectAggregate && depth == 0
+                    let objectStyle = compact ? Style.compact : (style == .objectAggregate ? .builder : style)
                     try emit(123)
-                    try memory.append(.text("}"), to: &visits)
+                    if aggregateRoot { try emit(32) }
+                    try memory.append(.text(aggregateRoot ? " }" : "}"), to: &visits)
                     for index in members.indices.reversed() {
                         try memory.append(.entry(members[index].value, depth + 1, objectStyle), to: &visits)
                         try memory.append(.text(objectStyle == .builder ? " : " : (objectStyle == .jsonb ? ": " : ":")), to: &visits)

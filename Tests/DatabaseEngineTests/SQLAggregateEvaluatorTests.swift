@@ -114,7 +114,7 @@ struct SQLAggregateEvaluatorTests {
         let pairs = [[Fixture.text("a"), Fixture.int(1)], [Fixture.text("a"), Fixture.int(2)], [Fixture.text("b"), Fixture.null]]
         let object = try await Fixture.run(.jsonObjectAgg, types: [.text, .integer], result: .json, rows: pairs)
         guard case .json(let text) = object.value else { Issue.record("Expected JSON object"); return }
-        #expect(String(decoding: text.bytes, as: UTF8.self) == "{\"a\" : 1, \"a\" : 2, \"b\" : null}")
+        #expect(String(decoding: text.bytes, as: UTF8.self) == "{ \"a\" : 1, \"a\" : 2, \"b\" : null }")
         let binary = try await Fixture.run(.jsonbObjectAgg, types: [.text, .integer], result: .jsonb, rows: pairs)
         guard case .jsonb(let value) = binary.value, case .object(let members) = value.root else { Issue.record("Expected JSONB object"); return }
         #expect(members.count == 2 && members[0].key == "a")

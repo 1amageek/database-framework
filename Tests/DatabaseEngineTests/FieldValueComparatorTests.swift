@@ -76,6 +76,20 @@ struct FieldValueComparatorTests {
         )
     }
 
+    @Test("Zero orders below positive fractions and above negative fractions")
+    func zeroAgainstFractions() throws {
+        let fractions: [FieldValue] = [.float64(0.5), .float64(1e-30), .float64(1e-310), .float32(0.25),
+            .decimal(ExactDecimal(coefficient: 1, scale: 20))]
+        for zero in [FieldValue.int32(0), .float64(0), .decimal(ExactDecimal(coefficient: 0, scale: 0))] {
+            for fraction in fractions {
+                #expect(try FieldValueComparator.compare(fraction, zero) == .greaterThan, "\(fraction) > \(zero)")
+                #expect(try FieldValueComparator.compare(zero, fraction) == .lessThan, "\(zero) < \(fraction)")
+            }
+            #expect(try FieldValueComparator.compare(.float64(-0.5), zero) == .lessThan)
+            #expect(try FieldValueComparator.compare(zero, .float64(-1e-30)) == .greaterThan)
+        }
+    }
+
     @Test("unordered numeric values remain typed failures")
     func unorderedNumericValuesFail() {
         #expect(throws: FieldValueComparisonError.unorderedFloatingPoint) {

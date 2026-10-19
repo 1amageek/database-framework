@@ -106,10 +106,7 @@ enum CanonicalSQLDecimalMath {
         guard !input.isZero else { return input }
         let meter = input.workMeter
         let one = try constant(1, meter: meter)
-        let weight = input.decimalDigitCount - input.scale - 1
-        let rootWeight = weight >= 0 ? weight / 2 : (weight - 1) / 2
-        guard let initialScale = Int32(exactly: -rootWeight - 1) else { throw ExactDecimalError.numericOverflow }
-        var estimate = try Wide(ExactDecimal(coefficient: 1, scale: initialScale), workMeter: meter)
+        var estimate = try squareRootSeed(input)
         let localScale = scale + guardDigits
         var previous: Wide? = nil
         while true {
@@ -123,6 +120,20 @@ enum CanonicalSQLDecimalMath {
             estimate = next
             if estimate.isZero { return try one.subtracting(one) }
         }
+    }
+
+    /// Seeds Newton iteration with about 15 significant digits from the leading
+    /// base10000 groups, so exact refinement needs only a few metered divisions.
+    private static func squareRootSeed(_ input: Wide) throws -> Wide {
+        var (significand, exponent) = input.leadingEstimate(groups: 4)
+        if exponent % 2 != 0 { significand *= 10; exponent -= 1 }
+        let root = significand.squareRoot()
+        guard root.isFinite, root >= 1 else { throw ExactDecimalError.numericOverflow }
+        let digits = Int(DatabaseMath.naturalLogarithm(root) / 2.302585092994046) + 1
+        let shift = 15 - digits
+        let coefficient = Int128((root * DatabaseMath.power(10, Double(shift))).rounded())
+        guard let seedScale = Int32(exactly: Int64(shift) - exponent / 2) else { throw ExactDecimalError.numericOverflow }
+        return try Wide(ExactDecimal(coefficient: coefficient, scale: seedScale), workMeter: input.workMeter)
     }
 
     private static func exponential(_ input: Wide, scale: Int32) throws -> Wide {

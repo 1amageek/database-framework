@@ -90,7 +90,7 @@ struct SQLConstantSyntaxTests {
         }
         for sql in ["SELECT NUMERIC '1.2.3'", "SELECT UUID 'bad'", #"SELECT BYTEA '\xzz'"#] {
             do { _ = try SQLParser().parseSelect(sql); Issue.record("Malformed typed constant succeeded") }
-            catch SQLParser.ParseError.literalError(_, let position) { #expect(position == 7) }
+            catch SQLParser.ParseError.literalError(_, let position, _) { #expect(position == 7) }
             catch { Issue.record("Expected a positioned intrinsic literal failure: \(error)") }
         }
     }

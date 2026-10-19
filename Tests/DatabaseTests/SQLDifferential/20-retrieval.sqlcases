@@ -1,0 +1,353 @@
+-- Q01-Q15 retrieval, relational and analytic syntax.
+
+### Q01 success query q01-columns-aliases-wildcards ordered
+--setup
+CREATE TABLE items(id integer, label text);
+INSERT INTO items VALUES (1, 'a'), (2, 'b');
+--query
+SELECT items.*, id + 1, label AS name, * FROM items ORDER BY id
+
+### Q01 boundary query q01-no-from-singleton
+--query
+SELECT 1 AS same, 2 AS same, NULL::text AS empty
+
+### Q01 boundary query q01-zero-row-types
+--setup
+CREATE TABLE items(id integer, amount numeric(10,2), label varchar(5));
+--query
+SELECT id, amount, label FROM items
+
+### Q01 failure query q01-unknown-column
+--setup
+CREATE TABLE items(id integer);
+--query
+SELECT missing FROM items
+
+### Q02 success query q02-derived-values-functions
+--setup
+CREATE SCHEMA app;
+CREATE TABLE app.items(id integer);
+INSERT INTO app.items VALUES (1), (2);
+--query
+SELECT t.x, v.y, d.z FROM app.items AS t(x) JOIN (VALUES (1, 'one'), (2, 'two')) AS v(n, y) ON v.n = t.x, (SELECT 10 AS z) d
+
+### Q02 failure query q02-alias-arity
+--setup
+CREATE TABLE items(id integer);
+--query
+SELECT * FROM items AS t(a, b)
+
+### Q02 failure query q02-absent-relation
+--query
+SELECT * FROM absent_relation
+
+### Q02 boundary query q02-empty-source
+--setup
+CREATE TABLE items(id integer);
+--query
+SELECT count(*) AS total, max(id) AS largest FROM items
+
+### Q03 success query q03-outer-joins
+--setup
+CREATE TABLE l(id integer, a text);
+CREATE TABLE r(id integer, b text);
+INSERT INTO l VALUES (1, 'l1'), (2, 'l2');
+INSERT INTO r VALUES (2, 'r2'), (3, 'r3');
+--query
+SELECT l.a, r.b FROM l FULL OUTER JOIN r ON l.id = r.id
+
+### Q03 success query q03-using-natural-merge ordered
+--setup
+CREATE TABLE l(id integer, a text);
+CREATE TABLE r(id integer, b text);
+INSERT INTO l VALUES (1, 'l1'), (2, 'l2');
+INSERT INTO r VALUES (2, 'r2'), (3, 'r3');
+--query
+SELECT * FROM l LEFT JOIN r USING (id) ORDER BY id
+
+### Q03 boundary query q03-natural-and-cross
+--setup
+CREATE TABLE l(id integer, a text);
+CREATE TABLE r(id integer, b text);
+INSERT INTO l VALUES (1, 'x');
+INSERT INTO r VALUES (1, 'y'), (2, 'z');
+--query
+SELECT * FROM l NATURAL JOIN r CROSS JOIN (VALUES (true)) AS f(flag)
+
+### Q03 boundary query q03-lateral-correlated ordered
+--setup
+CREATE TABLE l(id integer);
+INSERT INTO l VALUES (1), (3);
+--query
+SELECT l.id, s.n FROM l LEFT JOIN LATERAL (SELECT n FROM generate_series(1, l.id) AS g(n) WHERE n > 1) s ON true ORDER BY l.id, s.n
+
+### Q03 failure query q03-join-requires-condition
+--setup
+CREATE TABLE l(id integer);
+CREATE TABLE r(id integer);
+--query
+SELECT * FROM l JOIN r
+
+### Q04 success query q04-three-valued-logic
+--query
+SELECT NULL::boolean AND false AS a, NULL::boolean OR true AS b, 1 BETWEEN 0 AND 2 AS c, 3 NOT BETWEEN 0 AND 2 AS d, NULL::integer IS DISTINCT FROM 1 AS e, NULL::integer IS NOT DISTINCT FROM NULL AS f
+
+### Q04 boundary query q04-empty-quantified
+--setup
+CREATE TABLE empty(value integer);
+--query
+SELECT 1 = ANY (SELECT value FROM empty) AS any_empty, 1 = ALL (SELECT value FROM empty) AS all_empty, 1 < SOME (VALUES (0), (2)) AS some_true
+
+### Q04 boundary query q04-row-comparison-nulls
+--query
+SELECT ROW(1, NULL::integer) = ROW(1, 2) AS eq, ROW(1, 2) < ROW(1, 3) AS lt, ROW(1, NULL::integer) < ROW(2, 0) AS decided
+
+### Q04 failure query q04-incompatible-comparison
+--query
+SELECT 1 = 'abc'::text
+
+### Q05 success query q05-case-coalesce-greatest
+--query
+SELECT CASE 2 WHEN 1 THEN 'one' WHEN 2 THEN 'two' END AS simple, CASE WHEN false THEN 1 ELSE 2 END AS searched, COALESCE(NULL, 2, 3) AS c, NULLIF(1, 1) AS n, GREATEST(1, 3, 2) AS g, LEAST(1, NULL, 0) AS l
+
+### Q05 boundary query q05-common-type-before-execution
+--query
+SELECT CASE WHEN true THEN 1 ELSE 2.5 END AS widened, COALESCE(1, 2.0) AS numeric_common
+
+### Q05 boundary query q05-unselected-branch-not-evaluated
+--query
+SELECT CASE WHEN true THEN 1 ELSE (SELECT 1 FROM generate_series(1, 2)) END AS guarded
+
+### Q05 failure query q05-no-common-type
+--query
+SELECT CASE WHEN true THEN 1 ELSE 'x'::text END
+
+### Q06 success query q06-scalar-exists-in ordered
+--setup
+CREATE TABLE a(id integer);
+CREATE TABLE b(id integer);
+INSERT INTO a VALUES (1), (2), (3);
+INSERT INTO b VALUES (2), (3), (3);
+--query
+SELECT id, (SELECT count(*) FROM b WHERE b.id = a.id) AS matches, EXISTS (SELECT 1 FROM b WHERE b.id = a.id) AS present, id IN (SELECT id FROM b) AS member FROM a ORDER BY id
+
+### Q06 failure query q06-scalar-multirow
+--setup
+CREATE TABLE b(id integer);
+INSERT INTO b VALUES (1), (2);
+--query
+SELECT (SELECT id FROM b) AS value
+
+### Q06 failure query q06-subquery-column-count
+--query
+SELECT 1 IN (SELECT 1, 2)
+
+### Q06 boundary query q06-empty-scalar-is-null
+--setup
+CREATE TABLE b(id integer);
+--query
+SELECT (SELECT id FROM b) AS value
+
+### Q07 success query q07-distinct
+--setup
+CREATE TABLE items(id integer, label text);
+INSERT INTO items VALUES (1, 'a'), (1, 'a'), (2, NULL), (2, NULL);
+--query
+SELECT DISTINCT id, label FROM items
+
+### Q07 success query q07-distinct-on ordered
+--setup
+CREATE TABLE items(grp integer, value integer);
+INSERT INTO items VALUES (1, 5), (1, 3), (2, 9), (2, 1);
+--query
+SELECT DISTINCT ON (grp) grp, value FROM items ORDER BY grp, value DESC
+
+### Q07 failure query q07-distinct-on-order-mismatch
+--setup
+CREATE TABLE items(grp integer, value integer);
+--query
+SELECT DISTINCT ON (grp) grp, value FROM items ORDER BY value
+
+### Q07 boundary query q07-all-keeps-duplicates
+--query
+SELECT ALL x FROM (VALUES (1), (1), (NULL::integer), (NULL)) AS v(x)
+
+### Q08 success query q08-set-operations
+--query
+SELECT x FROM (VALUES (1), (1), (2), (NULL::integer)) a(x) UNION SELECT x FROM (VALUES (2), (3), (NULL::integer)) b(x)
+
+### Q08 success query q08-intersect-except-all
+--query
+SELECT x FROM (VALUES (1), (1), (1), (2)) a(x) INTERSECT ALL SELECT x FROM (VALUES (1), (1), (3)) b(x)
+
+### Q08 boundary query q08-precedence-and-order ordered
+--query
+SELECT 1 AS v UNION SELECT 2 INTERSECT SELECT 2 EXCEPT SELECT 3 ORDER BY v DESC LIMIT 1
+
+### Q08 failure query q08-column-count-mismatch
+--query
+SELECT 1, 2 UNION SELECT 1
+
+### Q08 boundary query q08-common-type
+--query
+SELECT 1 AS v UNION ALL SELECT 2.5 UNION ALL SELECT NULL
+
+### Q09 success query q09-order-keys ordered
+--setup
+CREATE TABLE items(a integer, b text);
+INSERT INTO items VALUES (2, 'x'), (1, NULL), (2, 'a'), (NULL, 'z');
+--query
+SELECT a AS key, b FROM items ORDER BY key DESC, 2
+
+### Q09 boundary query q09-default-null-order ordered
+--query
+SELECT x FROM (VALUES (2), (NULL::integer), (1)) v(x) ORDER BY x
+
+### Q09 boundary query q09-nulls-first-desc ordered
+--query
+SELECT x FROM (VALUES (2), (NULL::integer), (1)) v(x) ORDER BY x DESC NULLS LAST
+
+### Q09 failure query q09-invalid-ordinal
+--query
+SELECT 1 AS a ORDER BY 2
+
+### Q10 success query q10-limit-offset ordered
+--query
+SELECT n FROM generate_series(1, 10) g(n) ORDER BY n LIMIT 3 OFFSET 2
+
+### Q10 success query q10-fetch-with-ties ordered
+--query
+SELECT n % 3 AS k FROM generate_series(1, 7) g(n) ORDER BY k FETCH FIRST 2 ROWS WITH TIES
+
+### Q10 boundary query q10-limit-all-null-and-empty ordered
+--query
+SELECT n FROM generate_series(1, 3) g(n) ORDER BY n LIMIT NULL OFFSET 5
+
+### Q10 failure query q10-negative-limit
+--query
+SELECT 1 LIMIT -1
+
+### Q11 success query q11-group-having
+--setup
+CREATE TABLE sales(region text, amount integer);
+INSERT INTO sales VALUES ('n', 10), ('n', 5), ('s', 1), (NULL, 2), (NULL, 3);
+--query
+SELECT region, sum(amount) AS total FROM sales GROUP BY region HAVING sum(amount) > 2
+
+### Q11 success query q11-grouping-sets
+--setup
+CREATE TABLE sales(region text, product text, amount integer);
+INSERT INTO sales VALUES ('n', 'a', 1), ('n', 'b', 2), ('s', 'a', 4);
+--query
+SELECT region, product, sum(amount) AS total, GROUPING(region, product) AS bits FROM sales GROUP BY ROLLUP (region, product)
+
+### Q11 boundary query q11-cube-and-empty-set
+--setup
+CREATE TABLE sales(region text, amount integer);
+--query
+SELECT region, count(*) AS n FROM sales GROUP BY CUBE (region)
+
+### Q11 failure query q11-nongrouped-projection
+--setup
+CREATE TABLE sales(region text, amount integer);
+--query
+SELECT region, amount FROM sales GROUP BY region
+
+### Q11 boundary query q11-functional-dependency
+--setup
+CREATE TABLE items(id integer PRIMARY KEY, label text);
+INSERT INTO items VALUES (1, 'a'), (2, 'b');
+--query
+SELECT id, label, count(*) AS n FROM items GROUP BY id
+
+### Q12 success query q12-cte-aliases-materialized
+--query
+WITH a(x) AS MATERIALIZED (SELECT 1), b AS NOT MATERIALIZED (SELECT x + 1 AS y FROM a) SELECT x, y FROM a, b
+
+### Q12 boundary query q12-cte-shadowing
+--setup
+CREATE TABLE t(v integer);
+INSERT INTO t VALUES (100);
+--query
+WITH t(v) AS (SELECT 1) SELECT v FROM t
+
+### Q12 failure query q12-cte-arity
+--query
+WITH a(x, y) AS (SELECT 1) SELECT * FROM a
+
+### Q13 success query q13-recursive-union-all ordered
+--query
+WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r WHERE n < 5) SELECT n FROM r ORDER BY n
+
+### Q13 success query q13-recursive-union-dedup ordered
+--query
+WITH RECURSIVE r(n) AS (VALUES (1) UNION SELECT (n % 3) + 1 FROM r) SELECT n FROM r ORDER BY n
+
+### Q13 boundary query q13-search-cycle ordered
+--setup
+CREATE TABLE edges(src integer, dst integer);
+INSERT INTO edges VALUES (1, 2), (2, 3), (3, 1);
+--query
+WITH RECURSIVE walk(node) AS (SELECT 1 UNION ALL SELECT e.dst FROM walk w JOIN edges e ON e.src = w.node) CYCLE node SET looped USING path SELECT node, looped FROM walk ORDER BY array_length(path, 1), node
+
+### Q13 failure query q13-recursive-reference-in-subquery
+--query
+WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT (SELECT n FROM r) + 1 FROM r) SELECT * FROM r
+
+### Q14 success query q14-window-frames ordered
+--setup
+CREATE TABLE w(g integer, v integer);
+INSERT INTO w VALUES (1, 1), (1, 2), (1, 2), (2, 5);
+--query
+SELECT g, v, sum(v) OVER (PARTITION BY g ORDER BY v) AS running, sum(v) OVER (PARTITION BY g ORDER BY v ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS rows_frame, count(*) OVER (ORDER BY v GROUPS BETWEEN 1 PRECEDING AND 1 FOLLOWING EXCLUDE CURRENT ROW) AS grouped FROM w ORDER BY g, v, running
+
+### Q14 boundary query q14-named-window-default-frame ordered
+--query
+SELECT v, last_value(v) OVER win AS last_default, last_value(v) OVER (win ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS last_full FROM (VALUES (1), (2), (2), (3)) t(v) WINDOW win AS (ORDER BY v) ORDER BY v, last_default
+
+### Q14 failure query q14-invalid-frame-bound
+--query
+SELECT sum(v) OVER (ORDER BY v ROWS BETWEEN UNBOUNDED FOLLOWING AND CURRENT ROW) FROM (VALUES (1)) t(v)
+
+### Q14 failure query q14-range-offset-type
+--query
+SELECT sum(v) OVER (ORDER BY v RANGE BETWEEN 'a' PRECEDING AND CURRENT ROW) FROM (VALUES (1)) t(v)
+
+### Q15 success query q15-unnest-ordinality ordered
+--query
+SELECT * FROM unnest(ARRAY['a', 'b', NULL]) WITH ORDINALITY AS u(value, position) ORDER BY position
+
+### Q15 success query q15-generate-series-directions ordered
+--query
+SELECT a.n AS up, b.n AS down FROM generate_series(1, 3) WITH ORDINALITY a(n, i) JOIN generate_series(3, 1, -1) WITH ORDINALITY b(n, i) USING (i) ORDER BY i
+
+### Q15 failure query q15-zero-step
+--query
+SELECT * FROM generate_series(1, 3, 0)
+
+### Q15 boundary query q15-correlated-table-function ordered
+--setup
+CREATE TABLE arrays(id integer, items integer[]);
+INSERT INTO arrays VALUES (1, ARRAY[3, 4]), (2, ARRAY[]::integer[]);
+--query
+SELECT a.id, u.item FROM arrays a LEFT JOIN LATERAL unnest(a.items) AS u(item) ON true ORDER BY a.id, u.item
+
+### Q01 boundary query q01-derived-implicit-names
+--query
+SELECT * FROM (SELECT 1 + 1, 'a' || 'b', count(*), CAST(2 AS text)) AS t
+
+### Q01 boundary query q01-cte-implicit-names
+--query
+WITH c AS (SELECT 1 + 1, 2 * 3) SELECT * FROM c
+
+### Q01 failure query q01-ambiguous-implicit-name-reference
+--query
+SELECT "?column?" FROM (SELECT 1 + 1, 2 + 2) AS t
+
+### Q01 boundary query q01-folded-cast-names
+--query
+SELECT '1'::int, (CAST(2 AS text)), DATE '2020-01-02', INTERVAL '1 day', CAST(1.5 AS numeric(4, 1)), -1::int, CAST(3 AS text) AS named, CAST(4 AS text) || 'x'
+
+### Q01 boundary query q01-unaliased-subquery-duplicate-implicit-names
+--query
+SELECT * FROM (SELECT 1 + 1, 2 + 2)

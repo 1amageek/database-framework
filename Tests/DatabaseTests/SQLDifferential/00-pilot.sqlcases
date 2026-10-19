@@ -1,0 +1,39 @@
+-- SQL differential corpus. Each case is replayed on PostgreSQL 18.6 by
+-- scripts/sql-differential-oracle and on Framework SQL by SQLDifferentialTests.
+-- Header: ### <inventory> <success|failure|boundary> <query|block|script> <id> [ordered]
+-- query: one preparable statement whose columns, types and rows are compared.
+-- block: atomic statements; PostgreSQL wraps them in one transaction.
+-- script: statements that own their transaction control.
+-- Statements end with ';' at a line end. --post is one readback query.
+
+### Q04 success query q04-not-in-null
+--setup
+CREATE TABLE items(value integer);
+INSERT INTO items VALUES (1), (NULL);
+--query
+SELECT 2 NOT IN (SELECT value FROM items) AS absent, 1 IN (SELECT value FROM items) AS present
+
+### T02 boundary query t02-repeating-division
+--query
+SELECT 1::numeric / 3 AS third, 2.5::numeric(4,1) AS kept, round(2.5) AS rounded
+
+### T01 failure query t01-integer-overflow
+--query
+SELECT 2147483647::integer + 1
+
+### M04 success query m04-returning ordered
+--setup
+CREATE TABLE items(id integer PRIMARY KEY, label text);
+--query
+INSERT INTO items VALUES (2, 'b'), (1, NULL) RETURNING id, label, ''::text AS empty
+--post
+SELECT id, label FROM items ORDER BY id
+
+### O01 failure block o01-first-error-rolls-back
+--setup
+CREATE TABLE items(id integer PRIMARY KEY);
+--query
+INSERT INTO items VALUES (1);
+INSERT INTO items VALUES (1);
+--post
+SELECT count(*) AS total FROM items

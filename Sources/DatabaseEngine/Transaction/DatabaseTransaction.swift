@@ -923,7 +923,7 @@ public final actor DatabaseTransaction: DatabaseTransactionWriting, DatabaseTran
                               selected.contains(SQLCatalogName(foreign.referencedRelationID)),
                               !selected.contains(SQLCatalogName(relation.id)) else { continue }
                         guard cascade else {
-                            throw SQLConstraintError.violation(kind: .foreignKey, relation: relation, constraint: constraint.name, catalog: readPolicy.sqlCatalog.catalog)
+                            throw SQLConstraintError.truncateReferenced(by: relation, constraint: constraint.name, catalog: readPolicy.sqlCatalog.catalog)
                         }
                         selected.append(SQLCatalogName(relation.id))
                         changed = true

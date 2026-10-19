@@ -71,6 +71,35 @@ struct S16SQLTextBlockTests {
         }
     }
 
+    @Test("Typed constant and type modifier failures are data exceptions at their cast or modifier")
+    func constantFailureClasses() async throws {
+        let container = try await makeContainer()
+        defer { await container.shutdown() }
+        let cases: [(String, String, UInt64)] = [
+            ("SELECT 'x'::integer", "22P02", 11),
+            ("SELECT 1, 'not-a-uuid'::uuid", "22P02", 23),
+            ("SELECT '{\"a\": }'::jsonb", "22P02", 17),
+            ("SELECT 'a'::varchar(0)", "22023", 21),
+            ("SELECT NULL::numeric(39)", "22023", 22),
+        ]
+        for (sql, state, position) in cases {
+            do {
+                _ = try await container.testBaseContext().executeSQLBlock(sql, options: options())
+                Issue.record("Expected \(state) for \(sql)")
+            } catch let error as SQLExecutionFailure {
+                #expect(error.diagnostic.sqlState == state, "\(sql)")
+                #expect(error.diagnostic.position == position, "\(sql)")
+                #expect(error.underlyingError is SQLParser.ParseError, "\(sql)")
+            }
+        }
+        do {
+            _ = try await container.testBaseContext().executeSQLBlock("SELECT 1::", options: options())
+            Issue.record("Expected a syntax failure")
+        } catch let error as SQLExecutionFailure {
+            #expect(error.diagnostic.sqlState == "42601")
+        }
+    }
+
     @Test("Syntax failure preserves parser cause and absolute position after CRLF and multibyte text")
     func syntaxSourcePosition() async throws {
         let container = try await makeContainer()

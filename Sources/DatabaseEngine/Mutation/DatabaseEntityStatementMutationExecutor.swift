@@ -1107,7 +1107,8 @@ extension DatabaseEntityStatementMutationExecutor {
                 }
             }
             if wildcard {
-                sourceProjection = sourceLayout.visibleSlots.map { .expression(.column(ColumnRef(table: sourceLayout.slots[$0].scope, column: sourceLayout.slots[$0].name))) }
+                // Binds every visible source slot positionally; source output names may repeat.
+                sourceProjection = [.wildcard()]
             } else {
                 references = references.filter { $0.table == nil || $0.table != table.effectiveName }
                 sourceProjection = references.sorted { $0.displayName < $1.displayName }.map { .expression(.column($0)) }
@@ -1774,8 +1775,13 @@ extension DatabaseEntityStatementMutationExecutor {
                 guard query.columns == nil else { throw SQLMutationError.invalidStatement("DEFAULT VALUES columns") }; rows = []
             case .select(let selectedQuery):
                 let source = try scope.relationLayout(.subquery(selectedQuery))
-                let expressions = source.visibleSlots.map { Expression.column(ColumnRef(table: source.slots[$0].scope, column: source.slots[$0].name)) }
-                try cells(expressions, query: query, layout: source, columns: columns)
+                // Selected values are consumed positionally, as execution does; output
+                // names may repeat (for example implicit `?column?` names).
+                let slots = source.visibleSlots
+                let positional = CanonicalSourceLayout(slots: slots.indices.map { .init(name: "c\($0)", scope: nil) },
+                    types: slots.map { source.types[$0] }, nullability: slots.map { source.nullability[$0] })
+                let expressions = slots.indices.map { Expression.column(ColumnRef(column: "c\($0)")) }
+                try cells(expressions, query: query, layout: positional, columns: columns)
                 rows = []
             }
             for row in rows { try cells(row, query: query, layout: layout, columns: columns) }

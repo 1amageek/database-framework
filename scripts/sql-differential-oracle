@@ -1,0 +1,309 @@
+#!/usr/bin/env python3
+"""Record PostgreSQL 18.6 results for the SQL differential corpus.
+
+The corpus is the only case source. This script parses it once, executes every
+case in its own disposable PostgreSQL database through the package-owned
+`docker-test-harness postgresql-run` lifecycle, and writes the oracle that
+`SQLDifferentialTests` replays against Framework SQL execution.
+"""
+
+import base64
+import csv
+import io
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+CORPUS = ROOT / "Tests/DatabaseTests/SQLDifferential"
+ORACLE = ROOT / "Tests/DatabaseTests/SQLDifferential/oracle.json"
+HARNESS = ROOT / "scripts/docker-test-harness"
+KINDS = {"success", "failure", "boundary"}
+MODES = {"query", "block", "script"}
+SETTINGS = [
+    "SET TimeZone = 'UTC'",
+    "SET DateStyle = 'ISO, MDY'",
+    "SET IntervalStyle = 'postgres'",
+    "SET extra_float_digits = 1",
+    "SET bytea_output = 'hex'",
+]
+# Bounded per-argument size below Linux MAX_ARG_STRLEN.
+CHUNK = 100_000
+# psql prints this unquoted sentinel for SQL NULL; no corpus value uses it.
+NULL = "\u2400NULL"
+
+
+def fail(message):
+    raise SystemExit("error: " + message)
+
+
+def split_statements(text):
+    """Split authored SQL at statement terminators placed at line ends."""
+    statements = [part.strip() for part in re.split(r";[ \t]*\n", text.strip() + "\n")]
+    return [statement for statement in statements if statement]
+
+
+def parse_corpus(directory):
+    cases = []
+    paths = sorted(directory.glob("*.sqlcases"))
+    if not paths:
+        fail("no corpus files in " + str(directory))
+    for path in paths:
+        cases += parse_corpus_file(path)
+    identifiers = [case["id"] for case in cases]
+    if len(identifiers) != len(set(identifiers)):
+        fail("duplicate case identifiers")
+    return cases
+
+
+def parse_corpus_file(path):
+    cases, current, section = [], None, None
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if line.startswith("### "):
+            fields = line[4:].split()
+            if len(fields) < 4:
+                fail(f"{path.name}:{number}: header needs inventory, kind, mode and id")
+            inventory, kind, mode, identifier, *flags = fields
+            if kind not in KINDS or mode not in MODES or set(flags) - {"ordered", "shape", "dynamic"}:
+                fail(f"{path.name}:{number}: invalid case header")
+            current = {"id": identifier, "inventory": inventory, "kind": kind, "mode": mode,
+                       "ordered": "ordered" in flags, "shape": "shape" in flags, "dynamic": "dynamic" in flags, "setup": "", "query": "", "post": ""}
+            cases.append(current)
+            section = None
+        elif line in ("--setup", "--query", "--post"):
+            if current is None:
+                fail(f"{path.name}:{number}: section outside a case")
+            section = line[2:]
+        elif line.startswith("--") and section is None:
+            continue
+        elif section is not None:
+            current[section] += line + "\n"
+        elif line.strip():
+            fail(f"{path.name}:{number}: text outside a section")
+    for case in cases:
+        case["setup"] = split_statements(case["setup"])
+        case["post"] = case["post"].strip().rstrip(";") or None
+        body = case["query"].strip()
+        if not body:
+            fail(f"case {case['id']} has no query")
+        if case["mode"] == "query":
+            case["query"] = body.rstrip(";")
+            if len(split_statements(case["query"] + ";\n")) != 1:
+                fail(f"query case {case['id']} must contain one statement")
+        else:
+            case["query"] = split_statements(body + ("\n" if body.endswith(";") else ";\n"))
+    return cases
+
+
+def marker(name, value=":SQLSTATE"):
+    return f"\\echo @@{name} {value}"
+
+
+def record_first_error():
+    return "\\if :ERROR\n\\if :{?first_error}\n\\else\n\\set first_error :SQLSTATE\n\\endif\n\\endif"
+
+
+def psql_script(cases):
+    lines = ["\\set ON_ERROR_STOP 0", "\\pset pager off", "\\pset footer off", "\\pset format csv",
+             f"\\pset null '{NULL}'"]
+    for index, case in enumerate(cases):
+        database = f"differential_{index}"
+        lines += [f"\\echo @@CASE {case['id']}", f"DROP DATABASE IF EXISTS {database};",
+                  f"CREATE DATABASE {database} TEMPLATE template0 ENCODING 'UTF8' LC_COLLATE 'C' LC_CTYPE 'C';",
+                  f"\\c {database}"]
+        lines += [setting + ";" for setting in SETTINGS]
+        for statement in case["setup"]:
+            lines += [statement + ";", "\\if :ERROR", marker("SETUP_ERROR"), "\\endif"]
+        if case["dynamic"]:
+            # Malformed source text is executed server-side so psql's own lexer
+            # cannot consume the remainder of the oracle script.
+            text = case["query"] if case["mode"] == "query" else ";\n".join(case["query"])
+            if "$differential_sql$" in text or case["kind"] != "failure":
+                fail(f"dynamic case {case['id']} must be a failure without the reserved tag")
+            lines += [f"DO $differential_do$ BEGIN EXECUTE $differential_sql${text}$differential_sql$; END $differential_do$;",
+                      marker("STATE")]
+        elif case["mode"] == "query":
+            lines += [f"PREPARE differential_query AS {case['query']};", marker("PREPARE"),
+                      "\\pset tuples_only on",
+                      "SELECT result_types FROM pg_prepared_statements WHERE name = 'differential_query';",
+                      "\\pset tuples_only off", marker("ROWS_BEGIN", "1"), "EXECUTE differential_query;",
+                      marker("STATE"), marker("ROW_COUNT", ":ROW_COUNT")]
+        else:
+            lines.append("\\unset first_error")
+            statements = case["query"]
+            if case["mode"] == "block":
+                statements = ["BEGIN"] + statements
+            for position, statement in enumerate(statements):
+                if position == len(statements) - 1:
+                    # The final statement's rows are compared by column name and value.
+                    lines.append(marker("ROWS_BEGIN", "1"))
+                lines += [statement + ";", record_first_error()]
+            if case["mode"] == "block":
+                lines += ["\\if :{?first_error}", "ROLLBACK;", "\\else", "COMMIT;", record_first_error(), "\\endif"]
+            lines += ["\\if :{?first_error}", marker("STATE", ":first_error"), "\\else",
+                      marker("STATE", "00000"), "\\endif"]
+            if case["mode"] == "script":
+                # A request ends any transaction its script left open.
+                lines.append("ROLLBACK;")
+        if case["post"]:
+            lines += [marker("POST_BEGIN", "1"), case["post"] + ";", marker("POST_STATE")]
+        lines += ["\\c database_framework_test", f"DROP DATABASE {database};", marker("END", "1")]
+    return "\n".join(lines) + "\n"
+
+
+def parse_array_literal(text):
+    text = text.strip()
+    if not (text.startswith("{") and text.endswith("}")):
+        fail("unexpected result_types literal: " + text)
+    reader = csv.reader(io.StringIO(text[1:-1]), quotechar='"', escapechar="\\")
+    row = next(reader, [])
+    return [value for value in row if value != ""]
+
+
+def parse_csv(lines):
+    if not lines:
+        return [], []
+    rows = list(csv.reader(io.StringIO("\n".join(lines) + "\n")))
+    header, values = rows[0], rows[1:]
+    # psql writes a one-column empty string as a blank CSV line.
+    values = [[""] if not row and len(header) == 1 else row for row in values]
+    return header, [[None if field == NULL else field for field in row] for row in values]
+
+
+def parse_output(text, cases):
+    by_id = {case["id"]: case for case in cases}
+    results, current, collecting, buffer = {}, None, None, []
+
+    def flush():
+        nonlocal buffer
+        if current is None or collecting is None:
+            buffer = []
+            return
+        target = results[current]
+        if collecting == "types":
+            joined = "\n".join(buffer).strip()
+            # The CSV formatter quotes the regtype[] literal as one field.
+            literal = next(csv.reader(io.StringIO(joined)))[0] if joined else None
+            # result_types is NULL for a statement that returns no rows.
+            target["types"] = [] if literal == NULL else (parse_array_literal(literal) if literal else None)
+        else:
+            header, rows = parse_csv(buffer)
+            target[collecting] = {"columns": header, "rows": rows}
+        buffer = []
+
+    for line in text.splitlines():
+        match = re.match(r"^@@([A-Z_]+) ?(.*)$", line)
+        if not match:
+            buffer.append(line)
+            continue
+        flush()
+        name, value = match.groups()
+        if name == "CASE":
+            current, collecting = value, None
+            results[current] = {"setupErrors": []}
+        elif name == "SETUP_ERROR":
+            results[current]["setupErrors"].append(value)
+            collecting = None
+        elif name == "PREPARE":
+            results[current]["prepareState"] = value
+            collecting = "types"
+        elif name == "ROWS_BEGIN":
+            collecting = "result"
+        elif name == "STATE":
+            results[current]["state"] = value
+            collecting = None
+        elif name == "ROW_COUNT":
+            results[current]["rowCount"] = int(value)
+        elif name == "POST_BEGIN":
+            collecting = "postResult"
+        elif name == "POST_STATE":
+            results[current]["postState"] = value
+            collecting = None
+        elif name == "END":
+            collecting = None
+    missing = set(by_id) - set(results)
+    if missing:
+        fail("PostgreSQL output is missing cases: " + ", ".join(sorted(missing)))
+    return results
+
+
+def run_postgresql(script, result_directory):
+    encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
+    chunks = [encoded[offset:offset + CHUNK] for offset in range(0, len(encoded), CHUNK)]
+    shell = ('for part in "$@"; do printf %s "$part"; done | base64 -d > /tmp/differential.sql && '
+             'psql -X -q -h 127.0.0.1 -U postgres -d database_framework_test -f /tmp/differential.sql 2>/dev/null')
+    command = [str(HARNESS), "postgresql-run", "--result-directory", str(result_directory), "--",
+               "sh", "-c", shell, "differential", *chunks]
+    completed = subprocess.run(command, cwd=ROOT, timeout=3600)
+    if completed.returncode != 0:
+        fail(f"PostgreSQL harness exited {completed.returncode}")
+    logs = sorted(Path(result_directory).rglob("reference-command.log"))
+    if len(logs) != 1:
+        fail("expected exactly one reference-command.log")
+    identities = sorted(Path(result_directory).rglob("service-identity.txt"))
+    identity = identities[0].read_text() if identities else ""
+    return logs[0].read_text(encoding="utf-8"), identity
+
+
+def main():
+    if len(sys.argv) != 2 or sys.argv[1] in ("-h", "--help"):
+        print("Usage: scripts/sql-differential-oracle <result-directory>")
+        return 2
+    cases = parse_corpus(CORPUS)
+    script = psql_script(cases)
+    result_directory = Path(sys.argv[1]).resolve()
+    result_directory.mkdir(parents=True, exist_ok=True)
+    (result_directory / "differential.sql").write_text(script, encoding="utf-8")
+    output, identity = run_postgresql(script, result_directory)
+    results = parse_output(output, cases)
+    invalid = []
+    for case in cases:
+        observed = results[case["id"]]
+        if case["mode"] == "query" and not case["dynamic"] and observed.get("prepareState") not in (None, "00000"):
+            # Analysis-time failures surface at PREPARE; EXECUTE then reports 26000.
+            observed["state"] = observed["prepareState"]
+        if observed["setupErrors"]:
+            invalid.append(f"{case['id']} setup {observed['setupErrors']}")
+        succeeded = observed.get("state") == "00000"
+        if case["kind"] == "failure" and succeeded:
+            invalid.append(f"{case['id']} failure case succeeded")
+        if case["kind"] != "failure" and not succeeded:
+            invalid.append(f"{case['id']} {case['kind']} case failed with {observed.get('state')}")
+        if case["post"] and observed.get("postState") != "00000":
+            invalid.append(f"{case['id']} post readback failed with {observed.get('postState')}")
+    if invalid:
+        fail("invalid PostgreSQL oracle cases:\n  " + "\n  ".join(invalid))
+    version = re.search(r"server-version=(\S+)", identity)
+    oracle = {"formatVersion": 1, "postgresqlVersion": version.group(1) if version else None,
+              "settings": SETTINGS, "cases": []}
+    for case in cases:
+        observed = results[case["id"]]
+        expected = {"state": observed["state"]}
+        if case["mode"] == "query" and observed["state"] == "00000":
+            result = observed.get("result", {"columns": [], "rows": []})
+            types = observed.get("types") or []
+            if len(types) != len(result["columns"]):
+                fail(f"{case['id']} column metadata and result width differ")
+            expected.update(columns=[{"name": name, "type": kind} for name, kind in zip(result["columns"], types)],
+                            rows=result["rows"], rowCount=observed["rowCount"])
+        if case["mode"] != "query" and observed["state"] == "00000":
+            result = observed.get("result", {"columns": [], "rows": []})
+            if result["columns"]:
+                expected.update(columnNames=result["columns"], rows=result["rows"])
+        if case["post"]:
+            expected["post"] = observed["postResult"]["rows"]
+            expected["postColumns"] = observed["postResult"]["columns"]
+        oracle["cases"].append({key: case[key] for key in
+                                ("id", "inventory", "kind", "mode", "ordered", "shape", "dynamic", "setup", "query", "post")}
+                               | {"expected": expected})
+    if oracle["postgresqlVersion"] != "18.6":
+        fail("PostgreSQL identity is not 18.6: " + str(oracle["postgresqlVersion"]))
+    ORACLE.write_text(json.dumps(oracle, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(f"PostgreSQL oracle recorded {len(cases)} cases: {ORACLE}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -23,6 +23,9 @@ public enum CanonicalReadError: Error, Sendable {
     /// specific reason.
     case unsupportedSelectQuery(String)
 
+    /// The query violates a SQL structural rule; the message names the rule.
+    case invalidQueryStructure(SQLQueryStructureViolation, String)
+
     /// A `Expression` could not be converted to a canonical operation.
     case unsupportedExpression
 

@@ -1,0 +1,406 @@
+-- D01-D12 logical schemas, tables, constraints, identities, indexes, views and sequences.
+
+### D01 success block d01-schema-search-path
+--query
+CREATE SCHEMA app;
+CREATE TABLE app.items(v integer);
+INSERT INTO app.items VALUES (1);
+SET LOCAL search_path TO app;
+SELECT v FROM items;
+
+### D01 success block d01-schema-rename-and-drop
+--setup
+CREATE SCHEMA old_name;
+CREATE TABLE old_name.items(v integer);
+INSERT INTO old_name.items VALUES (7);
+--query
+ALTER SCHEMA old_name RENAME TO new_name;
+CREATE SCHEMA scratch;
+DROP SCHEMA scratch;
+SELECT v FROM new_name.items;
+
+### D01 failure block d01-drop-nonempty-schema
+--setup
+CREATE SCHEMA app;
+CREATE TABLE app.items(v integer);
+--query
+DROP SCHEMA app;
+--post
+SELECT count(*) AS tables FROM information_schema.tables WHERE table_schema = 'app'
+
+### D01 boundary block d01-drop-schema-cascade
+--setup
+CREATE SCHEMA app;
+CREATE TABLE app.items(v integer);
+--query
+DROP SCHEMA app CASCADE;
+--post
+SELECT count(*) AS tables FROM information_schema.tables WHERE table_schema = 'app'
+
+### D02 success block d02-create-if-not-exists-and-as
+--setup
+CREATE TABLE items(v integer);
+INSERT INTO items VALUES (1), (2);
+--query
+CREATE TABLE IF NOT EXISTS items(other text);
+CREATE TABLE copy AS SELECT v * 2 AS doubled FROM items;
+SELECT doubled FROM copy ORDER BY doubled;
+
+### D02 boundary block d02-zero-row-ctas-types
+--query
+CREATE TABLE empty AS SELECT 1::smallint AS s, 'x'::varchar(4) AS t WHERE false;
+SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'empty' ORDER BY ordinal_position;
+
+### D02 failure block d02-duplicate-table
+--setup
+CREATE TABLE items(v integer);
+--query
+CREATE TABLE items(v integer);
+
+### D02 success block d02-temporary-table
+--query
+CREATE TEMPORARY TABLE scratch(v integer);
+INSERT INTO scratch VALUES (5);
+SELECT v FROM scratch;
+
+### D03 success block d03-alter-columns
+--setup
+CREATE TABLE items(id integer, label text);
+INSERT INTO items VALUES (1, '10'), (2, '20');
+--query
+ALTER TABLE items ADD COLUMN flag boolean DEFAULT true;
+ALTER TABLE items ALTER COLUMN label TYPE integer USING label::integer;
+ALTER TABLE items RENAME COLUMN label TO amount;
+ALTER TABLE items DROP COLUMN flag;
+ALTER TABLE items RENAME TO stock;
+SELECT id, amount FROM stock ORDER BY id;
+
+### D03 boundary block d03-default-and-not-null
+--setup
+CREATE TABLE items(id integer);
+INSERT INTO items VALUES (1);
+--query
+ALTER TABLE items ADD COLUMN qty integer NOT NULL DEFAULT 0;
+ALTER TABLE items ALTER COLUMN qty SET DEFAULT 5;
+INSERT INTO items(id) VALUES (2);
+SELECT id, qty FROM items ORDER BY id;
+
+### D03 failure block d03-type-change-invalid-data
+--setup
+CREATE TABLE items(label text);
+INSERT INTO items VALUES ('abc');
+--query
+ALTER TABLE items ALTER COLUMN label TYPE integer USING label::integer;
+--post
+SELECT label FROM items
+
+### D03 failure block d03-set-not-null-with-nulls
+--setup
+CREATE TABLE items(v integer);
+INSERT INTO items VALUES (NULL);
+--query
+ALTER TABLE items ALTER COLUMN v SET NOT NULL;
+
+### D04 success block d04-drop-if-exists
+--setup
+CREATE TABLE items(v integer);
+--query
+DROP TABLE IF EXISTS items;
+DROP TABLE IF EXISTS never_created;
+SELECT count(*) AS remaining FROM information_schema.tables WHERE table_name = 'items';
+
+### D04 failure block d04-drop-restrict-dependency
+--setup
+CREATE TABLE parent(id integer PRIMARY KEY);
+CREATE TABLE child(parent_id integer REFERENCES parent(id));
+--query
+DROP TABLE parent RESTRICT;
+
+### D04 boundary block d04-drop-cascade-removes-view
+--setup
+CREATE TABLE base(v integer);
+CREATE VIEW over_base AS SELECT v FROM base;
+--query
+DROP TABLE base CASCADE;
+SELECT count(*) AS views FROM information_schema.views WHERE table_name = 'over_base';
+
+### D05 success block d05-composite-primary-key
+--setup
+CREATE TABLE pairs(a integer, b integer, label text, PRIMARY KEY (a, b));
+--query
+INSERT INTO pairs VALUES (1, 1, 'x'), (1, 2, 'y');
+SELECT a, b, label FROM pairs ORDER BY a, b;
+
+### D05 failure block d05-composite-key-conflict
+--setup
+CREATE TABLE pairs(a integer, b integer, PRIMARY KEY (a, b));
+INSERT INTO pairs VALUES (1, 1);
+--query
+INSERT INTO pairs VALUES (1, 1);
+
+### D05 boundary block d05-unique-nulls-not-distinct
+--setup
+CREATE TABLE distinct_nulls(v integer UNIQUE);
+CREATE TABLE same_nulls(v integer UNIQUE NULLS NOT DISTINCT);
+--query
+INSERT INTO distinct_nulls VALUES (NULL), (NULL);
+INSERT INTO same_nulls VALUES (NULL);
+SELECT (SELECT count(*) FROM distinct_nulls) AS distinct_count, (SELECT count(*) FROM same_nulls) AS same_count;
+
+### D05 failure block d05-unique-nulls-not-distinct-conflict
+--setup
+CREATE TABLE same_nulls(v integer UNIQUE NULLS NOT DISTINCT);
+INSERT INTO same_nulls VALUES (NULL);
+--query
+INSERT INTO same_nulls VALUES (NULL);
+
+### D05 boundary block d05-no-primary-key-duplicates
+--setup
+CREATE TABLE loose(v integer);
+--query
+INSERT INTO loose VALUES (1), (1);
+SELECT v, count(*) AS n FROM loose GROUP BY v;
+
+### D06 success block d06-check-unknown-passes
+--setup
+CREATE TABLE items(v integer CHECK (v > 0));
+--query
+INSERT INTO items VALUES (1), (NULL);
+SELECT count(*) AS stored FROM items;
+
+### D06 failure block d06-check-violation
+--setup
+CREATE TABLE items(v integer CHECK (v > 0));
+--query
+INSERT INTO items VALUES (0);
+
+### D06 success block d06-foreign-key-actions
+--setup
+CREATE TABLE parent(id integer PRIMARY KEY);
+CREATE TABLE cascade_child(pid integer REFERENCES parent(id) ON DELETE CASCADE ON UPDATE CASCADE);
+CREATE TABLE null_child(pid integer REFERENCES parent(id) ON DELETE SET NULL);
+INSERT INTO parent VALUES (1), (2);
+INSERT INTO cascade_child VALUES (1), (2);
+INSERT INTO null_child VALUES (2);
+--query
+UPDATE parent SET id = 10 WHERE id = 1;
+DELETE FROM parent WHERE id = 2;
+SELECT (SELECT string_agg(pid::text, ',' ORDER BY pid) FROM cascade_child) AS cascaded, (SELECT count(*) FROM null_child WHERE pid IS NULL) AS nulled;
+
+### D06 boundary block d06-match-simple-partial-null
+--setup
+CREATE TABLE parent(a integer, b integer, PRIMARY KEY (a, b));
+CREATE TABLE child(a integer, b integer, FOREIGN KEY (a, b) REFERENCES parent(a, b) MATCH SIMPLE);
+--query
+INSERT INTO child VALUES (1, NULL);
+SELECT count(*) AS stored FROM child;
+
+### D06 failure block d06-match-full-partial-null
+--setup
+CREATE TABLE parent(a integer, b integer, PRIMARY KEY (a, b));
+CREATE TABLE child(a integer, b integer, FOREIGN KEY (a, b) REFERENCES parent(a, b) MATCH FULL);
+--query
+INSERT INTO child VALUES (1, NULL);
+
+### D06 failure block d06-foreign-key-missing-parent
+--setup
+CREATE TABLE parent(id integer PRIMARY KEY);
+CREATE TABLE child(pid integer REFERENCES parent(id));
+--query
+INSERT INTO child VALUES (99);
+
+### D07 success block d07-deferred-repair
+--setup
+CREATE TABLE parent(id integer PRIMARY KEY);
+CREATE TABLE child(pid integer REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED);
+--query
+INSERT INTO child VALUES (1);
+INSERT INTO parent VALUES (1);
+SELECT count(*) AS children FROM child;
+
+### D07 failure block d07-deferred-final-failure
+--setup
+CREATE TABLE parent(id integer PRIMARY KEY);
+CREATE TABLE child(pid integer REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED);
+--query
+INSERT INTO child VALUES (1);
+--post
+SELECT count(*) AS children FROM child
+
+### D07 failure block d07-set-constraints-immediate
+--setup
+CREATE TABLE parent(id integer PRIMARY KEY);
+CREATE TABLE child(pid integer REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED);
+--query
+INSERT INTO child VALUES (1);
+SET CONSTRAINTS ALL IMMEDIATE;
+
+### D08 success block d08-identity-serial-generated
+--setup
+CREATE TABLE items(id integer GENERATED BY DEFAULT AS IDENTITY, serial_id serial, price numeric, tax numeric GENERATED ALWAYS AS (price * 0.1) STORED);
+--query
+INSERT INTO items(price) VALUES (10), (20);
+INSERT INTO items(id, price) VALUES (100, 30);
+SELECT id, serial_id, price, tax FROM items ORDER BY serial_id;
+
+### D08 failure block d08-identity-always-override
+--setup
+CREATE TABLE items(id integer GENERATED ALWAYS AS IDENTITY, v integer);
+--query
+INSERT INTO items(id, v) VALUES (5, 1);
+
+### D08 boundary block d08-overriding-system-value
+--setup
+CREATE TABLE items(id integer GENERATED ALWAYS AS IDENTITY, v integer);
+--query
+INSERT INTO items(id, v) OVERRIDING SYSTEM VALUE VALUES (5, 1);
+INSERT INTO items(v) VALUES (2);
+SELECT id, v FROM items ORDER BY v;
+
+### D08 failure block d08-write-generated-column
+--setup
+CREATE TABLE items(price numeric, tax numeric GENERATED ALWAYS AS (price * 0.1) STORED);
+--query
+INSERT INTO items VALUES (10, 1);
+
+### D08 failure block d08-volatile-generated-expression
+--query
+CREATE TABLE items(v integer, r timestamptz GENERATED ALWAYS AS (clock_timestamp()) STORED);
+
+### D09 success block d09-unique-composite-expression-partial-indexes
+--setup
+CREATE TABLE users(id integer, email text, active boolean);
+--query
+CREATE UNIQUE INDEX users_email ON users(lower(email));
+CREATE INDEX users_active ON users(id) WHERE active;
+CREATE UNIQUE INDEX users_pair ON users(id, email);
+INSERT INTO users VALUES (1, 'A@x', true), (2, 'b@x', false);
+SELECT id FROM users WHERE lower(email) = 'a@x';
+
+### D09 failure block d09-unique-index-build-validates
+--setup
+CREATE TABLE users(email text);
+INSERT INTO users VALUES ('a'), ('a');
+--query
+CREATE UNIQUE INDEX users_email ON users(email);
+
+### D09 failure block d09-expression-index-conflict
+--setup
+CREATE TABLE users(email text);
+CREATE UNIQUE INDEX users_email ON users(lower(email));
+INSERT INTO users VALUES ('A');
+--query
+INSERT INTO users VALUES ('a');
+
+### D09 boundary block d09-partial-unique-ignores-excluded
+--setup
+CREATE TABLE users(email text, active boolean);
+CREATE UNIQUE INDEX active_email ON users(email) WHERE active;
+--query
+INSERT INTO users VALUES ('a', false), ('a', false), ('a', true);
+DROP INDEX active_email;
+SELECT count(*) AS stored FROM users;
+
+### D10 success block d10-view-create-replace
+--setup
+CREATE TABLE items(id integer, price numeric);
+INSERT INTO items VALUES (1, 2), (2, 3);
+--query
+CREATE VIEW priced AS SELECT id, price FROM items;
+CREATE OR REPLACE VIEW priced AS SELECT id, price, price * 2 AS doubled FROM items;
+SELECT id, price, doubled FROM priced ORDER BY id;
+
+### D10 failure block d10-replace-drops-column
+--setup
+CREATE TABLE items(id integer, price numeric);
+CREATE VIEW priced AS SELECT id, price FROM items;
+--query
+CREATE OR REPLACE VIEW priced AS SELECT id FROM items;
+
+### D10 failure block d10-view-mutation-rejected
+--setup
+CREATE TABLE items(id integer);
+CREATE VIEW grouped AS SELECT count(*) AS n FROM items;
+--query
+INSERT INTO grouped VALUES (1);
+
+### D10 boundary block d10-drop-view
+--setup
+CREATE TABLE items(id integer);
+CREATE VIEW v AS SELECT id FROM items;
+--query
+DROP VIEW v;
+SELECT count(*) AS views FROM information_schema.views WHERE table_name = 'v';
+
+### D11 success block d11-materialized-view-refresh
+--setup
+CREATE TABLE items(v integer);
+INSERT INTO items VALUES (1);
+--query
+CREATE MATERIALIZED VIEW snapshot AS SELECT sum(v) AS total FROM items;
+INSERT INTO items VALUES (2);
+SELECT total FROM snapshot;
+
+### D11 boundary block d11-refresh-visible-after
+--setup
+CREATE TABLE items(v integer);
+INSERT INTO items VALUES (1);
+CREATE MATERIALIZED VIEW snapshot AS SELECT sum(v) AS total FROM items;
+--query
+INSERT INTO items VALUES (2);
+REFRESH MATERIALIZED VIEW snapshot;
+SELECT total FROM snapshot;
+
+### D11 failure block d11-drop-base-with-dependent-matview
+--setup
+CREATE TABLE items(v integer);
+CREATE MATERIALIZED VIEW snapshot AS SELECT v FROM items;
+--query
+DROP TABLE items;
+
+### D11 boundary block d11-drop-materialized-view
+--setup
+CREATE TABLE items(v integer);
+CREATE MATERIALIZED VIEW snapshot AS SELECT v FROM items;
+--query
+DROP MATERIALIZED VIEW snapshot;
+SELECT count(*) AS remaining FROM items;
+
+### D12 success block d12-sequence-options
+--query
+CREATE SEQUENCE s START 10 INCREMENT 5 MINVALUE 1 MAXVALUE 20 CYCLE;
+SELECT nextval('s') AS a, nextval('s') AS b, nextval('s') AS c, nextval('s') AS d;
+
+### D12 failure block d12-sequence-exhausted
+--query
+CREATE SEQUENCE s START 1 MAXVALUE 2;
+SELECT nextval('s'), nextval('s'), nextval('s');
+
+### D12 boundary block d12-alter-and-drop-sequence
+--query
+CREATE SEQUENCE s;
+ALTER SEQUENCE s RESTART WITH 50 INCREMENT BY -1;
+SELECT nextval('s') AS a, nextval('s') AS b;
+
+### D12 failure block d12-invalid-sequence-bounds
+--query
+CREATE SEQUENCE s MINVALUE 10 MAXVALUE 1;
+
+### D12 failure block d12-consumption-survives-rollback
+--setup
+CREATE SEQUENCE s;
+--query
+SELECT nextval('s');
+SELECT 1 / 0;
+--post
+SELECT nextval('s') AS after_rollback
+
+### D07 boundary block d07-set-constraints-deferred-repair
+--setup
+CREATE TABLE parent(id integer PRIMARY KEY);
+CREATE TABLE child(pid integer REFERENCES parent(id) DEFERRABLE INITIALLY IMMEDIATE);
+--query
+SET CONSTRAINTS ALL DEFERRED;
+INSERT INTO child VALUES (1);
+INSERT INTO parent VALUES (1);
+SELECT count(*) AS children FROM child;

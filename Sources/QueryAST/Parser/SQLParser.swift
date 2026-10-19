@@ -16,7 +16,7 @@ public final class SQLParser {
         case unexpectedEndOfInput(expected: String, position: Int)
         case invalidSyntax(message: String, position: Int)
         case unsupportedFeature(String)
-        case literalError(message: String, position: Int)
+        case literalError(message: String, position: Int, failure: SQLConstantFailure)
     }
 
     /// Token types
@@ -59,6 +59,21 @@ public final class SQLParser {
         "#>>": .jsonPathText, "?": .jsonHasKey, "?|": .jsonHasAnyKey,
         "?&": .jsonHasAllKeys, "#-": .jsonDeletePath,
     ]
+
+    /// Renders an identifier the way PostgreSQL's quote_ident does: bare when it
+    /// is a lowercase regular identifier that is not a reserved, type/function or
+    /// column-name keyword, otherwise double-quoted with embedded quotes doubled.
+    public static func displayIdentifier(_ name: String) -> String {
+        let scalars = name.unicodeScalars
+        let regular = !scalars.isEmpty && scalars.allSatisfy {
+            ("a"..."z").contains($0) || ("0"..."9").contains($0) || $0 == "_"
+        } && !("0"..."9").contains(scalars.first!)
+        let upper = name.uppercased()
+        if regular, !reservedWords.contains(upper), !typeFunctionWords.contains(upper), !columnNameWords.contains(upper) {
+            return name
+        }
+        return "\"" + name.map { $0 == "\"" ? "\"\"" : String($0) }.joined() + "\""
+    }
 
     private static let keywords: Set<String> = [
         "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "IN", "LIKE", "BETWEEN",
@@ -123,6 +138,9 @@ public final class SQLParser {
     private var preservesOutputReferenceCasts = false
     private var colonStartsSlice = false
     private var implicitRowStart: Int?
+    private let preservesCastOutputNames: Bool
+    /// Source span and output name of the most recent cast folded to a literal.
+    private var lastFoldedCast: (start: Int, end: Int, name: String)?
     private var sourceCapture: SQLSourceCaptureCollector?
     private var sourceRoots: [QueryOccurrenceID] = []
     private var tokenIsQuoted = false
@@ -134,9 +152,16 @@ public final class SQLParser {
     private var structuralError: QueryStructuralValidationError?
     private var lexicalError: ParseError?
 
+    /// - Parameter preservesCastOutputNames: Names an unaliased projection item
+    ///   whose spanning cast folds to a constant after that cast, as SQL text
+    ///   execution presents it. The canonical AST cannot distinguish such a
+    ///   constant from one without cast syntax, so the default keeps the item
+    ///   unaliased and canonical SQL round-trips unchanged.
     public init(
-        structuralLimits: QueryStructuralLimits = .default
+        structuralLimits: QueryStructuralLimits = .default,
+        preservesCastOutputNames: Bool = false
     ) {
+        self.preservesCastOutputNames = preservesCastOutputNames
         self.position = 0
         self.currentToken = .eof
         self.anonymousParameterPosition = 0
@@ -251,6 +276,7 @@ public final class SQLParser {
         preservesOutputReferenceCasts = false
         colonStartsSlice = false
         implicitRowStart = nil
+        lastFoldedCast = nil
         tokenIsQuoted = false
         currentToken = .eof
         anonymousParameterPosition = 0
@@ -876,6 +902,17 @@ extension SQLParser {
         }
     }
 
+    /// A word naming an unknown option value is a value failure; any other token is syntax.
+    private func unrecognizedOptionValue(_ option: String) -> ParseError {
+        switch currentToken {
+        case .identifier, .keyword:
+            return .literalError(message: "Unrecognized \(option) value", position: tokenStart,
+                failure: .invalidOptionValue)
+        default:
+            return .unexpectedToken(expected: option, found: tokenDescription(currentToken), position: tokenStart)
+        }
+    }
+
     private func expectContextualWord(_ word: String) throws {
         guard consumeContextualWord(word) else {
             throw ParseError.unexpectedToken(
@@ -1345,7 +1382,7 @@ extension SQLParser {
             do {
                 literal = try SQLConstantSyntax.cycleDate(text, limits: constantLimits(reservingNodes: 3))
             } catch let error as SQLConstantError {
-                throw ParseError.literalError(message: error.description, position: start)
+                throw ParseError.literalError(message: error.description, position: start, failure: error.failure)
             }
             _ = sourceCapture?.discardLastExpression()
             _ = try makeLiteralExpression(literal, at: start)
@@ -1372,10 +1409,17 @@ extension SQLParser {
                 try sourceCapture?.recordProjectionQualifier(start: start, end: previousTokenEnd, identifierEnd: identifierEnd, ledger: &structuralLedger)
                 items.append(.wildcard(qualifier: qualifier))
             } else {
+                let itemStart = tokenStart
                 let expression = try parseExpression()
+                let itemEnd = previousTokenEnd
                 var alias: String?
                 if isKeyword("AS") { advance(); alias = try parseRequiredIdentifier("projection alias", allowsKeywordLabel: true) }
                 else if let name = identifierText { alias = name; advance() }
+                // A folded cast keeps the output name of the cast it replaced.
+                else if preservesCastOutputNames, case .literal = expression, let folded = lastFoldedCast,
+                        folded.start == itemStart, folded.end == itemEnd {
+                    alias = folded.name
+                }
                 items.append(try makeStructuralNode(ProjectionItem(expression, alias: alias)))
             }
         } while isSymbol(",")
@@ -2010,6 +2054,8 @@ extension SQLParser {
         }
         let signCount = signs.count
         defer { for _ in 0..<signCount { leaveStructuralNesting() } }
+        // A sign binds looser than `::`, so a signed cast never spans the operand.
+        let operandStart: Int? = initial == nil ? tokenStart : nil
         var expression: Expression
         if let initial {
             expression = initial
@@ -2023,7 +2069,7 @@ extension SQLParser {
             if isSymbol("::") {
                 let start = tokenStart
                 advance()
-                expression = try normalizedCast(expression, as: parseDataType(), at: start)
+                expression = try normalizedCast(expression, as: parseDataType(), at: start, spanStart: operandStart)
             } else if isSymbol("[") {
                 expression = try parseArrayAccess(expression)
             } else if isSymbol(".") {
@@ -2085,11 +2131,13 @@ extension SQLParser {
         do {
             return try makeLiteralExpression(SQLConstantSyntax.numericLiteral(text, limits: constantLimits(reservingNodes: 4)), at: start)
         } catch let error as SQLConstantError {
-            throw ParseError.literalError(message: String(describing: error), position: start)
+            throw ParseError.literalError(message: String(describing: error), position: start, failure: error.failure)
         }
     }
 
-    private func normalizedCast(_ expression: Expression, as type: DataType, at start: Int) throws -> Expression {
+    /// `spanStart` is where the cast's source span begins for output naming,
+    /// or `nil` when the operand's start is not known to this parser state.
+    private func normalizedCast(_ expression: Expression, as type: DataType, at start: Int, spanStart: Int?) throws -> Expression {
         do {
             if let literal = try SQLConstantSyntax.normalize(expression, as: type, limits: constantLimits(reservingNodes: 3 + dataTypeNodeCount(type))) {
                 if preservesOutputReferenceCasts {
@@ -2103,11 +2151,12 @@ extension SQLParser {
                 }
                 let originalRange = sourceCapture?.discardLastExpression()
                 sourceCapture?.discardLastType()
+                if let spanStart { lastFoldedCast = (spanStart, previousTokenEnd, SQLCastOutputName.name(for: type)) }
                 return try makeLiteralExpression(literal, at: min(start, originalRange?.start ?? start))
             }
             return try makeStructuralNode(.cast(expression, targetType: type), at: start)
         } catch let error as SQLConstantError {
-            throw ParseError.literalError(message: String(describing: error), position: start)
+            throw ParseError.literalError(message: String(describing: error), position: start, failure: error.failure)
         }
     }
 
@@ -2167,7 +2216,7 @@ extension SQLParser {
                 }
                 advance()
                 let value = try makeLiteralExpression(.sqlUnknownString(text), at: primaryStart)
-                return try normalizedCast(value, as: type, at: start)
+                return try normalizedCast(value, as: type, at: start, spanStart: start)
             }
             let syntaxExpression = ["EXISTS", "CASE", "CAST"].contains(upper)
             if !syntaxExpression || upper == "EXISTS" && next != .symbol("(") {
@@ -2199,8 +2248,12 @@ extension SQLParser {
                 implicitRowStart = primaryStart
                 return row
             }
+            let expressionEnd = previousTokenEnd
             try expect(")")
             if implicitRowStart == expressionStart { implicitRowStart = primaryStart }
+            if let folded = lastFoldedCast, folded.start == expressionStart, folded.end == expressionEnd {
+                lastFoldedCast = (primaryStart, previousTokenEnd, folded.name)
+            }
             return expr
 
         case .keyword("EXISTS"):
@@ -2344,7 +2397,7 @@ extension SQLParser {
             throw ParseError.invalidSyntax(message: "Invalid interval field precision", position: start)
         }
         _ = try makeStructuralNode(type, at: start)
-        return try normalizedCast(value, as: type, at: start)
+        return try normalizedCast(value, as: type, at: start, spanStart: start)
     }
 
     private func parseIntervalFields() throws -> SQLIntervalFields? {
@@ -2691,7 +2744,7 @@ extension SQLParser {
         try expect("AS")
         let targetType = try parseDataType()
         try expect(")")
-        return try normalizedCast(value, as: targetType, at: start)
+        return try normalizedCast(value, as: targetType, at: start, spanStart: start)
     }
 
     private func parseDataType() throws -> DataType {
@@ -2846,7 +2899,7 @@ extension SQLParser {
             named: "DECIMAL precision",
             allowsZero: false
         )
-        guard precision <= 38 else { throw ParseError.invalidSyntax(message: "NUMERIC precision must be in 1...38", position: precisionPosition) }
+        guard precision <= 38 else { throw ParseError.literalError(message: "NUMERIC precision must be in 1...38", position: precisionPosition, failure: .invalidTypeModifier) }
         var scale: Int?
         if isSymbol(",") {
             advance()
@@ -2857,7 +2910,7 @@ extension SQLParser {
                 named: "DECIMAL scale",
                 allowsZero: true
             )
-            guard magnitude <= 1000 else { throw ParseError.invalidSyntax(message: "NUMERIC scale must be in -1000...1000", position: scalePosition) }
+            guard magnitude <= 1000 else { throw ParseError.literalError(message: "NUMERIC scale must be in -1000...1000", position: scalePosition, failure: .invalidTypeModifier) }
             scale = negative ? -magnitude : magnitude
         }
         try expect(")")
@@ -2881,13 +2934,18 @@ extension SQLParser {
         named name: String,
         allowsZero: Bool
     ) throws -> Int {
-        guard case .number(let lexicalForm) = currentToken,
-              let value = UInt64(lexicalForm),
-              let result = Int(exactly: value),
-              allowsZero || result > 0 else {
+        guard case .number(let lexicalForm) = currentToken else {
             throw ParseError.invalidSyntax(
                 message: "\(name) must be \(allowsZero ? "a non-negative" : "a positive") integer",
                 position: tokenStart
+            )
+        }
+        // A numeric argument outside the admitted range is a value failure, not syntax.
+        guard let value = UInt64(lexicalForm), let result = Int(exactly: value),
+              allowsZero || result > 0 else {
+            throw ParseError.literalError(
+                message: "\(name) must be \(allowsZero ? "a non-negative" : "a positive") integer",
+                position: tokenStart, failure: .invalidTypeModifier
             )
         }
         advance()
@@ -2899,7 +2957,7 @@ extension SQLParser {
         advance()
         let precisionPosition = tokenStart
         let value = try parseTypeParameter(named: "temporal precision", allowsZero: true)
-        guard value <= 6 else { throw ParseError.invalidSyntax(message: "Temporal precision must be in 0...6", position: precisionPosition) }
+        guard value <= 6 else { throw ParseError.literalError(message: "Temporal precision must be in 0...6", position: precisionPosition, failure: .invalidTypeModifier) }
         try expect(")")
         return value
     }
@@ -5198,7 +5256,8 @@ extension SQLParser {
             guard seen.insert(key).inserted else { throw ddlSyntax("Duplicate EXPLAIN option") }
             if key == "format" {
                 if consumeContextualWord("JSON") { format = .json }
-                else { try expectContextualWord("TEXT"); format = .text }
+                else if consumeContextualWord("TEXT") { format = .text }
+                else { throw unrecognizedOptionValue("EXPLAIN format") }
             } else {
                 let explicit = withLookahead {
                     consumeContextualWord("TRUE") || consumeContextualWord("FALSE") || consumeContextualWord("ON") || consumeContextualWord("OFF") || { if case .number = currentToken { return true }; return false }()
@@ -5249,7 +5308,8 @@ extension SQLParser {
             case "csv": format = .csv
             case "format":
                 if consumeContextualWord("CSV") { format = .csv }
-                else { try expectContextualWord("TEXT"); format = .text }
+                else if consumeContextualWord("TEXT") { format = .text }
+                else { throw unrecognizedOptionValue("COPY format") }
             case "header":
                 let explicit = withLookahead { consumeContextualWord("TRUE") || consumeContextualWord("FALSE") || consumeContextualWord("ON") || consumeContextualWord("OFF") }
                 header = explicit ? try blockBoolean() : true

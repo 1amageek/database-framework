@@ -41,7 +41,8 @@ private func executeSQLText<Result: Sendable>(_ sql: String, context: DatabaseCo
         timeoutMilliseconds: options.budget.timeoutMilliseconds)
     let parsed: SQLParsedBlock
     do {
-        parsed = try SQLParser(structuralLimits: options.structuralLimits).parseBlockWithSource(sql)
+        parsed = try SQLParser(structuralLimits: options.structuralLimits,
+            preservesCastOutputNames: true).parseBlockWithSource(sql)
         try meter.checkpoint(at: .bindingCandidate)
     } catch {
         throw try sqlTextFailure(error, source: sql, bytePosition: sqlParserBytePosition(error))
@@ -71,8 +72,18 @@ private func sqlParserBytePosition(_ error: any Error) -> Int? {
     guard let error = error as? SQLParser.ParseError else { return nil }
     switch error {
     case .unexpectedToken(_, _, let position), .unexpectedEndOfInput(_, let position),
-         .invalidSyntax(_, let position), .literalError(_, let position): return position
+         .invalidSyntax(_, let position), .literalError(_, let position, _): return position
     case .unsupportedFeature: return nil
+    }
+}
+
+private func sqlConstantDiagnostic(_ failure: SQLConstantFailure, message: String) throws -> SQLDiagnostic {
+    switch failure {
+    case .invalidRepresentation: try SQLDiagnostic(sqlState: "22P02", category: .data, message: message)
+    case .outOfRange: try SQLDiagnostic(sqlState: "22003", category: .numeric, message: message)
+    case .invalidTypeModifier, .invalidOptionValue: try SQLDiagnostic(sqlState: "22023", category: .data, message: message)
+    case .unsupported: try SQLDiagnostic(sqlState: "0A000", category: .unsupported, message: message)
+    case .resourceLimit: try SQLDiagnostic(sqlState: "54000", category: .resource, message: message)
     }
 }
 
@@ -85,6 +96,8 @@ private func sqlTextFailure(
         case .unsupportedFeature:
             base = try SQLDiagnostic(sqlState: "0A000", category: .unsupported,
                 message: "Unsupported SQL syntax")
+        case .literalError(let message, _, let failure):
+            base = try sqlConstantDiagnostic(failure, message: message)
         default:
             base = try SQLDiagnostic(sqlState: "42601", category: .syntax,
                 message: "Invalid SQL syntax")

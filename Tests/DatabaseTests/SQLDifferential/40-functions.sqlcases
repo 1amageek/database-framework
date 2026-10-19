@@ -1,0 +1,410 @@
+-- F01-F14 named functions and operators. Every named function appears in at
+-- least one success column; overload and failure contracts follow per family.
+
+### F01 success query f01-conditional-functions
+--query
+SELECT CASE WHEN 1 > 0 THEN 'p' END AS c, COALESCE(NULL::integer, NULL, 3) AS co, NULLIF('a', 'b') AS nf, GREATEST('b', 'a', NULL) AS gs, LEAST(2.5, 1, 3) AS ls
+
+### F01 boundary query f01-all-null-and-short-circuit
+--query
+SELECT COALESCE(NULL::integer) AS all_null, GREATEST(NULL::integer, NULL) AS no_value, COALESCE(1, 1 / 0) AS short_circuit
+
+### F01 failure query f01-greatest-no-common-type
+--query
+SELECT GREATEST(1, 'a'::text)
+
+### F02 success query f02-integer-math
+--query
+SELECT abs(-5) AS a, sign(-3) AS s, div(7, 2) AS d, mod(-7, 3) AS m, gcd(12, 18) AS g, lcm(4, 6) AS l, width_bucket(5, 0, 10, 4) AS wb, power(2, 10) AS p
+
+### F02 success query f02-numeric-math
+--query
+SELECT ceil(1.2) AS c1, ceiling(-1.2) AS c2, floor(-1.5) AS f, round(1.2345, 2) AS r, trunc(-1.99) AS t1, trunc(1.987, 2) AS t2, sqrt(2::numeric) AS sq, round(cbrt(27::float8)::numeric, 10) AS cb, exp(1::numeric) AS e, ln(10::numeric) AS ln10, log(100) AS lg, log10(1000::numeric) AS l10, log(2, 8) AS lb
+
+### F02 success query f02-scale-functions
+--query
+SELECT scale(1.2300) AS sc, min_scale(1.2300) AS ms, trim_scale(1.2300) AS ts, power(2::numeric, 0.5) AS frac_power, sign(-0.0::numeric) AS zero_sign, abs(-2::numeric(5,2)) AS scaled_abs
+
+### F02 boundary query f02-numeric-math-stays-decimal
+--query
+SELECT sqrt(4::numeric) AS sqrt_numeric, power(2::numeric, 2) AS power_numeric, round(1.5::float8) AS float_round, round(2.5::float8) AS banker
+
+### F02 failure query f02-sqrt-negative
+--query
+SELECT sqrt(-1::numeric)
+
+### F02 failure query f02-ln-zero
+--query
+SELECT ln(0::numeric)
+
+### F02 failure query f02-mod-zero
+--query
+SELECT mod(1, 0)
+
+### F02 failure query f02-width-bucket-zero-count
+--query
+SELECT width_bucket(1, 0, 10, 0)
+
+### F03 success query f03-trigonometry
+--query
+SELECT pi() AS p, degrees(pi()) AS deg, radians(180) AS rad, sin(0) AS s, cos(0) AS c, tan(0) AS t, asin(1) AS asn, acos(1) AS acs, atan(1) AS atn, atan2(1, 1) AS atn2
+
+### F03 failure query f03-asin-domain
+--query
+SELECT asin(2)
+
+### F03 boundary query f03-float-result-type
+--query
+SELECT sin(1) AS sin_float, degrees(1::numeric) AS degrees_float
+
+### F04 success query f04-case-and-length
+--query
+SELECT lower('ÄBC') AS lo, upper('äbc') AS up, length('猫a') AS len, char_length('猫a') AS cl, character_length('猫a') AS chl, octet_length('猫a') AS ol, bit_length('猫a') AS bl
+
+### F04 success query f04-substring-position
+--query
+SELECT substring('hello' FROM 2 FOR 3) AS s1, substr('hello', 0, 3) AS s2, substring('hello' FROM 4) AS s3, position('l' IN 'hello') AS p1, strpos('hello', 'z') AS p2, substr('猫😀犬', 2, 1) AS emoji
+
+### F04 success query f04-trim-concat-replace
+--query
+SELECT trim('  x  ') AS t, btrim('xxaxx', 'x') AS bt, ltrim('  x') AS lt, rtrim('x--', '-') AS rt, trim(LEADING 'a' FROM 'aab') AS tl, concat('a', NULL, 1) AS c, concat_ws('-', 'a', NULL, 'b') AS cw, replace('banana', 'an', 'AN') AS r, translate('12345', '143', 'ax') AS tr
+
+### F04 success query f04-split-pad-repeat
+--query
+SELECT split_part('a,b,c', ',', 2) AS sp, split_part('a,b,c', ',', -1) AS spn, left('hello', 2) AS l, right('hello', -2) AS r, lpad('7', 3, '0') AS lp, rpad('ab', 1) AS rp, repeat('ab', 2) AS rep, reverse('abc') AS rev, ascii('A') AS a, chr(26085) AS ch
+
+### F04 boundary query f04-empty-and-negative
+--query
+SELECT substring('abc' FROM -1 FOR 3) AS clipped, repeat('x', 0) AS zero, lpad('abc', -1) AS negative_pad, left('abc', -5) AS left_neg, trim('   ') AS blank
+
+### F04 failure query f04-negative-substring-length
+--query
+SELECT substring('abc' FROM 1 FOR -1)
+
+### F04 failure query f04-split-part-zero
+--query
+SELECT split_part('a,b', ',', 0)
+
+### F05 success query f05-like-ilike-similar
+--query
+SELECT 'abc' LIKE 'a%' AS l1, 'aBc' ILIKE 'A_C' AS l2, 'a%c' LIKE 'a!%c' ESCAPE '!' AS l3, 'abc' NOT LIKE '%d' AS l4, 'abc' SIMILAR TO '(a|b)%' AS s1, 'xyz' NOT ILIKE 'X%' AS l5
+
+### F05 success query f05-regex-operators
+--query
+SELECT 'abc' ~ 'b' AS r1, 'ABC' ~* 'b' AS r2, 'abc' !~ 'z' AS r3, 'abc' !~* 'B' AS r4, regexp_like('abc', 'B', 'i') AS r5, regexp_replace('aaa', 'a', 'b', 'g') AS r6, regexp_replace('abc', '(b)', '[\1]') AS r7
+
+### F05 success query f05-regex-match-and-split
+--query
+SELECT regexp_match('foo123bar', '([0-9]+)') AS m, regexp_split_to_array('a1b22c', '[0-9]+') AS parts
+
+### F05 success query f05-regex-matches-rows
+--query
+SELECT m FROM regexp_matches('a1b2c3', '([a-z])([0-9])', 'g') AS t(m)
+
+### F05 success query f05-regex-split-table
+--query
+SELECT part FROM regexp_split_to_table('x,y,,z', ',') AS t(part)
+
+### F05 boundary query f05-like-whole-input-and-codepoints
+--query
+SELECT 'abc' LIKE 'b' AS partial, '猫' LIKE '_' AS one_codepoint, '' LIKE '%' AS empty, NULL LIKE 'a' AS null_input
+
+### F05 failure query f05-invalid-regex
+--query
+SELECT 'a' ~ '('
+
+### F05 failure query f05-invalid-escape
+--query
+SELECT 'a' LIKE 'a' ESCAPE 'xy'
+
+### F06 success query f06-binary-functions
+--query
+SELECT encode('\x0102ff'::bytea, 'hex') AS hx, encode('hi'::bytea, 'base64') AS b64, decode('0102', 'hex') AS dh, decode('aGk=', 'base64') AS db, get_byte('\x0102'::bytea, 1) AS gb, set_byte('\x0102'::bytea, 0, 255) AS sb, get_bit('\x80'::bytea, 7) AS gbit, set_bit('\x00'::bytea, 0, 1) AS sbit
+
+### F06 success query f06-bytea-length-substring-concat
+--query
+SELECT length('\x010203'::bytea) AS n, substring('\x010203'::bytea FROM 2 FOR 1) AS sub, '\x01'::bytea || '\x02'::bytea AS cat, octet_length('\x0102'::bytea) AS ol
+
+### F06 boundary query f06-concat-unknown-operand-types
+--query
+SELECT '\x01'::bytea || '\x02' AS bytes_unknown, '\x01'::bytea || NULL AS bytes_null, 'a' || 'b' AS unknowns, 1 || 'a' AS number_text
+
+### F06 failure query f06-get-byte-out-of-range
+--query
+SELECT get_byte('\x01'::bytea, 1)
+
+### F06 failure query f06-invalid-encoding
+--query
+SELECT decode('zz', 'hex')
+
+### F07 success query f07-extract-and-trunc
+--query
+SELECT EXTRACT(YEAR FROM TIMESTAMP '2024-02-29 13:14:15') AS y, date_part('dow', DATE '2024-02-29') AS dow, EXTRACT(EPOCH FROM TIMESTAMPTZ '1970-01-02 00:00:00+00') AS epoch, date_trunc('month', TIMESTAMP '2024-02-29 13:14:15') AS month_start, date_trunc('hour', TIMESTAMPTZ '2024-02-29 13:14:15+00') AS hour_start
+
+### F07 success query f07-bin-age-make
+--query
+SELECT date_bin(INTERVAL '15 minutes', TIMESTAMP '2024-01-01 10:37:00', TIMESTAMP '2024-01-01 00:00:00') AS binned, age(TIMESTAMP '2024-03-01', TIMESTAMP '2023-01-15') AS aged, make_date(2024, 2, 29) AS md, make_time(1, 2, 3.5) AS mt, make_timestamp(2024, 1, 2, 3, 4, 5.25) AS mts, make_timestamptz(2024, 1, 2, 3, 4, 5, 'UTC') AS mtz, make_interval(years => 1, days => 2) AS mi
+
+### F07 success query f07-zone-and-format
+--query
+SELECT TIMESTAMP '2024-01-01 12:00' AT TIME ZONE 'UTC' AS at_utc, to_char(TIMESTAMP '2024-02-03 04:05:06', 'YYYY-MM-DD HH24:MI:SS') AS formatted, to_date('2024-02-29', 'YYYY-MM-DD') AS parsed_date, to_timestamp('2024-02-29 01:02', 'YYYY-MM-DD HH24:MI') AS parsed_ts
+
+### F07 success query f07-current-time-functions shape
+--query
+SELECT current_date AS cd, current_time AS ct, current_timestamp AS cts, localtime AS lt, localtimestamp AS lts, now() AS n, transaction_timestamp() AS tt, statement_timestamp() AS st, clock_timestamp() AS clk
+
+### F07 boundary query f07-transaction-equals-statement-in-one-statement
+--query
+SELECT now() = transaction_timestamp() AS same_transaction, now() <= clock_timestamp() AS clock_advances
+
+### F07 failure query f07-invalid-format-date
+--query
+SELECT to_date('2024-13-01', 'YYYY-MM-DD')
+
+### F07 failure query f07-make-date-invalid
+--query
+SELECT make_date(2023, 2, 29)
+
+### F07 failure query f07-unknown-field
+--query
+SELECT EXTRACT(fortnight FROM DATE '2024-01-01')
+
+### F08 success query f08-array-shape-functions
+--query
+SELECT array_length(ARRAY[[1,2,3],[4,5,6]], 2) AS al, array_lower(ARRAY[1,2], 1) AS lo, array_upper(ARRAY[1,2], 1) AS up, array_ndims(ARRAY[[1]]) AS nd, array_dims(ARRAY[[1,2],[3,4]]) AS dims, cardinality(ARRAY[[1,2],[3,4]]) AS card
+
+### F08 success query f08-array-edit-functions
+--query
+SELECT array_append(ARRAY[1], 2) AS ap, array_prepend(0, ARRAY[1]) AS pp, array_cat(ARRAY[1], ARRAY[2, 3]) AS ct, array_position(ARRAY['a', 'b', 'a'], 'a') AS pos, array_positions(ARRAY['a', 'b', 'a'], 'a') AS poss, array_remove(ARRAY[1, 2, 1], 1) AS rm, array_replace(ARRAY[1, 2, 1], 1, 9) AS rp
+
+### F08 success query f08-array-text-conversion
+--query
+SELECT array_to_string(ARRAY['a', NULL, 'c'], ',', '*') AS ats, string_to_array('a,b,,c', ',') AS sta, string_to_array('a,b,,c', ',', '') AS sta_null
+
+### F08 success query f08-unnest-subscripts
+--query
+SELECT idx FROM generate_subscripts(ARRAY['a', 'b', 'c'], 1) AS g(idx)
+
+### F08 boundary query f08-null-element-and-empty
+--query
+SELECT array_position(ARRAY[1, NULL], NULL) AS null_pos, array_length('{}'::integer[], 1) AS empty_len, array_remove(ARRAY[NULL, 1], NULL) AS remove_null, array_dims('{}'::integer[]) AS empty_dims
+
+### F08 failure query f08-cat-dimension-mismatch
+--query
+SELECT array_cat(ARRAY[[1, 2]], ARRAY[[[3]]])
+
+### F09 success query f09-json-builders
+--query
+SELECT to_json('a"b'::text) AS tj, to_jsonb(1.50) AS tjb, row_to_json(ROW(1, 'x')) AS rj, array_to_json(ARRAY[1, 2]) AS aj, json_build_object('a', 1, 'b', NULL) AS jbo, jsonb_build_object('b', 2, 'a', 1) AS jbbo, json_build_array(1, 'x') AS jba, jsonb_build_array(true, NULL) AS jbba
+
+### F09 success query f09-json-inspection
+--query
+SELECT json_typeof('[1]') AS jt, jsonb_typeof('null') AS jbt, json_array_length('[1,2]') AS jal, jsonb_array_length('[]') AS jbal, json_extract_path('{"a":{"b":1}}', 'a', 'b') AS jep, jsonb_extract_path_text('{"a":{"b":"x"}}', 'a', 'b') AS jbept, json_extract_path_text('{"a":null}', 'a') AS json_null_text
+
+### F09 success query f09-json-each
+--query
+SELECT key, value FROM jsonb_each('{"b": [1], "a": "x"}')
+
+### F09 success query f09-json-each-text
+--query
+SELECT key, value FROM json_each_text('{"a": "x", "b": null}')
+
+### F09 success query f09-json-array-elements
+--query
+SELECT value FROM jsonb_array_elements('[1, "a", null]')
+
+### F09 success query f09-json-array-elements-text
+--query
+SELECT value FROM json_array_elements_text('[1, "a", null]')
+
+### F09 success query f09-json-object-keys
+--query
+SELECT k FROM jsonb_object_keys('{"b": 1, "a": 2}') AS t(k)
+
+### F09 boundary query f09-missing-member-vs-null
+--query
+SELECT '{"a": null}'::jsonb -> 'a' AS present_null, '{"a": null}'::jsonb -> 'b' AS missing, jsonb_typeof('{"a": null}'::jsonb -> 'a') AS null_type
+
+### F09 failure query f09-array-length-of-object
+--query
+SELECT jsonb_array_length('{"a": 1}')
+
+### F09 failure query f09-each-of-array
+--query
+SELECT * FROM jsonb_each('[1]')
+
+### F10 success query f10-jsonb-modification
+--query
+SELECT jsonb_set('{"a": {"b": 1}}', '{a,b}', '2') AS js, jsonb_set('{"a": 1}', '{c}', '3', true) AS created, jsonb_insert('[1, 3]', '{1}', '2') AS ins, jsonb_strip_nulls('{"a": null, "b": [null]}') AS stripped
+
+### F10 success query f10-jsonb-operators
+--query
+SELECT '{"a": [1, 2]}'::jsonb -> 'a' AS arrow, '{"a": "x"}'::jsonb ->> 'a' AS text_arrow, '{"a": [1, 2]}'::jsonb #> '{a,1}' AS path, '{"a": [1, 2]}'::jsonb #>> '{a,0}' AS text_path, '{"a": 1, "b": 2}'::jsonb @> '{"a": 1}' AS contains, '{"a": 1}'::jsonb <@ '{"a": 1, "b": 2}' AS contained
+
+### F10 success query f10-jsonb-key-and-edit-operators
+--query
+SELECT '{"a": 1}'::jsonb ? 'a' AS has, '{"a": 1, "b": 2}'::jsonb ?| ARRAY['x', 'b'] AS has_any, '{"a": 1}'::jsonb ?& ARRAY['a', 'b'] AS has_all, '[1]'::jsonb || '[2]'::jsonb AS cat, '{"a": 1, "b": 2}'::jsonb - 'a' AS minus_key, '[1, 2, 3]'::jsonb - -1 AS minus_last, '{"a": {"b": 1}}'::jsonb #- '{a,b}' AS minus_path
+
+### F10 boundary query f10-negative-index-and-missing-path
+--query
+SELECT '[1, 2, 3]'::jsonb -> -1 AS last_element, '[1]'::jsonb -> 5 AS out_of_range, jsonb_set('[1]', '{5}', '9') AS appended, '{"a": 1}'::jsonb #> '{x,y}' AS missing_path
+
+### F10 failure query f10-minus-on-scalar
+--query
+SELECT '1'::jsonb - 'a'
+
+### F10 failure query f10-insert-existing-key
+--query
+SELECT jsonb_insert('{"a": 1}', '{a}', '2')
+
+### F11 success query f11-basic-aggregates
+--setup
+CREATE TABLE v(g integer, x integer, s text, b boolean);
+INSERT INTO v VALUES (1, 1, 'a', true), (1, NULL, 'b', false), (2, 3, NULL, true), (2, 3, 'c', NULL);
+--query
+SELECT g, count(*) AS n, count(x) AS nx, sum(x) AS s, avg(x) AS a, min(s) AS mn, max(x) AS mx, bool_and(b) AS ba, bool_or(b) AS bo, every(b) AS ev FROM v GROUP BY g
+
+### F11 success query f11-ordered-and-filtered-aggregates
+--setup
+CREATE TABLE v(g integer, x integer, s text);
+INSERT INTO v VALUES (1, 2, 'b'), (1, 1, 'a'), (1, 2, 'c'), (2, 5, NULL);
+--query
+SELECT g, string_agg(s, ',' ORDER BY s DESC) AS sa, array_agg(x ORDER BY x) AS aa, array_agg(DISTINCT x ORDER BY x) AS ad, count(*) FILTER (WHERE x > 1) AS big, sum(DISTINCT x) AS sd FROM v GROUP BY g
+
+### F11 success query f11-bit-and-json-aggregates
+--setup
+CREATE TABLE v(x integer, k text);
+INSERT INTO v VALUES (12, 'a'), (10, 'b'), (6, NULL);
+--query
+SELECT bit_and(x) AS ba, bit_or(x) AS bo, bit_xor(x) AS bx, json_agg(x ORDER BY x) AS ja, jsonb_agg(k ORDER BY x) AS jba, json_object_agg(x, k ORDER BY x) AS joa, jsonb_object_agg(x, k) AS jboa FROM v
+
+### F11 boundary query f11-empty-input
+--setup
+CREATE TABLE v(x integer, s text);
+--query
+SELECT count(*) AS n, count(x) AS nx, sum(x) AS s, avg(x) AS a, string_agg(s, ',') AS sa, array_agg(x) AS aa, bool_and(x > 0) AS ba, json_agg(x) AS ja FROM v
+
+### F11 boundary query f11-widened-result-types
+--query
+SELECT sum(1::smallint) AS sum_small, sum(1::integer) AS sum_int, sum(1::bigint) AS sum_big, avg(1::integer) AS avg_int, sum(1.5::real) AS sum_real
+
+### F11 failure query f11-object-agg-null-key
+--query
+SELECT json_object_agg(k, v) FROM (VALUES (NULL::text, 1)) t(k, v)
+
+### F11 failure query f11-distinct-order-mismatch
+--query
+SELECT array_agg(DISTINCT x ORDER BY y) FROM (VALUES (1, 2)) t(x, y)
+
+### F12 success query f12-statistics
+-- Floating aggregates depend on input order, which SQL leaves unspecified
+-- without an aggregate ORDER BY.
+--setup
+CREATE TABLE p(x float8, y float8);
+INSERT INTO p VALUES (1, 2), (2, 4), (3, 7), (NULL, 1), (4, NULL);
+--query
+SELECT var_pop(x ORDER BY x) AS vp, var_samp(x ORDER BY x) AS vs, variance(x ORDER BY x) AS va, stddev_pop(x ORDER BY x) AS sp, stddev_samp(x ORDER BY x) AS ss, stddev(x ORDER BY x) AS sd, corr(y, x ORDER BY x) AS co, covar_pop(y, x ORDER BY x) AS cp, covar_samp(y, x ORDER BY x) AS cs FROM p
+
+### F12 success query f12-regression
+--setup
+CREATE TABLE p(x float8, y float8);
+INSERT INTO p VALUES (1, 2), (2, 4), (3, 7);
+--query
+SELECT regr_count(y, x) AS rc, regr_avgx(y, x) AS ax, regr_avgy(y, x) AS ay, regr_sxx(y, x) AS sxx, regr_sxy(y, x) AS sxy, regr_syy(y, x) AS syy, regr_slope(y, x) AS slope, regr_intercept(y, x) AS intercept, regr_r2(y, x) AS r2 FROM p
+
+### F12 success query f12-ordered-set
+--setup
+CREATE TABLE p(x integer);
+INSERT INTO p VALUES (1), (2), (2), (10);
+--query
+SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY x) AS median, percentile_disc(0.5) WITHIN GROUP (ORDER BY x) AS disc, percentile_cont(ARRAY[0, 1]) WITHIN GROUP (ORDER BY x) AS bounds, mode() WITHIN GROUP (ORDER BY x) AS most FROM p
+
+### F12 boundary query f12-small-and-numeric-samples
+--query
+SELECT var_samp(x) AS one_sample, stddev_pop(x) AS one_pop, var_pop(x::numeric) AS numeric_var FROM (VALUES (5)) t(x)
+
+### F12 failure query f12-percentile-out-of-range
+--query
+SELECT percentile_cont(1.5) WITHIN GROUP (ORDER BY x) FROM (VALUES (1)) t(x)
+
+### F12 failure query f12-ordered-set-without-within-group
+--query
+SELECT percentile_cont(0.5) FROM (VALUES (1)) t(x)
+
+### F13 success query f13-ranking ordered
+--query
+SELECT v, row_number() OVER (ORDER BY v) AS rn, rank() OVER (ORDER BY v) AS rk, dense_rank() OVER (ORDER BY v) AS dr, percent_rank() OVER (ORDER BY v) AS pr, cume_dist() OVER (ORDER BY v) AS cd, ntile(2) OVER (ORDER BY v) AS nt FROM (VALUES (10), (20), (20), (30)) t(v) ORDER BY v, rn
+
+### F13 success query f13-offset-and-value ordered
+--query
+SELECT v, lag(v) OVER w AS lg, lead(v, 2, -1) OVER w AS ld, first_value(v) OVER w AS fv, last_value(v) OVER (w ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS lv, nth_value(v, 2) OVER w AS nv FROM (VALUES (1), (2), (3)) t(v) WINDOW w AS (ORDER BY v) ORDER BY v
+
+### F13 success query f13-aggregate-over-partition ordered
+--query
+SELECT g, v, avg(v) OVER (PARTITION BY g) AS pa, count(*) OVER () AS total FROM (VALUES (1, 2), (1, 4), (2, 6)) t(g, v) ORDER BY g, v
+
+### F13 failure query f13-ntile-zero
+--query
+SELECT ntile(0) OVER () FROM (VALUES (1)) t(v)
+
+### F13 failure query f13-nth-value-zero
+--query
+SELECT nth_value(v, 0) OVER () FROM (VALUES (1)) t(v)
+
+### F13 boundary query f13-lag-past-start ordered
+--query
+SELECT v, lag(v, 5) OVER (ORDER BY v) AS far, lag(v, 1, 0) OVER (ORDER BY v) AS defaulted FROM (VALUES (1), (2)) t(v) ORDER BY v
+
+### F14 success block f14-sequence-functions
+--setup
+CREATE SEQUENCE counter START 5;
+--query
+SELECT nextval('counter') AS first_value, nextval('counter') AS second_value, currval('counter') AS current_value, lastval() AS last_value, setval('counter', 20) AS set_value, nextval('counter') AS after_set;
+
+### F14 failure block f14-currval-uninitialized
+--setup
+CREATE SEQUENCE counter;
+--query
+SELECT currval('counter');
+
+### F14 success query f14-catalog-identity shape
+--query
+SELECT current_schema() AS cs, current_schemas(false) AS css, current_database() AS cd, current_user AS cu, session_user AS su
+
+### F14 boundary block f14-setval-is-called-false
+--setup
+CREATE SEQUENCE counter;
+--query
+SELECT setval('counter', 10, false) AS set_value, nextval('counter') AS next_value;
+
+### F06 boundary query f06-bit-numbering-and-empty
+--query
+SELECT get_bit('\x01'::bytea, 0) AS lowest, get_bit('\x01'::bytea, 7) AS highest, length(''::bytea) AS empty_length, encode(''::bytea, 'hex') AS empty_hex
+
+### F02 boundary query f02-numeric-exp
+--query
+SELECT exp(1::numeric) AS e, exp(0::numeric) AS one
+
+### F02 boundary query f02-numeric-ln-log
+--query
+SELECT ln(10::numeric) AS ln10, log10(1000::numeric) AS l10, log(2::numeric, 8::numeric) AS lb, log(100::numeric) AS lg
+
+### F02 boundary query f02-numeric-sqrt-power
+--query
+SELECT sqrt(2::numeric) AS sq, power(2::numeric, 0.5) AS half, power(1.5::numeric, 3) AS cube
+
+### F02 boundary query f02-numeric-ln-only
+--query
+SELECT ln(10::numeric) AS ln10
+
+### F02 boundary query f02-numeric-log10-only
+--query
+SELECT log10(1000::numeric) AS l10
+
+### F02 boundary query f02-numeric-log-base-only
+--query
+SELECT log(2::numeric, 8::numeric) AS lb
+
+### F02 boundary query f02-numeric-log-one-argument
+--query
+SELECT log(100::numeric) AS lg

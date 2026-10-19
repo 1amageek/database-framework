@@ -30,7 +30,7 @@ extension DatabaseContext {
         let deadline = TransactionExecutionDeadline(
             instant: container.monotonicClock.now.advanced(by: .milliseconds(Int64(options.budget.timeoutMilliseconds))),
             timeoutMilliseconds: options.budget.timeoutMilliseconds)
-        let parser = SQLParser(structuralLimits: structuralLimits)
+        let parser = SQLParser(structuralLimits: structuralLimits, preservesCastOutputNames: true)
         let parsed = try parser.parseWithSource(sql)
         let parsedStatement = parsed.statement
         try QueryParameterBinder(

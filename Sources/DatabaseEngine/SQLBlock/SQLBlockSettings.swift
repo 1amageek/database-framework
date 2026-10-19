@@ -1,4 +1,5 @@
 import DatabaseKit
+import QueryAST
 import DatabaseTypes
 
 /// Reversible SQL invocation policy; prepared names deliberately live elsewhere.
@@ -86,7 +87,7 @@ struct SQLBlockSettings: Sendable {
             return searchPath.entries.map { entry in
                 switch entry {
                 case .currentUser: return "\"$user\""
-                case .schema(let name): return "\"" + name.map { $0 == "\"" ? "\"\"" : String($0) }.joined() + "\""
+                case .schema(let name): return SQLParser.displayIdentifier(name)
                 }
             }.joined(separator: ", ")
         case .timeZone: return timeZoneName

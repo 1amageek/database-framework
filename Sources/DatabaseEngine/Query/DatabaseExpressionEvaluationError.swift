@@ -16,6 +16,7 @@ public enum DatabaseExpressionEvaluationError: Error, Sendable, Equatable, Custo
     case numericDomain(operation: String)
     case unsupportedExpression(String)
     case unsupportedFunction(String)
+    case ambiguousOperator(String)
     case invalidFunctionArgument(function: String, reason: String)
     case invalidPattern(offset: UInt64, reason: String)
     case unsupportedPattern(offset: UInt64, reason: String)
@@ -60,6 +61,8 @@ public enum DatabaseExpressionEvaluationError: Error, Sendable, Equatable, Custo
             return "Expression is not supported by the database evaluator: \(expression)"
         case .unsupportedFunction(let function):
             return "Scalar function '\(function)' is not supported by the database evaluator"
+        case .ambiguousOperator(let operation):
+            return "Expression operator is ambiguous: \(operation)"
         case .invalidFunctionArgument(let function, let reason):
             return "Invalid argument for scalar function '\(function)': \(reason)"
         case .invalidPattern(let offset, let reason):
