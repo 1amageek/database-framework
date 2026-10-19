@@ -6,20 +6,21 @@ extension SQLJSONPlan {
 
     mutating func concatenate(_ left: Int, _ right: Int) throws -> Int {
         if case .object(let a, _) = entries[left], case .object(let b, _) = entries[right] {
-            var result = try copy(a)
+            @AdmittedArray var result: [Member] = []
+            try copy(a, into: &$result)
             for member in b {
                 if let index = try memberIndex(member.key, in: result) { result[index] = member }
-                else { try memory.append(member, to: &result) }
+                else { try memory.append(member, to: &$result) }
             }
             try sort(&result)
             return try add(.object(result))
         }
-        var result: [Int] = []
+        @AdmittedArray var result: [Int] = []
         for id in [left, right] {
             if case .array(let children) = entries[id] {
-                try memory.prepare(&result, adding: children.count)
+                try memory.prepare(&$result, adding: children.count)
                 result.append(contentsOf: children)
-            } else { try memory.append(id, to: &result) }
+            } else { try memory.append(id, to: &$result) }
         }
         return try add(.array(result))
     }
@@ -27,19 +28,19 @@ extension SQLJSONPlan {
     mutating func delete(_ root: Int, key: String) throws {
         switch entries[root] {
         case .object(let members, _):
-            var output: [Member] = []
+            @AdmittedArray var output: [Member] = []
             for member in members {
                 if try SQLJSONComparison.strings(member.key, key, memory: memory) != .equal {
-                    try memory.append(member, to: &output)
+                    try memory.append(member, to: &$output)
                 }
             }
             entries[root] = .object(output)
         case .array(let children):
-            var output: [Int] = []
+            @AdmittedArray var output: [Int] = []
             for child in children {
                 if case .scalar(.string(let string)) = entries[child],
                    try SQLJSONComparison.strings(string, key, memory: memory) == .equal { continue }
-                try memory.append(child, to: &output)
+                try memory.append(child, to: &$output)
             }
             entries[root] = .array(output)
         default: throw collection(.jsonContainerRootRequired(operation: "jsonb - text"))
@@ -52,7 +53,8 @@ extension SQLJSONPlan {
         }
         let position = index < 0 ? Int64(children.count) + Int64(index) : Int64(index)
         guard position >= 0, position < children.count else { return }
-        var output = try copy(children)
+        @AdmittedArray var output: [Int] = []
+        try copy(children, into: &$output)
         output.remove(at: Int(position))
         entries[root] = .array(output)
     }
@@ -80,19 +82,20 @@ extension SQLJSONPlan {
                     guard let existing else { return }
                     current = members[existing].value; continue
                 }
-                var output = try copy(members)
+                @AdmittedArray var output: [Member] = []
+                try copy(members, into: &$output)
                 switch operation {
                 case .delete:
                     if let existing { output.remove(at: existing) }
                 case .set:
                     guard let replacement else { throw SQLJSONMemory.failure("JSON replacement") }
                     if let existing { output[existing] = Member(key: key, value: replacement) }
-                    else if flag { try memory.append(Member(key: key, value: replacement), to: &output); try sort(&output) }
+                    else if flag { try memory.append(Member(key: key, value: replacement), to: &$output); try sort(&output) }
                 case .insert:
                     if existing != nil { throw collection(.existingJSONInsertKey(key: key)) }
                     guard let replacement else { throw SQLJSONMemory.failure("JSON replacement") }
                     try memory.bytes(UInt64(key.utf8.count))
-                    try memory.append(Member(key: key, value: replacement), to: &output); try sort(&output)
+                    try memory.append(Member(key: key, value: replacement), to: &$output); try sort(&output)
                 }
                 entries[current] = .object(output)
             case .array(let children):
@@ -104,20 +107,21 @@ extension SQLJSONPlan {
                 if !final {
                     guard inside else { return }; current = children[Int(selected)]; continue
                 }
-                var output = try copy(children)
+                @AdmittedArray var output: [Int] = []
+                try copy(children, into: &$output)
                 switch operation {
                 case .delete: if inside { output.remove(at: Int(selected)) }
                 case .set:
                     guard let replacement else { throw SQLJSONMemory.failure("JSON replacement") }
                     if inside { output[Int(selected)] = replacement }
                     else if flag {
-                        try memory.prepare(&output)
+                        try memory.prepare(&$output)
                         output.insert(replacement, at: index < 0 ? 0 : output.count)
                     }
                 case .insert:
                     guard let replacement else { throw SQLJSONMemory.failure("JSON replacement") }
                     let at = inside ? Int(selected) + (flag ? 1 : 0) : (index < 0 ? 0 : output.count)
-                    try memory.prepare(&output); output.insert(replacement, at: at)
+                    try memory.prepare(&$output); output.insert(replacement, at: at)
                 }
                 entries[current] = .array(output)
             default: return
@@ -126,25 +130,25 @@ extension SQLJSONPlan {
     }
 
     mutating func stripNulls(_ root: Int, arrays: Bool) throws {
-        var pending: [Int] = []
-        try memory.append(root, to: &pending)
+        @AdmittedArray var pending: [Int] = []
+        try memory.append(root, to: &$pending)
         while let id = pending.popLast() {
             try memory.work()
             switch entries[id] {
             case .array(let children):
-                var output: [Int] = []
+                @AdmittedArray var output: [Int] = []
                 for child in children {
                     if arrays, case .scalar(.null) = entries[child] { continue }
-                    try memory.append(child, to: &output)
-                    try memory.append(child, to: &pending)
+                    try memory.append(child, to: &$output)
+                    try memory.append(child, to: &$pending)
                 }
                 entries[id] = .array(output)
             case .object(let members, _):
-                var output: [Member] = []
+                @AdmittedArray var output: [Member] = []
                 for member in members {
                     if case .scalar(.null) = entries[member.value] { continue }
-                    try memory.append(member, to: &output)
-                    try memory.append(member.value, to: &pending)
+                    try memory.append(member, to: &$output)
+                    try memory.append(member.value, to: &$pending)
                 }
                 entries[id] = .object(output)
             default: break
@@ -152,12 +156,10 @@ extension SQLJSONPlan {
         }
     }
 
-    private func copy<T>(_ source: [T]) throws -> [T] {
-        var destination: [T] = []
+    private func copy<T>(_ source: [T], into destination: inout AdmittedArray<T>) throws {
         try memory.prepare(&destination, adding: source.count)
         // Only this container's ID/member slots are copied; subtrees remain flat references.
-        destination.append(contentsOf: source)
-        return destination
+        destination.wrappedValue.append(contentsOf: source)
     }
 
     private func collection(_ cause: SQLCollectionError) -> DatabaseExpressionEvaluationError { .collection(cause) }

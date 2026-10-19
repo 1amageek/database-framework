@@ -55,11 +55,11 @@ struct SQLJSONRowCursor: ~Copyable {
         else { throw SQLJSONMemory.failure("JSON cursor input") }
         let text = name.hasSuffix("_text")
         let type: QueryColumnType = text || keys ? .sql(.text) : (name.hasPrefix("jsonb_") ? .sql(.jsonb) : .sql(.json))
-        var columns: [QueryColumn] = []
-        try memory.prepare(&columns, adding: each ? 2 : 1)
+        @AdmittedArray var columns: [QueryColumn] = []
+        try memory.prepare(&$columns, adding: each ? 2 : 1)
         if each { columns.append(try QueryColumn(number: 1, name: "key", type: .sql(.text), isNullable: false)) }
         columns.append(try QueryColumn(number: each ? 2 : 1, name: keys ? name : "value", type: type, isNullable: text))
-        var schemaBytes = try SQLJSONMemory.product(columns.capacity, MemoryLayout<QueryColumn>.stride)
+        var schemaBytes = try SQLJSONMemory.product(columns.count, MemoryLayout<QueryColumn>.stride)
         schemaBytes = try SQLJSONMemory.add(schemaBytes, UInt64(MemoryLayout<[QueryColumn]>.stride))
         for column in columns { schemaBytes = try SQLJSONMemory.add(schemaBytes, UInt64(column.name.utf8.count)) }
         let schema = try workMeter.reserveIntermediate(bytes: schemaBytes, at: .expressionEvaluation)
@@ -81,8 +81,8 @@ struct SQLJSONRowCursor: ~Copyable {
             try current.memory.work()
             if current.input.isNull { close(); return nil }
             let rowMemory = try SQLJSONMemory(current.memory.meter)
-            var values: [QueryValue] = []
-            try rowMemory.prepare(&values, adding: current.columns.count)
+            @AdmittedArray var values: [QueryValue] = []
+            try rowMemory.prepare(&$values, adding: current.columns.count)
             if let lexical = current.lexical {
                 guard current.index < lexical.nodes[0].end else { close(); return nil }
                 let node = lexical.nodes[current.index]
@@ -112,20 +112,20 @@ struct SQLJSONRowCursor: ~Copyable {
                 }
                 current.index += 1
             }
-            var rowBytes = try SQLJSONMemory.product(values.capacity, MemoryLayout<QueryValue>.stride)
+            var rowBytes = try SQLJSONMemory.product(values.count, MemoryLayout<QueryValue>.stride)
             rowBytes = try SQLJSONMemory.add(rowBytes, UInt64(MemoryLayout<[QueryValue]>.stride))
             for value in values {
                 rowBytes = try SQLJSONMemory.add(rowBytes, CanonicalRelationalFootprintMeter.valueFootprint(of: value,
                     workMeter: current.memory.meter, stage: .expressionEvaluation).bytes)
             }
             let rowClaim = try current.memory.meter.reserveIntermediate(rows: 1, bytes: rowBytes, at: .expressionEvaluation)
-            var leases: [DatabaseQueryPayloadLease] = []
-            try rowMemory.prepare(&leases, adding: current.inputLeases.count + 1)
+            @AdmittedArray var leases: [DatabaseQueryPayloadLease] = []
+            try rowMemory.prepare(&$leases, adding: current.inputLeases.count + 1)
             leases.append(contentsOf: current.inputLeases)
             leases.append(DatabaseQueryPayloadLease(retaining: rowClaim))
             // The returned lease-array storage must survive this row's transient builder.
             let leaseBytes = try SQLJSONMemory.add(UInt64(MemoryLayout<[DatabaseQueryPayloadLease]>.stride),
-                SQLJSONMemory.product(leases.capacity, MemoryLayout<DatabaseQueryPayloadLease>.stride))
+                SQLJSONMemory.product(leases.count, MemoryLayout<DatabaseQueryPayloadLease>.stride))
             try rowClaim.reserveAdditional(bytes: leaseBytes, at: .expressionEvaluation)
             storage = .active(current)
             return (values, leases)

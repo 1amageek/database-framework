@@ -32,24 +32,13 @@ enum CanonicalSQLValueConstruction {
         func bytes(_ bytes: UInt64) throws {
             try reservation.reserveAdditional(bytes: bytes, at: .expressionEvaluation)
         }
-        func prepare<T>(_ values: inout [T], adding count: Int = 1) throws {
-            let next = values.count.addingReportingOverflow(count)
-            guard count >= 0, !next.overflow else { throw QueryValueError.arithmeticOverflow }
-            guard next.partialValue > values.capacity else { return }
-            let layout = try DatabaseRetainedArrayLayout.forElement(T.self)
-            let growth = try layout.growth(from: values.capacity, toFit: next.partialValue)
-            let header = values.capacity == 0 ? layout.containerByteCount : 0
-            try bytes(try DatabaseIntermediateFootprint(bytes: header).adding(.init(bytes: growth.additionalByteCount)).bytes)
-            values.reserveCapacity(growth.capacity)
-            if values.capacity > growth.capacity {
-                try bytes(try DatabaseIntermediateFootprint(bytes: layout.elementCapacitySlotByteCount)
-                    .multiplied(by: UInt64(values.capacity - growth.capacity)).bytes)
-            }
+        func prepare<T>(_ values: inout AdmittedArray<T>, adding count: Int = 1) throws {
+            try values.admit(adding: count, layout: DatabaseRetainedArrayLayout.forElement(T.self)) { try bytes($0) }
         }
-        func append<T>(_ value: T, to values: inout [T]) throws {
+        func append<T>(_ value: T, to values: inout AdmittedArray<T>) throws {
             try meter.consume(at: .expressionEvaluation)
             try prepare(&values)
-            values.append(value)
+            values.wrappedValue.append(value)
         }
     }
 
@@ -59,29 +48,32 @@ enum CanonicalSQLValueConstruction {
         temporalEnvironment: SQLTemporalEnvironment? = nil, workMeter: DatabaseWorkMeter,
         limits: QueryValueLimits) throws -> (value: QueryValue, lease: DatabaseQueryPayloadLease?) {
         let memory = try Memory(workMeter)
-        var visits: [Visit] = [], nodes: [Node] = [], completed: [Int] = [], edges: [Int] = []
+        @AdmittedArray var visits: [Visit] = []
+        @AdmittedArray var nodes: [Node] = []
+        @AdmittedArray var completed: [Int] = []
+        @AdmittedArray var edges: [Int] = []
         switch type {
         case .sql(.array(let element)):
-            try memory.append(.array(element, .owned(dimensions), values.count), to: &visits)
+            try memory.append(.array(element, .owned(dimensions), values.count), to: &$visits)
             for index in values.indices.reversed() {
                 let source = sourceElementType ?? sourceTypes.flatMap { $0.indices.contains(index) ? $0[index] : nil }
-                try memory.append(.value(values[index], source, .sql(element)), to: &visits)
+                try memory.append(.value(values[index], source, .sql(element)), to: &$visits)
             }
         case .sql(.composite(let descriptor)):
             guard descriptor.columns.count == values.count else {
                 throw QueryValueError.compositeFieldCountMismatch(expected: UInt64(descriptor.columns.count), actual: UInt64(values.count))
             }
-            try memory.append(.composite(descriptor, values.count), to: &visits)
+            try memory.append(.composite(descriptor, values.count), to: &$visits)
             for index in values.indices.reversed() {
                 let source = sourceTypes.flatMap { $0.indices.contains(index) ? $0[index] : nil }
-                try memory.append(.value(values[index], source, descriptor.columns[index].type), to: &visits)
+                try memory.append(.value(values[index], source, descriptor.columns[index].type), to: &$visits)
             }
         default: throw DatabaseExpressionEvaluationError.typeMismatch(operation: "flat selected destination")
         }
         if let sourceTypes, sourceTypes.count != values.count { throw QueryValueError.invalidValueConstruction }
         func finish(_ count: Int) throws -> Range<Int> {
             guard count >= 0, completed.count >= count else { throw QueryValueError.invalidValueConstruction }
-            try memory.prepare(&edges, adding: count)
+            try memory.prepare(&$edges, adding: count)
             let start = edges.count
             edges.append(contentsOf: completed.suffix(count))
             completed.removeLast(count)
@@ -96,18 +88,18 @@ enum CanonicalSQLValueConstruction {
                     if case .composite(let record) = value, case .sql(.composite(let destination)) = target {
                         guard case .sql(.composite(let origin)) = source,
                               record.fields.count == destination.columns.count else { throw QueryValueError.invalidValueConstruction }
-                        try memory.append(.composite(destination, record.fields.count), to: &visits)
+                        try memory.append(.composite(destination, record.fields.count), to: &$visits)
                         for index in record.fields.indices.reversed() {
                             try memory.append(.value(record.fields[index], origin.columns[index].type,
-                                destination.columns[index].type), to: &visits)
+                                destination.columns[index].type), to: &$visits)
                         }
                         continue
                     }
                     if case .array(let array) = value, case .sql(.array(let element)) = target {
                         guard case .sql(.array(let origin)) = source else { throw QueryValueError.invalidValueConstruction }
-                        try memory.append(.array(element, .view(array.dimensions), array.elements.count), to: &visits)
+                        try memory.append(.array(element, .view(array.dimensions), array.elements.count), to: &$visits)
                         for index in array.elements.indices.reversed() {
-                            try memory.append(.value(array.elements[index], .sql(origin), .sql(element)), to: &visits)
+                            try memory.append(.value(array.elements[index], .sql(origin), .sql(element)), to: &$visits)
                         }
                         continue
                     }
@@ -120,13 +112,14 @@ enum CanonicalSQLValueConstruction {
             case .composite(let descriptor, let count): node = .composite(descriptor, try finish(count))
             }
             let index = nodes.count
-            try memory.append(node, to: &nodes)
-            try memory.append(index, to: &completed)
+            try memory.append(node, to: &$nodes)
+            try memory.append(index, to: &$completed)
         }
         guard completed.count == 1, let root = completed.first else { throw QueryValueError.invalidValueConstruction }
         var valueCount = 0, childCount = edges.count, dimensionCount = 0, typeCount = 0, columnCount = 0
         var leafBytes: UInt64 = 0, names: UInt64 = 0
-        var types: [QueryColumnType] = [], leafVisits: [QueryValue] = []
+        @AdmittedArray var types: [QueryColumnType] = []
+        @AdmittedArray var leafVisits: [QueryValue] = []
         func add(_ count: Int, to total: inout Int) throws {
             let sum = total.addingReportingOverflow(count)
             guard !sum.overflow else { throw QueryValueError.arithmeticOverflow }
@@ -142,38 +135,38 @@ enum CanonicalSQLValueConstruction {
                 }
                 try add(count, to: &valueCount); try add(children, to: &childCount)
                 leafBytes = try DatabaseIntermediateFootprint(bytes: leafBytes).adding(.init(bytes: logical.retainedByteCount)).bytes
-                try memory.append(value, to: &leafVisits)
+                try memory.append(value, to: &$leafVisits)
                 while let source = leafVisits.popLast() {
                     try workMeter.consume(at: .expressionEvaluation)
                     switch source {
                     case .array(let array):
                         try add(array.dimensions.count, to: &dimensionCount)
-                        try memory.append(.sql(array.elementType), to: &types)
-                        for value in array.elements { try memory.append(value, to: &leafVisits) }
+                        try memory.append(.sql(array.elementType), to: &$types)
+                        for value in array.elements { try memory.append(value, to: &$leafVisits) }
                     case .composite(let record):
-                        try memory.append(.sql(.composite(record.type)), to: &types)
-                        for value in record.fields { try memory.append(value, to: &leafVisits) }
+                        try memory.append(.sql(.composite(record.type)), to: &$types)
+                        for value in record.fields { try memory.append(value, to: &$leafVisits) }
                     default: break
                     }
                 }
             case .array(let element, let shape, _):
                 try add(1, to: &valueCount); try add(shape.count, to: &dimensionCount)
-                try memory.append(.sql(element), to: &types)
+                try memory.append(.sql(element), to: &$types)
             case .composite(let descriptor, _):
                 try add(1, to: &valueCount)
-                try memory.append(.sql(.composite(descriptor)), to: &types)
+                try memory.append(.sql(.composite(descriptor)), to: &$types)
             }
         }
         while let type = types.popLast() {
             try workMeter.consume(at: .expressionEvaluation)
             try add(1, to: &typeCount)
             switch type {
-            case .sql(.array(let child)): try memory.append(.sql(child), to: &types)
+            case .sql(.array(let child)): try memory.append(.sql(child), to: &$types)
             case .sql(.composite(let descriptor)):
                 try add(descriptor.columns.count, to: &columnCount)
                 for column in descriptor.columns {
                     names = try DatabaseIntermediateFootprint(bytes: names).adding(.init(bytes: UInt64(column.name.utf8.count))).bytes
-                    try memory.append(column.type, to: &types)
+                    try memory.append(column.type, to: &$types)
                 }
             default: break
             }
@@ -191,8 +184,10 @@ enum CanonicalSQLValueConstruction {
             try reservation.reserveAdditional(bytes: excess, at: .expressionEvaluation)
             admitted = try DatabaseIntermediateFootprint(bytes: admitted).adding(.init(bytes: excess)).bytes
         }
-        var ids: [Int] = [], children: [Int] = [], shape: [QueryArrayDimension] = []
-        try memory.prepare(&ids, adding: nodes.count)
+        @AdmittedArray var ids: [Int] = []
+        @AdmittedArray var children: [Int] = []
+        @AdmittedArray var shape: [QueryArrayDimension] = []
+        try memory.prepare(&$ids, adding: nodes.count)
         for node in nodes {
             try workMeter.consume(at: .expressionEvaluation)
             let id: Int
@@ -200,12 +195,12 @@ enum CanonicalSQLValueConstruction {
             case .leaf(let value): id = try builder.append(value)
             case .composite(let descriptor, let range):
                 children.removeAll(keepingCapacity: true)
-                try memory.prepare(&children, adding: range.count)
+                try memory.prepare(&$children, adding: range.count)
                 for edge in range { children.append(ids[edges[edge]]) }
                 id = try builder.appendComposite(type: descriptor, fields: children)
             case .array(let element, let dimensions, let range):
                 children.removeAll(keepingCapacity: true); shape.removeAll(keepingCapacity: true)
-                try memory.prepare(&children, adding: range.count); try memory.prepare(&shape, adding: dimensions.count)
+                try memory.prepare(&$children, adding: range.count); try memory.prepare(&$shape, adding: dimensions.count)
                 for edge in range { children.append(ids[edges[edge]]) }
                 for index in 0..<dimensions.count { shape.append(dimensions[index]) }
                 id = try builder.appendArray(elementType: element, dimensions: shape, elements: children)

@@ -18,14 +18,14 @@ enum SQLAggregateEvaluator {
         guard rowCount >= 0, let selected = bound.aggregate else { throw mismatch("selected aggregate descriptor") }
         try workMeter.checkpoint(at: .aggregateInput)
         let memory = try SQLAggregateWorkspace(workMeter)
-        var directValues: [Cell] = []
+        @AdmittedArray var directValues: [Cell] = []
         for argument in selected.directArguments {
             await Task.yield()
             try workMeter.checkpoint(at: .aggregateInput)
-            try memory.append(memory.retain(try await direct(argument)), to: &directValues)
+            try memory.append(memory.retain(try await direct(argument)), to: &$directValues)
         }
         let orderedSet = !selected.withinGroup.isEmpty
-        var inputs: [Input] = []
+        @AdmittedArray var inputs: [Input] = []
         var seen = try CanonicalSQLIdentitySet(workMeter: workMeter, stage: .aggregateInput)
         for ordinal in 0..<rowCount {
             await Task.yield()
@@ -38,10 +38,11 @@ enum SQLAggregateEvaluator {
             }
             let rowMemory = try SQLAggregateWorkspace(workMeter)
             try rowMemory.reservation.reserveAdditional(rows: 1, at: .aggregateInput)
-            var arguments: [Cell] = [], ordering: [Cell] = []
+            @AdmittedArray var arguments: [Cell] = []
+            @AdmittedArray var ordering: [Cell] = []
             if !orderedSet {
                 for argument in selected.arguments {
-                    try rowMemory.append(rowMemory.retain(try await evaluate(ordinal, argument)), to: &arguments)
+                    try rowMemory.append(rowMemory.retain(try await evaluate(ordinal, argument)), to: &$arguments)
                 }
             }
             for key in orderedSet ? selected.withinGroup : selected.orderBy {
@@ -50,23 +51,23 @@ enum SQLAggregateEvaluator {
                     guard arguments.indices.contains(index) else { throw mismatch("aggregate cached ordering argument") }
                     cell = arguments[index]
                 } else { cell = try rowMemory.retain(try await evaluate(ordinal, key.expression)) }
-                try rowMemory.append(cell, to: &ordering)
+                try rowMemory.append(cell, to: &$ordering)
             }
             if orderedSet {
                 guard let input = ordering.first else { throw mismatch("ordered-set input") }
                 if input.value.isNull { continue }
-                try rowMemory.append(input, to: &arguments)
+                try rowMemory.append(input, to: &$arguments)
             }
             if selected.call.distinct {
-                var identities: [CanonicalSQLValueIdentity] = []
+                @AdmittedArray var identities: [CanonicalSQLValueIdentity] = []
                 for index in arguments.indices {
                     try rowMemory.append(CanonicalSQLValueIdentity.prepare(arguments[index].value,
                         type: selected.arguments[index].type, environment: temporalEnvironment,
-                        workMeter: workMeter, stage: .aggregateInput), to: &identities)
+                        workMeter: workMeter, stage: .aggregateInput), to: &$identities)
                 }
                 if try !seen.insert(identities) { continue }
             }
-            try memory.append(Input(arguments: arguments, ordering: ordering, workspace: rowMemory), to: &inputs)
+            try memory.append(Input(arguments: arguments, ordering: ordering, workspace: rowMemory), to: &$inputs)
         }
         let keys = orderedSet ? selected.withinGroup : selected.orderBy
         if !keys.isEmpty { try await sort(&inputs, keys: keys, environment: temporalEnvironment, memory: memory) }
@@ -89,10 +90,6 @@ enum SQLAggregateEvaluator {
             .adding(.init(bytes: growth.additionalByteCount)).bytes, at: .aggregateInput)
         var output: [DatabaseQueryPayloadLease] = []
         output.reserveCapacity(growth.capacity)
-        if output.capacity > growth.capacity {
-            try claim.reserveAdditional(bytes: try DatabaseIntermediateFootprint(bytes: layout.elementCapacitySlotByteCount)
-                .multiplied(by: UInt64(output.capacity - growth.capacity)).bytes, at: .aggregateInput)
-        }
         for lease in leases { try workMeter.consume(at: .aggregateInput); output.append(lease) }
         output.append(DatabaseQueryPayloadLease(retaining: claim))
         return Cell(value: value, leases: output, payloadIsRetained: true)
@@ -100,8 +97,8 @@ enum SQLAggregateEvaluator {
 
     static func retained(_ value: QueryValue, lease: DatabaseQueryPayloadLease?,
         memory: SQLAggregateWorkspace) throws -> Cell {
-        var leases: [DatabaseQueryPayloadLease] = []
-        if let lease { try memory.append(lease, to: &leases) }
+        @AdmittedArray var leases: [DatabaseQueryPayloadLease] = []
+        if let lease { try memory.append(lease, to: &$leases) }
         return Cell(value: value, leases: leases, payloadIsRetained: true)
     }
 
@@ -120,9 +117,9 @@ enum SQLAggregateEvaluator {
     private static func sort(_ rows: inout [Input], keys: [CanonicalBoundKey],
         environment: SQLTemporalEnvironment?, memory: SQLAggregateWorkspace) async throws {
         guard rows.count > 1 else { return }
-        var scratch: [Input?] = []
-        try memory.prepare(&scratch, adding: rows.count)
-        for _ in rows.indices { try memory.append(Optional<Input>.none, to: &scratch) }
+        @AdmittedArray var scratch: [Input?] = []
+        try memory.prepare(&$scratch, adding: rows.count)
+        for _ in rows.indices { try memory.append(Optional<Input>.none, to: &$scratch) }
         func less(_ left: Input, _ right: Input) throws -> Bool {
             for index in keys.indices {
                 try memory.meter.consume(at: .sortComparison)

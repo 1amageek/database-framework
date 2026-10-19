@@ -16,14 +16,14 @@ struct SQLJSONLexicalInput {
     }
     let source: QueryJSONValue
     let memory: SQLJSONMemory
-    private(set) var nodes: [Node] = []
+    @AdmittedArray private(set) var nodes: [Node] = []
 
     init(_ source: QueryJSONValue, memory: SQLJSONMemory) throws {
         self.source = source
         self.memory = memory
         let retained = try source.measure().retainedByteCount
         try memory.bytes(retained)
-        var frames: [Frame] = []
+        @AdmittedArray var frames: [Frame] = []
         var offset = 0
         let bytes = source.bytes
         while offset < bytes.count {
@@ -65,9 +65,9 @@ struct SQLJSONLexicalInput {
             let key = frames.last?.key
             if !frames.isEmpty { frames[frames.count - 1].key = nil }
             let id = nodes.count
-            try memory.append(Node(kind: kind, range: start..<offset, end: id + 1, key: key), to: &nodes)
+            try memory.append(Node(kind: kind, range: start..<offset, end: id + 1, key: key), to: &$nodes)
             if kind == .object || kind == .array {
-                try memory.append(Frame(node: id, key: nil), to: &frames)
+                try memory.append(Frame(node: id, key: nil), to: &$frames)
             }
         }
         guard frames.isEmpty, !nodes.isEmpty else { throw SQLJSONMemory.failure("validated JSON root") }

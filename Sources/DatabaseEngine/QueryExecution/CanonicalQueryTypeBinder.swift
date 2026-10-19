@@ -78,20 +78,20 @@ struct CanonicalQueryTypeBinder {
         let output = selected.columns
         let projection = selected.projection
         let filter = try query.filter.map { try childBinder(.filter).bindPredicate($0) }
-        var groupBy: [CanonicalBoundExpression] = []
+        @AdmittedArray var groupBy: [CanonicalBoundExpression] = []
         func groupingLeaves(_ elements: [GroupingElement], binder: Self, field: QueryOccurrenceField = .groupBy) throws {
             for (index, element) in elements.enumerated() {
                 let selected = binder.childBinder(field, index)
                 switch element {
                 case .expression(let expression):
                     let child = try selected.childBinder(.operand).bindGroupingExpression(expression)
-                    try CanonicalBindingStorage.append(child, to: &groupBy, reservation: reservation)
+                    try CanonicalBindingStorage.append(child, to: &$groupBy, reservation: reservation)
                 case .rollup(let units), .cube(let units):
                     for (unit, expressions) in units.enumerated() {
                         for (position, expression) in expressions.enumerated() {
                             let child = try selected.childBinder(.groupingComponent, unit)
                                 .childBinder(.argument, position).bindGroupingExpression(expression)
-                            try CanonicalBindingStorage.append(child, to: &groupBy, reservation: reservation)
+                            try CanonicalBindingStorage.append(child, to: &$groupBy, reservation: reservation)
                         }
                     }
                 case .groupingSets(let sets):
@@ -103,12 +103,12 @@ struct CanonicalQueryTypeBinder {
         }
         try groupingLeaves(query.groupBy ?? [], binder: self)
         let having = try query.having.map { try childBinder(.having).bindHaving($0) }
-        var orderBy: [CanonicalBoundKey] = []
+        @AdmittedArray var orderBy: [CanonicalBoundKey] = []
         for (index, key) in (query.orderBy ?? []).enumerated() {
             try CanonicalBindingStorage.append(childBinder(.orderBy, index).bindOrderKey(key,
-                projection: projection, output: output), to: &orderBy, reservation: reservation)
+                projection: projection, output: output), to: &$orderBy, reservation: reservation)
         }
-        var distinctOn: [CanonicalBoundKey] = []
+        @AdmittedArray var distinctOn: [CanonicalBoundKey] = []
         switch query.quantifier {
         case .all: break
         case .distinct:
@@ -118,7 +118,7 @@ struct CanonicalQueryTypeBinder {
                 let key = try childBinder(.distinctOn, index).bindOrderKey(SortKey(expression),
                     projection: projection, output: output)
                 try CanonicalBindingStorage.append(CanonicalBoundKey(expression: key.expression,
-                    projectionIndex: key.projectionIndex, occurrence: key.occurrence), to: &distinctOn,
+                    projectionIndex: key.projectionIndex, occurrence: key.occurrence), to: &$distinctOn,
                     reservation: reservation)
             }
         }
@@ -138,7 +138,8 @@ struct CanonicalQueryTypeBinder {
         let reservation = try workMeter?.reserveIntermediate(bytes: bytes, at: .bindingCandidate)
         var successful = false
         defer { if !successful { reservation?.release() } }
-        var columns: [QueryColumn] = [], projection: [CanonicalBoundExpression] = []
+        var columns: [QueryColumn] = []
+        var projection: [CanonicalBoundExpression] = []
         for (index, item) in items.enumerated() {
             try scoped.childBinder(.projection, index).appendProjectionItem(item, index: index,
                 columns: &columns, projection: &projection, reservation: reservation)
@@ -172,8 +173,8 @@ struct CanonicalQueryTypeBinder {
         reservation: DatabaseIntermediateReservation?) throws {
         let column = try QueryColumn(number: ordinal(columns.count), name: name,
             type: bound.type, isNullable: bound.isNullable)
-        try CanonicalBindingStorage.append(bound, to: &projection, reservation: reservation)
-        try CanonicalBindingStorage.append(column, to: &columns, reservation: reservation)
+        try CanonicalBindingStorage.appendGrowing(bound, to: &projection, reservation: reservation)
+        try CanonicalBindingStorage.appendGrowing(column, to: &columns, reservation: reservation)
     }
 
     private func appendProjectionWildcard(_ qualifier: String?, columns: inout [QueryColumn],
@@ -402,12 +403,7 @@ struct CanonicalQueryTypeBinder {
                     if growth.capacity > capacity {
                         try scratch?.reserveAdditional(bytes: growth.additionalByteCount, at: .bindingCandidate)
                         pending.reserveCapacity(growth.capacity)
-                        if pending.capacity > growth.capacity {
-                            let extra = try DatabaseIntermediateFootprint(bytes: layout.elementCapacitySlotByteCount)
-                                .multiplied(by: UInt64(pending.capacity - growth.capacity))
-                            try scratch?.reserveAdditional(bytes: extra.bytes, at: .bindingCandidate)
-                        }
-                        capacity = pending.capacity
+                        capacity = growth.capacity
                     }
                     pending.append(child)
                 }
@@ -554,8 +550,8 @@ struct CanonicalQueryTypeBinder {
                 let index = fields.count
                 let field = try QueryColumn(number: ordinal(index), name: "f\(index + 1)",
                     type: child.type, isNullable: child.isNullable)
-                try CanonicalBindingStorage.append(child, to: &children, reservation: claim)
-                try CanonicalBindingStorage.append(field, to: &fields, reservation: claim)
+                try CanonicalBindingStorage.appendGrowing(child, to: &children, reservation: claim)
+                try CanonicalBindingStorage.appendGrowing(field, to: &fields, reservation: claim)
             }
             for (index, value) in expressions.enumerated() {
                 let scoped = childBinder(.argument, index)
@@ -575,7 +571,7 @@ struct CanonicalQueryTypeBinder {
             let descriptor = try CanonicalBindingStorage.composite(columns: fields, workMeter: workMeter)
             let temporary = try DatabaseIntermediateFootprint(bytes: UInt64(MemoryLayout<[QueryColumn]>.stride))
                 .adding(try DatabaseIntermediateFootprint(bytes: UInt64(MemoryLayout<QueryColumn>.stride))
-                    .multiplied(by: UInt64(fields.capacity)))
+                    .multiplied(by: UInt64(fields.count)))
             try claim?.releasePartial(bytes: temporary.bytes)
             // The descriptor lease and the selected children remain live together.
             let result = node(expression, .sql(.composite(descriptor.type)), false, children,
@@ -844,7 +840,7 @@ struct CanonicalQueryTypeBinder {
             defer { if !successful { claim?.release() } }
             var children: [CanonicalBoundExpression] = []
             for (index, argument) in arguments.enumerated() {
-                try CanonicalBindingStorage.append(scoped.childBinder(.argument, index).bind(argument),
+                try CanonicalBindingStorage.appendGrowing(scoped.childBinder(.argument, index).bind(argument),
                     to: &children, reservation: claim)
             }
             try bindingMetadata.retain(claim)
@@ -993,7 +989,8 @@ struct CanonicalQueryTypeBinder {
         let boundArray = try childBinder(.operand).bind(base)
         guard let element = Self.arrayElement(boundArray.type), !subscripts.isEmpty else { throw mismatch("array access") }
         let array = try coerce(boundArray, to: .sql(.array(try sqlElement(element))))
-        var children = [array], slicing = false
+        var children = [array]
+        var slicing = false
         func append(_ value: Expression, address: Int) throws {
             let child = try childBinder(.argument, address).bind(value, contextualType: .sql(.integer))
             children.append(try coerce(child, to: .sql(.integer)))
@@ -1730,7 +1727,9 @@ struct CanonicalQueryTypeBinder {
             + MemoryLayout<[CanonicalBoundExpression]>.stride + MemoryLayout<[QueryColumnType]>.stride), at: .bindingCandidate)
         var successful = false
         defer { if !successful { claim?.release() } }
-        var fields: [QueryColumn] = [], selected: [CanonicalBoundExpression] = [], types: [QueryColumnType] = []
+        @AdmittedArray var fields: [QueryColumn] = []
+        @AdmittedArray var selected: [CanonicalBoundExpression] = []
+        @AdmittedArray var types: [QueryColumnType] = []
         for input in inputs {
             guard Self.compositeType(input.type)?.columns.count == descriptor.columns.count else { throw mismatch("row comparison arity") }
             if allowsRowSubquery, case .subquery(let query) = input.expression {
@@ -1745,13 +1744,13 @@ struct CanonicalQueryTypeBinder {
                 let field = Self.compositeType(input.type)!.columns[index]
                 nullable = nullable || field.isNullable
                 if let original = try constructorField(input, at: index), try isContextualUnknown(original) { continue }
-                try CanonicalBindingStorage.append(field.type, to: &types, reservation: claim)
+                try CanonicalBindingStorage.append(field.type, to: &$types, reservation: claim)
             }
             let type: QueryColumnType
             if !types.isEmpty, types.allSatisfy({ Self.numericKind($0) != nil }) { type = try arithmeticType(types) }
             else { type = try commonType(types) }
             try CanonicalBindingStorage.append(try QueryColumn(number: ordinal(index), name: descriptor.columns[index].name,
-                type: type, isNullable: nullable), to: &fields, reservation: claim)
+                type: type, isNullable: nullable), to: &$fields, reservation: claim)
         }
         let destination = try CanonicalBindingStorage.composite(columns: fields, workMeter: workMeter)
         try bindingMetadata.retain(destination.reservation)
@@ -1761,7 +1760,7 @@ struct CanonicalQueryTypeBinder {
                 let childrenClaim = try workMeter?.reserveIntermediate(bytes: UInt64(MemoryLayout<[CanonicalBoundExpression]>.stride), at: .bindingCandidate)
                 var completed = false
                 defer { if !completed { childrenClaim?.release() } }
-                var children: [CanonicalBoundExpression] = []
+                @AdmittedArray var children: [CanonicalBoundExpression] = []
                 for index in descriptor.columns.indices {
                     let child: CanonicalBoundExpression
                     if let original = try constructorField(input, at: index), try isContextualUnknown(original) {
@@ -1770,19 +1769,19 @@ struct CanonicalQueryTypeBinder {
                         scoped.currentOccurrence = input.children[index].occurrence
                         child = try scoped.bind(original, contextualType: destination.type.columns[index].type)
                     } else { child = try coerce(input.children[index], to: destination.type.columns[index].type) }
-                    try CanonicalBindingStorage.append(child, to: &children, reservation: childrenClaim)
+                    try CanonicalBindingStorage.append(child, to: &$children, reservation: childrenClaim)
                 }
                 let replacement = CanonicalBoundExpression(expression: input.expression, type: target, isNullable: false,
                     children: children, occurrence: input.occurrence, comparisonMode: .constructor,
                     constructionLease: childrenClaim.map { DatabaseQueryPayloadLease(retaining: $0) }, bindingMetadata: bindingMetadata)
-                try CanonicalBindingStorage.append(replacement, to: &selected, reservation: claim)
+                try CanonicalBindingStorage.append(replacement, to: &$selected, reservation: claim)
                 completed = true
-            } else { try CanonicalBindingStorage.append(coerce(input, to: target), to: &selected, reservation: claim) }
+            } else { try CanonicalBindingStorage.append(coerce(input, to: target), to: &$selected, reservation: claim) }
         }
         // Only the selected array escapes; descriptor/temporary field buffers do not.
         let temporary = UInt64(MemoryLayout<[QueryColumn]>.stride + MemoryLayout<[QueryColumnType]>.stride)
-        let slots = try DatabaseIntermediateFootprint(bytes: UInt64(MemoryLayout<QueryColumn>.stride)).multiplied(by: UInt64(fields.capacity))
-            .adding(try DatabaseIntermediateFootprint(bytes: UInt64(MemoryLayout<QueryColumnType>.stride)).multiplied(by: UInt64(types.capacity))).bytes
+        let slots = try DatabaseIntermediateFootprint(bytes: UInt64(MemoryLayout<QueryColumn>.stride)).multiplied(by: UInt64(fields.count))
+            .adding(try DatabaseIntermediateFootprint(bytes: UInt64(MemoryLayout<QueryColumnType>.stride)).multiplied(by: UInt64(types.count))).bytes
         try claim?.releasePartial(bytes: try DatabaseIntermediateFootprint(bytes: temporary).adding(.init(bytes: slots)).bytes)
         try bindingMetadata.retain(claim)
         successful = true
@@ -1891,7 +1890,8 @@ struct CanonicalQueryTypeBinder {
             for type in types {
                 guard Self.compositeType(type)?.columns.count == descriptor.columns.count else { throw mismatch("composite common arity") }
             }
-            var fields: [QueryColumn] = [], candidates: [QueryColumnType] = []
+            @AdmittedArray var fields: [QueryColumn] = []
+            @AdmittedArray var candidates: [QueryColumnType] = []
             for index in descriptor.columns.indices {
                 candidates.removeAll(keepingCapacity: true)
                 var nullable = false
@@ -1899,11 +1899,11 @@ struct CanonicalQueryTypeBinder {
                     guard let source = Self.compositeType(type) else { throw mismatch("composite common type") }
                     try workMeter?.consume(at: .bindingCandidate)
                     nullable = nullable || source.columns[index].isNullable
-                    try CanonicalBindingStorage.append(source.columns[index].type, to: &candidates, reservation: claim)
+                    try CanonicalBindingStorage.append(source.columns[index].type, to: &$candidates, reservation: claim)
                 }
                 let type = try commonType(candidates)
                 let field = try QueryColumn(number: ordinal(index), name: descriptor.columns[index].name, type: type, isNullable: nullable)
-                try CanonicalBindingStorage.append(field, to: &fields, reservation: claim)
+                try CanonicalBindingStorage.append(field, to: &$fields, reservation: claim)
             }
             let result = try CanonicalBindingStorage.composite(columns: fields, workMeter: workMeter)
             try bindingMetadata.retain(result.reservation)
@@ -2753,9 +2753,9 @@ extension CanonicalQueryTypeBinder {
             + UInt64(MemoryLayout<[CanonicalBoundExpression]>.stride), at: .bindingCandidate)
         var successful = false
         defer { if !successful { claim?.release() } }
-        var arguments: [CanonicalBoundExpression] = []
+        @AdmittedArray var arguments: [CanonicalBoundExpression] = []
         func append(_ child: CanonicalBoundExpression) throws {
-            try CanonicalBindingStorage.append(child, to: &arguments, reservation: claim)
+            try CanonicalBindingStorage.append(child, to: &$arguments, reservation: claim)
         }
         for (index, expression) in call.arguments.enumerated() {
             let binder = scoped.childBinder(.aggregateArgument, indexedArgumentOccurrences ? index : nil)
@@ -2844,7 +2844,7 @@ extension CanonicalQueryTypeBinder {
         if call.distinct {
             for argument in arguments { try requireSQLComparison(argument.type, operation: "aggregate DISTINCT") }
         }
-        var ordering: [CanonicalBoundKey] = []
+        @AdmittedArray var ordering: [CanonicalBoundKey] = []
         for (index, key) in call.orderBy.enumerated() {
             let input = try scoped.childBinder(.aggregateOrderBy, index).bind(key.expression)
             try requireSQLComparison(input.type, operation: "aggregate ORDER BY")
@@ -2860,10 +2860,10 @@ extension CanonicalQueryTypeBinder {
             }
             guard !call.distinct || selected != nil else { throw mismatch("DISTINCT aggregate ORDER BY argument membership") }
             try CanonicalBindingStorage.append(CanonicalBoundKey(expression: selected.map { arguments[$0] } ?? input,
-                projectionIndex: selected, sortKey: key, occurrence: input.occurrence), to: &ordering, reservation: claim)
+                projectionIndex: selected, sortKey: key, occurrence: input.occurrence), to: &$ordering, reservation: claim)
         }
         let filter = try call.filter.map { try scoped.childBinder(.aggregateFilter).boolean($0) }
-        var within: [CanonicalBoundKey] = []
+        @AdmittedArray var within: [CanonicalBoundKey] = []
         for (index, key) in (call.withinGroup ?? []).enumerated() {
             let binder = scoped.childBinder(.aggregateWithinGroup, index)
             var input = try binder.bind(key.expression, contextualType: call.function == .percentileCont ? .sql(.doublePrecision) : nil)
@@ -2876,16 +2876,16 @@ extension CanonicalQueryTypeBinder {
                 }
             } else { type = input.type }
             try requireSQLComparison(input.type, operation: "WITHIN GROUP")
-            try CanonicalBindingStorage.append(CanonicalBoundKey(expression: input, sortKey: key), to: &within, reservation: claim)
+            try CanonicalBindingStorage.append(CanonicalBoundKey(expression: input, sortKey: key), to: &$within, reservation: claim)
         }
         if ordered, let fraction = arguments.first, Self.arrayElement(fraction.type) != nil {
             type = .sql(.array(try sqlElement(type)))
         }
-        var children: [CanonicalBoundExpression] = []
-        for argument in arguments { try CanonicalBindingStorage.append(argument, to: &children, reservation: claim) }
-        for key in ordering { try CanonicalBindingStorage.append(key.expression, to: &children, reservation: claim) }
-        if let filter { try CanonicalBindingStorage.append(filter, to: &children, reservation: claim) }
-        for key in within { try CanonicalBindingStorage.append(key.expression, to: &children, reservation: claim) }
+        @AdmittedArray var children: [CanonicalBoundExpression] = []
+        for argument in arguments { try CanonicalBindingStorage.append(argument, to: &$children, reservation: claim) }
+        for key in ordering { try CanonicalBindingStorage.append(key.expression, to: &$children, reservation: claim) }
+        if let filter { try CanonicalBindingStorage.append(filter, to: &$children, reservation: claim) }
+        for key in within { try CanonicalBindingStorage.append(key.expression, to: &$children, reservation: claim) }
         let aggregate = CanonicalBoundAggregate(call: call, arguments: arguments,
             directArguments: ordered ? arguments : [], orderBy: ordering, filter: filter, withinGroup: within)
         try bindingMetadata.retain(claim)
@@ -2907,7 +2907,7 @@ extension CanonicalQueryTypeBinder {
             }
             let selected = try scoped.childBinder(.namedWindow, index).childBinder(.windowReference)
                 .bindWindowSpecification(definition.specification, identity: index, name: definition.name)
-            try CanonicalBindingStorage.append(selected, to: &scoped.windowDefinitions, reservation: claim)
+            try CanonicalBindingStorage.appendGrowing(selected, to: &scoped.windowDefinitions, reservation: claim)
         }
         try bindingMetadata.retain(claim)
         successful = true
@@ -2930,17 +2930,17 @@ extension CanonicalQueryTypeBinder {
         let claim = try workMeter?.reserveIntermediate(bytes: UInt64(MemoryLayout<CanonicalBoundWindowDefinition>.stride), at: .bindingCandidate)
         var successful = false
         defer { if !successful { claim?.release() } }
-        var partitions = inherited?.partitionBy ?? []
-        var ordering = inherited?.orderBy ?? []
+        @AdmittedArray var partitions = inherited?.partitionBy ?? []
+        @AdmittedArray var ordering = inherited?.orderBy ?? []
         for (index, expression) in specification.partitionBy.enumerated() {
             let selected = try scoped.childBinder(.windowPartitionBy, index).bind(expression)
             try requireSQLComparison(selected.type, operation: "window PARTITION BY")
-            try CanonicalBindingStorage.append(selected, to: &partitions, reservation: claim)
+            try CanonicalBindingStorage.append(selected, to: &$partitions, reservation: claim)
         }
         for (index, key) in specification.orderBy.enumerated() {
             let selected = try scoped.childBinder(.windowOrderBy, index).bind(key.expression)
             try requireSQLComparison(selected.type, operation: "window ORDER BY")
-            try CanonicalBindingStorage.append(CanonicalBoundKey(expression: selected, sortKey: key), to: &ordering, reservation: claim)
+            try CanonicalBindingStorage.append(CanonicalBoundKey(expression: selected, sortKey: key), to: &$ordering, reservation: claim)
         }
         let frame = try specification.frame.map { try scoped.bindWindowFrame($0, orderBy: ordering) }
         try bindingMetadata.retain(claim)
@@ -2989,8 +2989,8 @@ extension CanonicalQueryTypeBinder {
             let selected = try scoped.bindAssignment(expression, to: target)
             let claim = try workMeter?.reserveIntermediate(bytes: UInt64(MemoryLayout<[CanonicalBoundExpression]>.stride), at: .bindingCandidate)
             defer { claim?.release() }
-            var pending: [CanonicalBoundExpression] = []
-            try CanonicalBindingStorage.append(selected, to: &pending, reservation: claim)
+            @AdmittedArray var pending: [CanonicalBoundExpression] = []
+            try CanonicalBindingStorage.append(selected, to: &$pending, reservation: claim)
             while let node = pending.popLast() {
                 try workMeter?.consume(at: .bindingCandidate)
                 guard node.columnSlot == nil, node.wholeRow == nil, node.subqueryBinding == nil else {
@@ -3001,7 +3001,7 @@ extension CanonicalQueryTypeBinder {
                     throw DatabaseExpressionEvaluationError.windowingViolation
                 default: break
                 }
-                for child in node.children { try CanonicalBindingStorage.append(child, to: &pending, reservation: claim) }
+                for child in node.children { try CanonicalBindingStorage.append(child, to: &$pending, reservation: claim) }
             }
             return selected
         }
@@ -3029,7 +3029,7 @@ extension CanonicalQueryTypeBinder {
         var successful = false
         defer { if !successful { claim?.release() } }
         let aggregate: CanonicalBoundExpression?
-        var arguments: [CanonicalBoundExpression] = []
+        @AdmittedArray var arguments: [CanonicalBoundExpression] = []
         let type: QueryColumnType
         let nullable: Bool
         switch call.function {
@@ -3063,7 +3063,7 @@ extension CanonicalQueryTypeBinder {
                     || ([.lag, .lead, .nthValue].contains(function) && index == 1) {
                     selected = try binder.bindAssignment(input, to: .sql(.integer))
                 } else { selected = try binder.bind(input) }
-                try CanonicalBindingStorage.append(selected, to: &arguments, reservation: claim)
+                try CanonicalBindingStorage.append(selected, to: &$arguments, reservation: claim)
             }
             switch function {
             case .rowNumber, .rank, .denseRank: type = .sql(.bigint); nullable = false
@@ -3080,13 +3080,13 @@ extension CanonicalQueryTypeBinder {
             case .firstValue, .lastValue, .nthValue: type = arguments[0].type; nullable = true
             }
         }
-        var children: [CanonicalBoundExpression] = []
-        if let aggregate { try CanonicalBindingStorage.append(aggregate, to: &children, reservation: claim) }
-        for argument in arguments { try CanonicalBindingStorage.append(argument, to: &children, reservation: claim) }
-        for key in definition.partitionBy { try CanonicalBindingStorage.append(key, to: &children, reservation: claim) }
-        for key in definition.orderBy { try CanonicalBindingStorage.append(key.expression, to: &children, reservation: claim) }
-        if let offset = definition.frame?.startOffset { try CanonicalBindingStorage.append(offset, to: &children, reservation: claim) }
-        if let offset = definition.frame?.endOffset { try CanonicalBindingStorage.append(offset, to: &children, reservation: claim) }
+        @AdmittedArray var children: [CanonicalBoundExpression] = []
+        if let aggregate { try CanonicalBindingStorage.append(aggregate, to: &$children, reservation: claim) }
+        for argument in arguments { try CanonicalBindingStorage.append(argument, to: &$children, reservation: claim) }
+        for key in definition.partitionBy { try CanonicalBindingStorage.append(key, to: &$children, reservation: claim) }
+        for key in definition.orderBy { try CanonicalBindingStorage.append(key.expression, to: &$children, reservation: claim) }
+        if let offset = definition.frame?.startOffset { try CanonicalBindingStorage.append(offset, to: &$children, reservation: claim) }
+        if let offset = definition.frame?.endOffset { try CanonicalBindingStorage.append(offset, to: &$children, reservation: claim) }
         let selected = CanonicalBoundWindow(call: call, arguments: arguments, aggregate: aggregate,
             partitionBy: definition.partitionBy, orderBy: definition.orderBy, frame: definition.frame,
             identity: definition.identity)
@@ -3101,9 +3101,9 @@ extension CanonicalQueryTypeBinder {
     func requireScalarPhase(_ expression: Expression) throws {
         let claim = try workMeter?.reserveIntermediate(bytes: UInt64(MemoryLayout<[Expression]>.stride), at: .bindingCandidate)
         defer { claim?.release() }
-        var pending: [Expression] = []
+        @AdmittedArray var pending: [Expression] = []
         func append(_ expression: Expression) throws {
-            try CanonicalBindingStorage.append(expression, to: &pending, reservation: claim)
+            try CanonicalBindingStorage.append(expression, to: &$pending, reservation: claim)
         }
         try append(expression)
         while let expression = pending.popLast() {
@@ -3188,9 +3188,9 @@ extension CanonicalQueryTypeBinder {
         let kind: CanonicalBoundTableFunction.Kind
         let bound: CanonicalBoundExpression
         let reservation = try workMeter?.reserveIntermediate(bytes: UInt64(MemoryLayout<CanonicalBoundTableFunction>.stride), at: .bindingCandidate)
-        var output: [(String, QueryColumnType, Bool)] = []
+        @AdmittedArray var output: [(String, QueryColumnType, Bool)] = []
         func column(_ name: String, _ type: QueryColumnType, _ nullable: Bool) throws {
-            try CanonicalBindingStorage.append((name, type, nullable), to: &output, reservation: reservation)
+            try CanonicalBindingStorage.append((name, type, nullable), to: &$output, reservation: reservation)
         }
         switch name {
         case "unnest", "generate_subscripts":
@@ -3203,7 +3203,7 @@ extension CanonicalQueryTypeBinder {
                 if name == "unnest" || index == 0 {
                     child = try childBinder(.argument, index).bind(argument)
                     guard let element = Self.arrayElement(child.type) else { throw mismatch("\(name) requires a typed array") }
-                    if name == "unnest" { try appendTableColumns(name: name, type: element, nullable: true, to: &output, reservation: reservation) }
+                    if name == "unnest" { try appendTableColumns(name: name, type: element, nullable: true, to: &$output, reservation: reservation) }
                 } else {
                     let target = QueryColumnType.sql(index == 1 ? .integer : .boolean)
                     child = try coerce(childBinder(.argument, index).bind(argument, contextualType: target), to: target)
@@ -3261,23 +3261,23 @@ extension CanonicalQueryTypeBinder {
         default:
             kind = .scalar
             bound = try bindFunction(call, expression: expression)
-            try appendTableColumns(name: name, type: bound.type, nullable: bound.isNullable, to: &output, reservation: reservation)
+            try appendTableColumns(name: name, type: bound.type, nullable: bound.isNullable, to: &$output, reservation: reservation)
         }
-        var columns: [QueryColumn] = []
+        @AdmittedArray var columns: [QueryColumn] = []
         for (name, type, nullable) in output {
             try reservation?.reserveAdditional(bytes: UInt64(name.utf8.count), at: .bindingCandidate)
-            try CanonicalBindingStorage.append(QueryColumn(number: ordinal(columns.count), name: name, type: type, isNullable: nullable), to: &columns, reservation: reservation)
+            try CanonicalBindingStorage.append(QueryColumn(number: ordinal(columns.count), name: name, type: type, isNullable: nullable), to: &$columns, reservation: reservation)
         }
         if withOrdinality {
             try reservation?.reserveAdditional(bytes: 10, at: .bindingCandidate)
-            try CanonicalBindingStorage.append(QueryColumn(number: ordinal(columns.count), name: "ordinality", type: .sql(.bigint), isNullable: false), to: &columns, reservation: reservation)
+            try CanonicalBindingStorage.append(QueryColumn(number: ordinal(columns.count), name: "ordinality", type: .sql(.bigint), isNullable: false), to: &$columns, reservation: reservation)
         }
         try bindingMetadata.retain(reservation)
         return CanonicalBoundTableFunction(bound: try finalizing(bound), columns: columns, kind: kind, withOrdinality: withOrdinality)
     }
 
     private func appendTableColumns(name: String, type: QueryColumnType, nullable: Bool,
-        to output: inout [(String, QueryColumnType, Bool)], reservation: DatabaseIntermediateReservation?) throws {
+        to output: inout AdmittedArray<(String, QueryColumnType, Bool)>, reservation: DatabaseIntermediateReservation?) throws {
         if case .sql(.composite(let descriptor)) = type {
             for field in descriptor.columns {
                 try CanonicalBindingStorage.append((field.name, field.type, nullable || field.isNullable), to: &output, reservation: reservation)

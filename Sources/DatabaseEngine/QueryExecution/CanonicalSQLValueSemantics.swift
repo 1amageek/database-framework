@@ -15,15 +15,13 @@ enum CanonicalSQLValueSemantics {
         let reservation = try workMeter?.reserveIntermediate(bytes: layout.containerByteCount, at: stage)
         defer { reservation?.release() }
         var pending: [QueryColumnType] = []
+        var admittedPending = 0
         func push(_ type: QueryColumnType) throws {
-            let growth = try layout.growth(from: pending.capacity, toFit: pending.count + 1)
-            if growth.capacity > pending.capacity {
+            let growth = try layout.growth(from: admittedPending, toFit: pending.count + 1)
+            if growth.capacity > admittedPending {
                 try reservation?.reserveAdditional(bytes: growth.additionalByteCount, at: stage)
                 pending.reserveCapacity(growth.capacity)
-                if pending.capacity > growth.capacity {
-                    try reservation?.reserveAdditional(bytes: try DatabaseIntermediateFootprint(bytes: layout.elementCapacitySlotByteCount)
-                        .multiplied(by: UInt64(pending.capacity - growth.capacity)).bytes, at: stage)
-                }
+                admittedPending = growth.capacity
             }
             pending.append(type)
         }

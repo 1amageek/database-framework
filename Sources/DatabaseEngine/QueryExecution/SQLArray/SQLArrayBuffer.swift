@@ -35,12 +35,6 @@ struct SQLArrayBuffer<Element: Sendable>: ~Copyable {
         try reservation.reserveAdditional(bytes: growth.additionalByteCount, at: .expressionEvaluation)
         values.reserveCapacity(growth.capacity)
         capacity = growth.capacity
-        if values.capacity > capacity {
-            let extra = try DatabaseIntermediateFootprint(bytes: layout.elementCapacitySlotByteCount)
-                .multiplied(by: UInt64(values.capacity - capacity)).bytes
-            try reservation.reserveAdditional(bytes: extra, at: .expressionEvaluation)
-            capacity = values.capacity
-        }
     }
 
     mutating func append(_ value: Element) throws {

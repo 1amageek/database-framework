@@ -2,21 +2,34 @@ import DatabaseKit
 
 /// Admission for immutable selected metadata and its temporary traversal buffers.
 enum CanonicalBindingStorage {
-    static func append<Element>(_ value: Element, to values: inout [Element],
+    static func append<Element>(_ value: Element, to values: inout AdmittedArray<Element>,
+        reservation: DatabaseIntermediateReservation?) throws {
+        try append(value, to: &values.wrappedValue, admittedCapacity: &values.admittedCapacity,
+            reservation: reservation)
+    }
+
+    /// Appends to an Array that starts empty and grows only through this
+    /// function. Its admitted capacity is then the layout growth for its
+    /// count, so no admission state is stored and recursive binder frames
+    /// keep their size.
+    static func appendGrowing<Element>(_ value: Element, to values: inout [Element],
+        reservation: DatabaseIntermediateReservation?) throws {
+        let layout = try DatabaseRetainedArrayLayout.forElement(Element.self)
+        var admitted = values.isEmpty ? 0 : try layout.growth(from: 0, toFit: values.count).capacity
+        try append(value, to: &values, admittedCapacity: &admitted, reservation: reservation)
+    }
+
+    /// The unwrapped form keeps deeply recursive binder frames small.
+    static func append<Element>(_ value: Element, to values: inout [Element], admittedCapacity: inout Int,
         reservation: DatabaseIntermediateReservation?) throws {
         let next = values.count.addingReportingOverflow(1)
         guard !next.overflow else { throw DatabaseExpressionEvaluationError.numericOverflow }
         let layout = try DatabaseRetainedArrayLayout.forElement(Element.self)
-        let capacity = values.capacity
-        let growth = try layout.growth(from: capacity, toFit: next.partialValue)
-        if growth.capacity > capacity {
+        let growth = try layout.growth(from: admittedCapacity, toFit: next.partialValue)
+        if growth.capacity > admittedCapacity {
             try reservation?.reserveAdditional(bytes: growth.additionalByteCount, at: .bindingCandidate)
             values.reserveCapacity(growth.capacity)
-            if values.capacity > growth.capacity {
-                let extra = try DatabaseIntermediateFootprint(bytes: layout.elementCapacitySlotByteCount)
-                    .multiplied(by: UInt64(values.capacity - growth.capacity))
-                try reservation?.reserveAdditional(bytes: extra.bytes, at: .bindingCandidate)
-            }
+            admittedCapacity = growth.capacity
         }
         values.append(value)
     }
@@ -34,7 +47,7 @@ enum CanonicalBindingStorage {
         let scratch = try workMeter?.reserveIntermediate(bytes: UInt64(MemoryLayout<[QueryColumnType]>.stride),
             at: .bindingCandidate)
         defer { scratch?.release() }
-        var pending: [QueryColumnType] = []
+        @AdmittedArray var pending: [QueryColumnType] = []
         var nodes = 1
         var count = columns.count
         var names: UInt64 = 0
@@ -47,14 +60,14 @@ enum CanonicalBindingStorage {
             let bytes = names.addingReportingOverflow(UInt64(column.name.utf8.count))
             guard !bytes.overflow else { throw DatabaseExpressionEvaluationError.numericOverflow }
             names = bytes.partialValue
-            try append(column.type, to: &pending, reservation: scratch)
+            try append(column.type, to: &$pending, reservation: scratch)
         }
         for value in columns { try column(value) }
         while let type = pending.popLast() {
             try workMeter?.consume(at: .bindingCandidate)
             try add(1, to: &nodes)
             switch type {
-            case .sql(.array(let element)): try append(.sql(element), to: &pending, reservation: scratch)
+            case .sql(.array(let element)): try append(.sql(element), to: &$pending, reservation: scratch)
             case .sql(.composite(let descriptor)):
                 try add(descriptor.columns.count, to: &count)
                 for value in descriptor.columns { try column(value) }

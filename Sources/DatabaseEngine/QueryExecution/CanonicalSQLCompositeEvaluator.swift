@@ -142,15 +142,13 @@ enum CanonicalSQLCompositeEvaluator {
         let scratch = try workMeter.reserveIntermediate(bytes: layout.containerByteCount, at: .expressionEvaluation)
         defer { scratch.release() }
         var pending: [Visit] = []
+        var admittedPending = 0
         func push(_ visit: Visit) throws {
-            let growth = try layout.growth(from: pending.capacity, toFit: pending.count + 1)
-            if growth.capacity > pending.capacity {
+            let growth = try layout.growth(from: admittedPending, toFit: pending.count + 1)
+            if growth.capacity > admittedPending {
                 try scratch.reserveAdditional(bytes: growth.additionalByteCount, at: .expressionEvaluation)
                 pending.reserveCapacity(growth.capacity)
-                if pending.capacity > growth.capacity {
-                    try scratch.reserveAdditional(bytes: try DatabaseIntermediateFootprint(bytes: layout.elementCapacitySlotByteCount)
-                        .multiplied(by: UInt64(pending.capacity - growth.capacity)).bytes, at: .expressionEvaluation)
-                }
+                admittedPending = growth.capacity
             }
             pending.append(visit)
         }
@@ -217,14 +215,6 @@ enum CanonicalSQLCompositeEvaluator {
         defer { scratch.release() }
         var fields: [QueryValue] = [], sources: [QueryColumnType] = []
         fields.reserveCapacity(valuesGrowth.capacity); sources.reserveCapacity(typesGrowth.capacity)
-        if fields.capacity > valuesGrowth.capacity {
-            try scratch.reserveAdditional(bytes: try DatabaseIntermediateFootprint(bytes: valueLayout.elementCapacitySlotByteCount)
-                .multiplied(by: UInt64(fields.capacity - valuesGrowth.capacity)).bytes, at: .expressionEvaluation)
-        }
-        if sources.capacity > typesGrowth.capacity {
-            try scratch.reserveAdditional(bytes: try DatabaseIntermediateFootprint(bytes: typeLayout.elementCapacitySlotByteCount)
-                .multiplied(by: UInt64(sources.capacity - typesGrowth.capacity)).bytes, at: .expressionEvaluation)
-        }
         for index in record.fields.indices {
             try workMeter.consume(at: .expressionEvaluation)
             fields.append(record.fields[index]); sources.append(origin.columns[index].type)

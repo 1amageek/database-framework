@@ -50,12 +50,6 @@ package actor SQLMutationRequest {
         if growth.capacity != capacity {
             events.reserveCapacity(growth.capacity)
             capacity = growth.capacity
-            if events.capacity > capacity {
-                let extra = try DatabaseIntermediateFootprint(bytes: layout.elementCapacitySlotByteCount)
-                    .multiplied(by: UInt64(events.capacity - capacity))
-                try reservation.reserveAdditional(bytes: extra.bytes, at: .mutationPlanning)
-                capacity = events.capacity
-            }
         }
         events.append(Event(relation: relationID, column: column, statement: statement,
             value: value, reservation: reservation))

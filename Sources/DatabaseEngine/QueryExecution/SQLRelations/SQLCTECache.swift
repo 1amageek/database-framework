@@ -58,13 +58,7 @@ actor SQLCTECache {
             try reservation.reserveAdditional(bytes: growth.additionalByteCount, at: .bindingCandidate)
             if growth.capacity > capacity {
                 prefix.reserveCapacity(growth.capacity)
-                let actual = prefix.capacity
-                if actual > growth.capacity {
-                    let extra = try DatabaseIntermediateFootprint(bytes: layout.elementCapacitySlotByteCount)
-                        .multiplied(by: UInt64(actual - growth.capacity))
-                    try reservation.reserveAdditional(bytes: extra.bytes, at: .bindingCandidate)
-                }
-                capacity = actual
+                capacity = growth.capacity
             }
             prefix.append(row)
             await gate.release()

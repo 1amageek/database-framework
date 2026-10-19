@@ -270,6 +270,18 @@ budget, cancellation, and cleanup remain distinct failures. One transaction is
 used serially. Intermediate polymorphic reads expose only the retained owner;
 raw entity arrays exist only at the consuming public-output boundary.
 
+Array retention is admitted in canonical budget units, never by allocator
+introspection. An owner that grows an Array tracks the capacity admitted by
+`DatabaseRetainedArrayLayout` growth (`AdmittedArray` for arrays grown through
+the shared SQL helpers; an Array that only grows from empty through
+`CanonicalBindingStorage.appendGrowing` derives it from its count, which keeps
+recursive binder frames unchanged) and charges only that admitted capacity; capacity the
+allocator rounds up is not charged, and removing elements neither refunds nor
+re-admits slots. A footprint of an Array produced elsewhere counts its
+elements. The same work therefore admits the same bytes on every platform and
+heap state, so exact-budget boundaries are reproducible. Byte payload capacity
+remains owned by the byte producers' measured-capacity contracts.
+
 ## Verification and Change Impact
 
 | Contract | Evidence |
@@ -286,11 +298,13 @@ raw entity arrays exist only at the consuming public-output boundary.
 | Bounded item path | Envelope and every chunk are observed as bounded reads. |
 | Directory binding | [Directory](Directory/DESIGN.md) owns the canonical component, tag derivation, and layout-rejection evidence. |
 | Graph shared ownership | Retained-buffer tests observe the reservation surviving the consumed linear owner, bounded page copies, and zero retained resources after the last shared owner is released. |
+| Deterministic array admission | `AdmittedArray` tests show admission follows layout growth, ignores allocator-reported spare capacity, charges the container once and never re-admits after removal. |
 | Row shared ownership | The same retained-buffer evidence covers staged rows, and complete staging is observed to carry no continuation so a durable snapshot never publishes a truncated result. |
 
 Owners: [polymorphic retained tests](../../Tests/DatabaseEngineTests/PolymorphicRetainedResourceContractTests.swift),
 [item storage tests](../../Tests/DatabaseEngineTests/ItemStorageResourceTests.swift),
-and [authorization tests](../../Tests/DatabaseEngineTests/ReadAuthorizationCapabilityTests.swift).
+[authorization tests](../../Tests/DatabaseEngineTests/ReadAuthorizationCapabilityTests.swift),
+and [admitted array tests](../../Tests/DatabaseEngineTests/AdmittedArrayTests.swift).
 
 ## Schema-driven Authorization
 

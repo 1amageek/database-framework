@@ -115,7 +115,8 @@ extension SQLAggregateEvaluator {
         let object = function == .jsonObjectAgg || function == .jsonbObjectAgg
         let jsonMemory = try SQLJSONMemory(memory.meter)
         var plan = SQLJSONPlan(memory: jsonMemory, limits: limits, environment: environment)
-        var elements: [Int] = [], members: [SQLJSONPlan.Member] = []
+        @AdmittedArray var elements: [Int] = []
+        @AdmittedArray var members: [SQLJSONPlan.Member] = []
         for row in inputs {
             try await checkpoint(memory.meter)
             if object {
@@ -134,10 +135,10 @@ extension SQLAggregateEvaluator {
                 let value = try plan.value(row.arguments[1].value, type: selected.arguments[1].type, jsonb: binary)
                 let member = SQLJSONPlan.Member(key: key, value: value)
                 if binary, let previous = try plan.memberIndex(key, in: members) { members[previous] = member }
-                else { try jsonMemory.append(member, to: &members) }
+                else { try jsonMemory.append(member, to: &$members) }
             } else {
                 guard row.arguments.count == 1, let type = selected.arguments.first?.type else { throw mismatch("JSON aggregate argument") }
-                try jsonMemory.append(plan.value(row.arguments[0].value, type: type, jsonb: binary), to: &elements)
+                try jsonMemory.append(plan.value(row.arguments[0].value, type: type, jsonb: binary), to: &$elements)
             }
         }
         if binary && object { try plan.sort(&members) }

@@ -39,7 +39,7 @@ struct SQLJSONPlan {
     let memory: SQLJSONMemory
     let limits: QueryValueLimits
     let environment: SQLTemporalEnvironment?
-    var entries: [Entry] = []
+    @AdmittedArray var entries: [Entry] = []
 
     mutating func add(_ entry: Entry) throws -> Int {
         guard UInt64(entries.count) < limits.maximumTotalNodes else {
@@ -48,7 +48,7 @@ struct SQLJSONPlan {
         }
         try memory.work()
         let id = entries.count
-        try memory.append(entry, to: &entries)
+        try memory.append(entry, to: &$entries)
         return id
     }
 
@@ -65,41 +65,42 @@ struct SQLJSONPlan {
     }
 
     private mutating func append(_ first: Visit, jsonb: Bool) throws -> Int {
-        var visits: [Visit] = [], completed: [Int] = []
-        try memory.append(first, to: &visits)
+        @AdmittedArray var visits: [Visit] = []
+        @AdmittedArray var completed: [Int] = []
+        try memory.append(first, to: &$visits)
         while let visit = visits.popLast() {
             try memory.work()
             switch visit {
             case .node(let node):
                 switch node {
                 case .array(let values):
-                    try memory.append(.array(values.count), to: &visits)
-                    for index in values.indices.reversed() { try memory.append(.node(values[index]), to: &visits) }
+                    try memory.append(.array(values.count), to: &$visits)
+                    for index in values.indices.reversed() { try memory.append(.node(values[index]), to: &$visits) }
                 case .object(let members):
-                    try memory.append(.object(members), to: &visits)
-                    for index in members.indices.reversed() { try memory.append(.node(members[index].value), to: &visits) }
-                default: try memory.append(try add(.scalar(node)), to: &completed)
+                    try memory.append(.object(members), to: &$visits)
+                    for index in members.indices.reversed() { try memory.append(.node(members[index].value), to: &$visits) }
+                default: try memory.append(try add(.scalar(node)), to: &$completed)
                 }
             case .value(let value, let type):
                 switch value {
-                case .jsonb(let source): try memory.append(.node(source.root), to: &visits)
+                case .jsonb(let source): try memory.append(.node(source.root), to: &$visits)
                 case .json(let source):
-                    if jsonb { try memory.append(try lexical(source), to: &completed) }
-                    else { try memory.append(try add(.lexical(source)), to: &completed) }
+                    if jsonb { try memory.append(try lexical(source), to: &$completed) }
+                    else { try memory.append(try add(.lexical(source)), to: &$completed) }
                 case .primitive(.array(let cells)):
                     guard case .primitive(let kind, true) = type else { throw SQLJSONMemory.failure("JSON primitive array declaration") }
-                    try memory.append(.array(cells.count), to: &visits)
-                    for cell in cells.reversed() { try memory.append(.value(.primitive(cell), .primitive(kind)), to: &visits) }
+                    try memory.append(.array(cells.count), to: &$visits)
+                    for cell in cells.reversed() { try memory.append(.value(.primitive(cell), .primitive(kind)), to: &$visits) }
                 case .composite(let composite):
                     // Facade inputs are validated once; the immutable value owner validates
                     // every nested field against its descriptor when it is constructed.
                     guard case .sql(.composite) = type else {
                         throw SQLJSONMemory.failure("ROW JSON value type")
                     }
-                    try memory.append(.row(.composite(composite.type.columns), .composite(composite.fields), validate: false), to: &visits)
+                    try memory.append(.row(.composite(composite.type.columns), .composite(composite.fields), validate: false), to: &$visits)
                 case .array(let array):
-                    if array.dimensions.isEmpty { try memory.append(try add(.array([])), to: &completed) }
-                    else { try memory.append(.dimension(array, 0, 0), to: &visits) }
+                    if array.dimensions.isEmpty { try memory.append(try add(.array([])), to: &$completed) }
+                    else { try memory.append(.dimension(array, 0, 0), to: &$visits) }
                 default:
                     let scalar: QueryJSONBNode
                     if value.isNull { scalar = .null }
@@ -117,14 +118,14 @@ struct SQLJSONPlan {
                                 return .string(String(text))
                             }
                     }
-                    try memory.append(try add(.scalar(scalar)), to: &completed)
+                    try memory.append(try add(.scalar(scalar)), to: &$completed)
                 }
             case .row(let columns, let fields, let validate):
                 guard columns.count == fields.count else { throw SQLJSONMemory.failure("ROW conversion arity") }
-                try memory.append(.rowField(columns, fields, 0, validate: validate), to: &visits)
+                try memory.append(.rowField(columns, fields, 0, validate: validate), to: &$visits)
             case .rowField(let columns, let fields, let index, let validate):
                 guard index < fields.count else {
-                    try memory.append(.rowObject(columns), to: &visits)
+                    try memory.append(.rowObject(columns), to: &$visits)
                     continue
                 }
                 let column = columns[index]
@@ -133,27 +134,27 @@ struct SQLJSONPlan {
                     try SQLJSONMemory.validate(fields[index], type: column.type, meter: memory.meter)
                     guard column.isNullable || !fields[index].isNull else { throw SQLJSONMemory.failure("ROW JSON value type") }
                 }
-                try memory.append(.rowField(columns, fields, index + 1, validate: validate), to: &visits)
-                try memory.append(.value(fields[index], column.type), to: &visits)
+                try memory.append(.rowField(columns, fields, index + 1, validate: validate), to: &$visits)
+                try memory.append(.value(fields[index], column.type), to: &$visits)
             case .rowObject(let columns):
                 guard completed.count >= columns.count else { throw SQLJSONMemory.failure("ROW conversion stack") }
-                var members: [Member] = []
+                @AdmittedArray var members: [Member] = []
                 let start = completed.count - columns.count
                 for index in 0..<columns.count {
                     let key = columns[index].name
                     let member = Member(key: key, value: completed[start + index])
                     if jsonb, let old = try memberIndex(key, in: members) { members[old] = member }
-                    else { try memory.append(member, to: &members) }
+                    else { try memory.append(member, to: &$members) }
                 }
                 completed.removeLast(columns.count)
                 if jsonb { try sort(&members) }
-                try memory.append(try add(.object(members, compact: true)), to: &completed)
+                try memory.append(try add(.object(members, compact: true)), to: &$completed)
             case .dimension(let array, let dimension, let offset):
                 let count = Int(array.dimensions[dimension].length)
-                try memory.append(.array(count), to: &visits)
+                try memory.append(.array(count), to: &$visits)
                 if dimension + 1 == array.dimensions.count {
                     for index in (0..<count).reversed() {
-                        try memory.append(.value(array.elements[offset + index], .sql(array.elementType)), to: &visits)
+                        try memory.append(.value(array.elements[offset + index], .sql(array.elementType)), to: &$visits)
                     }
                 } else {
                     var stride = 1
@@ -163,24 +164,24 @@ struct SQLJSONPlan {
                         stride = product.partialValue
                     }
                     for index in (0..<count).reversed() {
-                        try memory.append(.dimension(array, dimension + 1, offset + index * stride), to: &visits)
+                        try memory.append(.dimension(array, dimension + 1, offset + index * stride), to: &$visits)
                     }
                 }
             case .array(let count):
-                var children: [Int] = []
-                try memory.prepare(&children, adding: count)
+                @AdmittedArray var children: [Int] = []
+                try memory.prepare(&$children, adding: count)
                 children.append(contentsOf: completed.suffix(count))
                 completed.removeLast(count)
-                try memory.append(try add(.array(children)), to: &completed)
+                try memory.append(try add(.array(children)), to: &$completed)
             case .object(let source):
-                var members: [Member] = []
-                try memory.prepare(&members, adding: source.count)
+                @AdmittedArray var members: [Member] = []
+                try memory.prepare(&$members, adding: source.count)
                 let start = completed.count - source.count
                 for index in source.indices {
                     members.append(Member(key: source[index].key, value: completed[start + index]))
                 }
                 completed.removeLast(source.count)
-                try memory.append(try add(.object(members)), to: &completed)
+                try memory.append(try add(.object(members)), to: &$completed)
             }
         }
         guard completed.count == 1 else { throw SQLJSONMemory.failure("JSON conversion stack") }
@@ -189,26 +190,28 @@ struct SQLJSONPlan {
 
     mutating func lexical(_ source: QueryJSONValue) throws -> Int {
         let input = try SQLJSONLexicalInput(source, memory: memory)
-        var ids: [Int] = []
-        try memory.prepare(&ids, adding: input.nodes.count)
+        @AdmittedArray var ids: [Int] = []
+        try memory.prepare(&$ids, adding: input.nodes.count)
         ids.append(contentsOf: repeatElement(-1, count: input.nodes.count))
         for index in input.nodes.indices.reversed() {
             let node = input.nodes[index]
             let entry: Entry
             switch node.kind {
             case .array:
-                var children: [Int] = [], child = index + 1
+                @AdmittedArray var children: [Int] = []
+                var child = index + 1
                 while child < node.end {
-                    try memory.append(ids[child], to: &children); child = input.nodes[child].end
+                    try memory.append(ids[child], to: &$children); child = input.nodes[child].end
                 }
                 entry = .array(children)
             case .object:
-                var members: [Member] = [], child = index + 1
+                @AdmittedArray var members: [Member] = []
+                var child = index + 1
                 while child < node.end {
                     guard let key = input.nodes[child].key else { throw SQLJSONMemory.failure("JSON object key") }
                     let decoded = try input.decodedString(key, limits: limits)
                     if let old = try memberIndex(decoded, in: members) { members[old] = Member(key: decoded, value: ids[child]) }
-                    else { try memory.append(Member(key: decoded, value: ids[child]), to: &members) }
+                    else { try memory.append(Member(key: decoded, value: ids[child]), to: &$members) }
                     child = input.nodes[child].end
                 }
                 try sort(&members)

@@ -1982,7 +1982,7 @@ extension DatabaseContext {
         let footprint = try DatabaseIntermediateCollectionMeter.arrayFootprint(
             count: columns.count, element: CanonicalBoundExpression.self)
         let claim = try workMeter.reserveIntermediate(bytes: footprint.bytes, at: .bindingCandidate)
-        var projection: [CanonicalBoundExpression] = []
+        @AdmittedArray var projection: [CanonicalBoundExpression] = []
         for column in columns {
             try workMeter.consume(UInt64(source.schema.layout.slots.count), at: .bindingCandidate)
             let slot = try source.schema.resolve(ColumnRef(column: column.name))
@@ -1996,7 +1996,7 @@ extension DatabaseContext {
                 throw SQLReadResolutionError.missingPhysicalColumn(entity: relation.entity.name,
                     field: field?.field?.name ?? column.name)
             }
-            try CanonicalBindingStorage.append(selected, to: &projection, reservation: claim)
+            try CanonicalBindingStorage.append(selected, to: &$projection, reservation: claim)
         }
         try metadata.retain(claim)
         return CanonicalBoundSelect(columns: columns, projection: projection, filter: plan.filter,
@@ -3398,11 +3398,6 @@ extension DatabaseContext {
                 count: keys.count, element: CanonicalSQLValueIdentity.self).bytes, at: .joinCandidate)
             var values: [CanonicalSQLValueIdentity] = []
             values.reserveCapacity(keys.count)
-            if values.capacity > keys.count {
-                try claim.reserveAdditional(bytes: DatabaseIntermediateFootprint(
-                    bytes: UInt64(MemoryLayout<CanonicalSQLValueIdentity>.stride))
-                    .multiplied(by: UInt64(values.capacity - keys.count)).bytes, at: .joinCandidate)
-            }
             for pair in keys {
                 let reference = left ? pair.left : pair.right
                 let matches = row.layout.matching(reference)
@@ -3696,12 +3691,12 @@ extension DatabaseContext {
         let count = grouped?.count ?? filtered.count
         let hasWindows = canonicalQueryRequiresWindows(query)
         let windowClaim = try hasWindows ? meter.reserveIntermediate(bytes: 128, at: .projection) : nil
-        var windowPlans: [CanonicalBoundWindow] = []
+        @AdmittedArray var windowPlans: [CanonicalBoundWindow] = []
         func collectWindows(_ value: CanonicalBoundExpression) throws {
             try meter.consume(at: .bindingCandidate)
             if let window = value.window {
                 if !windowPlans.contains(where: { $0 === window }) {
-                    try CanonicalBindingStorage.append(window, to: &windowPlans, reservation: windowClaim)
+                    try CanonicalBindingStorage.append(window, to: &$windowPlans, reservation: windowClaim)
                 }
                 return
             }
@@ -3711,7 +3706,7 @@ extension DatabaseContext {
             for expression in plan.projection { try collectWindows(expression) }
             for key in plan.orderBy { try collectWindows(key.expression) }
         }
-        var windowResults: [SQLWindowResults] = []
+        @AdmittedArray var windowResults: [SQLWindowResults] = []
         for window in windowPlans {
             let results = try await SQLWindowEvaluator.evaluate(plan: window, rowCount: count,
                 evaluate: { [self] index, selected in
@@ -3732,7 +3727,7 @@ extension DatabaseContext {
                         context: context, workMeter: meter)
                 }, workMeter: meter, temporalEnvironment: context.options.temporalEnvironment,
                 limits: Self.selectedValueLimits(context: context, meter: meter))
-            try CanonicalBindingStorage.append(results, to: &windowResults, reservation: windowClaim)
+            try CanonicalBindingStorage.append(results, to: &$windowResults, reservation: windowClaim)
         }
         let analyticContext = hasWindows ? context.usingWindows(CanonicalWindowEvaluation(plans: windowPlans, results: windowResults, row: 0)) : context
         let windowMetadataLease = windowClaim.map { DatabaseQueryPayloadLease(retaining: $0) }
@@ -5849,7 +5844,7 @@ extension DatabaseContext {
         if case .using(let columns) = condition { coalescing = columns } else { coalescing = [] }
         let coalesced = CanonicalSourceNames(coalescing)
         let conversionClaim = coalescing.isEmpty ? nil : try workMeter.reserveIntermediate(bytes: 128, at: .joinCandidate)
-        var conversionLeases: [DatabaseQueryPayloadLease] = []
+        @AdmittedArray var conversionLeases: [DatabaseQueryPayloadLease] = []
         var values: [QueryValue] = []
         values.reserveCapacity(layout.slots.count)
         for name in coalescing {
@@ -5869,7 +5864,7 @@ extension DatabaseContext {
                 limits: Self.selectedValueLimits(context: nil, meter: workMeter))
             values.append(converted.value)
             if let lease = converted.lease {
-                try CanonicalBindingStorage.append(lease, to: &conversionLeases, reservation: conversionClaim)
+                try CanonicalBindingStorage.append(lease, to: &$conversionLeases, reservation: conversionClaim)
             }
         }
         for source in [left, right] {
@@ -5890,7 +5885,7 @@ extension DatabaseContext {
         }
         if let conversionClaim {
             try CanonicalBindingStorage.append(DatabaseQueryPayloadLease(retaining: conversionClaim),
-                to: &conversionLeases, reservation: conversionClaim)
+                to: &$conversionLeases, reservation: conversionClaim)
         }
         return CanonicalSourceRow(values: values, layout: layout,
             annotations: left.annotations.merging(right.annotations) { current, _ in current },
@@ -8076,17 +8071,17 @@ extension DatabaseContext {
         let leaves = grouping?.leaves ?? boundGroupBy
         let scratch = try workMeter.reserveIntermediate(bytes: UInt64(leaves.count) * 128 + 64, at: .aggregateInput)
         defer { scratch.release() }
-        var sets = grouping?.sets ?? []
+        @AdmittedArray var sets = grouping?.sets ?? []
         if grouping == nil {
-            var set: [Int] = []
-            for index in leaves.indices { try CanonicalBindingStorage.append(index, to: &set, reservation: scratch) }
-            try CanonicalBindingStorage.append(set, to: &sets, reservation: scratch)
+            @AdmittedArray var set: [Int] = []
+            for index in leaves.indices { try CanonicalBindingStorage.append(index, to: &$set, reservation: scratch) }
+            try CanonicalBindingStorage.append(set, to: &$sets, reservation: scratch)
         }
         var values: [[ProjectedQueryValue]]? = nil
         if sets.count > 1, !leaves.isEmpty {
-            var cache: [[ProjectedQueryValue]] = []
+            @AdmittedArray var cache: [[ProjectedQueryValue]] = []
             for row in rows {
-                var cells: [ProjectedQueryValue] = []
+                @AdmittedArray var cells: [ProjectedQueryValue] = []
                 for leaf in leaves {
                     let value = try await evaluateBoundValue(leaf, on: row, context: evaluationContext, workMeter: workMeter)
                     if !value.payloadIsRetained {
@@ -8094,9 +8089,9 @@ extension DatabaseContext {
                             workMeter: workMeter, stage: .aggregateInput)
                         try scratch.reserveAdditional(bytes: footprint.bytes, at: .aggregateInput)
                     }
-                    try CanonicalBindingStorage.append(value, to: &cells, reservation: scratch)
+                    try CanonicalBindingStorage.append(value, to: &$cells, reservation: scratch)
                 }
-                try CanonicalBindingStorage.append(cells, to: &cache, reservation: scratch)
+                try CanonicalBindingStorage.append(cells, to: &$cache, reservation: scratch)
             }
             values = cache
         }
@@ -9294,12 +9289,7 @@ extension DatabaseContext {
             if growth.capacity > capacity {
                 try reservation.reserveAdditional(bytes: growth.additionalByteCount, at: .bindingCandidate)
                 stack.reserveCapacity(growth.capacity)
-                if stack.capacity > growth.capacity {
-                    let excess = try DatabaseIntermediateFootprint(bytes: layout.elementCapacitySlotByteCount)
-                        .multiplied(by: UInt64(stack.capacity - growth.capacity))
-                    try reservation.reserveAdditional(bytes: excess.bytes, at: .bindingCandidate)
-                }
-                capacity = stack.capacity
+                capacity = growth.capacity
             }
             stack.append(visit)
         }
@@ -9520,7 +9510,7 @@ extension DatabaseContext {
         let named = try mergeNamedSubqueries(local: local, inherited: inherited, sqlResolution: binding.sqlResolution)
         var visible = inherited
         var scoped = binding
-        var ctes: [CanonicalBoundCTE] = []
+        @AdmittedArray var ctes: [CanonicalBoundCTE] = []
         for index in local.indices {
             let definition = local[index]
             guard definition.search == nil, definition.cycle == nil else {
@@ -9533,7 +9523,7 @@ extension DatabaseContext {
             }
             let item = try CanonicalBoundCTE.create(identity: index, definition: definition, plan: plan,
                 referenceCount: 1, isVolatile: selectedPlanIsVolatile(plan), workMeter: binding.workMeter)
-            try CanonicalBindingStorage.append(item, to: &ctes, reservation: binding.planReservation)
+            try CanonicalBindingStorage.append(item, to: &$ctes, reservation: binding.planReservation)
             scoped.namedPlans = CanonicalNamedBindingScope(parent: scoped.namedPlans, name: definition.name, plan: plan)
             visible.insert(definition, at: 0)
         }
@@ -9546,7 +9536,7 @@ extension DatabaseContext {
         let local = query.subqueries ?? []
         let named = try mergeNamedSubqueries(local: local, inherited: inherited, withRecursive: true, sqlResolution: binding.sqlResolution)
         var scoped = binding
-        var ctes: [CanonicalBoundCTE] = []
+        @AdmittedArray var ctes: [CanonicalBoundCTE] = []
         let dependencyBytes = try DatabaseIntermediateCollectionMeter.arrayFootprint(count: local.count, element: Int.self)
             .adding(DatabaseIntermediateCollectionMeter.arrayFootprint(count: local.count, element: CanonicalSourceNames.self))
             .adding(DatabaseIntermediateFootprint(bytes: UInt64(local.count) * 128))
@@ -9554,12 +9544,12 @@ extension DatabaseContext {
         defer { dependencyClaim.release() }
         var remaining = Array(local.indices)
         let names = CanonicalSourceNames(local.map { $0.name })
-        var dependencies: [CanonicalSourceNames] = []
+        @AdmittedArray var dependencies: [CanonicalSourceNames] = []
         for definition in local {
             try binding.workMeter.consume(at: .bindingCandidate)
             let referenced = referencedTableNames(in: definition.query, among: names)
             try dependencyClaim.reserveAdditional(bytes: UInt64(referenced.count) * 128, at: .bindingCandidate)
-            try CanonicalBindingStorage.append(referenced, to: &dependencies, reservation: dependencyClaim)
+            try CanonicalBindingStorage.append(referenced, to: &$dependencies, reservation: dependencyClaim)
         }
         while !remaining.isEmpty {
             try binding.workMeter.consume(at: .bindingCandidate)
@@ -9593,7 +9583,7 @@ extension DatabaseContext {
                 item = try CanonicalBoundCTE.create(identity: index, definition: definition, plan: plan,
                     referenceCount: 1, isVolatile: selectedPlanIsVolatile(plan), workMeter: binding.workMeter)
             }
-            try CanonicalBindingStorage.append(item, to: &ctes, reservation: binding.planReservation)
+            try CanonicalBindingStorage.append(item, to: &$ctes, reservation: binding.planReservation)
             scoped.namedPlans = CanonicalNamedBindingScope(parent: scoped.namedPlans, name: definition.name, plan: item.plan)
             // The final selected recursive output schema is represented by the definition's plan.
         }
@@ -9619,13 +9609,13 @@ extension DatabaseContext {
         let seed = try bindCanonicalQuery(seedQuery, inherited: prelude.named,
             outerSchemas: outerSchemas, binding: seedBinding)
         let names = try aliasedColumnNames(seed.columns.map { $0.name }, overrides: definition.columns)
-        var columns: [QueryColumn] = []
+        @AdmittedArray var columns: [QueryColumn] = []
         for index in seed.columns.indices {
             let column = seed.columns[index]
             try CanonicalBindingStorage.append(try QueryColumn(number: UInt32(index + 1), name: names[index],
-                type: column.type, isNullable: true), to: &columns, reservation: binding.planReservation)
+                type: column.type, isNullable: true), to: &$columns, reservation: binding.planReservation)
         }
-        let generated = try bindCanonicalRecursiveGenerated(definition, columns: &columns, binding: binding,
+        let generated = try bindCanonicalRecursiveGenerated(definition, columns: &$columns, binding: binding,
             declarationBinding: declarationBinding, identity: identity)
         let placeholder = CanonicalRecursiveSelfBinding(name: definition.name, columns: columns)
         var termBinding = prelude.scoped.child(.source).child(.setRight)
@@ -9644,14 +9634,14 @@ extension DatabaseContext {
         if seed.columns.indices.contains(where: { seed.columns[$0].type != term.columns[$0].type }) {
             let binder = try typeBinder(schema: CanonicalRelationSchema(), namedSubqueries: prelude.named,
                 queryBinding: termBinding, outerSchemas: outerSchemas)
-            var columns: [QueryColumn] = []
-            var projection: [CanonicalBoundExpression] = []
+            @AdmittedArray var columns: [QueryColumn] = []
+            @AdmittedArray var projection: [CanonicalBoundExpression] = []
             for index in seed.columns.indices {
                 try CanonicalBindingStorage.append(try binder.bindSourceValue(term.projection[index], to: seed.columns[index].type),
-                    to: &projection, reservation: binding.planReservation)
+                    to: &$projection, reservation: binding.planReservation)
                 try CanonicalBindingStorage.append(try QueryColumn(number: term.columns[index].number,
                     name: term.columns[index].name, type: seed.columns[index].type, isNullable: term.columns[index].isNullable),
-                    to: &columns, reservation: binding.planReservation)
+                    to: &$columns, reservation: binding.planReservation)
             }
             term = CanonicalBoundSelect(columns: columns, projection: projection, filter: term.filter,
                 groupBy: term.groupBy, having: term.having, orderBy: term.orderBy, sourcePlan: term.sourcePlan,
@@ -9730,47 +9720,47 @@ extension DatabaseContext {
         guard count == 1 else { throw CanonicalReadError.invalidQueryStructure(.recursion, "A recursive term requires exactly one working-table reference") }
     }
 
-    private func bindCanonicalRecursiveGenerated(_ definition: NamedSubquery, columns: inout [QueryColumn],
+    private func bindCanonicalRecursiveGenerated(_ definition: NamedSubquery, columns: inout AdmittedArray<QueryColumn>,
         binding: CanonicalQueryBindingEnvironment, declarationBinding: CanonicalQueryBindingEnvironment, identity: Int
     ) throws -> (configuration: SQLRecursiveGeneratedColumns?, leases: [DatabaseQueryPayloadLease]) {
-        let userColumns = columns
+        let userColumns = columns.wrappedValue
         let binder = try typeBinder(schema: CanonicalRelationSchema(), namedSubqueries: [], queryBinding: binding)
-        var leases: [DatabaseQueryPayloadLease] = []
+        @AdmittedArray var leases: [DatabaseQueryPayloadLease] = []
         var search: SQLRecursiveGeneratedColumns.Search?
         var cycle: SQLRecursiveGeneratedColumns.Cycle?
         func keys(_ names: [String]) throws -> [Int] {
             guard !names.isEmpty, CanonicalSourceNames(names).count == names.count else {
                 throw CanonicalReadError.unsupportedSelectQuery("Recursive generated keys must be unique and nonempty")
             }
-            var slots: [Int] = []
+            @AdmittedArray var slots: [Int] = []
             for name in names {
                 let matches = userColumns.indices.filter { CanonicalSourceName.equal(userColumns[$0].name, name) }
                 guard matches.count == 1, let slot = matches.first else {
                     throw CanonicalReadError.unsupportedSelectQuery("A recursive generated key is missing or ambiguous")
                 }
                 try binder.requireSQLComparison(userColumns[slot].type, operation: "recursive generated key")
-                try CanonicalBindingStorage.append(slot, to: &slots, reservation: binding.planReservation)
+                try CanonicalBindingStorage.append(slot, to: &$slots, reservation: binding.planReservation)
             }
             return slots
         }
         func record(_ slots: [Int], breadth: Bool) throws -> QueryCompositeType {
-            var fields: [QueryColumn] = []
+            @AdmittedArray var fields: [QueryColumn] = []
             if breadth { try CanonicalBindingStorage.append(try QueryColumn(number: 1, name: "f1", type: .sql(.bigint), isNullable: false),
-                to: &fields, reservation: binding.planReservation) }
+                to: &$fields, reservation: binding.planReservation) }
             for slot in slots {
                 let index = fields.count + 1
                 try CanonicalBindingStorage.append(try QueryColumn(number: UInt32(index), name: "f\(index)",
-                    type: userColumns[slot].type, isNullable: true), to: &fields, reservation: binding.planReservation)
+                    type: userColumns[slot].type, isNullable: true), to: &$fields, reservation: binding.planReservation)
             }
             let selected = try CanonicalBindingStorage.composite(columns: fields, workMeter: binding.workMeter)
-            if let lease = selected.lease { try CanonicalBindingStorage.append(lease, to: &leases, reservation: binding.planReservation) }
+            if let lease = selected.lease { try CanonicalBindingStorage.append(lease, to: &$leases, reservation: binding.planReservation) }
             return selected.type
         }
         func append(_ name: String, type: QueryColumnType, nullable: Bool = false) throws {
-            guard !name.isEmpty, !columns.contains(where: { CanonicalSourceName.equal($0.name, name) }) else {
+            guard !name.isEmpty, !columns.wrappedValue.contains(where: { CanonicalSourceName.equal($0.name, name) }) else {
                 throw CanonicalReadError.unsupportedSelectQuery("Recursive generated column names must be unique")
             }
-            try CanonicalBindingStorage.append(try QueryColumn(number: UInt32(columns.count + 1), name: name,
+            try CanonicalBindingStorage.append(try QueryColumn(number: UInt32(columns.wrappedValue.count + 1), name: name,
                 type: type, isNullable: nullable), to: &columns, reservation: binding.planReservation)
         }
         if let clause = definition.search {
@@ -9816,13 +9806,13 @@ extension DatabaseContext {
                     let result = try CanonicalSQLScalarCast.alignSource(child, from: selected.children[0].type,
                         to: selected.type, temporalEnvironment: inheritedSQLTemporalEnvironment,
                         workMeter: binding.workMeter, limits: CanonicalBindingStorage.limits(binding.workMeter))
-                    if let lease = result.lease { try CanonicalBindingStorage.append(lease, to: &leases, reservation: binding.planReservation) }
+                    if let lease = result.lease { try CanonicalBindingStorage.append(lease, to: &$leases, reservation: binding.planReservation) }
                     return result.value
                 }
                 let result = try evaluate(value)
                 let claim = try binding.workMeter.reserveIntermediate(bytes: CanonicalRelationalFootprintMeter.valueFootprint(
                     of: result, workMeter: binding.workMeter, stage: .bindingCandidate).bytes, at: .bindingCandidate)
-                try CanonicalBindingStorage.append(DatabaseQueryPayloadLease(retaining: claim), to: &leases, reservation: binding.planReservation)
+                try CanonicalBindingStorage.append(DatabaseQueryPayloadLease(retaining: claim), to: &$leases, reservation: binding.planReservation)
                 return result
             }
             let cycleValue = try constant(mark, position: .cteCycleMark)
@@ -9872,8 +9862,8 @@ extension DatabaseContext {
         guard let slots = try selfSlots(source) else {
             throw CanonicalReadError.unsupportedSelectQuery("Recursive term has no selected working-table input")
         }
-        var columns = term.columns
-        var projection = term.projection
+        @AdmittedArray var columns = term.columns
+        @AdmittedArray var projection = term.projection
         func append(_ ordinal: Int) throws {
             guard slots.indices.contains(ordinal), let type = source.schema.slotTypes[slots[ordinal]] else {
                 throw CanonicalReadError.unsupportedSelectQuery("Recursive parent metadata has no selected type")
@@ -9881,9 +9871,9 @@ extension DatabaseContext {
             let address = source.schema.layout.slots[slots[ordinal]]
             let cell = CanonicalBoundExpression(expression: .column(ColumnRef(table: address.scope, column: address.name)),
                 type: type, isNullable: true, columnSlot: slots[ordinal])
-            try CanonicalBindingStorage.append(cell, to: &projection, reservation: binding.planReservation)
+            try CanonicalBindingStorage.append(cell, to: &$projection, reservation: binding.planReservation)
             try CanonicalBindingStorage.append(try QueryColumn(number: UInt32(columns.count + 1), name: "", type: type,
-                isNullable: true), to: &columns, reservation: binding.planReservation)
+                isNullable: true), to: &$columns, reservation: binding.planReservation)
         }
         if generated.search != nil { try append(userColumnCount) }
         if generated.cycle != nil { try append(userColumnCount + (generated.search == nil ? 0 : 1) + 1) }
@@ -9935,7 +9925,7 @@ extension DatabaseContext {
         if query.groupBy?.contains(where: { element in
             if case .expression = element { return false }; return true
         }) == true {
-            try CanonicalBindingStorage.append(source.schema.layout, to: &binding.groupingOuterLayouts,
+            try CanonicalBindingStorage.appendGrowing(source.schema.layout, to: &binding.groupingOuterLayouts,
                 reservation: binding.planReservation)
         }
         let binder = try typeBinder(schema: source.schema, namedSubqueries: namedSubqueries,
@@ -10022,8 +10012,8 @@ extension DatabaseContext {
     ) throws -> CanonicalBoundGrouping? {
         guard let elements = query.groupBy else { return nil }
         let claim = try binding.workMeter.reserveIntermediate(bytes: 128, at: .bindingCandidate)
-        var leaves: [CanonicalBoundExpression] = []
-        func append<T>(_ value: T, to array: inout [T]) throws {
+        @AdmittedArray var leaves: [CanonicalBoundExpression] = []
+        func append<T>(_ value: T, to array: inout AdmittedArray<T>) throws {
             try CanonicalBindingStorage.append(value, to: &array, reservation: claim)
         }
         func leaf(_ expression: Expression, path: CanonicalQueryBindingEnvironment) throws -> Int {
@@ -10054,24 +10044,24 @@ extension DatabaseContext {
                         to: CanonicalBoundKey(expression: leaves[index]), workMeter: binding.workMeter,
                         isVolatileSubquery: selectedPlanIsVolatile) { return index }
                 }
-                try append(selected, to: &leaves)
+                try append(selected, to: &$leaves)
                 return leaves.count - 1
             }
         }
         func product(_ lhs: [[Int]], _ rhs: [[Int]]) throws -> [[Int]] {
-            var output: [[Int]] = []
+            @AdmittedArray var output: [[Int]] = []
             for left in lhs { for right in rhs {
                 try binding.workMeter.consume(at: .bindingCandidate)
-                var combined: [Int] = []
-                for index in left { try append(index, to: &combined) }
-                for index in right where !combined.contains(index) { try append(index, to: &combined) }
-                try append(combined, to: &output)
+                @AdmittedArray var combined: [Int] = []
+                for index in left { try append(index, to: &$combined) }
+                for index in right where !combined.contains(index) { try append(index, to: &$combined) }
+                try append(combined, to: &$output)
             } }
             return output
         }
         func sequence(_ values: [GroupingElement], path: CanonicalQueryBindingEnvironment) throws -> [[Int]] {
-            var result: [[Int]] = []
-            try append([], to: &result)
+            @AdmittedArray var result: [[Int]] = []
+            try append([], to: &$result)
             for (index, value) in values.enumerated() {
                 result = try product(result, expand(value, path: path.child(.groupingElement, index: UInt32(index))))
             }
@@ -10082,44 +10072,44 @@ extension DatabaseContext {
             switch value {
             case .expression(let expression):
                 let index = try leaf(expression, path: path.child(.operand))
-                var set: [Int] = []; try append(index, to: &set)
-                var output: [[Int]] = []; try append(set, to: &output); return output
+                @AdmittedArray var set: [Int] = []; try append(index, to: &$set)
+                @AdmittedArray var output: [[Int]] = []; try append(set, to: &$output); return output
             case .groupingSets(let sets):
-                var output: [[Int]] = []
+                @AdmittedArray var output: [[Int]] = []
                 for (index, set) in sets.enumerated() {
                     for expanded in try sequence(set, path: path.child(.groupingSet, index: UInt32(index))) {
-                        try append(expanded, to: &output)
+                        try append(expanded, to: &$output)
                     }
                 }
                 return output
             case .rollup(let units), .cube(let units):
-                var selected: [[Int]] = []
+                @AdmittedArray var selected: [[Int]] = []
                 for (unitIndex, unit) in units.enumerated() {
-                    var indices: [Int] = []
+                    @AdmittedArray var indices: [Int] = []
                     for (index, expression) in unit.enumerated() {
                         let leafIndex = try leaf(expression, path: path.child(.groupingComponent, index: UInt32(unitIndex)).child(.argument, index: UInt32(index)))
-                        if !indices.contains(leafIndex) { try append(leafIndex, to: &indices) }
+                        if !indices.contains(leafIndex) { try append(leafIndex, to: &$indices) }
                     }
-                    try append(indices, to: &selected)
+                    try append(indices, to: &$selected)
                 }
-                var output: [[Int]] = []
+                @AdmittedArray var output: [[Int]] = []
                 switch value {
                 case .rollup:
                     for count in stride(from: selected.count, through: 0, by: -1) {
-                        var set: [Int] = []
-                        for unit in selected.prefix(count) { for index in unit where !set.contains(index) { try append(index, to: &set) } }
-                        try append(set, to: &output)
+                        @AdmittedArray var set: [Int] = []
+                        for unit in selected.prefix(count) { for index in unit where !set.contains(index) { try append(index, to: &$set) } }
+                        try append(set, to: &$output)
                     }
                 default:
-                    try append([], to: &output)
+                    try append([], to: &$output)
                     for unit in selected.reversed() {
-                        var next: [[Int]] = []
+                        @AdmittedArray var next: [[Int]] = []
                         for set in output {
-                            var included: [Int] = []
-                            for index in unit { try append(index, to: &included) }
-                            for index in set where !included.contains(index) { try append(index, to: &included) }
-                            try append(included, to: &next)
-                            try append(set, to: &next)
+                            @AdmittedArray var included: [Int] = []
+                            for index in unit { try append(index, to: &$included) }
+                            for index in set where !included.contains(index) { try append(index, to: &$included) }
+                            try append(included, to: &$next)
+                            try append(set, to: &$next)
                         }
                         output = next
                     }
@@ -10127,7 +10117,7 @@ extension DatabaseContext {
                 return output
             }
         }
-        var sets: [[Int]] = []; try append([], to: &sets)
+        @AdmittedArray var sets: [[Int]] = []; try append([], to: &$sets)
         for (index, value) in elements.enumerated() {
             sets = try product(sets, expand(value, path: binding.child(.groupBy, index: UInt32(index))))
         }
@@ -10216,19 +10206,19 @@ extension DatabaseContext {
                     if value.queryPlan == nil, value.informationSchema == nil,
                        let relation = value.sqlRelation, let keyIDs = relation.declaration.primaryKeyColumnIDs,
                        !keyIDs.isEmpty, (relation.declaration.primaryKeyConstraint?.timing ?? .immediate) == .immediate {
-                        var slots: [Int] = []
+                        @AdmittedArray var slots: [Int] = []
                         for id in keyIDs {
                             guard let column = relation.columns.first(where: { $0.declaration.id == id }) else { return nil }
                             let matches = value.schema.layout.matching(ColumnRef(table: table.effectiveName, column: column.declaration.name))
                             guard matches.count == 1, let slot = matches.first else { return nil }
-                            try CanonicalBindingStorage.append(slot, to: &slots, reservation: lineageClaim)
+                            try CanonicalBindingStorage.append(slot, to: &$slots, reservation: lineageClaim)
                         }
                         return slots
                     }
                     guard value.queryPlan == nil, value.informationSchema == nil,
                           let runtime = try readPolicy().entityRuntime(named: value.sqlRelation?.entity.name ?? table.table),
                           let fields = runtime.groupingIdentityFields else { return nil }
-                    var slots: [Int] = []
+                    @AdmittedArray var slots: [Int] = []
                     for field in fields {
                         let logical: String
                         if let relation = value.sqlRelation {
@@ -10237,17 +10227,17 @@ extension DatabaseContext {
                         } else { logical = field }
                         let matches = value.schema.layout.matching(ColumnRef(table: table.effectiveName, column: logical))
                         guard matches.count == 1, let slot = matches.first else { return nil }
-                        try CanonicalBindingStorage.append(slot, to: &slots, reservation: lineageClaim)
+                        try CanonicalBindingStorage.append(slot, to: &$slots, reservation: lineageClaim)
                     }
                     return slots
                 case .aliased:
                     guard value.children.count == 1,
                           let childKeys = try identitySlots(value.children[0]) else { return nil }
-                    var slots: [Int] = []
+                    @AdmittedArray var slots: [Int] = []
                     let visible = value.children[0].schema.layout.visibleSlots
                     for key in childKeys {
                         guard let ordinal = visible.firstIndex(of: key), value.schema.layout.visibleSlots.indices.contains(ordinal) else { return nil }
-                        try CanonicalBindingStorage.append(value.schema.layout.visibleSlots[ordinal], to: &slots, reservation: lineageClaim)
+                        try CanonicalBindingStorage.append(value.schema.layout.visibleSlots[ordinal], to: &$slots, reservation: lineageClaim)
                     }
                     return slots
                 default: return nil
@@ -10356,7 +10346,7 @@ extension DatabaseContext {
         outerSchemas: [CanonicalRelationSchema], binding: CanonicalQueryBindingEnvironment,
         reservation claim: DatabaseIntermediateReservation
     ) throws -> (schema: CanonicalRelationSchema, valueBindings: [[CanonicalBoundExpression]]) {
-        var valueBindings: [[CanonicalBoundExpression]] = []
+        @AdmittedArray var valueBindings: [[CanonicalBoundExpression]] = []
         let schema: CanonicalRelationSchema
         let empty = try CanonicalRelationSchema()
         let binder = try typeBinder(schema: empty, namedSubqueries: namedSubqueries,
@@ -10364,9 +10354,9 @@ extension DatabaseContext {
         typealias ValueCell = (bound: CanonicalBoundExpression, original: DatabaseKit.Expression?)
         let scratch = try binding.workMeter.reserveIntermediate(bytes: 256, at: .bindingCandidate)
         defer { scratch.release() }
-        var known: [[ValueCell]] = []
+        @AdmittedArray var known: [[ValueCell]] = []
         for (rowIndex, expressions) in rows.enumerated() {
-            var cells: [ValueCell] = []
+            @AdmittedArray var cells: [ValueCell] = []
             for (cellIndex, expression) in expressions.enumerated() {
                 try binding.workMeter.consume(at: .bindingCandidate)
                 let occurrence = binding.child(.valuesRow, index: UInt32(rowIndex))
@@ -10382,13 +10372,13 @@ extension DatabaseContext {
                         let selected = CanonicalBoundExpression(expression: .field(source.expression, name: field.name),
                             type: field.type, isNullable: source.isNullable || field.isNullable,
                             children: [source], occurrence: occurrence, fieldOrdinal: ordinal)
-                        try CanonicalBindingStorage.append((bound: selected, original: nil), to: &cells, reservation: scratch)
+                        try CanonicalBindingStorage.append((bound: selected, original: nil), to: &$cells, reservation: scratch)
                     }
                 } else {
-                    try CanonicalBindingStorage.append((bound: bound, original: expression), to: &cells, reservation: scratch)
+                    try CanonicalBindingStorage.append((bound: bound, original: expression), to: &$cells, reservation: scratch)
                 }
             }
-            try CanonicalBindingStorage.append(cells, to: &known, reservation: scratch)
+            try CanonicalBindingStorage.append(cells, to: &$known, reservation: scratch)
         }
         let width = known.first?.count ?? 0
         guard known.allSatisfy({ $0.count == width }) else {
@@ -10402,17 +10392,17 @@ extension DatabaseContext {
             }
             return expressionIsContextualNull(value.expression)
         }
-        var types: [QueryColumnType] = []
-        var inputs: [QueryColumnType] = []
+        @AdmittedArray var types: [QueryColumnType] = []
+        @AdmittedArray var inputs: [QueryColumnType] = []
         for column in 0..<width {
             inputs.removeAll(keepingCapacity: true)
             for row in known where !contextualNull(row[column].bound) {
-                try CanonicalBindingStorage.append(row[column].bound.type, to: &inputs, reservation: scratch)
+                try CanonicalBindingStorage.append(row[column].bound.type, to: &$inputs, reservation: scratch)
             }
-            try CanonicalBindingStorage.append(binder.commonType(inputs), to: &types, reservation: scratch)
+            try CanonicalBindingStorage.append(binder.commonType(inputs), to: &$types, reservation: scratch)
         }
         for row in known {
-            var selected: [CanonicalBoundExpression] = []
+            @AdmittedArray var selected: [CanonicalBoundExpression] = []
             for (column, cell) in row.enumerated() {
                 let value: CanonicalBoundExpression
                 if let original = cell.original {
@@ -10422,11 +10412,11 @@ extension DatabaseContext {
                           case .sql(.composite(let descriptor)) = source.type else {
                         throw DatabaseExpressionEvaluationError.typeMismatch(operation: "VALUES expanded field binding")
                     }
-                    var fields: [QueryColumn] = []
+                    @AdmittedArray var fields: [QueryColumn] = []
                     for (fieldIndex, field) in descriptor.columns.enumerated() {
                         let target = try QueryColumn(number: field.number, name: field.name,
                             type: types[column - ordinal + fieldIndex], isNullable: field.isNullable)
-                        try CanonicalBindingStorage.append(target, to: &fields, reservation: scratch)
+                        try CanonicalBindingStorage.append(target, to: &$fields, reservation: scratch)
                     }
                     let contextual = try CanonicalBindingStorage.composite(columns: fields, workMeter: binding.workMeter)
                     let rebound = try binder.bind(source.expression, contextualType: .sql(.composite(contextual.type)),
@@ -10441,9 +10431,9 @@ extension DatabaseContext {
                         metadataLease: contextual.lease)
                     value = try binder.bindSourceValue(selectedField, to: types[column])
                 }
-                try CanonicalBindingStorage.append(value, to: &selected, reservation: claim)
+                try CanonicalBindingStorage.append(value, to: &$selected, reservation: claim)
             }
-            try CanonicalBindingStorage.append(selected, to: &valueBindings, reservation: claim)
+            try CanonicalBindingStorage.append(selected, to: &$valueBindings, reservation: claim)
         }
         // Explicit optional elements avoid Swift's implicit array runtime cast, unavailable in Embedded.
         schema = try CanonicalRelationSchema(unscopedColumns: (0..<width).map { "column\($0 + 1)" },
@@ -10865,13 +10855,13 @@ extension DatabaseContext {
         let storage = try workMeter.reserveIntermediate(bytes: 256, at: .bindingCandidate)
         let traversal = try workMeter.reserveIntermediate(bytes: UInt64(MemoryLayout<[Visit]>.stride), at: .bindingCandidate)
         defer { traversal.release() }
-        var pending: [Visit] = []
+        @AdmittedArray var pending: [Visit] = []
         var leases: [DatabaseQueryPayloadLease] = [DatabaseQueryPayloadLease(retaining: storage)]
         var visitedPlans = Set<ObjectIdentifier>()
         var visitedSources = Set<ObjectIdentifier>()
         func push(_ visit: Visit) throws {
             try workMeter.checkpoint(at: .bindingCandidate)
-            try CanonicalBindingStorage.append(visit, to: &pending, reservation: traversal)
+            try CanonicalBindingStorage.append(visit, to: &$pending, reservation: traversal)
         }
         func keep(_ lease: DatabaseQueryPayloadLease?) throws {
             if let lease {
@@ -11430,10 +11420,10 @@ extension DatabaseContext {
                 throw CanonicalReadError.unsupportedSelectQuery("Set operation row differs from its admitted schema")
             }
             let claim = try workMeter.reserveIntermediate(bytes: 256, at: .bindingCandidate)
-            var values: [QueryValue] = []
-            var leases: [DatabaseQueryPayloadLease] = []
-            for lease in row.payloadLeases { try CanonicalBindingStorage.append(lease, to: &leases, reservation: claim) }
-            try CanonicalBindingStorage.append(relation.rows.payloadLease, to: &leases, reservation: claim)
+            @AdmittedArray var values: [QueryValue] = []
+            @AdmittedArray var leases: [DatabaseQueryPayloadLease] = []
+            for lease in row.payloadLeases { try CanonicalBindingStorage.append(lease, to: &$leases, reservation: claim) }
+            try CanonicalBindingStorage.append(relation.rows.payloadLease, to: &$leases, reservation: claim)
             for ordinal in sourceSlots.indices {
                 let sourceSlot = sourceSlots[ordinal]
                 guard row.values.indices.contains(sourceSlot),
@@ -11444,10 +11434,10 @@ extension DatabaseContext {
                 let converted = try CanonicalSQLScalarCast.alignSource(row.values[sourceSlot], from: sourceType, to: targetType,
                     temporalEnvironment: temporalEnvironment ?? inheritedSQLTemporalEnvironment,
                     workMeter: workMeter, limits: Self.selectedValueLimits(context: nil, meter: workMeter))
-                try CanonicalBindingStorage.append(converted.value, to: &values, reservation: claim)
-                if let lease = converted.lease { try CanonicalBindingStorage.append(lease, to: &leases, reservation: claim) }
+                try CanonicalBindingStorage.append(converted.value, to: &$values, reservation: claim)
+                if let lease = converted.lease { try CanonicalBindingStorage.append(lease, to: &$leases, reservation: claim) }
             }
-            try CanonicalBindingStorage.append(DatabaseQueryPayloadLease(retaining: claim), to: &leases, reservation: claim)
+            try CanonicalBindingStorage.append(DatabaseQueryPayloadLease(retaining: claim), to: &$leases, reservation: claim)
             let selected = CanonicalSourceRow(values: values, layout: outputLayout,
                 annotations: row.annotations, version: row.version, payloadLeases: leases)
             try aligned.append(footprint: CanonicalRelationalFootprintMeter.sourceAliasFootprint(of: selected,
@@ -11891,7 +11881,7 @@ extension DatabaseContext {
         let claim = try meter.reserveIntermediate(bytes: 512, at: .bindingCandidate)
         defer { claim.release() }
         var requirements: [ObjectIdentifier: Set<Int>] = [:]
-        var sources: [CanonicalSourceBindingPlan] = []
+        @AdmittedArray var sources: [CanonicalSourceBindingPlan] = []
         var visited = Set<ObjectIdentifier>()
         func require(_ slot: Int, frames: [CanonicalSourceLayout]) throws {
             var offset = slot
@@ -11921,7 +11911,7 @@ extension DatabaseContext {
         }
         func source(_ value: CanonicalSourceBindingPlan) throws {
             if value.statementRelation != nil { throw SQLViewExecutionError.invalidDefinition("A durable view cannot retain a statement-private relation") }
-            try CanonicalBindingStorage.append(value, to: &sources, reservation: claim)
+            try CanonicalBindingStorage.append(value, to: &$sources, reservation: claim)
             if let condition = value.condition { try expression(condition, frames: value.bindingFrames) }
             if case .join(let join) = value.source, value.children.count == 2 {
                 let names: [String]
@@ -11985,7 +11975,7 @@ extension DatabaseContext {
                 }
             }
         }
-        var bindings: [SQLViewSourceBinding] = []
+        @AdmittedArray var bindings: [SQLViewSourceBinding] = []
         guard let resolution = scope.execution.sqlResolution else { throw DatabaseTransactionError.invalidOperationContext }
         for source in sources {
             guard case .table(let table) = source.source,
@@ -12033,7 +12023,7 @@ extension DatabaseContext {
                     relationID: relationID, columns: allColumns.filter { ids.contains(SQLCatalogName($0.id)) })
             } else {
                 try CanonicalBindingStorage.append(SQLViewSourceBinding(kind: kind, schema: table.schema, table: table.table,
-                    relationID: relationID, columns: columns), to: &bindings, reservation: claim)
+                    relationID: relationID, columns: columns), to: &$bindings, reservation: claim)
             }
         }
         let columns = try selected.columns.enumerated().map { ordinal, column in

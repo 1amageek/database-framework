@@ -222,11 +222,11 @@ package enum CanonicalRelationalFootprintMeter {
     ) throws -> DatabaseIntermediateFootprint {
         var bytes = try adding(rowHeaderByteCount,
             DatabaseIntermediateFootprint(bytes: UInt64(MemoryLayout<QueryValue>.stride))
-                .multiplied(by: UInt64(values.capacity)).bytes)
+                .multiplied(by: UInt64(values.count)).bytes)
         bytes = try adding(bytes, UInt64(MemoryLayout<[String: FieldValue]>.stride))
         bytes = try adding(bytes, DatabaseIntermediateFootprint(
             bytes: UInt64(MemoryLayout<String>.stride + MemoryLayout<FieldValue>.stride + 32))
-            .multiplied(by: UInt64(annotations.capacity)).bytes)
+            .multiplied(by: UInt64(annotations.count)).bytes)
         for name in annotations.keys { bytes = try adding(bytes, UInt64(name.utf8.count)) }
         bytes = try adding(bytes, DatabaseIntermediateCollectionMeter.arrayFootprint(
             count: payloadLeaseCount, element: DatabaseQueryPayloadLease.self).bytes)
@@ -243,11 +243,7 @@ package enum CanonicalRelationalFootprintMeter {
             if growth.additionalByteCount > 0 {
                 try scratch.reserveAdditional(bytes: growth.additionalByteCount, at: stage)
                 stack.reserveCapacity(growth.capacity)
-                if stack.capacity > growth.capacity {
-                    try scratch.reserveAdditional(bytes: try DatabaseIntermediateFootprint(bytes: layout.elementCapacitySlotByteCount)
-                        .multiplied(by: UInt64(stack.capacity - growth.capacity)).bytes, at: stage)
-                }
-                capacity = stack.capacity
+                capacity = growth.capacity
             }
             stack.append(visit)
         }

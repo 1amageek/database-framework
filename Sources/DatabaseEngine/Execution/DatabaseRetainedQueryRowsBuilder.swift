@@ -38,7 +38,7 @@ public struct DatabaseRetainedQueryRowsBuilder: ~Copyable {
         if schemaLeases.isEmpty {
             var footprint = try DatabaseIntermediateFootprint(
                 bytes: UInt64(MemoryLayout<QueryColumn>.stride)
-            ).multiplied(by: UInt64(columns.capacity))
+            ).multiplied(by: UInt64(columns.count))
             footprint = try footprint.adding(DatabaseIntermediateFootprint(
                 bytes: UInt64(MemoryLayout<[QueryColumn]>.stride) + 64
             ))

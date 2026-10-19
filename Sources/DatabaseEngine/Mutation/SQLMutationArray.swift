@@ -20,12 +20,6 @@ struct SQLMutationArray<Element: Sendable>: Sendable {
         if growth.capacity != capacity {
             elements.reserveCapacity(growth.capacity)
             capacity = growth.capacity
-            if elements.capacity > capacity {
-                let extra = try DatabaseIntermediateFootprint(bytes: layout.elementCapacitySlotByteCount)
-                    .multiplied(by: UInt64(elements.capacity - capacity))
-                try reservation.reserveAdditional(bytes: extra.bytes, at: .mutationPlanning)
-                capacity = elements.capacity
-            }
         }
         elements.append(element)
     }

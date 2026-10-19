@@ -891,12 +891,6 @@ public struct CompositionQueryPlanner: Sendable {
             )
             var contributors: [Base.ID] = []
             contributors.reserveCapacity(growth.capacity)
-            if contributors.capacity > growth.capacity {
-                let extra = try DatabaseIntermediateFootprint(
-                    bytes: layout.elementCapacitySlotByteCount
-                ).multiplied(by: UInt64(contributors.capacity - growth.capacity))
-                try originReservation.reserveAdditional(bytes: extra.bytes, at: .resultMaterialization)
-            }
             if plan.leftBaseID < plan.rightBaseID {
                 contributors.append(plan.leftBaseID)
                 contributors.append(plan.rightBaseID)

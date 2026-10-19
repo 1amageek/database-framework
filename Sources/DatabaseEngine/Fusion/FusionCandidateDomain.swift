@@ -673,7 +673,7 @@ package struct FusionCandidateDomain: Sendable {
     private static func admitColumns(_ columns: [QueryColumn], workMeter: DatabaseWorkMeter,
                                      stage: DatabaseWorkStage) throws -> DatabaseIntermediateReservation {
         var bytes = try DatabaseIntermediateFootprint(bytes: UInt64(MemoryLayout<QueryColumn>.stride))
-            .multiplied(by: UInt64(columns.capacity))
+            .multiplied(by: UInt64(columns.count))
             .adding(DatabaseIntermediateFootprint(bytes: 64 + UInt64(MemoryLayout<[QueryColumn]>.stride)))
         for column in columns { bytes = try bytes.adding(DatabaseIntermediateFootprint(bytes: UInt64(column.name.utf8.count))) }
         return try workMeter.reserveIntermediate(bytes: bytes.bytes, at: stage)

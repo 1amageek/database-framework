@@ -21,11 +21,11 @@ final class SQLStatementReadScope: Sendable {
     private struct State: Sendable {
         var sealed = false
         var closed = false
-        var snapshots: [SQLStatementSourceSnapshot] = []
-        var relations: [SQLStatementRelation] = []
-        var claims: [DatabaseIntermediateReservation] = []
+        @AdmittedArray var snapshots: [SQLStatementSourceSnapshot] = []
+        @AdmittedArray var relations: [SQLStatementRelation] = []
+        @AdmittedArray var claims: [DatabaseIntermediateReservation] = []
         var mutationOwner: UInt64 = 0
-        var mutationTargets: [MutationClaim] = []
+        @AdmittedArray var mutationTargets: [MutationClaim] = []
     }
     private let state = Mutex(State())
 
@@ -56,7 +56,7 @@ final class SQLStatementReadScope: Sendable {
             guard !state.sealed else { throw SQLStatementReadError.uncapturedSource }
             let value = try SQLStatementSourceSnapshot(table: table, query: query,
                 scopeIdentity: ObjectIdentifier(self), meter: execution.workMeter, sqlResolution: sqlResolution)
-            try CanonicalBindingStorage.append(value, to: &state.snapshots, reservation: reservation)
+            try CanonicalBindingStorage.append(value, to: &state.$snapshots, reservation: reservation)
             return value
         }
     }
@@ -77,7 +77,7 @@ final class SQLStatementReadScope: Sendable {
             guard !state.sealed, !state.relations.contains(where: { CanonicalSourceName.equal($0.name, name) }) else {
                 throw SQLStatementReadError.invalidDeclaration(name)
             }
-            try CanonicalBindingStorage.append(relation, to: &state.relations, reservation: reservation)
+            try CanonicalBindingStorage.append(relation, to: &state.$relations, reservation: reservation)
         }
         return relation
     }
@@ -125,7 +125,7 @@ final class SQLStatementReadScope: Sendable {
     func retain(_ claim: DatabaseIntermediateReservation) throws {
         guard claim.workMeter === execution.workMeter else { throw DatabaseIntermediateReservationError.workMeterMismatch }
         try state.withLock { state in
-            try CanonicalBindingStorage.append(claim, to: &state.claims, reservation: reservation)
+            try CanonicalBindingStorage.append(claim, to: &state.$claims, reservation: reservation)
         }
     }
 
@@ -164,7 +164,7 @@ final class SQLStatementReadScope: Sendable {
                 }
             }
             try CanonicalBindingStorage.append(MutationClaim(key: key, owner: owner, reservation: claim),
-                to: &state.mutationTargets, reservation: reservation)
+                to: &state.$mutationTargets, reservation: reservation)
         }
     }
 

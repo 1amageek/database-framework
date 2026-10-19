@@ -135,12 +135,6 @@ final class CompositionRowLineage: Sendable {
             at: .resultMaterialization)
         var contributors: [Base.ID] = []
         contributors.reserveCapacity(growth.capacity)
-        if contributors.capacity > growth.capacity {
-            try reservation.reserveAdditional(bytes: try DatabaseIntermediateFootprint(
-                bytes: layout.elementCapacitySlotByteCount)
-                .multiplied(by: UInt64(contributors.capacity - growth.capacity)).bytes,
-                at: .resultMaterialization)
-        }
         for index in members.indices where includesMember(index) {
             contributors.append(members[index].baseID)
         }
@@ -152,12 +146,6 @@ final class CompositionRowLineage: Sendable {
             ? .source(contributors[0]) : .derived(contributors: contributors)
         var retainedLeases: [DatabaseQueryPayloadLease] = []
         retainedLeases.reserveCapacity(leases.count + 1)
-        if retainedLeases.capacity > leases.count + 1 {
-            try reservation.reserveAdditional(bytes: try DatabaseIntermediateFootprint(
-                bytes: UInt64(MemoryLayout<DatabaseQueryPayloadLease>.stride))
-                .multiplied(by: UInt64(retainedLeases.capacity - leases.count - 1)).bytes,
-                at: .resultMaterialization)
-        }
         retainedLeases.append(contentsOf: leases)
         retainedLeases.append(payloadLease)
         return CompositionQueryRow(row: output, origin: origin, payloadLeases: retainedLeases)

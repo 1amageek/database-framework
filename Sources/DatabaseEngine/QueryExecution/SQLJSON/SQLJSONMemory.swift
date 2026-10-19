@@ -19,24 +19,13 @@ final class SQLJSONMemory {
         try reservation.reserveAdditional(bytes: count, at: .expressionEvaluation)
     }
 
-    func prepare<T>(_ array: inout [T], adding count: Int = 1) throws {
-        let next = array.count.addingReportingOverflow(count)
-        guard count >= 0, !next.overflow else { throw QueryValueError.arithmeticOverflow }
-        guard next.partialValue > array.capacity else { return }
-        let layout = try DatabaseRetainedArrayLayout.forElement(T.self)
-        let growth = try layout.growth(from: array.capacity, toFit: next.partialValue)
-        let previous = array.capacity
-        let prospective = previous == 0 ? try Self.add(growth.additionalByteCount, layout.containerByteCount) : growth.additionalByteCount
-        try bytes(prospective)
-        array.reserveCapacity(growth.capacity)
-        if array.capacity > growth.capacity {
-            try bytes(try Self.product(array.capacity - growth.capacity, max(1, MemoryLayout<T>.stride)))
-        }
+    func prepare<T>(_ array: inout AdmittedArray<T>, adding count: Int = 1) throws {
+        try array.admit(adding: count, layout: DatabaseRetainedArrayLayout.forElement(T.self)) { try bytes($0) }
     }
 
-    func append<T>(_ value: T, to array: inout [T]) throws {
+    func append<T>(_ value: T, to array: inout AdmittedArray<T>) throws {
         try prepare(&array)
-        array.append(value)
+        array.wrappedValue.append(value)
     }
 
     static func product(_ count: Int, _ stride: Int) throws -> UInt64 {

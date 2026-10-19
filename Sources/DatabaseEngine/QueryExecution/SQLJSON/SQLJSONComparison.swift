@@ -16,8 +16,8 @@ enum SQLJSONComparison {
 
     static func compare(_ left: QueryJSONBNode, _ right: QueryJSONBNode,
         memory: SQLJSONMemory) throws -> QueryComparison {
-        var visits: [Visit] = []
-        try memory.append(.pair(left, right, true), to: &visits)
+        @AdmittedArray var visits: [Visit] = []
+        try memory.append(.pair(left, right, true), to: &$visits)
         while let visit = visits.popLast() {
             try memory.work()
             switch visit {
@@ -34,20 +34,20 @@ enum SQLJSONComparison {
                     if a.value != b.value { return a.value < b.value ? .lessThan : .greaterThan }
                 case (.array(let a), .array(let b)):
                     if a.count != b.count { return a.count < b.count ? .lessThan : .greaterThan }
-                    if !a.isEmpty { try memory.append(.arrays(a, b, 0), to: &visits) }
+                    if !a.isEmpty { try memory.append(.arrays(a, b, 0), to: &$visits) }
                 case (.object(let a), .object(let b)):
                     if a.count != b.count { return a.count < b.count ? .lessThan : .greaterThan }
-                    if !a.isEmpty { try memory.append(.objects(a, b, 0), to: &visits) }
+                    if !a.isEmpty { try memory.append(.objects(a, b, 0), to: &$visits) }
                 default: throw SQLJSONMemory.failure("JSONB comparison kinds")
                 }
             case .arrays(let a, let b, let index):
-                if index + 1 < a.count { try memory.append(.arrays(a, b, index + 1), to: &visits) }
-                try memory.append(.pair(a[index], b[index], false), to: &visits)
+                if index + 1 < a.count { try memory.append(.arrays(a, b, index + 1), to: &$visits) }
+                try memory.append(.pair(a[index], b[index], false), to: &$visits)
             case .objects(let a, let b, let index):
                 let result = try strings(a[index].key, b[index].key, memory: memory)
                 if result != .equal { return result }
-                if index + 1 < a.count { try memory.append(.objects(a, b, index + 1), to: &visits) }
-                try memory.append(.pair(a[index].value, b[index].value, false), to: &visits)
+                if index + 1 < a.count { try memory.append(.objects(a, b, index + 1), to: &$visits) }
+                try memory.append(.pair(a[index].value, b[index].value, false), to: &$visits)
             }
         }
         return .equal
@@ -55,8 +55,9 @@ enum SQLJSONComparison {
 
     static func contains(_ left: QueryJSONBNode, _ right: QueryJSONBNode,
         memory: SQLJSONMemory) throws -> Bool {
-        var visits: [Containment] = [], results: [Bool] = []
-        try memory.append(.pair(left, right), to: &visits)
+        @AdmittedArray var visits: [Containment] = []
+        @AdmittedArray var results: [Bool] = []
+        try memory.append(.pair(left, right), to: &$visits)
         while let visit = visits.popLast() {
             try memory.work()
             switch visit {
@@ -66,11 +67,11 @@ enum SQLJSONComparison {
                 var result = all
                 for value in results.suffix(count) { try memory.work(); result = all ? result && value : result || value }
                 results.removeLast(count)
-                try memory.append(result, to: &results)
+                try memory.append(result, to: &$results)
             case .pair(let left, let right):
                 switch (left, right) {
                 case (.object(let a), .object(let b)):
-                    var pairs: [(QueryJSONBNode, QueryJSONBNode)] = []
+                    @AdmittedArray var pairs: [(QueryJSONBNode, QueryJSONBNode)] = []
                     var missing = false
                     for member in b {
                         var found: QueryJSONBNode?
@@ -78,24 +79,24 @@ enum SQLJSONComparison {
                             if try strings(member.key, candidate.key, memory: memory) == .equal { found = candidate.value; break }
                         }
                         guard let found else { missing = true; break }
-                        try memory.append((found, member.value), to: &pairs)
+                        try memory.append((found, member.value), to: &$pairs)
                     }
-                    if missing { try memory.append(false, to: &results) }
+                    if missing { try memory.append(false, to: &$results) }
                     else {
-                        try memory.append(.all(pairs.count), to: &visits)
-                        for pair in pairs.reversed() { try memory.append(.pair(pair.0, pair.1), to: &visits) }
+                        try memory.append(.all(pairs.count), to: &$visits)
+                        for pair in pairs.reversed() { try memory.append(.pair(pair.0, pair.1), to: &$visits) }
                     }
                 case (.array(let a), .array(let b)):
-                    try memory.append(.all(b.count), to: &visits)
+                    try memory.append(.all(b.count), to: &$visits)
                     for child in b.reversed() {
-                        var eligible: [QueryJSONBNode] = []
+                        @AdmittedArray var eligible: [QueryJSONBNode] = []
                         for candidate in a {
                             try memory.work()
                             if scalar(child) && !scalar(candidate) { continue }
-                            try memory.append(candidate, to: &eligible)
+                            try memory.append(candidate, to: &$eligible)
                         }
-                        try memory.append(.any(eligible.count), to: &visits)
-                        for candidate in eligible.reversed() { try memory.append(.pair(candidate, child), to: &visits) }
+                        try memory.append(.any(eligible.count), to: &$visits)
+                        for candidate in eligible.reversed() { try memory.append(.pair(candidate, child), to: &$visits) }
                     }
                 case (.array(let a), _):
                     if scalar(right) {
@@ -103,10 +104,10 @@ enum SQLJSONComparison {
                         for candidate in a where scalar(candidate) {
                             if try compare(candidate, right, memory: memory) == .equal { found = true; break }
                         }
-                        try memory.append(found, to: &results)
-                    } else { try memory.append(false, to: &results) }
+                        try memory.append(found, to: &$results)
+                    } else { try memory.append(false, to: &$results) }
                 default:
-                    try memory.append(try scalar(left) && scalar(right) && compare(left, right, memory: memory) == .equal, to: &results)
+                    try memory.append(try scalar(left) && scalar(right) && compare(left, right, memory: memory) == .equal, to: &$results)
                 }
             }
         }

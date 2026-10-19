@@ -29,9 +29,9 @@ package actor CompositionQueryReadyBuffer {
                 throw CompositionQueryError.workspaceCorrupted
             }
             var footprint = try DatabaseIntermediateCollectionMeter.arrayFootprint(
-                count: value.columns.capacity, element: QueryColumn.self
+                count: value.columns.count, element: QueryColumn.self
             ).adding(DatabaseIntermediateCollectionMeter.arrayFootprint(
-                count: value.composition.bases.capacity, element: Base.ID.self
+                count: value.composition.bases.count, element: Base.ID.self
             ))
             footprint = try footprint.adding(DatabaseIntermediateFootprint(
                 bytes: UInt64(MemoryLayout<CompositionQueryMetadata>.stride)
@@ -55,12 +55,12 @@ package actor CompositionQueryReadyBuffer {
             // snapshot storage. Keep a conservative entry bound after close.
             footprint = try footprint.adding(DatabaseIntermediateFootprint(
                 bytes: UInt64(MemoryLayout<(Base.ID, UInt64)>.stride) + 64
-            ).multiplied(by: UInt64(value.basePlacementGenerations.capacity)))
+            ).multiplied(by: UInt64(value.basePlacementGenerations.count)))
             guard case .federated(let readPoints) = value.consistency else {
                 throw CompositionQueryError.workspaceCorrupted
             }
             footprint = try footprint.adding(DatabaseIntermediateCollectionMeter.arrayFootprint(
-                count: readPoints.capacity, element: DomainReadPoint.self
+                count: readPoints.count, element: DomainReadPoint.self
             ))
             for point in readPoints {
                 footprint = try footprint.adding(DatabaseIntermediateFootprint(
@@ -97,22 +97,9 @@ package actor CompositionQueryReadyBuffer {
             if growth.capacity != accountedCapacity {
                 rows.reserveCapacity(growth.capacity)
                 accountedCapacity = growth.capacity
-                if rows.capacity > accountedCapacity {
-                    let extra = try DatabaseIntermediateFootprint(
-                        bytes: layout.elementCapacitySlotByteCount
-                    ).multiplied(by: UInt64(rows.capacity - accountedCapacity))
-                    try reservation.reserveAdditional(bytes: extra.bytes, at: .resultMaterialization)
-                    accountedCapacity = rows.capacity
-                }
             }
             var retainedLeases: [DatabaseQueryPayloadLease] = []
             retainedLeases.reserveCapacity(leases.count + 1)
-            if retainedLeases.capacity > leases.count + 1 {
-                let extra = try DatabaseIntermediateFootprint(
-                    bytes: UInt64(MemoryLayout<DatabaseQueryPayloadLease>.stride)
-                ).multiplied(by: UInt64(retainedLeases.capacity - leases.count - 1))
-                try reservation.reserveAdditional(bytes: extra.bytes, at: .resultMaterialization)
-            }
             retainedLeases.append(contentsOf: leases)
             retainedLeases.append(DatabaseQueryPayloadLease(retaining: reservation))
             rows.append(CompositionQueryRow(

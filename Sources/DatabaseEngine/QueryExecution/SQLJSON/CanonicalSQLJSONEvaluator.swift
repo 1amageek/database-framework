@@ -16,8 +16,8 @@ enum CanonicalSQLJSONEvaluator {
         switch bound.expression {
         case .collectionOperation(let operation, _, _):
             guard operands.count == 2 else { throw SQLJSONMemory.failure("JSON operator arity") }
-            var types: [QueryColumnType] = []
-            for child in bound.children { try memory.append(child.type, to: &types) }
+            @AdmittedArray var types: [QueryColumnType] = []
+            for child in bound.children { try memory.append(child.type, to: &$types) }
             result = try collection(operation, operands: operands, types: types, plan: &plan)
         case .concatenate:
             if operands.contains(where: { $0.isNull }) { return (.primitive(.null), nil) }
@@ -152,18 +152,19 @@ enum CanonicalSQLJSONEvaluator {
         let buildArray = name == "json_build_array" || name == "jsonb_build_array"
         let binary = name.hasPrefix("jsonb_") || name == "to_jsonb"
         if buildObject || buildArray {
-            var values: [QueryValue] = [], types: [QueryColumnType] = []
+            @AdmittedArray var values: [QueryValue] = []
+            @AdmittedArray var types: [QueryColumnType] = []
             for index in operands.indices {
                 if call.finalArrayIsVariadic && index + 1 == operands.count {
                     if operands[index].isNull { return .primitive(.null) }
                     let expanded = try array(operands[index])
                     for value in expanded.elements {
-                        try plan.memory.append(value, to: &values)
-                        try plan.memory.append(.sql(expanded.elementType), to: &types)
+                        try plan.memory.append(value, to: &$values)
+                        try plan.memory.append(.sql(expanded.elementType), to: &$types)
                     }
                 } else {
-                    try plan.memory.append(operands[index], to: &values)
-                    try plan.memory.append(bound.children[index].type, to: &types)
+                    try plan.memory.append(operands[index], to: &$values)
+                    try plan.memory.append(bound.children[index].type, to: &$types)
                 }
             }
             if buildObject && !values.count.isMultiple(of: 2) {
@@ -171,7 +172,7 @@ enum CanonicalSQLJSONEvaluator {
             }
             let root: Int
             if buildObject {
-                var members: [SQLJSONPlan.Member] = []
+                @AdmittedArray var members: [SQLJSONPlan.Member] = []
                 for index in stride(from: 0, to: values.count, by: 2) {
                     guard !values[index].isNull else { throw failure(.nullJSONObjectKey(argument: index + 1)) }
                     switch values[index] {
@@ -189,13 +190,13 @@ enum CanonicalSQLJSONEvaluator {
                     }
                     let member = SQLJSONPlan.Member(key: key, value: try plan.value(values[index + 1], type: types[index + 1], jsonb: binary))
                     if binary, let old = try plan.memberIndex(key, in: members) { members[old] = member }
-                    else { try plan.memory.append(member, to: &members) }
+                    else { try plan.memory.append(member, to: &$members) }
                 }
                 if binary { try plan.sort(&members) }
                 root = try plan.add(.object(members))
             } else {
-                var children: [Int] = []
-                for index in values.indices { try plan.memory.append(try plan.value(values[index], type: types[index], jsonb: binary), to: &children) }
+                @AdmittedArray var children: [Int] = []
+                for index in values.indices { try plan.memory.append(try plan.value(values[index], type: types[index], jsonb: binary), to: &$children) }
                 root = try plan.add(.array(children))
             }
             return binary ? .jsonb(try plan.jsonb(root)) : .json(try plan.json(root, style: .builder))
@@ -229,11 +230,11 @@ enum CanonicalSQLJSONEvaluator {
             return .primitive(.int32(result))
         }
         if name == "json_extract_path" || name == "jsonb_extract_path" || name == "json_extract_path_text" || name == "jsonb_extract_path_text" {
-            var path: [QueryValue] = []
+            @AdmittedArray var path: [QueryValue] = []
             for index in operands.indices.dropFirst() {
                 if call.finalArrayIsVariadic && index + 1 == operands.count {
-                    for cell in try array(operands[index]).elements { try plan.memory.append(cell, to: &path) }
-                } else { try plan.memory.append(operands[index], to: &path) }
+                    for cell in try array(operands[index]).elements { try plan.memory.append(cell, to: &$path) }
+                } else { try plan.memory.append(operands[index], to: &$path) }
             }
             return try extract(operands[0], path: path, text: name.hasSuffix("_text"), plan: &plan)
         }

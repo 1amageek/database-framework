@@ -23,8 +23,8 @@ extension CanonicalSQLJSONEvaluator {
                 default: throw SQLJSONMemory.failure("JSON extraction input")
                 }
             }
-            var path: [QueryValue] = []
-            try plan.memory.append(operands[1], to: &path)
+            @AdmittedArray var path: [QueryValue] = []
+            try plan.memory.append(operands[1], to: &$path)
             return try extract(operands[0], path: path, text: text, plan: &plan, objectOnly: true)
         case .jsonPath, .jsonPathText:
             return try extract(operands[0], path: array(operands[1]).elements, text: operation == .jsonPathText, plan: &plan)

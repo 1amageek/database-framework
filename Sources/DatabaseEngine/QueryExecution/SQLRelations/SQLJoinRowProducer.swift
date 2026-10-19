@@ -189,11 +189,6 @@ actor SQLJoinRowProducer: SQLRelationProducer {
         try reservation.reserveAdditional(bytes: bytes.bytes, at: .joinCandidate)
         hashHeads = Array(repeating: -1, count: capacity)
         hashLinks = Array(repeating: -1, count: owned.count)
-        let headExtra = try DatabaseIntermediateFootprint(bytes: layout.elementCapacitySlotByteCount)
-            .multiplied(by: UInt64(hashHeads.capacity - capacity))
-        let linkExtra = try DatabaseIntermediateFootprint(bytes: layout.elementCapacitySlotByteCount)
-            .multiplied(by: UInt64(hashLinks.capacity - owned.count))
-        try reservation.reserveAdditional(bytes: headExtra.adding(linkExtra).bytes, at: .joinCandidate)
         // Prepending in reverse preserves the original right-input order within each bucket.
         for index in owned.indices.reversed() {
             try meter.consume(at: .joinCandidate)

@@ -11,11 +11,6 @@ enum SQLWindowMemory {
         try reservation.reserveAdditional(bytes: bytes.bytes, at: .expressionEvaluation)
         var result: [Element] = []
         result.reserveCapacity(growth.capacity)
-        if result.capacity > growth.capacity {
-            try reservation.reserveAdditional(bytes: try DatabaseIntermediateFootprint(
-                bytes: layout.elementCapacitySlotByteCount)
-                .multiplied(by: UInt64(result.capacity - growth.capacity)).bytes, at: .expressionEvaluation)
-        }
         return result
     }
 
@@ -28,7 +23,7 @@ enum SQLWindowMemory {
             }
         }
         let leaseLayout = try DatabaseRetainedArrayLayout.forElement(DatabaseQueryPayloadLease.self)
-        let leaseGrowth = try leaseLayout.growth(from: 0, toFit: cell.leases.capacity)
+        let leaseGrowth = try leaseLayout.growth(from: 0, toFit: cell.leases.count)
         try reservation.reserveAdditional(bytes: try DatabaseIntermediateFootprint(bytes: leaseLayout.containerByteCount)
             .adding(.init(bytes: leaseGrowth.additionalByteCount)).bytes, at: .expressionEvaluation)
         if !cell.payloadIsRetained || cell.leases.isEmpty {

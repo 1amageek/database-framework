@@ -30,11 +30,11 @@ extension SQLAggregateEvaluator {
             guard !inputs.isEmpty, !fraction.isNull else { return null }
             guard case .array(let fractions) = fraction,
                   case .sql(.array(let element)) = bound.type else { throw mismatch("percentile fraction array") }
-            var results: [QueryValue] = []
+            @AdmittedArray var results: [QueryValue] = []
             for value in fractions.elements {
                 try await checkpoint(memory.meter)
                 try memory.append(percentile(function, fraction: value, inputs: inputs,
-                    meter: memory.meter).value, to: &results)
+                    meter: memory.meter).value, to: &$results)
             }
             let result = try SQLArrayStorage.makeArray(element: element, rank: fractions.dimensions.count,
                 count: fractions.elements.count, meter: memory.meter, limits: limits,

@@ -25,9 +25,9 @@ extension CanonicalBoundKey {
         let layout = try DatabaseRetainedArrayLayout.forElement(ExpressionPair.self)
         let scratch = try workMeter?.reserveIntermediate(bytes: layout.containerByteCount, at: .bindingCandidate)
         defer { scratch?.release() }
-        var pending: [ExpressionPair] = []
+        @AdmittedArray var pending: [ExpressionPair] = []
         try CanonicalBindingStorage.append(ExpressionPair(left: expression, right: other.expression),
-            to: &pending, reservation: scratch)
+            to: &$pending, reservation: scratch)
         while let pair = pending.popLast() {
             try workMeter?.consume(at: .bindingCandidate)
             let left = pair.left, right = pair.right
@@ -47,7 +47,7 @@ extension CanonicalBoundKey {
             guard try Self.sameOperation(left, right, workMeter: workMeter) else { return false }
             for index in left.children.indices.reversed() {
                 try CanonicalBindingStorage.append(ExpressionPair(left: left.children[index], right: right.children[index]),
-                    to: &pending, reservation: scratch)
+                    to: &$pending, reservation: scratch)
             }
         }
         return true
@@ -155,8 +155,8 @@ extension CanonicalBoundKey {
         let layout = try DatabaseRetainedArrayLayout.forElement(Literal.self)
         let scratch = try workMeter?.reserveIntermediate(bytes: layout.containerByteCount, at: .bindingCandidate)
         defer { scratch?.release() }
-        var pending: [Literal] = []
-        try CanonicalBindingStorage.append(literal, to: &pending, reservation: scratch)
+        @AdmittedArray var pending: [Literal] = []
+        try CanonicalBindingStorage.append(literal, to: &$pending, reservation: scratch)
         while let value = pending.popLast() {
             try workMeter?.consume(at: .bindingCandidate)
             switch value {
@@ -178,7 +178,7 @@ extension CanonicalBoundKey {
                     _ = try CanonicalRelationalFootprintMeter.valueFootprint(of: value, workMeter: workMeter, stage: .bindingCandidate)
                 }
             case .array(let values):
-                for value in values { try CanonicalBindingStorage.append(value, to: &pending, reservation: scratch) }
+                for value in values { try CanonicalBindingStorage.append(value, to: &$pending, reservation: scratch) }
             case .rdfTerm(let term):
                 if let workMeter {
                     _ = try CanonicalRelationalFootprintMeter.valueFootprint(of: .rdfTerm(term), workMeter: workMeter, stage: .bindingCandidate)

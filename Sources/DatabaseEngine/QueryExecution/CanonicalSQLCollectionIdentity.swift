@@ -62,15 +62,13 @@ struct CanonicalSQLCollectionIdentity: Sendable, Hashable {
             at: .expressionEvaluation)
         defer { reservation.release() }
         var pending: [Cell] = []
+        var admittedPending = 0
         func append(_ value: QueryValue, _ type: QueryColumnType) throws {
-            let growth = try layout.growth(from: pending.capacity, toFit: pending.count + 1)
-            if growth.capacity > pending.capacity {
+            let growth = try layout.growth(from: admittedPending, toFit: pending.count + 1)
+            if growth.capacity > admittedPending {
                 try reservation.reserveAdditional(bytes: growth.additionalByteCount, at: .expressionEvaluation)
                 pending.reserveCapacity(growth.capacity)
-                if pending.capacity > growth.capacity {
-                    try reservation.reserveAdditional(bytes: try DatabaseIntermediateFootprint(bytes: layout.elementCapacitySlotByteCount)
-                        .multiplied(by: UInt64(pending.capacity - growth.capacity)).bytes, at: .expressionEvaluation)
-                }
+                admittedPending = growth.capacity
             }
             pending.append(Cell(value: value, type: type))
         }
@@ -179,11 +177,7 @@ struct CanonicalSQLCollectionIdentity: Sendable, Hashable {
             if growth.capacity > capacity {
                 try reservation.reserveAdditional(bytes: growth.additionalByteCount, at: .expressionEvaluation)
                 stack.reserveCapacity(growth.capacity)
-                if stack.capacity > growth.capacity {
-                    try reservation.reserveAdditional(bytes: try DatabaseIntermediateFootprint(bytes: layout.elementCapacitySlotByteCount)
-                        .multiplied(by: UInt64(stack.capacity - growth.capacity)).bytes, at: .expressionEvaluation)
-                }
-                capacity = stack.capacity
+                capacity = growth.capacity
             }
             stack.append(visit)
         }
