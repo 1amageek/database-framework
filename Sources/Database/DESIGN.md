@@ -231,11 +231,22 @@ The user-approved [S03-C12 verification schedule](../../../database-kit/Sources/
 places graph-enabled Database standard WASM/Embedded compile/link/runtime in
 S18. `OccurrenceRewrite` and `InliningStructureMeter` use the common Mutex
 storage and Native behavior tests; their graph-enabled portable runtime path
-remains unverified until that lane passes. Two stopped GraphIndex builds
-executed zero runtime cases and are not passing evidence. The pinned release
-compiler concentrated in async-variable debug-information propagation even
-with debug information disabled; a separately identified debug-pass option is
-only a diagnostic candidate, not accepted runtime evidence.
+remains unverified until that lane passes. Stopped GraphIndex builds executed
+zero runtime cases and are not passing evidence.
+
+The Embedded stall is a Swift compiler defect, not a Framework defect. The
+`sil-moved-async-var-dbginfo-propagator` pass compares dataflow states with
+`memcmp`, so two `undef` representatives of one variable never compare equal
+and circulate around a loop forever. In GraphIndex this occurs in
+`SPARQLQueryExecutor.evaluateValuesPattern`, whose loop consumes a
+`~Copyable` append admission and a binding around an `await`. The fix is
+swiftlang/swift#93133 (main `c5b10c22`, 2026-10-09); Swift 6.4.0, 6.4.1 and
+the 2026-10-17 6.4.x snapshot do not contain it. With the 2026-10-17 main
+snapshot and matching Wasm SDK, the graph-enabled Embedded build of the same
+source completes. That build is diagnostic evidence for the cause only; the
+Embedded runtime evidence for this lane requires a pinned 6.4.x release that
+contains the fix. Standard WASM builds the graph-enabled product with 6.4.0.
+Disabling the pass by option is not accepted runtime evidence.
 
 Changes to SQL/SPARQL entry contracts require rechecking DatabaseEngine's
 session design and GraphIndex's transaction-bound executor evidence. Changes
