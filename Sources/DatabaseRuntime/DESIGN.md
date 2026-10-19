@@ -37,3 +37,11 @@ candidate cloning and is never replaced with a synthesized allow policy.
 Schema-driven native and portable DDL tests exercise provider construction.
 Changes must preserve initial/restored runtime equality and explicit policy
 behavior in candidate generations.
+
+### SQL policy composition
+
+All `configuration` overloads forward the optional nonthrowing
+`sqlAuthorizationPolicyFactory` with physical entity, namespace and relation
+name inputs to [Configuration](../DatabaseEngine/Configuration/DESIGN.md#logical-sql-authorization).
+Composition preserves it across schema-driven reconstruction and does not
+resolve logical names, infer ownership, or supply an allow fallback.

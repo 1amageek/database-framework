@@ -7,9 +7,10 @@ protocol SQLRelationProducer: Sendable {
     func close() async throws
 }
 
-struct SQLRelationCleanupError: Error, Sendable {
-    let operationError: any Error
-    let cleanupError: any Error
+@_spi(DatabaseExecution)
+public struct SQLRelationCleanupError: Error, Sendable {
+    public let operationError: any Error
+    public let cleanupError: any Error
 }
 
 /// Serializes suspension across actor reentrancy without holding a memory lock.

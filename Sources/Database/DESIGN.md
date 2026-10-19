@@ -502,3 +502,51 @@ multibyte/CRLF/batch source positions, original constraint identity after rollba
 syntax/unsupported/resource classification and unchanged semantic error behavior.
 Standard and Embedded source graphs retain the same immutable parsed input and
 Engine isolation contracts; target proof remains local to the exact graph run.
+
+
+## S17 Encoded SQL Response Entry
+
+The Database facade adapts text/source diagnostics and semantic declarations to
+SQLBlock's [complete response projection](../DatabaseEngine/SQLBlock/DESIGN.md#s17-complete-response-projection).
+It owns no codec, frame allocation, transaction or publication policy.
+
+The execution SPI adds these exact overloads, each returning SQLEncodedResponse:
+
+```swift
+@_spi(DatabaseExecution)
+public func executeEncodedSQLBlock(_ sql: String,
+    parameters: [QueryParameter] = [], options: SQLBlockExecutionOptions,
+    encoder: any SQLBlockResponseEncoder) async throws -> SQLEncodedResponse
+
+@_spi(DatabaseExecution)
+public func executeEncodedSQLBlock(_ block: SQLBlock,
+    parameters: [QueryParameter] = [], options: SQLBlockExecutionOptions,
+    encoder: any SQLBlockResponseEncoder) async throws -> SQLEncodedResponse
+
+@_spi(DatabaseExecution)
+public func executeEncodedStatement(_ statement: QueryStatement,
+    parameters: [QueryParameter] = [], options: SQLBlockExecutionOptions,
+    encoder: any SQLBlockResponseEncoder) async throws -> SQLEncodedResponse
+```
+
+Text parsing shares the exact request meter/deadline with Engine and passes the
+existing occurrence roots and failure-position tracker. Its errors retain the
+same original cause and one-based source mapping in SQLExecutionFailure.
+An already-classified SQLExecutionFailure passes through every encoded entry
+unchanged, preserving its native underlying cause and owner-provided diagnostic.
+Semantic encoded entries classify the original cause without inventing a
+source position. Direct cancellation remains inspectable as the underlying
+cause; mandatory-cleanup composites are not flattened. Encoder and work-limit
+failures remain errors and cannot commit or become a success frame.
+
+```text
+text -> bounded parser/source map --+
+semantic statement -> one-step block+-> one SQLBlock projection
+semantic block -------------------+       -> authoritative close -> ready owner
+                                           -> Server/host final promotion
+```
+
+The existing public native SQLBlockResult / SQLStatementResult overloads are
+unchanged. SPI options continue to require checkpoint limits; Server or the
+application selects its immutable execution policy and supplies an encoder.
+Endpoint routing and Wire request/response declarations remain external owners.

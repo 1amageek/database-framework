@@ -23,12 +23,49 @@ public struct SQLBlockExecutor: Sendable {
             workMeter: meter, executionDeadline: deadline)
     }
 
+    public func executeEncoded(_ block: SQLBlock, parameters: [QueryParameter] = [],
+        options: SQLBlockExecutionOptions, encoder: any SQLBlockResponseEncoder) async throws -> SQLEncodedResponse {
+        let clock = context.container.monotonicClock
+        let deadline = TransactionExecutionDeadline(
+            instant: clock.now.advanced(by: .milliseconds(Int64(options.budget.timeoutMilliseconds))),
+            timeoutMilliseconds: options.budget.timeoutMilliseconds)
+        let meter = DatabaseWorkMeter(budget: options.budget, monotonicClock: clock)
+        return try await executeEncoded(block, parameters: parameters, options: options,
+            workMeter: meter, executionDeadline: deadline, encoder: encoder)
+    }
+
     package func execute(
         _ block: SQLBlock, parameters: [QueryParameter] = [], options: SQLBlockExecutionOptions,
         workMeter meter: DatabaseWorkMeter, executionDeadline deadline: TransactionExecutionDeadline,
         occurrences: QueryOccurrenceArena? = nil, occurrence: QueryOccurrenceID? = nil,
         occurrenceRoots: [QueryOccurrenceID?]? = nil, failurePosition: SQLBlockFailurePosition? = nil
     ) async throws -> SQLBlockResult {
+        let boxed = try await executeCollecting(block, parameters: parameters, options: options,
+            workMeter: meter, executionDeadline: deadline, occurrences: occurrences, occurrence: occurrence,
+            occurrenceRoots: occurrenceRoots, failurePosition: failurePosition, encoder: nil)
+        return try Ready(boxed.take()).promoteToOutput()
+    }
+
+    package func executeEncoded(
+        _ block: SQLBlock, parameters: [QueryParameter] = [], options: SQLBlockExecutionOptions,
+        workMeter meter: DatabaseWorkMeter, executionDeadline deadline: TransactionExecutionDeadline,
+        occurrences: QueryOccurrenceArena? = nil, occurrence: QueryOccurrenceID? = nil,
+        occurrenceRoots: [QueryOccurrenceID?]? = nil, failurePosition: SQLBlockFailurePosition? = nil,
+        encoder: any SQLBlockResponseEncoder
+    ) async throws -> SQLEncodedResponse {
+        let boxed = try await executeCollecting(block, parameters: parameters, options: options,
+            workMeter: meter, executionDeadline: deadline, occurrences: occurrences, occurrence: occurrence,
+            occurrenceRoots: occurrenceRoots, failurePosition: failurePosition, encoder: encoder)
+        return try Ready(boxed.take()).promoteToEncodedOutput()
+    }
+
+    private func executeCollecting(
+        _ block: SQLBlock, parameters: [QueryParameter] = [], options: SQLBlockExecutionOptions,
+        workMeter meter: DatabaseWorkMeter, executionDeadline deadline: TransactionExecutionDeadline,
+        occurrences: QueryOccurrenceArena? = nil, occurrence: QueryOccurrenceID? = nil,
+        occurrenceRoots: [QueryOccurrenceID?]? = nil, failurePosition: SQLBlockFailurePosition? = nil,
+        encoder: (any SQLBlockResponseEncoder)?
+    ) async throws -> DatabaseReadResultBox<Collecting> {
         if let roots = occurrenceRoots {
             guard occurrences != nil, occurrence == nil, roots.count == block.steps.count else {
                 throw SQLBlockExecutionError.unsupportedStatement
@@ -41,18 +78,18 @@ public struct SQLBlockExecutor: Sendable {
         let boxed = try await context.withDataOperation {
             try await context.withSQLTemporalStatement(environment: temporal) {
                 try await executeAdmitted(block, parameters: parameters, options: options,
-                    workMeter: meter, deadline: deadline, occurrences: occurrences, occurrence: occurrence, occurrenceRoots: occurrenceRoots, failurePosition: failurePosition)
+                    workMeter: meter, deadline: deadline, occurrences: occurrences, occurrence: occurrence, occurrenceRoots: occurrenceRoots, failurePosition: failurePosition, encoder: encoder)
             }
         }
         try meter.checkpoint(at: .resultMaterialization)
-        let ready = Ready(boxed.take())
-        return try ready.promoteToOutput()
+        return boxed
     }
 
     private func executeAdmitted(
         _ block: SQLBlock, parameters: [QueryParameter], options: SQLBlockExecutionOptions,
         workMeter meter: DatabaseWorkMeter, deadline: TransactionExecutionDeadline,
-        occurrences: QueryOccurrenceArena?, occurrence: QueryOccurrenceID?, occurrenceRoots: [QueryOccurrenceID?]?, failurePosition: SQLBlockFailurePosition?
+        occurrences: QueryOccurrenceArena?, occurrence: QueryOccurrenceID?, occurrenceRoots: [QueryOccurrenceID?]?, failurePosition: SQLBlockFailurePosition?,
+        encoder: (any SQLBlockResponseEncoder)?
     ) async throws -> DatabaseReadResultBox<Collecting> {
         let clock = context.container.monotonicClock
         try QueryStructuralValidator.validate(block, parameters: parameters, limits: options.structuralLimits)
@@ -81,7 +118,7 @@ public struct SQLBlockExecutor: Sendable {
                                 await mutations.beginAttempt()
                                 let collecting = try await collect(block, parameters: parameters, options: options,
                                     binder: binder, transaction: transaction, timeline: timeline, workMeter: meter, ddlRequest: ddlRequest,
-                                    occurrences: occurrences, occurrence: occurrence, occurrenceRoots: occurrenceRoots, failurePosition: failurePosition)
+                                    occurrences: occurrences, occurrence: occurrence, occurrenceRoots: occurrenceRoots, failurePosition: failurePosition, encoder: encoder)
                                 let boxed = DatabaseReadResultBox(consume collecting)
                                 if case .transaction(.rollback) = block.steps.last {
                                     throw RollbackDemand(result: boxed)
@@ -123,15 +160,19 @@ public struct SQLBlockExecutor: Sendable {
         _ block: SQLBlock, parameters: [QueryParameter], options: SQLBlockExecutionOptions,
         binder: QueryParameterBinder, transaction: DatabaseTransaction,
         timeline: SQLBlockStatementTimeline, workMeter: DatabaseWorkMeter, ddlRequest: SQLDDLRequest,
-        occurrences: QueryOccurrenceArena?, occurrence: QueryOccurrenceID?, occurrenceRoots: [QueryOccurrenceID?]?, failurePosition: SQLBlockFailurePosition?
+        occurrences: QueryOccurrenceArena?, occurrence: QueryOccurrenceID?, occurrenceRoots: [QueryOccurrenceID?]?, failurePosition: SQLBlockFailurePosition?,
+        encoder: (any SQLBlockResponseEncoder)?
     ) async throws -> Collecting {
         var results = try DatabaseRetainedArrayBuilder<SQLBlockStatementOutcome>(workMeter: workMeter,
             stage: .resultMaterialization,
             layout: try DatabaseRetainedArrayLayout.forElement(SQLBlockStatementOutcome.self),
             expectedCount: block.steps.count)
-        let outputFootprint = try DatabaseIntermediateCollectionMeter.arrayFootprint(
-            count: block.steps.count, element: SQLStatementResult.self)
-        let outputClaim = try workMeter.reserveIntermediate(bytes: outputFootprint.bytes, at: .resultMaterialization)
+        let outputClaim: DatabaseIntermediateReservation?
+        if encoder == nil {
+            let outputFootprint = try DatabaseIntermediateCollectionMeter.arrayFootprint(
+                count: block.steps.count, element: SQLStatementResult.self)
+            outputClaim = try workMeter.reserveIntermediate(bytes: outputFootprint.bytes, at: .resultMaterialization)
+        } else { outputClaim = nil }
         let checkpointFootprint = try DatabaseIntermediateCollectionMeter.arrayFootprint(
             count: block.steps.count, element: NamedCheckpoint.self)
         let checkpointClaim = try workMeter.reserveIntermediate(bytes: checkpointFootprint.bytes, at: .mutationPlanning)
@@ -314,7 +355,11 @@ public struct SQLBlockExecutor: Sendable {
         }
         try await SQLDDLExecutor(context: context, transaction: transaction, options: options, workMeter: workMeter,
             parameters: parameters, request: ddlRequest).cleanupTemporaryObjects(step: block.steps.count)
-        return Collecting(statements: results.finish(), outputClaim: outputClaim)
+        let output = SQLBlockOutputView(statements: results.finish())
+        let encoded: SQLEncodedPayload?
+        if let encoder { encoded = try SQLEncodedPayload.encode(output, encoder: encoder, workMeter: workMeter) }
+        else { encoded = nil }
+        return Collecting(output: consume output, outputClaim: outputClaim, encoded: encoded)
     }
 
     private func execute(
@@ -723,21 +768,27 @@ public struct SQLBlockExecutor: Sendable {
 
 
     private struct Collecting: ~Copyable, Sendable {
-        let statements: DatabaseRetainedBuffer<SQLBlockStatementOutcome>
-        let outputClaim: DatabaseIntermediateReservation
+        let output: SQLBlockOutputView
+        let outputClaim: DatabaseIntermediateReservation?
+        let encoded: SQLEncodedPayload?
     }
 
     private struct Ready: ~Copyable {
         private let collecting: Collecting
         init(_ collecting: consuming Collecting) { self.collecting = consume collecting }
 
+        consuming func promoteToEncodedOutput() throws -> SQLEncodedResponse {
+            guard let encoded = collecting.encoded else { throw SQLBlockProjectionError.unexpectedOutputMode }
+            return SQLEncodedResponse(encoded)
+        }
+
         consuming func promoteToOutput() throws -> SQLBlockResult {
-            let claim = collecting.outputClaim
+            guard let claim = collecting.outputClaim else { throw SQLBlockProjectionError.unexpectedOutputMode }
             defer { withExtendedLifetime(claim) {} }
             var results: [SQLStatementResult] = []
-            results.reserveCapacity(collecting.statements.count)
-            for index in 0..<collecting.statements.count {
-                try collecting.statements.withElement(at: index) { value in
+            results.reserveCapacity(collecting.output.statements.count)
+            for index in 0..<collecting.output.statements.count {
+                try collecting.output.statements.withElement(at: index) { value in
                     switch value {
                     case .command(let kind, let count): results.append(.command(kind, affectedRows: count))
                     case .copy(let value, let reservation):

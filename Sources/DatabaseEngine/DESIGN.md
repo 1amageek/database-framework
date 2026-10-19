@@ -561,3 +561,13 @@ deadline. No new process-global state or target-specific isolation is introduced
 Native focused and complete affected targets, exact portable runtime cases and
 canonical changed-backend tests reject violations; S18 closes integrated URL and
 production-backend evidence rather than treating a declaration as support.
+
+
+### S17 complete SQL response assumption
+
+[SQLBlock](SQLBlock/DESIGN.md#s17-complete-response-projection) owns synchronous
+precommit projection into one exact metered frame and its concrete post-close
+ready owner. External encoders borrow only noncopyable provisional views;
+Framework imports no Wire implementation. The existing kernel, retry,
+checkpoint and mandatory-close contracts remain authoritative, and no ready
+callback or publication I/O is introduced inside data execution.

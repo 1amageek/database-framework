@@ -14,6 +14,8 @@ public struct DatabaseRuntimeConfiguration: Sendable {
     public let entityRuntimes: EntityRuntimeRegistry
     public let indexConfigurations: [any IndexRuntimeConfiguration]
     private let schemaDrivenAuthorizationPolicyFactory: (@Sendable (Schema.Entity) -> AuthorizationPolicyHandler?)?
+    private let sqlAuthorizationPolicyFactory: (@Sendable (Schema.Entity, SQLNamespace, String) -> AuthorizationPolicyHandler?)?
+    private let sqlOwnedPolicyEntityNames: Set<SQLCatalogName>
     private let schemaDrivenEntityFactory: (@Sendable (Schema.Entity) throws -> EntityRuntimeRegistration)?
     private let indexConfigurationsByName: [String: [any IndexRuntimeConfiguration]]
 
@@ -30,7 +32,8 @@ public struct DatabaseRuntimeConfiguration: Sendable {
         authorizationPolicies: [AuthorizationPolicyHandler] = [],
         indexConfigurations: [any IndexRuntimeConfiguration] = [],
         schemaDrivenEntityFactory: (@Sendable (Schema.Entity) throws -> EntityRuntimeRegistration)? = nil,
-        schemaDrivenAuthorizationPolicyFactory: (@Sendable (Schema.Entity) -> AuthorizationPolicyHandler?)? = nil
+        schemaDrivenAuthorizationPolicyFactory: (@Sendable (Schema.Entity) -> AuthorizationPolicyHandler?)? = nil,
+        sqlAuthorizationPolicyFactory: (@Sendable (Schema.Entity, SQLNamespace, String) -> AuthorizationPolicyHandler?)? = nil
     ) throws(DatabaseRuntimeConfigurationError) {
         try self.init(
             executionIdentity: executionIdentity,
@@ -46,7 +49,8 @@ public struct DatabaseRuntimeConfiguration: Sendable {
             authorizationPolicies: authorizationPolicies,
             indexConfigurations: indexConfigurations,
             schemaDrivenEntityFactory: schemaDrivenEntityFactory,
-            schemaDrivenAuthorizationPolicyFactory: schemaDrivenAuthorizationPolicyFactory
+            schemaDrivenAuthorizationPolicyFactory: schemaDrivenAuthorizationPolicyFactory,
+            sqlAuthorizationPolicyFactory: sqlAuthorizationPolicyFactory
         )
     }
 
@@ -67,7 +71,8 @@ public struct DatabaseRuntimeConfiguration: Sendable {
         authorizationPolicies: [AuthorizationPolicyHandler] = [],
         indexConfigurations: [any IndexRuntimeConfiguration] = [],
         schemaDrivenEntityFactory: (@Sendable (Schema.Entity) throws -> EntityRuntimeRegistration)? = nil,
-        schemaDrivenAuthorizationPolicyFactory: (@Sendable (Schema.Entity) -> AuthorizationPolicyHandler?)? = nil
+        schemaDrivenAuthorizationPolicyFactory: (@Sendable (Schema.Entity) -> AuthorizationPolicyHandler?)? = nil,
+        sqlAuthorizationPolicyFactory: (@Sendable (Schema.Entity, SQLNamespace, String) -> AuthorizationPolicyHandler?)? = nil
     ) throws(DatabaseRuntimeConfigurationError) {
         guard !executionIdentity.identifier.isEmpty,
             executionIdentity.identifier.utf8.count
@@ -80,6 +85,8 @@ public struct DatabaseRuntimeConfiguration: Sendable {
             throw .invalidExecutionIdentityRevision
         }
         self.schemaDrivenAuthorizationPolicyFactory = schemaDrivenAuthorizationPolicyFactory
+        self.sqlAuthorizationPolicyFactory = sqlAuthorizationPolicyFactory
+        self.sqlOwnedPolicyEntityNames = []
         self.schemaDrivenEntityFactory = schemaDrivenEntityFactory
         self.executionIdentity = executionIdentity
         self.indexMaintainerProviders = try IndexMaintainerProviderRegistry(
@@ -156,8 +163,10 @@ public struct DatabaseRuntimeConfiguration: Sendable {
             indexNames: schema.allIndexNames)
     }
 
-    private init(source: Self, registrations: [EntityRuntimeRegistration],
-        addedPolicies: [AuthorizationPolicyHandler], indexNames: Set<String>
+    private init(source: Self, registrations: [EntityRuntimeRegistration]?,
+        addedPolicies: [AuthorizationPolicyHandler], indexNames: Set<String>,
+        authorizationPolicies: AuthorizationPolicyRegistry? = nil,
+        sqlOwnedPolicyEntityNames: Set<SQLCatalogName>? = nil
     ) throws {
         self.executionIdentity = source.executionIdentity
         self.indexMaintainerProviders = source.indexMaintainerProviders
@@ -165,12 +174,47 @@ public struct DatabaseRuntimeConfiguration: Sendable {
         self.fusionReadExecutors = source.fusionReadExecutors
         self.logicalSourceExecutors = source.logicalSourceExecutors
         self.persistableMutationMaintainers = source.persistableMutationMaintainers
-        self.authorizationPolicies = try source.authorizationPolicies.adding(addedPolicies)
-        self.entityRuntimes = try EntityRuntimeRegistry(registrations: registrations)
+        self.authorizationPolicies = try authorizationPolicies ?? source.authorizationPolicies.adding(addedPolicies)
+        self.entityRuntimes = try registrations.map { try EntityRuntimeRegistry(registrations: $0) } ?? source.entityRuntimes
         self.indexConfigurations = source.indexConfigurations.filter { indexNames.contains($0.indexName) }
         self.indexConfigurationsByName = source.indexConfigurationsByName.filter { indexNames.contains($0.key) }
         self.schemaDrivenEntityFactory = source.schemaDrivenEntityFactory
+        self.sqlAuthorizationPolicyFactory = source.sqlAuthorizationPolicyFactory
+        self.sqlOwnedPolicyEntityNames = sqlOwnedPolicyEntityNames ?? source.sqlOwnedPolicyEntityNames
         self.schemaDrivenAuthorizationPolicyFactory = source.schemaDrivenAuthorizationPolicyFactory
+    }
+
+    /// Rebinds SQL-owned policies only from the validated logical catalog.
+    func rebindingSQLAuthorization(to snapshot: SQLCatalogSnapshot, previousSQLOwnedEntityNames: [String] = []) throws -> Self {
+        guard let factory = sqlAuthorizationPolicyFactory else { return self }
+        let ownedNames = Set(snapshot.sqlOwnedEntityNames.map(SQLCatalogName.init))
+        let namespaces = Dictionary(uniqueKeysWithValues: snapshot.catalog.namespaces.map {
+            (SQLCatalogName($0.id), $0)
+        })
+        let materializedNames = Dictionary(uniqueKeysWithValues: snapshot.catalog.materializedViews.map {
+            (SQLCatalogName($0.backingRelationID), $0.name)
+        })
+        var policies: [AuthorizationPolicyHandler] = []
+        for relation in snapshot.catalog.relations where ownedNames.contains(SQLCatalogName(relation.entityName)) {
+            guard let entity = entityRuntimes.registration(named: relation.entityName)?.entity,
+                let namespace = namespaces[SQLCatalogName(relation.namespaceID)] else {
+                throw SQLCatalogBindingError.missingEntity(relation.entityName)
+            }
+            let name = materializedNames[SQLCatalogName(relation.id)] ?? relation.name
+            if let policy = factory(entity, namespace, name) {
+                guard policy.entityName.utf8.elementsEqual(entity.name.utf8) else {
+                    throw DatabaseRuntimeConfigurationError.authorizationPolicyEntityMismatch(
+                        expected: entity.name, actual: policy.entityName)
+                }
+                policies.append(policy)
+            }
+        }
+        let registry = try authorizationPolicies.replacing(
+            entityNames: ownedNames.union(sqlOwnedPolicyEntityNames)
+                .union(previousSQLOwnedEntityNames.map(SQLCatalogName.init)), with: policies)
+        return try Self(source: self, registrations: nil,
+            addedPolicies: [], indexNames: Set(indexConfigurationsByName.keys),
+            authorizationPolicies: registry, sqlOwnedPolicyEntityNames: ownedNames)
     }
 
     /// Returns the deployment policy paired with one declared index in this

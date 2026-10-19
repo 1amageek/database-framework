@@ -46,3 +46,35 @@ Candidate staging tests exercise new contracts, journal restoration and runtime
 selection. Enabled-security CREATE/INSERT and denied-policy integration tests
 must establish policy-factory behavior. Factory changes require rechecking Schema
 candidate admission and native/portable composition call sites.
+
+### Logical SQL authorization
+
+`sqlAuthorizationPolicyFactory: (@Sendable (Schema.Entity, SQLNamespace,
+String) -> AuthorizationPolicyHandler?)?` is an optional immutable input.
+After catalog validation, runtime rebinding removes every handler for the current
+and previous `sqlOwnedEntityNames`, then invokes this factory with each current
+physical entity and its exact logical namespace/public relation name. A materialized
+view uses its visible view name through the validated backing-relation identity;
+ordinary views retain underlying-table invoker authorization. A missing handler
+leaves access denied; an initial physical-name handler never bypasses the logical
+selection. Returned handler entity identity must match exact UTF-8 bytes or fail
+with `authorizationPolicyEntityMismatch`. Validated SQL ownership excludes
+compiled protected entities, so their handlers remain unchanged. An absent SQL
+factory preserves the existing generic/explicit policy behavior.
+
+Rebinding occurs for every finalized catalog, including unchanged physical
+entities after logical table/schema rename and altered contracts. It produces a
+new runtime and security delegate before staging or publication; previous leases
+retain their original generation. The Schema owner supplies validated ownership,
+namespace and relation declarations; this component does not infer SQL ownership.
+
+| State | Native / WASM / Embedded storage and lifetime |
+|---|---|
+| Factories and policy handlers | Same immutable `Sendable` configuration, retained by generation lease |
+| Previous SQL-owned identities | Same immutable exact-byte identity set, replaced during runtime cloning |
+| Published generation | Existing Schema generation-store `Mutex<State>`; no new lock or mutation path |
+
+`S17SQLAuthorizationTests` owns logical allow/missing deny, explicit physical
+handler rejection, exact names, handler mismatch, rename/rollback/savepoint,
+compiled coexistence and reopen regressions. Existing generic-policy suites
+remain regression evidence when this factory is absent.

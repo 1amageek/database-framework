@@ -9,38 +9,61 @@ extension DatabaseContext {
         parameters: [QueryParameter] = [],
         options: SQLBlockExecutionOptions
     ) async throws -> SQLBlockResult {
-        let clock = container.monotonicClock
-        let meter = DatabaseWorkMeter(budget: options.budget, monotonicClock: clock)
-        let deadline = TransactionExecutionDeadline(
-            instant: clock.now.advanced(by: .milliseconds(Int64(options.budget.timeoutMilliseconds))),
-            timeoutMilliseconds: options.budget.timeoutMilliseconds)
-        let parsed: SQLParsedBlock
-        do {
-            parsed = try SQLParser(structuralLimits: options.structuralLimits).parseBlockWithSource(sql)
-            try meter.checkpoint(at: .bindingCandidate)
-        } catch {
-            throw try sqlTextFailure(error, source: sql, bytePosition: sqlParserBytePosition(error))
+        try await executeSQLText(sql, context: self, options: options) { parsed, meter, deadline, position in
+            try await SQLBlockExecutor(context: self).execute(parsed.block, parameters: parameters,
+                options: options, workMeter: meter, executionDeadline: deadline,
+                occurrences: parsed.occurrences, occurrenceRoots: parsed.roots, failurePosition: position)
         }
-        let failurePosition = SQLBlockFailurePosition()
-        do {
-            return try await SQLBlockExecutor(context: self).execute(parsed.block,
-                parameters: parameters, options: options, workMeter: meter,
-                executionDeadline: deadline, occurrences: parsed.occurrences,
-                occurrenceRoots: parsed.roots, failurePosition: failurePosition)
-        } catch let failure as CanonicalSQLBindingFailure {
-            let source = SQLBindingSourceFailure(failure, sourceMap: parsed.sourceMap)
-            throw try sqlTextFailure(failure, source: sql, bytePosition: source.position)
-        } catch CanonicalReadError.expressionEvaluation(let cause, let occurrence) {
-            let original = CanonicalReadError.expressionEvaluation(cause, occurrence: occurrence)
-            let source = SQLBindingSourceFailure(cause: .expression(cause), occurrence: occurrence,
-                sourceMap: parsed.sourceMap)
-            throw try sqlTextFailure(original, source: sql, bytePosition: source.position)
-        } catch {
-            let offset = failurePosition.stepIndex.flatMap { index in
-                parsed.stepRanges.indices.contains(index) ? parsed.stepRanges[index].start : nil
-            }
-            throw try sqlTextFailure(error, source: sql, bytePosition: offset)
+    }
+
+    /// Encodes one bounded text request while preserving the original source diagnostic.
+    @_spi(DatabaseExecution)
+    public func executeEncodedSQLBlock(_ sql: String,
+        parameters: [QueryParameter] = [], options: SQLBlockExecutionOptions,
+        encoder: any SQLBlockResponseEncoder) async throws -> SQLEncodedResponse {
+        try await executeSQLText(sql, context: self, options: options) { parsed, meter, deadline, position in
+            try await SQLBlockExecutor(context: self).executeEncoded(parsed.block, parameters: parameters,
+                options: options, workMeter: meter, executionDeadline: deadline,
+                occurrences: parsed.occurrences, occurrenceRoots: parsed.roots, failurePosition: position,
+                encoder: encoder)
         }
+    }
+}
+
+private func executeSQLText<Result: Sendable>(_ sql: String, context: DatabaseContext,
+    options: SQLBlockExecutionOptions,
+    execute: @Sendable (SQLParsedBlock, DatabaseWorkMeter, TransactionExecutionDeadline, SQLBlockFailurePosition) async throws -> Result
+) async throws -> Result {
+    let clock = context.container.monotonicClock
+    let meter = DatabaseWorkMeter(budget: options.budget, monotonicClock: clock)
+    let deadline = TransactionExecutionDeadline(
+        instant: clock.now.advanced(by: .milliseconds(Int64(options.budget.timeoutMilliseconds))),
+        timeoutMilliseconds: options.budget.timeoutMilliseconds)
+    let parsed: SQLParsedBlock
+    do {
+        parsed = try SQLParser(structuralLimits: options.structuralLimits).parseBlockWithSource(sql)
+        try meter.checkpoint(at: .bindingCandidate)
+    } catch {
+        throw try sqlTextFailure(error, source: sql, bytePosition: sqlParserBytePosition(error))
+    }
+    let failurePosition = SQLBlockFailurePosition()
+    do {
+        return try await execute(parsed, meter, deadline, failurePosition)
+    } catch let failure as SQLExecutionFailure {
+        throw failure
+    } catch let failure as CanonicalSQLBindingFailure {
+        let source = SQLBindingSourceFailure(failure, sourceMap: parsed.sourceMap)
+        throw try sqlTextFailure(failure, source: sql, bytePosition: source.position)
+    } catch CanonicalReadError.expressionEvaluation(let cause, let occurrence) {
+        let original = CanonicalReadError.expressionEvaluation(cause, occurrence: occurrence)
+        let source = SQLBindingSourceFailure(cause: .expression(cause), occurrence: occurrence,
+            sourceMap: parsed.sourceMap)
+        throw try sqlTextFailure(original, source: sql, bytePosition: source.position)
+    } catch {
+        let offset = failurePosition.stepIndex.flatMap { index in
+            parsed.stepRanges.indices.contains(index) ? parsed.stepRanges[index].start : nil
+        }
+        throw try sqlTextFailure(error, source: sql, bytePosition: offset)
     }
 }
 

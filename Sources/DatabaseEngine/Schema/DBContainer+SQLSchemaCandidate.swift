@@ -34,9 +34,10 @@ extension DBContainer {
             sqlOwnedEntityNames: sqlOwnedEntityNames, limits: .default)
         let reservation = try workMeter.reserveIntermediate(bytes: UInt64(admittedCatalogBytes) + UInt64(schemaBytes)
             + UInt64(MemoryLayout<DatabaseSchemaGeneration>.stride), at: .validation)
-        let runtime = try sourceLease.runtimeConfiguration.replacingPhysicalSchema(schema)
+        let physicalRuntime = try sourceLease.runtimeConfiguration.replacingPhysicalSchema(schema)
         let snapshot = try sourceLease.sqlCatalog.replacingPhysicalCatalog(catalog,
-            physicalSchema: schema, runtimeConfiguration: runtime, sqlOwnedEntityNames: sqlOwnedEntityNames)
+            physicalSchema: schema, runtimeConfiguration: physicalRuntime, sqlOwnedEntityNames: sqlOwnedEntityNames)
+        let runtime = try physicalRuntime.rebindingSQLAuthorization(to: snapshot)
         let prepared = try prepareSchemaGeneration(schema, runtimeConfiguration: runtime,
             catalogSnapshot: snapshot)
         let layers = try DirectoryLayerTagMap(entities: schema.entities,

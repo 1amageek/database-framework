@@ -17,7 +17,8 @@ struct SQLSequenceAllocationDemand: Error, Sendable {
     let event: Int
 }
 
-struct SQLSequenceRequestCleanupError: Error, Sendable {
-    let operationError: any Error
-    let cleanupError: any Error
+@_spi(DatabaseExecution)
+public struct SQLSequenceRequestCleanupError: Error, Sendable {
+    public let operationError: any Error
+    public let cleanupError: any Error
 }

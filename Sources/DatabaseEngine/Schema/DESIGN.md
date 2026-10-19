@@ -527,3 +527,14 @@ current runtime name establishes SQL ownership. The final composed schema,
 runtime, catalog and physical layout are validated together before bootstrap or
 publication. This preserves ordinary normal-open behavior after SQL CREATE TABLE
 or MATERIALIZED VIEW without switching the host to a different opening API.
+
+### Logical SQL policy generations
+
+Every validated SQL catalog is paired with the immutable logical-policy rebind
+owned by [Configuration](../Configuration/DESIGN.md#logical-sql-authorization).
+Physical candidates, catalog-only stages, direct publication and final startup
+catalogs use the rebound runtime and a fresh security delegate. Existing
+transaction staging/checkpoint/commit and old-lease lifetimes own rollback and
+publication; SQL policy binding adds no second authority or mutable registry.
+`S17SQLAuthorizationTests` exercises these paths, including unchanged physical
+identity across logical rename and reopen.

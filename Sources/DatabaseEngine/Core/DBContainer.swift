@@ -349,14 +349,14 @@ public final class DBContainer: Sendable {
                 clock: configuration.monotonicClock)
             let schema = try restored.sqlCatalog?.applicationSchema(
                 physicalSchema: restored.schema, declaredSchema: declaredSchema) ?? declaredSchema
-            let runtimeConfiguration: DatabaseRuntimeConfiguration
+            let physicalRuntime: DatabaseRuntimeConfiguration
             if schema == declaredSchema {
-                runtimeConfiguration = declaredRuntimeConfiguration
+                physicalRuntime = declaredRuntimeConfiguration
             } else {
-                runtimeConfiguration = try declaredRuntimeConfiguration.replacingPhysicalSchema(schema)
+                physicalRuntime = try declaredRuntimeConfiguration.replacingPhysicalSchema(schema)
             }
-            try runtimeConfiguration.validate(schema: schema)
-            try runtimeConfiguration.validateStorageRequirements(
+            try physicalRuntime.validate(schema: schema)
+            try physicalRuntime.validateStorageRequirements(
                 schema: schema,
                 transactionCapabilities: transactionCapabilities
             )
@@ -367,17 +367,18 @@ public final class DBContainer: Sendable {
             } else {
                 validatedIndexPhysicalLayouts = try IndexRuntimeConfigurationValidator.validate(
                     schema: schema,
-                    runtimeConfiguration: runtimeConfiguration
+                    runtimeConfiguration: physicalRuntime
                 )
             }
             let sqlCatalog: SQLCatalogSnapshot
             if let stored = restored.sqlCatalog {
                 sqlCatalog = try stored.reconciledForApplication(physicalSchema: restored.schema,
-                    targetPhysicalSchema: schema, runtimeConfiguration: runtimeConfiguration)
+                    targetPhysicalSchema: schema, runtimeConfiguration: physicalRuntime)
             } else {
                 sqlCatalog = try SQLCatalogSnapshot(catalog: SQLCatalogSnapshot.derivedCatalog(physicalSchema: schema),
-                    physicalSchema: schema, runtimeConfiguration: runtimeConfiguration)
+                    physicalSchema: schema, runtimeConfiguration: physicalRuntime)
             }
+            let runtimeConfiguration = try physicalRuntime.rebindingSQLAuthorization(to: sqlCatalog)
             let indexPhysicalLayouts = try Self.sqlIndexPhysicalLayouts(
                 sqlCatalog.catalog, including: validatedIndexPhysicalLayouts)
             let preparedGeneration = try DatabasePreparedSchemaGeneration(
@@ -501,20 +502,21 @@ public final class DBContainer: Sendable {
                 metadataSubspace: schemaMetadataSubspace,
                 clock: configuration.monotonicClock
             )
-            let runtimeConfiguration = try await runtimeFactory(restored.schema)
-            try runtimeConfiguration.validate(schema: restored.schema)
+            let physicalRuntime = try await runtimeFactory(restored.schema)
+            try physicalRuntime.validate(schema: restored.schema)
             let validatedIndexPhysicalLayouts = try IndexRuntimeConfigurationValidator.validate(
                 schema: restored.schema,
-                runtimeConfiguration: runtimeConfiguration
+                runtimeConfiguration: physicalRuntime
             )
             let sqlCatalog: SQLCatalogSnapshot
             if let stored = restored.sqlCatalog {
                 sqlCatalog = try stored.reconciledForApplication(physicalSchema: restored.schema,
-                    targetPhysicalSchema: restored.schema, runtimeConfiguration: runtimeConfiguration)
+                    targetPhysicalSchema: restored.schema, runtimeConfiguration: physicalRuntime)
             } else {
                 sqlCatalog = try SQLCatalogSnapshot(catalog: SQLCatalogSnapshot.derivedCatalog(physicalSchema: restored.schema),
-                    physicalSchema: restored.schema, runtimeConfiguration: runtimeConfiguration)
+                    physicalSchema: restored.schema, runtimeConfiguration: physicalRuntime)
             }
+            let runtimeConfiguration = try physicalRuntime.rebindingSQLAuthorization(to: sqlCatalog)
             let indexPhysicalLayouts = try Self.sqlIndexPhysicalLayouts(
                 sqlCatalog.catalog, including: validatedIndexPhysicalLayouts)
             let preparedGeneration = try DatabasePreparedSchemaGeneration(
@@ -2950,7 +2952,7 @@ extension DBContainer {
         let registry = SchemaRegistry(database: schemaEngine, root: schemaRoot, clock: monotonicClock)
         let fingerprint = try SchemaManifest(schema: candidateSchema).fingerprint()
         let isExecutableTarget = fingerprint == (try SchemaManifest(schema: schema).fingerprint())
-        let publication: (UInt64, DatabasePreparedSchemaGeneration?, SQLCatalogSnapshot?) =
+        let publication: (UInt64, DatabasePreparedSchemaGeneration?, SQLCatalogSnapshot?, DatabaseRuntimeConfiguration?) =
             try await executor.withTransaction(configuration: .batch, clock: monotonicClock) { transaction in
             let state = try await Self.loadSchemaCatalog(registry: registry,
                 metadataSubspace: self.metadataSubspace, transaction: transaction)
@@ -2960,7 +2962,7 @@ extension DBContainer {
                     throw DatabaseSchemaRestorationError.indexPhysicalFingerprintMismatch
                 }
                 // A historical boundary is metadata; the installed runtime belongs to the final target.
-                if !isExecutableTarget { return (state.generation, nil, nil) }
+                if !isExecutableTarget { return (state.generation, nil, nil, nil) }
             }
             let catalogState: SQLCatalogStoredState
             let executableCatalog: SQLCatalogSnapshot?
@@ -2987,8 +2989,11 @@ extension DBContainer {
                     catalogState = try SQLCatalogStoredState.initialForMigration(physicalSchema: candidateSchema)
                 }
             }
+            let runtime = try executableCatalog.map {
+                try self.runtimeConfiguration.rebindingSQLAuthorization(to: $0)
+            } ?? self.runtimeConfiguration
             let prepared = try DatabasePreparedSchemaGeneration(schemaFingerprint: fingerprint,
-                runtimeConfiguration: self.runtimeConfiguration,
+                runtimeConfiguration: runtime,
                 securityConfiguration: self.securityConfiguration,
                 indexPhysicalLayouts: candidate.indexPhysicalLayouts,
                 sqlCatalogDigest: catalogState.digest,
@@ -2996,7 +3001,7 @@ extension DBContainer {
             if state.sqlCatalog != nil, state.fingerprint == fingerprint,
                 state.executionRuntimeFingerprint == prepared.executionRuntimeFingerprint,
                 state.sqlCatalog?.digest == catalogState.digest {
-                return (state.generation, prepared, executableCatalog)
+                return (state.generation, prepared, executableCatalog, runtime)
             }
             let generation: UInt64
             if state.sqlCatalog == nil {
@@ -3011,16 +3016,16 @@ extension DBContainer {
                 mode: state.sqlCatalog == nil ? nil : .allowBreakingChanges(
                     entityNames: Set(candidateSchema.entities.map { $0.name })),
                 metadataSubspace: self.metadataSubspace, transaction: transaction)
-            return (generation, prepared, executableCatalog)
+            return (generation, prepared, executableCatalog, runtime)
         }
         if isExecutableTarget {
-            guard let prepared = publication.1, let snapshot = publication.2 else {
+            guard let prepared = publication.1, let snapshot = publication.2, let runtime = publication.3 else {
                 throw DatabaseSchemaPublicationError.corruptedState("the final migration boundary has no executable catalog")
             }
             try publishSchemaGeneration(schema, fingerprint: fingerprint,
                 indexPhysicalFingerprint: prepared.indexPhysicalFingerprint,
                 executionRuntimeFingerprint: prepared.executionRuntimeFingerprint,
-                runtimeConfiguration: runtimeConfiguration,
+                runtimeConfiguration: runtime,
                 indexPhysicalLayouts: prepared.indexPhysicalLayouts,
                 generation: publication.0, sqlCatalog: snapshot)
         }

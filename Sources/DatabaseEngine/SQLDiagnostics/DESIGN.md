@@ -41,3 +41,13 @@ text adapters retain a position only when their actual source owner supplies it.
 
 ## Verification and Change Impact
 S16SQLDiagnosticTests checks each supported typed category, invalid state/location rejection, ambiguous constraint names, retained cancellation/cleanup and unknown errors. Actual constraint integration tests verify captured metadata survives transaction rollback. Text location adaptation is verified by Database tests. Changing error cases requires updating exhaustive case classifiers and their behavioral tests.
+
+
+### S17 cleanup relay visibility
+
+The existing SQLRelationCleanupError and SQLSequenceRequestCleanupError expose
+immutable operationError/cleanupError through DatabaseExecution SPI only.
+Construction remains internal to their owners. Server can distinguish the
+original primary and mandatory-cleanup causes after text/semantic encoded entry
+classification without a duplicate failure DTO or flattening. The lifetime and
+publication contract belongs to [SQLBlock](../SQLBlock/DESIGN.md#s17-complete-response-projection).

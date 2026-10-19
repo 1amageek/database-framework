@@ -229,3 +229,11 @@ reconciliation or separating row, runtime and catalog visibility.
 owns definition-sensitive fingerprints and both reopen paths, including rejection
 of incomplete persisted SQL layouts. The existing actor/Mutex state owners and
 Sendable contracts remain common to Native, WASM and Embedded.
+
+### Finalized SQL catalog policies
+
+Initial and restored opens bind SQL authorization only after catalog validation,
+before constructing the observable runtime generation/security delegate, under
+[Configuration's logical SQL policy contract](../Configuration/DESIGN.md#logical-sql-authorization).
+The same binding precedes a generation replacement; existing leases retain the
+old immutable runtime. No container or storage lifecycle changes are introduced.

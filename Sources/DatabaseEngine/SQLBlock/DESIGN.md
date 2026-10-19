@@ -574,3 +574,127 @@ SQL interpreter.
 |---|---|---|
 | Live prepared access | Immutable request prefix, no retained mutable registry | Exact-byte reverse lookup stops at matching/ALL deallocation; runtime registry owns declaration errors. |
 | Checkpoint statement deadline | Existing timeline `Mutex<[StorageInstant?]>` and deadline winner `Selection` owning `Mutex<Bool>` | Direct checkpoint control wrapper; no statement scope; producer and cancellation join before return. |
+
+
+## S17 Complete Response Projection
+
+SQLBlock owns a synchronous precommit encoding projection and its post-close
+ready frame owner. Server and application adapters supply only the SQL-specific
+encoder. They perform no publication I/O while projecting. Framework does not
+import DatabaseWire and the existing public SQLBlockResult entry retains its
+post-close native materialization.
+
+### Frozen execution SPI
+
+All declarations below are `@_spi(DatabaseExecution)` public. Input parameters
+retain the existing structural, execution, checkpoint and retry options.
+
+```swift
+public protocol SQLBlockResponseEncoder: Sendable {
+    func measure(_ output: borrowing SQLBlockOutputView) throws -> UInt64
+    func encode(_ output: borrowing SQLBlockOutputView,
+        into destination: inout MutableSpan<UInt8>) throws
+}
+
+extension SQLBlockExecutor {
+    public func executeEncoded(_ block: SQLBlock,
+        parameters: [QueryParameter] = [], options: SQLBlockExecutionOptions,
+        encoder: any SQLBlockResponseEncoder) async throws -> SQLEncodedResponse
+}
+```
+
+`SQLBlockOutputView` is noncopyable, has no public initializer and owns the
+existing retained statement buffer. Its only public metadata is statementCount.
+Its synchronous `withStatement(at:command:rows:copy:)` selects one of three Void
+visitors: command receives SQLCommandKind and UInt64?; rows receives a borrowing
+SQLBlockRowsView; copy receives a borrowing SQLBlockCopyView. No statement array,
+public result, COPY bytes property, row array, iterator or span escapes.
+
+| Borrowed view | Metadata | Synchronous Void visitors |
+|---|---|---|
+| SQLBlockRowsView | columnCount:Int, rowCount:Int, affectedRows:Int? | withColumn(at:_:) borrows QueryColumn; withRow(at:_:) borrows SQLBlockRowView |
+| SQLBlockRowView | valueCount:Int | withValue(at:_:) borrows QueryValue; withAnnotations(_:) borrows [String:FieldValue]; withVersion(_:) borrows PersistableVersionToken? |
+| SQLBlockCopyView | affectedRows:UInt64 | withBytes(_:) borrows ByteString |
+
+Every view is noncopyable with internal construction only. Visitors are
+nonescaping, synchronous and throwing. Their return type is Void; they do not
+produce an arbitrary escaping destination. Native work-limit failures and
+encoder failures propagate unchanged. The Wire-owned SQL writer SPI accepts
+untyped-throwing traversal bodies while retaining its own typed codec failures;
+no sentinel conversion or default fallback is introduced.
+
+Before the rows visitor, Framework reserves the current outcome's temporary
+column-descriptor array using the existing collection footprint helper. Before
+each row visitor it reserves the two canonical-annotation temporary arrays used
+by the existing Server conversion and the version digest's exact byte count.
+Empty annotations and absent versions allocate no scratch claim. The temporary
+claim remains private and lives through the visitor, covering both measurement
+and encoding passes separately. Original row/schema/payload claims remain held
+by the collecting owner. There is no all-results or all-rows materialization.
+
+After measurement and checked UInt64-to-Int conversion, Framework reserves the
+exact complete-frame byte count on the same request meter, then allocates one
+final ByteString and invokes encode into its bounded MutableSpan. Wire measures
+and validates the complete envelope and result body with the same SQL writer,
+then checks final cursor completion. The raw allocation is owned/deallocated by
+ByteString; Framework initializes its complete UInt8 region before the safe
+span facade. The borrow is synchronous, pointer-free at the public Framework
+boundary and cannot outlive the allocation. An encode throw destroys unpublished
+bytes and releases the frame claim before the transaction rolls back.
+
+The private collecting encoded payload crosses the existing result box together
+with its claim. Automatic infrastructure attempts and sequence-demand replay
+retain existing semantics: a failed attempt discards its provisional frame,
+reconstructs output on the next attempt, and refunds neither work nor deadline.
+A successful ROLLBACK carries its provisional frame through the same private
+rollback demand. No frame becomes ready before commit/rollback, schema
+publication, sequence close, operation-lease release and final cancellation
+admission have completed.
+
+`SQLEncodedResponse` is a concrete final Sendable reference owner with no public
+initializer, raw payload getter or callback. It contains immutable byteCount and
+one private `Mutex<Payload?>` holding frame bytes plus their reservation. Its
+`promoteToOutput() throws -> ByteString` takes the payload exactly once and ends
+the private claim only as final caller ownership is transferred. A repeated
+promotion fails explicitly. Server may retain this owner in its existing
+prepared-result body until endpoint publication; it never receives a claim.
+
+```text
+collect under one admitted transaction
+    -> borrow SQLBlockOutputView -> measure complete frame
+    -> exact same-meter frame reservation -> encode one ByteString
+    -> private frame + claim in collecting result
+    -> commit / rollback + schema / sequence / lease close
+    -> final cancellation admission -> SQLEncodedResponse
+    -> endpoint terminal promotion -> caller-owned ByteString
+
+measurement / codec / budget failure -> discard frame -> rollback + close
+```
+
+| State | Native / WASM / Embedded owner and isolation | Lifetime / release |
+|---|---|---|
+| Provisional view and row borrows | Same noncopyable value over existing retained owners | Synchronous projection only; no raw bulk result leaves the scope. |
+| Encoding scratch | Same private exact reservations | Current rows/row visitor; released after callback. |
+| Collecting encoded frame | Same private ByteString + reservation value | Retained through authoritative transaction and request close; discarded on any failure. |
+| Ready encoded frame | Same Mutex<Payload?> concrete reference owner | Server/host retains owner; one short lock takes payload at final promotion; no I/O, await or callback under lock. |
+
+Focused SQLBlock projection tests own actual mutation rollback on measurement
+and encoding rejection, frame-claim lifetime, and suspended authoritative close
+preventing ready-frame publication. Server and application tests own real Wire
+full-frame exact/one-past validation through these same visitors. Existing native
+block tests continue to own their public result and ordering contract.
+
+| Behavioral evidence owner | Counterexample rejected |
+|---|---|
+| `S17SQLBlockProjectionTests.projectionRejectionRollsBack` / `frameBudgetRefusal` | Earlier mutation commits after the complete response is refused. |
+| `commitGatesFrameAndClaim` / `cancellationDiscardsFrame` / `commitFailureDiscardsFrame` | Pre-close publication or retained frame/row claims after failure. |
+| `sequenceCloseFailureDiscardsFrame` | A successful producing read commit publishes despite later mandatory sequence recovery-close failure. |
+| `abandonedReadyReleasesClaim` / `commitGatesFrameAndClaim` | Unpromoted owner leaks a reservation, final promotion retains it, or promotion succeeds twice. |
+| `rollbackKeepsEncodedObservations` / `scopedOutputVisitors` | Ordered rollback observations or row/COPY payloads are lost before encoding. |
+| `S17EncodedSQLFacadeTests` in DatabaseTests | A facade bypasses projection, loses source diagnostics, or converts typed encoder refusal to success. |
+
+Encoded-entry failures preserve the existing SQLRelationCleanupError and
+SQLSequenceRequestCleanupError immutable cause pairs through execution SPI;
+[SQLDiagnostics](../SQLDiagnostics/DESIGN.md#s17-cleanup-relay-visibility) owns
+the classification/relay assumption. Neither is converted into direct
+cancellation or a second failure representation.

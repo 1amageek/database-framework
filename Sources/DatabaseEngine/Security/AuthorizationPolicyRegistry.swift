@@ -22,6 +22,10 @@ public struct AuthorizationPolicyRegistry: Sendable {
         try Self(handlers: Array(handlers.values) + additions)
     }
 
+    func replacing(entityNames: Set<SQLCatalogName>, with replacements: [AuthorizationPolicyHandler]) throws -> Self {
+        try Self(handlers: handlers.values.filter { !entityNames.contains(SQLCatalogName($0.entityName)) } + replacements)
+    }
+
     func handler(
         for entityName: String
     ) -> AuthorizationPolicyHandler? {

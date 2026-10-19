@@ -117,3 +117,11 @@ SQLite/PostgreSQL and exact formal target lanes are task-wide ownership.
 The implementation seams are internal: `SQLDDLExecutor.execute` returns only
 `SQLCommandKind`; Schema's candidate/stage API owns storage rewrites. No new SPI,
 wire operation, public server handler, transaction domain or transport is added.
+
+### Logical name policy changes
+
+Table/schema rename preserves physical identity while requiring a new policy
+binding under the current logical names. Schema stages that binding through the
+[Configuration contract](../Configuration/DESIGN.md#logical-sql-authorization);
+DDL never retains the old physical handler as a grant. Savepoint/full rollback
+restore the entire prior candidate generation, including its policy delegate.

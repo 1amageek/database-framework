@@ -101,12 +101,13 @@ extension DBContainer {
         }
         let snapshot = try lease.sqlCatalog.replacingCatalog(catalog,
             physicalSchema: lease.schema, runtimeConfiguration: lease.runtimeConfiguration)
+        let runtime = try lease.runtimeConfiguration.rebindingSQLAuthorization(to: snapshot)
         let prepared = try prepareSchemaGeneration(lease.schema,
-            runtimeConfiguration: lease.runtimeConfiguration, catalogSnapshot: snapshot)
+            runtimeConfiguration: runtime, catalogSnapshot: snapshot)
         return try await publishSchemaAggregate(lease.schema, fingerprint: lease.fingerprint,
             expectedFingerprint: lease.fingerprint, expectedGeneration: expectedGeneration,
             idempotencyKey: idempotencyKey, authorization: authorization,
-            runtimeConfiguration: lease.runtimeConfiguration, preparedGeneration: prepared,
+            runtimeConfiguration: runtime, preparedGeneration: prepared,
             publishedLease: lease, sqlCatalog: snapshot, requiresIdleSchemaTransition: true,
             validatesExistingSQLData: true)
     }
@@ -150,8 +151,15 @@ extension DBContainer {
             bytes: UInt64(byteCount) + UInt64(metadataBytes), at: .validation)
         let snapshot = try sourceLease.sqlCatalog.replacingCatalog(catalog,
             physicalSchema: sourceLease.schema, runtimeConfiguration: sourceLease.runtimeConfiguration)
+        let runtime = try sourceLease.runtimeConfiguration.rebindingSQLAuthorization(to: snapshot)
+        let security: (any DataStoreSecurityDelegate)?
+        switch securityConfiguration.policyEvaluation {
+        case .enabled:
+            security = RequestSecurityPolicyDelegate(policies: runtime.authorizationPolicies, schema: sourceLease.schema)
+        case .disabledForTesting: security = nil
+        }
         let prepared = try prepareSchemaGeneration(sourceLease.schema,
-            runtimeConfiguration: sourceLease.runtimeConfiguration, catalogSnapshot: snapshot)
+            runtimeConfiguration: runtime, catalogSnapshot: snapshot)
         let registry = SchemaRegistry(database: schemaEngine, root: schemaRoot, clock: monotonicClock)
         #if DATABASE_MULTI_BASE
         try await databaseGrantStore.require(.administer,
@@ -181,10 +189,10 @@ extension DBContainer {
             indexPhysicalFingerprint: outcome.publication.indexPhysicalFingerprint,
             executionRuntimeFingerprint: outcome.publication.executionRuntimeFingerprint,
             schema: sourceLease.schema, sqlCatalog: snapshot,
-            runtimeConfiguration: sourceLease.runtimeConfiguration,
+            runtimeConfiguration: runtime,
             indexPhysicalLayouts: prepared.indexPhysicalLayouts,
             directoryLayers: sourceLease.directoryLayers,
-            securityDelegate: sourceLease.securityDelegate)
+            securityDelegate: security)
         return DatabaseSchemaStagingOutcome(publication: outcome.publication,
             state: DatabaseSchemaStagingState(container: self, generation: generation,
                 sourceLease: sourceLease, reservation: reservation))
@@ -203,12 +211,14 @@ extension DBContainer {
         let lease = acquirePublishedSchemaLease()
         let catalog = try Self.applicationSQLCatalog(from: lease, schema: schema,
             runtimeConfiguration: targetRuntimeConfiguration, candidate: sqlCatalog)
+        let runtime = try targetRuntimeConfiguration.rebindingSQLAuthorization(to: catalog,
+            previousSQLOwnedEntityNames: lease.sqlCatalog.sqlOwnedEntityNames)
         let prepared = try prepareSchemaGeneration(schema,
-            runtimeConfiguration: targetRuntimeConfiguration, catalogSnapshot: catalog)
+            runtimeConfiguration: runtime, catalogSnapshot: catalog)
         return try await publishSchemaAggregate(schema, fingerprint: targetFingerprint,
             expectedFingerprint: expectedFingerprint, expectedGeneration: nil,
             idempotencyKey: idempotencyKey, authorization: authorization,
-            runtimeConfiguration: targetRuntimeConfiguration, preparedGeneration: prepared,
+            runtimeConfiguration: runtime, preparedGeneration: prepared,
             publishedLease: lease, sqlCatalog: catalog, requiresIdleSchemaTransition: false)
     }
 
