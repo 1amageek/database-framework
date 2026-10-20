@@ -135,6 +135,35 @@ struct FieldSecuritySQLiteTests {
         }
         #expect(try await orderRestricted.executeSQL(
             "SELECT (SELECT * FROM unnest(ARRAY[r.title]) AS u(x)) FROM \(table) r ORDER BY x").rows.count == 1)
+        // Ordering in a query enclosing the read reaches the reading entity's
+        // list decision. A derived source's outputs conservatively carry every
+        // field it reads, so the permitted controls read only title.
+        let blockOptions = SQLBlockExecutionOptions(checkpointLimits: try TransactionCheckpointLimits(
+            maximumEntries: 1000, maximumDepth: 16, maximumRetainedBytes: 8_000_000,
+            maximumWorkUnits: 1_000_000, maximumReadPageRows: 128))
+        for block in ["CREATE VIEW secret_view AS SELECT secret FROM \(table);",
+            "CREATE VIEW title_view AS SELECT title FROM \(table);",
+            "CREATE TABLE ordering_items(value INTEGER); INSERT INTO ordering_items VALUES (1);"] {
+            await #expect(throws: Never.self, "\(block)") { _ = try await writer.executeSQLBlock(block, options: blockOptions) }
+        }
+        for sql in [
+            "SELECT d.secret FROM (SELECT secret FROM \(table)) d ORDER BY d.secret",
+            "SELECT q.x FROM (SELECT (SELECT * FROM unnest(ARRAY[r.secret]) AS u(x)) FROM \(table) r) q ORDER BY q.x",
+            "WITH c AS (SELECT secret FROM \(table)) SELECT secret FROM c ORDER BY secret",
+            "SELECT secret FROM secret_view ORDER BY secret",
+            "SELECT value FROM ordering_items ORDER BY (SELECT secret FROM \(table) LIMIT 1)",
+        ] {
+            await #expect(throws: SecurityError.self, "\(sql)") { try await orderRestricted.executeSQL(sql) }
+        }
+        for sql in [
+            "SELECT d.title FROM (SELECT title FROM \(table)) d ORDER BY d.title",
+            "WITH c AS (SELECT title FROM \(table)) SELECT title FROM c ORDER BY title",
+            "SELECT title FROM title_view ORDER BY title",
+            "SELECT value FROM ordering_items ORDER BY (SELECT title FROM \(table) LIMIT 1)",
+        ] {
+            do { #expect(try await orderRestricted.executeSQL(sql).rows.count == 1, "\(sql)") }
+            catch { Issue.record("\(sql) was denied: \(error)") }
+        }
 
         let boundedReader = context(in: container, roles: ["bounded"])
         let boundedQuery = SelectQuery(projection: [.column("title")],
@@ -360,7 +389,12 @@ struct FieldSecuritySQLiteTests {
                 ],
                 authorizationPolicies: [
                     AuthorizationPolicyHandler(FieldSecuritySQLiteRecord.self)
-                ]
+                ],
+                // SQL-created relations are unrestricted so ordering tests can
+                // read the record through them.
+                sqlAuthorizationPolicyFactory: { entity, _, _ in
+                    AuthorizationPolicyHandler(schemaDriven: entity) { _, _ in true }
+                }
             ),
             security: .enabled()
         )

@@ -22,6 +22,7 @@ enum FusionPreflight {
         var featureAuthorizationPlan = DatabaseFieldReadAuthorizationPlan(
             fieldsByEntity: [:]
         )
+        var orderingDependencies: [String: Set<String>] = [:]
         var logicalNodes = try DatabaseRetainedArrayBuilder<LogicalNode>(
             workMeter: workMeter,
             stage: .validation,
@@ -46,6 +47,12 @@ enum FusionPreflight {
                     sqlResolution: sqlResolution
                 )
             )
+            if query.orderBy != nil {
+                for (entity, fields) in try query.orderingDependencies(
+                    schema: policy.schema, sqlResolution: sqlResolution) {
+                    orderingDependencies[entity, default: []].formUnion(fields)
+                }
+            }
             guard case .fusion(let source) = query.accessPath else { return }
             guard case .table(let tableRef) = query.source else {
                 throw FusionExecutionError.unsupportedSource
@@ -121,6 +128,10 @@ enum FusionPreflight {
         let retainedViewGraphs = try viewGraphs.finish().moveToSharedOwnership(at: .validation)
         let retainedLogicalNodes = try logicalNodes.finish()
             .moveToSharedOwnership(at: .validation)
+        listAuthorizationRequirements.append(contentsOf: orderingCompanions(
+            of: listAuthorizationRequirements
+                + retainedLogicalNodes.map { $0.listAuthorizationRequirement },
+            orderingDependencies: orderingDependencies))
         var authorizationPlan = try DatabaseFieldReadAuthorizationPlan.make(
             query: root,
             schema: policy.schema,
@@ -190,6 +201,27 @@ enum FusionPreflight {
             authorizationPlan: authorizationPlan,
             schemaGeneration: policy.schemaGeneration
         )
+    }
+
+    /// Ordering may happen in a query enclosing the one that reads an entity.
+    /// Each requirement whose ordering omits a field the statement orders by
+    /// gains a companion with the same entity and window that names it; the
+    /// original stays unchanged because Fusion entries match it exactly.
+    private static func orderingCompanions(
+        of requirements: [DatabaseListReadAuthorizationRequirement],
+        orderingDependencies: [String: Set<String>]
+    ) -> [DatabaseListReadAuthorizationRequirement] {
+        var companions: [DatabaseListReadAuthorizationRequirement] = []
+        for requirement in requirements {
+            guard let fields = orderingDependencies[requirement.entityName] else { continue }
+            let ordered = requirement.orderBy ?? []
+            let missing = fields.subtracting(ordered)
+            guard !missing.isEmpty else { continue }
+            companions.append(DatabaseListReadAuthorizationRequirement(
+                entityName: requirement.entityName, window: requirement.window,
+                orderBy: ordered + missing.sorted()))
+        }
+        return companions
     }
 
     private static func additionalIndexAuthorizationPlan(

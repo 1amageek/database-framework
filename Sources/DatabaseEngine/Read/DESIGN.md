@@ -62,6 +62,22 @@ ReadPolicy -> sealed authorization -> ReadSession closure
   that names no resolved source or output column, such as a table function
   column or an output name only binding determines, requires every dependency
   of the query; an unresolved key never yields an empty requirement.
+- A list requirement is created where a query reads an entity, but ordering
+  may happen in an enclosing query: over a derived table, a CTE, a view, or
+  through a subquery reading another entity. Query analysis therefore
+  collects every query's physical ordering dependencies for all entities and,
+  for each list requirement of an entity whose collected fields it does not
+  already name, also evaluates a companion requirement with the same entity
+  and window whose ordering adds those fields. The original requirement is
+  kept unchanged because Fusion entries and sealed authorization match it
+  exactly. A statement that orders by a field anywhere presents that field to
+  every list decision for its entity; windows stay at the reading query.
+
+```text
+WITH/derived/view/subquery reading entity E          enclosing query
+  list requirement(E, window W, orderBy O)  <---  ORDER BY depends on E.f
+  + companion requirement(E, window W, orderBy O + [f])
+```
 - A scoped range cursor uses the StorageKit state-owned validation contract;
   Read supplies the scope lease and does not wrap a second cursor state.
 

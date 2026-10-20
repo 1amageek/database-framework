@@ -274,9 +274,10 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
             fieldsByEntity = [:]
             unresolvedOrderingReference = false
             for expression in inputs { collect(expression, localBindings: bindings, outerScopes: []) }
-            // An unresolved input keeps every dependency of the query rather
-            // than none, so a name only binding resolves cannot hide a field.
-            if bindings.isEmpty || unresolvedOrderingReference {
+            // An unresolved or undeterminable input keeps every dependency of
+            // the query rather than none, so a name only binding resolves
+            // cannot hide a field.
+            if bindings.isEmpty || inputs.isEmpty || unresolvedOrderingReference {
                 collect(query)
                 for (entity, fields) in sourceDependencies { fieldsByEntity[entity, default: []].formUnion(fields) }
             }

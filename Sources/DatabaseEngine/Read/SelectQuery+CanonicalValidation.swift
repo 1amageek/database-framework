@@ -3,7 +3,30 @@ import DatabaseKit
 extension SelectQuery {
     package func requiredOrderByColumnNames(entity: Schema.Entity?, schema: Schema,
         sqlResolution: SQLReadResolution? = nil) throws -> [String]? {
-        guard let orderBy else { return nil }
+        guard orderBy != nil else { return nil }
+        var fields: [String] = []
+        try forEachOrderingDependency(entity: entity, schema: schema, sqlResolution: sqlResolution) { dependencies in
+            if let entity { fields.append(contentsOf: (dependencies[entity.name] ?? []).sorted()) }
+            else { fields.append(contentsOf: dependencies.values.flatMap { $0 }.sorted()) }
+        }
+        return fields
+    }
+
+    /// The physical fields of every entity this query's ORDER BY depends on,
+    /// including entities read through derived tables, CTEs, views and
+    /// subqueries.
+    package func orderingDependencies(schema: Schema,
+        sqlResolution: SQLReadResolution? = nil) throws -> [String: Set<String>] {
+        var result: [String: Set<String>] = [:]
+        try forEachOrderingDependency(entity: nil, schema: schema, sqlResolution: sqlResolution) { dependencies in
+            for (entity, fields) in dependencies { result[entity, default: []].formUnion(fields) }
+        }
+        return result
+    }
+
+    private func forEachOrderingDependency(entity: Schema.Entity?, schema: Schema,
+        sqlResolution: SQLReadResolution?, _ body: ([String: Set<String>]) -> Void) throws {
+        guard let orderBy else { return }
         let items: [(expression: Expression, alias: String?)]?
         if let sqlResolution {
             items = try DatabaseFieldReadAuthorizationPlan.orderingProjection(
@@ -68,15 +91,13 @@ extension SelectQuery {
             }
             return [expression]
         }
-        var fields: [String] = []
         for sortKey in orderBy {
-            for expression in orderingInputs(sortKey.expression) {
-                let dependencies = try DatabaseFieldReadAuthorizationPlan.orderingFields(
-                    query: self, inputs: [expression], schema: schema, sqlResolution: sqlResolution)
-                if let entity { fields.append(contentsOf: (dependencies[entity.name] ?? []).sorted()) }
-                else { fields.append(contentsOf: dependencies.values.flatMap { $0 }.sorted()) }
+            let inputs = orderingInputs(sortKey.expression)
+            // No determinable input means the key may read any projected value.
+            for expression in inputs.isEmpty ? [nil] : inputs.map(Optional.some) {
+                body(try DatabaseFieldReadAuthorizationPlan.orderingFields(
+                    query: self, inputs: expression.map { [$0] } ?? [], schema: schema, sqlResolution: sqlResolution))
             }
         }
-        return fields
     }
 }
