@@ -230,11 +230,15 @@ SPARQL function.
 The user-approved [S03-C12 verification schedule](../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md#s03-falsifiable-case-ids)
 places graph-enabled Database standard WASM/Embedded compile/link/runtime in
 S18. `OccurrenceRewrite` and `InliningStructureMeter` use the common Mutex
-storage and Native behavior tests; their graph-enabled portable runtime path
-remains unverified until that lane passes. Stopped GraphIndex builds executed
-zero runtime cases and are not passing evidence.
+storage and Native behavior tests; their graph-enabled portable runtime path is
+verified by the Cloudflare reactor lanes: standard WASI through
+`verify-standard-wasm-graph.sh` and Embedded WASI through the release gate
+`verify-runtime-feasibility.sh`, both with Swift 6.4.0 and both executing the
+five `sql:graph` cases. Stopped GraphIndex builds executed zero runtime cases
+and are not passing evidence.
 
-The Embedded stall is a Swift compiler defect, not a Framework defect. The
+Graph-enabled Embedded builds that carry debug information stall because of a
+Swift compiler defect, not a Framework defect. The
 `sil-moved-async-var-dbginfo-propagator` pass compares dataflow states with
 `memcmp`, so two `undef` representatives of one variable never compare equal
 and circulate around a loop forever. In GraphIndex this occurs in
@@ -242,11 +246,12 @@ and circulate around a loop forever. In GraphIndex this occurs in
 `~Copyable` append admission and a binding around an `await`. The fix is
 swiftlang/swift#93133 (main `c5b10c22`, 2026-10-09); Swift 6.4.0, 6.4.1 and
 the 2026-10-17 6.4.x snapshot do not contain it. With the 2026-10-17 main
-snapshot and matching Wasm SDK, the graph-enabled Embedded build of the same
-source completes. That build is diagnostic evidence for the cause only; the
-Embedded runtime evidence for this lane requires a pinned 6.4.x release that
-contains the fix. Standard WASM builds the graph-enabled product with 6.4.0.
-Disabling the pass by option is not accepted runtime evidence.
+snapshot and matching Wasm SDK, the graph-enabled Embedded debug build of the
+same source completes; that build is diagnostic evidence for the cause only.
+The pass propagates debug-info state, so a 6.4.0 Embedded build without debug
+information (`-debug-info-format none`, as the release gate builds) does not
+run into it and is the accepted Embedded runtime evidence. Disabling the pass
+by option is not accepted runtime evidence.
 
 Changes to SQL/SPARQL entry contracts require rechecking DatabaseEngine's
 session design and GraphIndex's transaction-bound executor evidence. Changes
