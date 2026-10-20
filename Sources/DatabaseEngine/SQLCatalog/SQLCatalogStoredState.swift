@@ -29,7 +29,7 @@ struct SQLCatalogStoredState: Sendable {
                 throw SQLCatalogBindingError.invalidSQLOwnership(name)
             }
             if let declared = declaredSchema.entity(named: stored.name) {
-                guard declared == stored else { throw SQLCatalogBindingError.runtimeContractMismatch(name) }
+                guard declared == stored else { throw SQLCatalogBindingError.sqlOwnedEntityRedeclared(name) }
             } else { entities.append(stored) }
         }
         return try Schema(entities: entities, version: declaredSchema.version)

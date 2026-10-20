@@ -528,6 +528,41 @@ runtime, catalog and physical layout are validated together before bootstrap or
 publication. This preserves ordinary normal-open behavior after SQL CREATE TABLE
 or MATERIALIZED VIEW without switching the host to a different opening API.
 
+### Remote publication with durable SQL entities
+
+A remote application declaration names only application-owned entities, while
+the published physical schema also holds SQL-owned ones. The SPI
+`DatabaseSchemaLease.applicationSchema(declaring:)` composes a declaration with
+the SQL-owned entities of that exact lease through the same durable witness as
+normal open, so planning and publication consume one effective schema.
+
+| Case | Result |
+|---|---|
+| Declaration omits a SQL-owned entity | The stored physical entity is retained unchanged |
+| Declaration names a SQL-owned entity with the identical definition | Accepted once |
+| Declaration names a SQL-owned entity with another definition | `SQLCatalogBindingError.sqlOwnedEntityRedeclared(name)` |
+| Witness names an entity absent from the physical schema | `SQLCatalogBindingError.invalidSQLOwnership(name)` |
+
+The effective schema's fingerprint is the publication target. The source
+fingerprint compared before publication is the fingerprint of the lease the
+composition used, so SQL DDL committed after composition changes the source
+and fails the existing generation check rather than dropping or replacing the
+new SQL entity. Removing a SQL-owned entity stays a SQL DDL operation. Normal
+open reports a redeclared SQL-owned entity with the same error.
+
+```text
+declared application schema --+
+                              +--> applicationSchema(declaring:) --> effective schema
+published lease (SQL witness) +         |                              |
+                                        v                              v
+                         source fingerprint CAS          target fingerprint, publication
+```
+
+`SQLOwnedSchemaCompositionTests` prove that a bare declaration cannot drop a
+SQL table, that composition retains it unchanged, accepts an identical
+redeclaration and rejects a different one, and that publishing the effective
+schema keeps the table's rows.
+
 ### Logical SQL policy generations
 
 Every validated SQL catalog is paired with the immutable logical-policy rebind

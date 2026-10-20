@@ -9,6 +9,8 @@ public enum SQLCatalogBindingError: Error, Sendable, Equatable {
     case digestMismatch
     case invalidProtection(String)
     case invalidSQLOwnership(String)
+    /// An application declaration redefines an entity that SQL owns.
+    case sqlOwnedEntityRedeclared(String)
     case protectedRelationRemoved(String)
     case relationRetargeted(String)
     case columnRetargeted(relation: String, column: String)

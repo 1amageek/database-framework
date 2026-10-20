@@ -57,6 +57,20 @@ public final class DatabaseSchemaLease: Sendable {
     var securityDelegate: (any DataStoreSecurityDelegate)? {
         value.securityDelegate
     }
+
+    /// Composes an application declaration with this generation's SQL-owned
+    /// entities, as normal open does. Omitted SQL-owned entities are retained;
+    /// a declaration that redefines one throws
+    /// `SQLCatalogBindingError.sqlOwnedEntityRedeclared`.
+    @_spi(DatabaseExecution)
+    public func applicationSchema(declaring declared: Schema) throws -> Schema {
+        let catalog = value.sqlCatalog
+        return try SQLCatalogStoredState(catalog: catalog.catalog,
+            physicalSchemaFingerprint: catalog.physicalSchemaFingerprint,
+            protectedContracts: catalog.protectedContracts, digest: catalog.digest,
+            sqlOwnedEntityNames: catalog.sqlOwnedEntityNames)
+            .applicationSchema(physicalSchema: value.schema, declaredSchema: declared)
+    }
 }
 
 final class DatabaseSchemaLeaseToken: Sendable {
