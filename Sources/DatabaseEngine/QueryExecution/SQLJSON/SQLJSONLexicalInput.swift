@@ -141,17 +141,21 @@ struct SQLJSONLexicalInput {
         emit: (UInt8) throws -> Void) throws {
         let bytes = source.bytes
         var offset = range.lowerBound + 1
-        func invalid(_ reason: String) -> QueryValueError { .invalidJSON(offset: UInt64(offset), reason: reason) }
+        // The failing position is passed explicitly: capturing `offset` here
+        // would overlap the exclusive access that `hex(&offset)` holds.
+        func invalid(_ reason: String, at position: Int) -> QueryValueError {
+            .invalidJSON(offset: UInt64(position), reason: reason)
+        }
         func hex(_ position: inout Int) throws -> UInt32 {
             var result: UInt32 = 0
             for _ in 0..<4 {
-                guard position < range.upperBound - 1 else { throw invalid("Incomplete Unicode escape") }
+                guard position < range.upperBound - 1 else { throw invalid("Incomplete Unicode escape", at: position) }
                 let byte = bytes[position], digit: UInt32
                 switch byte {
                 case 48...57: digit = UInt32(byte - 48)
                 case 65...70: digit = UInt32(byte - 55)
                 case 97...102: digit = UInt32(byte - 87)
-                default: throw invalid("Invalid Unicode escape")
+                default: throw invalid("Invalid Unicode escape", at: position)
                 }
                 result = result * 16 + digit; position += 1; try memory.work()
             }
@@ -161,7 +165,7 @@ struct SQLJSONLexicalInput {
             try memory.work()
             let byte = bytes[offset]; offset += 1
             if byte != 92 { try emit(byte); continue }
-            guard offset < range.upperBound - 1 else { throw invalid("Incomplete string escape") }
+            guard offset < range.upperBound - 1 else { throw invalid("Incomplete string escape", at: offset) }
             let escaped = bytes[offset]; offset += 1
             switch escaped {
             case 34, 47, 92: try emit(escaped)
@@ -174,15 +178,15 @@ struct SQLJSONLexicalInput {
                 var scalar = try hex(&offset)
                 if (0xD800...0xDBFF).contains(scalar) {
                     guard offset + 1 < range.upperBound - 1, bytes[offset] == 92, bytes[offset + 1] == 117 else {
-                        throw invalid("Unpaired high surrogate")
+                        throw invalid("Unpaired high surrogate", at: offset)
                     }
                     offset += 2
                     let low = try hex(&offset)
-                    guard (0xDC00...0xDFFF).contains(low) else { throw invalid("Invalid surrogate pair") }
+                    guard (0xDC00...0xDFFF).contains(low) else { throw invalid("Invalid surrogate pair", at: offset) }
                     scalar = 0x10000 + ((scalar - 0xD800) << 10) + low - 0xDC00
                 }
                 guard scalar != 0, !(0xDC00...0xDFFF).contains(scalar), Unicode.Scalar(scalar) != nil else {
-                    throw invalid("Selected text cannot contain NUL or an unpaired surrogate")
+                    throw invalid("Selected text cannot contain NUL or an unpaired surrogate", at: offset)
                 }
                 if scalar < 0x80 { try emit(UInt8(scalar)) }
                 else if scalar < 0x800 {
@@ -193,7 +197,7 @@ struct SQLJSONLexicalInput {
                     try emit(UInt8(0xF0 | (scalar >> 18))); try emit(UInt8(0x80 | ((scalar >> 12) & 63)))
                     try emit(UInt8(0x80 | ((scalar >> 6) & 63))); try emit(UInt8(0x80 | (scalar & 63)))
                 }
-            default: throw invalid("Invalid string escape")
+            default: throw invalid("Invalid string escape", at: offset)
             }
         }
     }
