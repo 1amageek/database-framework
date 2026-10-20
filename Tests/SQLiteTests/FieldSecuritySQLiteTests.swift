@@ -124,6 +124,17 @@ struct FieldSecuritySQLiteTests {
                 try await orderRestricted.query(derivedProjection.replacing(orderBy: [SortKey(key)]))
             }
         }
+        // Names that only binding resolves, such as a table function column
+        // or a scalar subquery's expanded output, keep their ordering dependencies.
+        let table = "\"\(FieldSecuritySQLiteRecord.persistableType)\""
+        for sql in [
+            "SELECT (SELECT * FROM unnest(ARRAY[r.secret]) AS u(x)) FROM \(table) r ORDER BY x",
+            "SELECT r.title FROM \(table) r, unnest(ARRAY[r.secret]) AS u(x) ORDER BY x",
+        ] {
+            await #expect(throws: SecurityError.self, "\(sql)") { try await orderRestricted.executeSQL(sql) }
+        }
+        #expect(try await orderRestricted.executeSQL(
+            "SELECT (SELECT * FROM unnest(ARRAY[r.title]) AS u(x)) FROM \(table) r ORDER BY x").rows.count == 1)
 
         let boundedReader = context(in: container, roles: ["bounded"])
         let boundedQuery = SelectQuery(projection: [.column("title")],

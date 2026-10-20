@@ -155,6 +155,10 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
         var collectingOrdering = false
         var resolutionFailure: (any Error)? = nil
         var fieldsByEntity: [String: Set<String>] = [:]
+        /// Set when an ordering input names a column no source binding
+        /// resolves, such as a table function column or an output name only
+        /// binding knows. Its dependencies are then unknown here.
+        var unresolvedOrderingReference = false
         struct CommonTableColumns {
             let names: [String]?
             var dependencies: [String: Set<String>] = [:]
@@ -268,8 +272,11 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                 commonTableNames: CanonicalSourceNames(commonTableColumns.keys.map { $0.value }), outerScopes: [])
             let sourceDependencies = fieldsByEntity
             fieldsByEntity = [:]
+            unresolvedOrderingReference = false
             for expression in inputs { collect(expression, localBindings: bindings, outerScopes: []) }
-            if bindings.isEmpty {
+            // An unresolved input keeps every dependency of the query rather
+            // than none, so a name only binding resolves cannot hide a field.
+            if bindings.isEmpty || unresolvedOrderingReference {
                 collect(query)
                 for (entity, fields) in sourceDependencies { fieldsByEntity[entity, default: []].formUnion(fields) }
             }
@@ -569,6 +576,11 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
             if bindings.isEmpty, column.table == nil {
                 includeWholeRow(qualifier: column.column,
                     localBindings: localBindings, outerScopes: outerScopes)
+            }
+            if bindings.isEmpty, collectingOrdering, column.table != nil
+                || matchingBindings(qualifier: column.column,
+                    localBindings: localBindings, outerScopes: outerScopes).isEmpty {
+                unresolvedOrderingReference = true
             }
             for binding in bindings {
                 fieldsByEntity[binding.entity.name, default: []]

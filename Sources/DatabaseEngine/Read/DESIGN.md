@@ -58,7 +58,10 @@ ReadPolicy -> sealed authorization -> ReadSession closure
   A derived source retains its underlying physical dependencies in its own
   aliased output bindings, including when a JOIN also has physical-table
   siblings. Ordering a derived output conservatively requires those source
-  dependencies; ordering an ordinary sibling field remains precise.
+  dependencies; ordering an ordinary sibling field remains precise. A key
+  that names no resolved source or output column, such as a table function
+  column or an output name only binding determines, requires every dependency
+  of the query; an unresolved key never yields an empty requirement.
 - A scoped range cursor uses the StorageKit state-owned validation contract;
   Read supplies the scope lease and does not wrap a second cursor state.
 
