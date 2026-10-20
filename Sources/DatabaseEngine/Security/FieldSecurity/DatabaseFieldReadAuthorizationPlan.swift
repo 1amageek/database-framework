@@ -74,7 +74,9 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
         var items: [(expression: Expression, alias: String?)] = []
         for item in query.projection {
             switch item {
-            case .expression(let expression, let alias): items.append((expression, alias))
+            case .expression(let expression, let alias):
+                // The output name is resolved here, where subquery output columns are known.
+                items.append((expression, alias ?? collector.outputName(expression, index: items.count)))
             case .wildcard(let qualifier):
                 let names = qualifier.map { collector.qualifiedColumnNames(query.source, qualifier: $0) }
                     ?? collector.sourceColumnNames(query.source, bindings: bindings)
@@ -1002,10 +1004,18 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                     guard let columns else { return nil }
                     names.append(contentsOf: columns)
                 case .expression(let expression, let alias):
-                    names.append(alias ?? CanonicalQueryTypeBinder.outputName(expression, index: names.count))
+                    names.append(alias ?? outputName(expression, index: names.count))
                 }
             }
             return names
+        }
+
+        /// Names an unaliased projection expression as the binder does, with
+        /// a scalar subquery named by its own first output column.
+        func outputName(_ expression: Expression, index: Int) -> String {
+            CanonicalQueryTypeBinder.outputName(expression, index: index, subqueryName: { query in
+                queryColumnNames(query, declarations: commonTableColumns)?.first
+            })
         }
 
         func qualifiedColumnNames(_ source: DataSource, qualifier: String) -> [String]? {

@@ -3262,6 +3262,149 @@
    }
   },
   {
+   "id": "q01-case-inherits-else-name",
+   "inventory": "Q01",
+   "kind": "success",
+   "mode": "query",
+   "ordered": false,
+   "shape": false,
+   "dynamic": false,
+   "setup": [],
+   "query": "SELECT q.x FROM (SELECT CASE WHEN false THEN 1 ELSE x END FROM (VALUES (2)) AS t(x)) AS q",
+   "post": null,
+   "expected": {
+    "state": "00000",
+    "columns": [
+     {
+      "name": "x",
+      "type": "integer"
+     }
+    ],
+    "rows": [
+     [
+      "2"
+     ]
+    ],
+    "rowCount": 1
+   }
+  },
+  {
+   "id": "q01-scalar-subquery-expanded-name",
+   "inventory": "Q01",
+   "kind": "success",
+   "mode": "query",
+   "ordered": false,
+   "shape": false,
+   "dynamic": false,
+   "setup": [],
+   "query": "SELECT q.x FROM (SELECT (SELECT * FROM (VALUES (2)) AS t(x))) AS q",
+   "post": null,
+   "expected": {
+    "state": "00000",
+    "columns": [
+     {
+      "name": "x",
+      "type": "integer"
+     }
+    ],
+    "rows": [
+     [
+      "2"
+     ]
+    ],
+    "rowCount": 1
+   }
+  },
+  {
+   "id": "q01-scalar-subquery-expanded-name-order-group",
+   "inventory": "Q01",
+   "kind": "success",
+   "mode": "query",
+   "ordered": false,
+   "shape": false,
+   "dynamic": false,
+   "setup": [],
+   "query": "SELECT (SELECT * FROM (VALUES (2)) AS t(x)) GROUP BY x ORDER BY x",
+   "post": null,
+   "expected": {
+    "state": "00000",
+    "columns": [
+     {
+      "name": "x",
+      "type": "integer"
+     }
+    ],
+    "rows": [
+     [
+      "2"
+     ]
+    ],
+    "rowCount": 1
+   }
+  },
+  {
+   "id": "q01-case-and-subquery-figured-names",
+   "inventory": "Q01",
+   "kind": "boundary",
+   "mode": "query",
+   "ordered": false,
+   "shape": false,
+   "dynamic": false,
+   "setup": [],
+   "query": "SELECT CASE WHEN false THEN 1 ELSE x END, CASE WHEN true THEN x END, CASE WHEN false THEN 1 ELSE 2 END, CASE WHEN false THEN 1 ELSE x::int END, CASE WHEN false THEN 1 ELSE (SELECT 1 + 1) END, CAST((SELECT 1 + 1) AS text), (SELECT t.* FROM (VALUES (3)) AS t(y)), CASE WHEN false THEN 1 ELSE (SELECT * FROM (VALUES (4)) AS u(z)) END FROM (VALUES (2)) AS t(x)",
+   "post": null,
+   "expected": {
+    "state": "00000",
+    "columns": [
+     {
+      "name": "x",
+      "type": "integer"
+     },
+     {
+      "name": "case",
+      "type": "integer"
+     },
+     {
+      "name": "case",
+      "type": "integer"
+     },
+     {
+      "name": "x",
+      "type": "integer"
+     },
+     {
+      "name": "?column?",
+      "type": "integer"
+     },
+     {
+      "name": "?column?",
+      "type": "text"
+     },
+     {
+      "name": "y",
+      "type": "integer"
+     },
+     {
+      "name": "z",
+      "type": "integer"
+     }
+    ],
+    "rows": [
+     [
+      "2",
+      "2",
+      "2",
+      "2",
+      "2",
+      "2",
+      "3",
+      "4"
+     ]
+    ],
+    "rowCount": 1
+   }
+  },
+  {
    "id": "t01-integer-widths-and-division",
    "inventory": "T01",
    "kind": "success",
@@ -6623,15 +6766,15 @@
     ],
     "rows": [
      [
-      "2026-10-19",
-      "03:17:27.061271+00",
-      "2026-10-19 03:17:27.061271+00",
-      "03:17:27.061271",
-      "2026-10-19 03:17:27.061271",
-      "2026-10-19 03:17:27.061271+00",
-      "2026-10-19 03:17:27.061271+00",
-      "2026-10-19 03:17:27.061271+00",
-      "2026-10-19 03:17:27.061291+00"
+      "2026-10-20",
+      "03:44:16.768137+00",
+      "2026-10-20 03:44:16.768137+00",
+      "03:44:16.768137",
+      "2026-10-20 03:44:16.768137",
+      "2026-10-20 03:44:16.768137+00",
+      "2026-10-20 03:44:16.768137+00",
+      "2026-10-20 03:44:16.768137+00",
+      "2026-10-20 03:44:16.76817+00"
      ]
     ],
     "rowCount": 1
@@ -8503,7 +8646,7 @@
      [
       "public",
       "{public}",
-      "differential_244",
+      "differential_248",
       "postgres",
       "postgres"
      ]

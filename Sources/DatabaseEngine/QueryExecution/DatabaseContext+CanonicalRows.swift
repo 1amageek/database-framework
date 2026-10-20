@@ -8527,9 +8527,13 @@ extension DatabaseContext {
         }
         guard case .column(let reference) = expression, reference.table == nil else { return nil }
         if prefersInput, !sourceSchema.layout.matching(reference).isEmpty { return nil }
+        // Selected subqueries carry their bound output names; unbound ones keep the syntactic name.
+        let subqueryName: (SelectQuery) -> String? = { query in
+            selectedProjection.flatMap { CanonicalQueryTypeBinder.boundSubqueryName(query, in: $0) }
+        }
         let indices = items.indices.filter {
-            CanonicalSourceName.equal(items[$0].alias ?? canonicalProjectionName(for: items[$0].expression, index: $0),
-                reference.column)
+            CanonicalSourceName.equal(items[$0].alias ?? canonicalProjectionName(for: items[$0].expression, index: $0,
+                subqueryName: subqueryName), reference.column)
         }
         guard let index = indices.first else { return nil }
         if indices.count > 1 {
@@ -9164,13 +9168,14 @@ extension DatabaseContext {
 
     private func canonicalProjectionName(
         for expression: DatabaseKit.Expression,
-        index: Int
+        index: Int,
+        subqueryName: (SelectQuery) -> String? = { _ in nil }
     ) -> String {
         if case .variable(let variable) = expression {
             let name = variable.name
             return name.hasPrefix("?") || name.hasPrefix("$") ? String(name.dropFirst()) : name
         }
-        return CanonicalQueryTypeBinder.outputName(expression, index: index)
+        return CanonicalQueryTypeBinder.outputName(expression, index: index, subqueryName: subqueryName)
     }
 
     private func canonicalUniqueRows(

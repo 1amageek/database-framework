@@ -351,3 +351,19 @@ SELECT '1'::int, (CAST(2 AS text)), DATE '2020-01-02', INTERVAL '1 day', CAST(1.
 ### Q01 boundary query q01-unaliased-subquery-duplicate-implicit-names
 --query
 SELECT * FROM (SELECT 1 + 1, 2 + 2)
+
+### Q01 success query q01-case-inherits-else-name
+--query
+SELECT q.x FROM (SELECT CASE WHEN false THEN 1 ELSE x END FROM (VALUES (2)) AS t(x)) AS q
+
+### Q01 success query q01-scalar-subquery-expanded-name
+--query
+SELECT q.x FROM (SELECT (SELECT * FROM (VALUES (2)) AS t(x))) AS q
+
+### Q01 success query q01-scalar-subquery-expanded-name-order-group
+--query
+SELECT (SELECT * FROM (VALUES (2)) AS t(x)) GROUP BY x ORDER BY x
+
+### Q01 boundary query q01-case-and-subquery-figured-names
+--query
+SELECT CASE WHEN false THEN 1 ELSE x END, CASE WHEN true THEN x END, CASE WHEN false THEN 1 ELSE 2 END, CASE WHEN false THEN 1 ELSE x::int END, CASE WHEN false THEN 1 ELSE (SELECT 1 + 1) END, CAST((SELECT 1 + 1) AS text), (SELECT t.* FROM (VALUES (3)) AS t(y)), CASE WHEN false THEN 1 ELSE (SELECT * FROM (VALUES (4)) AS u(z)) END FROM (VALUES (2)) AS t(x)

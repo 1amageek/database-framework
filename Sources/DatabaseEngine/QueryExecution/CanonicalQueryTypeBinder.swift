@@ -161,8 +161,9 @@ struct CanonicalQueryTypeBinder {
                 try appendProjectionExpansion(operand, alias: alias, columns: &columns,
                     projection: &projection, reservation: reservation)
             } else {
-                try appendProjection(bind(expression, parameterContext: .output),
-                    name: alias ?? Self.outputName(expression, index: index),
+                let bound = try bind(expression, parameterContext: .output)
+                try appendProjection(bound, name: alias ?? Self.outputName(expression, index: index,
+                        subqueryName: { Self.boundSubqueryName($0, in: [bound]) }),
                     columns: &columns, projection: &projection, reservation: reservation)
             }
         }
@@ -2557,16 +2558,40 @@ struct CanonicalQueryTypeBinder {
     }
 
     /// Names an unaliased output column with PostgreSQL's FigureColname rules.
-    static func outputName(_ expression: DatabaseKit.Expression, index: Int) -> String {
-        figuredName(expression)?.name ?? "?column?"
+    ///
+    /// PostgreSQL names a scalar subquery after its first output column once
+    /// wildcards are expanded. `subqueryName` supplies that name from the
+    /// caller's resolved subquery output; without it only an explicit first
+    /// projection expression names the subquery.
+    static func outputName(_ expression: DatabaseKit.Expression, index: Int,
+        subqueryName: (SelectQuery) -> String? = { _ in nil }) -> String {
+        figuredName(expression, subqueryName: subqueryName)?.name ?? "?column?"
+    }
+
+    /// The first output name of the scalar subquery `query` bound inside
+    /// `roots`, read from its retained binding.
+    static func boundSubqueryName(_ query: SelectQuery, in roots: [CanonicalBoundExpression]) -> String? {
+        var pending = roots
+        while let candidate = pending.popLast() {
+            if case .subquery(let bound) = candidate.expression, bound == query,
+               let column = candidate.subqueryBinding?.columns.first {
+                return column.name
+            }
+            pending.append(contentsOf: candidate.children)
+        }
+        return nil
     }
 
     /// A name and its strength: 2 for a referenced name, 1 for a fallback keyword or type.
-    private static func figuredName(_ expression: DatabaseKit.Expression) -> (name: String, strength: Int)? {
+    private static func figuredName(_ expression: DatabaseKit.Expression,
+        subqueryName: (SelectQuery) -> String?) -> (name: String, strength: Int)? {
+        func figured(_ expression: DatabaseKit.Expression) -> (name: String, strength: Int)? {
+            figuredName(expression, subqueryName: subqueryName)
+        }
         switch expression {
         case .column(let column): return (column.column, 2)
         case .field(_, let name): return (name, 2)
-        case .arrayAccess(let base, _), .collate(let base, _): return figuredName(base)
+        case .arrayAccess(let base, _), .collate(let base, _): return figured(base)
         case .function(let call): return (call.name, 2)
         case .grouping: return ("grouping", 2)
         case .window(let call):
@@ -2595,9 +2620,11 @@ struct CanonicalQueryTypeBinder {
             case .localTimestamp: return ("localtimestamp", 2)
             }
         case .cast(let operand, let type):
-            if let inner = figuredName(operand), inner.strength > 1 { return inner }
+            if let inner = figured(operand), inner.strength > 1 { return inner }
             return (SQLCastOutputName.name(for: type), 1)
-        case .caseWhen: return ("case", 1)
+        case .caseWhen(_, _, let elseResult):
+            if let elseResult, let inner = figured(elseResult), inner.strength > 1 { return inner }
+            return ("case", 1)
         case .array, .arraySubquery: return ("array", 2)
         case .row: return ("row", 2)
         case .coalesce: return ("coalesce", 2)
@@ -2606,9 +2633,9 @@ struct CanonicalQueryTypeBinder {
         case .least: return ("least", 2)
         case .exists: return ("exists", 2)
         case .subquery(let query):
+            if let name = subqueryName(query) { return (name, 2) }
             guard case .expression(let inner, let alias)? = query.projection.first else { return nil }
-            if let alias { return (alias, 2) }
-            return figuredName(inner)
+            return (alias ?? outputName(inner, index: 0, subqueryName: subqueryName), 2)
         default: return nil
         }
     }
