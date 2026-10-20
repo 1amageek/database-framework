@@ -136,7 +136,8 @@ enum FusionSelectQueryGraphWalker {
         _ visit: (SelectQuery) throws -> Void,
         visitTable: (TableRef, SelectQuery) throws -> Void,
         visitPolymorphic: (LogicalSourceRef, SelectQuery) throws -> Void,
-        visitExpression: (Expression) throws -> Void = { _ in }
+        visitExpression: (Expression) throws -> Void = { _ in },
+        visitOrdering: (SelectQuery, [DatabaseFieldReadAuthorizationPlan.CommonTableLevel]) throws -> Void = { _, _ in }
     ) throws {
         var stack = try WorkStack(
             root: .query(root),
@@ -147,6 +148,7 @@ enum FusionSelectQueryGraphWalker {
             switch item {
             case .query(let query):
                 try visit(query)
+                if query.orderBy != nil { try visitOrdering(query, try stack.scope?.levels(workMeter: workMeter) ?? []) }
                 try appendChildren(of: query, to: &stack)
             case .source(let source, let query):
                 if case .table(let tableRef) = source {
@@ -195,19 +197,34 @@ enum FusionSelectQueryGraphWalker {
             let parent: CommonTableScope?
             let definitions: [NamedSubquery]
             let visibleCount: Int
+            let recursive: Bool
         }
 
         private let contents: Contents
         private let reservation: DatabaseIntermediateReservation
 
-        init(parent: CommonTableScope?, definitions: [NamedSubquery], visibleCount: Int,
+        init(parent: CommonTableScope?, definitions: [NamedSubquery], visibleCount: Int, recursive: Bool,
              workMeter: DatabaseWorkMeter) throws {
             let layout = try DatabaseRetainedArrayLayout.forElement(Contents.self)
             let footprint = try DatabaseIntermediateFootprint(bytes: layout.elementCapacitySlotByteCount)
                 .adding(DatabaseIntermediateFootprint(bytes: layout.sharedOwnerByteCount))
                 .adding(DatabaseIntermediateFootprint(bytes: UInt64(MemoryLayout<DatabaseIntermediateReservation>.stride)))
             self.reservation = try workMeter.reserveIntermediate(bytes: footprint.bytes, at: .validation)
-            self.contents = Contents(parent: parent, definitions: definitions, visibleCount: visibleCount)
+            self.contents = Contents(parent: parent, definitions: definitions, visibleCount: visibleCount,
+                recursive: recursive)
+        }
+
+        /// The declarations visible here, outermost WITH clause first.
+        func levels(workMeter: DatabaseWorkMeter) throws -> [DatabaseFieldReadAuthorizationPlan.CommonTableLevel] {
+            var levels: [DatabaseFieldReadAuthorizationPlan.CommonTableLevel] = []
+            var current: CommonTableScope? = self
+            while let scope = current {
+                try workMeter.consume(at: .validation)
+                levels.append(.init(definitions: Array(scope.contents.definitions.prefix(scope.contents.visibleCount)),
+                    recursive: scope.contents.recursive))
+                current = scope.contents.parent
+            }
+            return levels.reversed()
         }
 
         func contains(_ name: String, workMeter: DatabaseWorkMeter) throws -> Bool {
@@ -293,11 +310,12 @@ enum FusionSelectQueryGraphWalker {
             for (index, definition) in definitions.enumerated() {
                 stack.scope = try CommonTableScope(parent: inheritedScope,
                     definitions: definitions, visibleCount: query.withRecursive ? definitions.count : index,
-                    workMeter: stack.workMeter)
+                    recursive: query.withRecursive, workMeter: stack.workMeter)
                 try stack.append(.query(definition.query))
             }
             stack.scope = try CommonTableScope(parent: inheritedScope,
-                definitions: definitions, visibleCount: definitions.count, workMeter: stack.workMeter)
+                definitions: definitions, visibleCount: definitions.count, recursive: query.withRecursive,
+                workMeter: stack.workMeter)
         }
         try stack.append(.source(query.source, owner: query))
         for item in query.projection {

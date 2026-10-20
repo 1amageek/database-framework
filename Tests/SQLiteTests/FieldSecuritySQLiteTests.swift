@@ -136,13 +136,14 @@ struct FieldSecuritySQLiteTests {
         #expect(try await orderRestricted.executeSQL(
             "SELECT (SELECT * FROM unnest(ARRAY[r.title]) AS u(x)) FROM \(table) r ORDER BY x").rows.count == 1)
         // Ordering in a query enclosing the read reaches the reading entity's
-        // list decision. A derived source's outputs conservatively carry every
-        // field it reads, so the permitted controls read only title.
+        // list decision through each output column's own lineage, resolved in
+        // the scope where the ordering query appears.
         let blockOptions = SQLBlockExecutionOptions(checkpointLimits: try TransactionCheckpointLimits(
             maximumEntries: 1000, maximumDepth: 16, maximumRetainedBytes: 8_000_000,
             maximumWorkUnits: 1_000_000, maximumReadPageRows: 128))
         for block in ["CREATE VIEW secret_view AS SELECT secret FROM \(table);",
             "CREATE VIEW title_view AS SELECT title FROM \(table);",
+            "CREATE VIEW pair_view AS SELECT title, secret FROM \(table);",
             "CREATE TABLE ordering_items(value INTEGER); INSERT INTO ordering_items VALUES (1);"] {
             await #expect(throws: Never.self, "\(block)") { _ = try await writer.executeSQLBlock(block, options: blockOptions) }
         }
@@ -152,6 +153,13 @@ struct FieldSecuritySQLiteTests {
             "WITH c AS (SELECT secret FROM \(table)) SELECT secret FROM c ORDER BY secret",
             "SELECT secret FROM secret_view ORDER BY secret",
             "SELECT value FROM ordering_items ORDER BY (SELECT secret FROM \(table) LIMIT 1)",
+            "SELECT d.y FROM (SELECT title AS x, secret AS y FROM \(table)) d ORDER BY d.y",
+            "SELECT d.secret FROM (SELECT * FROM \(table)) d ORDER BY d.secret",
+            "SELECT d.m FROM (SELECT count(*) AS c, max(secret) AS m FROM \(table)) d ORDER BY d.m",
+            "SELECT secret FROM pair_view ORDER BY secret",
+            "WITH a AS (SELECT secret AS s FROM \(table)) SELECT (SELECT s FROM a ORDER BY s LIMIT 1)",
+            "WITH a AS (SELECT secret AS s FROM \(table)), b AS (SELECT s FROM a ORDER BY s LIMIT 1) SELECT s FROM b",
+            "SELECT x FROM \(table) r, unnest(ARRAY[r.secret]) AS u(x) WHERE r.title = 'Visible' ORDER BY x",
         ] {
             await #expect(throws: SecurityError.self, "\(sql)") { try await orderRestricted.executeSQL(sql) }
         }
@@ -160,6 +168,17 @@ struct FieldSecuritySQLiteTests {
             "WITH c AS (SELECT title FROM \(table)) SELECT title FROM c ORDER BY title",
             "SELECT title FROM title_view ORDER BY title",
             "SELECT value FROM ordering_items ORDER BY (SELECT title FROM \(table) LIMIT 1)",
+            "SELECT d.title FROM (SELECT title, secret FROM \(table)) d ORDER BY d.title",
+            "SELECT d.title FROM (SELECT * FROM \(table)) d ORDER BY d.title",
+            "SELECT d.c FROM (SELECT count(*) AS c, max(secret) AS m FROM \(table)) d ORDER BY d.c",
+            "SELECT title FROM pair_view ORDER BY title",
+            "WITH c AS (SELECT title, secret FROM \(table)) SELECT title FROM c ORDER BY title",
+            // A filter field is not an ordering dependency of an unresolved key.
+            "SELECT x FROM \(table) r, unnest(ARRAY[r.title]) AS u(x) WHERE r.secret = 'classified' ORDER BY x",
+            // A nested ORDER BY resolves an outer CTE in the scope where it appears.
+            "WITH a AS (SELECT title FROM \(table)) SELECT x FROM (SELECT title AS x FROM a ORDER BY title LIMIT 1) d",
+            "WITH a AS (SELECT title, secret FROM \(table)) SELECT (SELECT title FROM a ORDER BY title LIMIT 1)",
+            "WITH a AS (SELECT title FROM \(table)), b AS (SELECT title FROM a ORDER BY title LIMIT 1) SELECT title FROM b",
         ] {
             do { #expect(try await orderRestricted.executeSQL(sql).rows.count == 1, "\(sql)") }
             catch { Issue.record("\(sql) was denied: \(error)") }

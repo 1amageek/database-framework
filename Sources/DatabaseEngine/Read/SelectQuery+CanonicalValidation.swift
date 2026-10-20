@@ -14,23 +14,27 @@ extension SelectQuery {
 
     /// The physical fields of every entity this query's ORDER BY depends on,
     /// including entities read through derived tables, CTEs, views and
-    /// subqueries.
-    package func orderingDependencies(schema: Schema,
-        sqlResolution: SQLReadResolution? = nil) throws -> [String: Set<String>] {
+    /// subqueries. `commonTables` are the CTE declarations visible where
+    /// this query appears, outermost first.
+    func orderingDependencies(schema: Schema, sqlResolution: SQLReadResolution?,
+        commonTables: [DatabaseFieldReadAuthorizationPlan.CommonTableLevel]) throws -> [String: Set<String>] {
         var result: [String: Set<String>] = [:]
-        try forEachOrderingDependency(entity: nil, schema: schema, sqlResolution: sqlResolution) { dependencies in
+        try forEachOrderingDependency(entity: nil, schema: schema, sqlResolution: sqlResolution,
+            commonTables: commonTables) { dependencies in
             for (entity, fields) in dependencies { result[entity, default: []].formUnion(fields) }
         }
         return result
     }
 
     private func forEachOrderingDependency(entity: Schema.Entity?, schema: Schema,
-        sqlResolution: SQLReadResolution?, _ body: ([String: Set<String>]) -> Void) throws {
+        sqlResolution: SQLReadResolution?, commonTables: [DatabaseFieldReadAuthorizationPlan.CommonTableLevel] = [],
+        _ body: ([String: Set<String>]) -> Void) throws {
         guard let orderBy else { return }
+        let scope = try DatabaseFieldReadAuthorizationPlan.OrderingScope(schema: schema,
+            sqlResolution: sqlResolution, commonTables: commonTables)
         let items: [(expression: Expression, alias: String?)]?
-        if let sqlResolution {
-            items = try DatabaseFieldReadAuthorizationPlan.orderingProjection(
-                query: self, schema: schema, sqlResolution: sqlResolution)
+        if sqlResolution != nil {
+            items = try scope.projection(of: self)
         } else if projection.contains(where: { if case .wildcard = $0 { return true }; return false }) {
             if let entity {
                 var expanded: [(expression: Expression, alias: String?)] = []
@@ -95,8 +99,7 @@ extension SelectQuery {
             let inputs = orderingInputs(sortKey.expression)
             // No determinable input means the key may read any projected value.
             for expression in inputs.isEmpty ? [nil] : inputs.map(Optional.some) {
-                body(try DatabaseFieldReadAuthorizationPlan.orderingFields(
-                    query: self, inputs: expression.map { [$0] } ?? [], schema: schema, sqlResolution: sqlResolution))
+                body(try scope.fields(of: self, inputs: expression.map { [$0] } ?? []))
             }
         }
     }

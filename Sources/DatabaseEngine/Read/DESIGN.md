@@ -55,13 +55,24 @@ ReadPolicy -> sealed authorization -> ReadSession closure
   every source field; whole-row field selection includes its physical field.
   A bare source alias becomes a whole row only after ordinary column lookup
   fails. These ordering requirements remain separate from field-read coverage.
-  A derived source retains its underlying physical dependencies in its own
-  aliased output bindings, including when a JOIN also has physical-table
-  siblings. Ordering a derived output conservatively requires those source
-  dependencies; ordering an ordinary sibling field remains precise. A key
-  that names no resolved source or output column, such as a table function
-  column or an output name only binding determines, requires every dependency
-  of the query; an unresolved key never yields an empty requirement.
+  A derived table, CTE or view binds each output column to the physical
+  fields its own projection item reads, including when a JOIN also has
+  physical-table siblings; filters, grouping and ordering inside it are not
+  output lineage. An output whose lineage is unknown, such as a wildcard over
+  a source without known columns or a recursive CTE, carries every field the
+  definition reads. A column with no physical lineage, such as `count(*)`,
+  still resolves and adds nothing. A key that names no resolved source or
+  output column, such as a table function column or an output name only
+  binding determines, requires the query's value dependencies: every
+  projection expression and named window, plus every field read by a source
+  whose columns have no bindings (table function arguments, VALUES rows, set
+  operations, graph sources and definitions with unknown columns) and the
+  output lineage of every derived table, CTE and view, whose output names
+  authorization computes and binding may name differently. Base relation
+  columns carry catalog names and are excluded. WHERE,
+  GROUP BY, HAVING and pagination are not value dependencies, so an
+  unresolved key never widens to a filter field, and it never yields an empty
+  requirement when its source reads a field.
 - A list requirement is created where a query reads an entity, but ordering
   may happen in an enclosing query: over a derived table, a CTE, a view, or
   through a subquery reading another entity. Query analysis therefore
@@ -72,6 +83,10 @@ ReadPolicy -> sealed authorization -> ReadSession closure
   kept unchanged because Fusion entries and sealed authorization match it
   exactly. A statement that orders by a field anywhere presents that field to
   every list decision for its entity; windows stay at the reading query.
+  Each nested query's ordering is resolved in the scope where it appears:
+  the query walker supplies every CTE declaration visible there, outermost
+  first, so a nested ORDER BY over an outer CTE resolves that CTE's columns
+  and lineage instead of looking it up as a stored relation.
 
 ```text
 WITH/derived/view/subquery reading entity E          enclosing query

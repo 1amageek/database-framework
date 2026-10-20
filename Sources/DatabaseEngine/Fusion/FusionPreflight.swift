@@ -47,12 +47,6 @@ enum FusionPreflight {
                     sqlResolution: sqlResolution
                 )
             )
-            if query.orderBy != nil {
-                for (entity, fields) in try query.orderingDependencies(
-                    schema: policy.schema, sqlResolution: sqlResolution) {
-                    orderingDependencies[entity, default: []].formUnion(fields)
-                }
-            }
             guard case .fusion(let source) = query.accessPath else { return }
             guard case .table(let tableRef) = query.source else {
                 throw FusionExecutionError.unsupportedSource
@@ -123,6 +117,11 @@ enum FusionPreflight {
                         selectQuery: query, schema: policy.schema, sqlResolution: sqlResolution
                     )
                 )
+            }
+        } visitOrdering: { query, commonTables in
+            for (entity, fields) in try query.orderingDependencies(schema: policy.schema,
+                sqlResolution: sqlResolution, commonTables: commonTables) {
+                orderingDependencies[entity, default: []].formUnion(fields)
             }
         }
         let retainedViewGraphs = try viewGraphs.finish().moveToSharedOwnership(at: .validation)
