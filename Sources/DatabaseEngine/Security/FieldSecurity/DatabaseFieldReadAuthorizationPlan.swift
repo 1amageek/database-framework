@@ -59,9 +59,13 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
     struct OrderingScope {
         private let collector: Collector
 
-        init(schema: Schema, sqlResolution: SQLReadResolution?, commonTables: [CommonTableLevel]) throws {
+        /// `commonTables` are the WITH levels visible where the query
+        /// appears, outermost first, or nil when that scope is not known to
+        /// the caller.
+        init(schema: Schema, sqlResolution: SQLReadResolution?, commonTables: [CommonTableLevel]?) throws {
             var collector = Collector(schema: schema, sqlResolution: sqlResolution, collectingOrdering: true)
-            for level in commonTables {
+            collector.enclosingCommonTablesUnknown = commonTables == nil
+            for level in commonTables ?? [] {
                 collector.collectCommonTables(level.definitions, recursive: level.recursive, outerScopes: [])
             }
             if let failure = collector.resolutionFailure { throw failure }
@@ -173,6 +177,11 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
         /// resolves, such as a table function column or an output name only
         /// binding knows. Its dependencies are then unknown here.
         var unresolvedOrderingReference = false
+        /// Set when the enclosing WITH scopes are unknown, as in standalone
+        /// list admission. An unqualified name the catalog cannot resolve is
+        /// then an outer CTE the binder already accepted: it binds no
+        /// columns here, and the walker's ordering companions carry its lineage.
+        var enclosingCommonTablesUnknown = false
         /// Fields read by the current query's sources whose columns have no
         /// binding or have names authorization computes: table function
         /// arguments, VALUES rows, and the output lineage of derived tables,
@@ -515,6 +524,8 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                         return SourceBinding.Field(visibleName: column.declaration.name,
                             entityFieldNames: dependencies, outputOrdinal: ordinal)
                     }
+                } catch SQLCatalogBindingError.missingRelation(namespace: .none, name: _) where enclosingCommonTablesUnknown {
+                    return []
                 } catch {
                     if resolutionFailure == nil { resolutionFailure = error }
                     return []

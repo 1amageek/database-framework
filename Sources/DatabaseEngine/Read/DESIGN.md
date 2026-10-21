@@ -86,7 +86,13 @@ ReadPolicy -> sealed authorization -> ReadSession closure
   Each nested query's ordering is resolved in the scope where it appears:
   the query walker supplies every CTE declaration visible there, outermost
   first, so a nested ORDER BY over an outer CTE resolves that CTE's columns
-  and lineage instead of looking it up as a stored relation.
+  and lineage instead of looking it up as a stored relation. The original
+  list requirement is computed from the query alone, at admission and again
+  at execution, so both sides produce the same value without the enclosing
+  scope. There an unqualified name the catalog cannot resolve is an outer
+  CTE the binder already accepted: it binds no columns, a key through it
+  falls back to the value dependencies above, and the companion requirement
+  carries its lineage.
 
 ```text
 WITH/derived/view/subquery reading entity E          enclosing query

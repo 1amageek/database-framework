@@ -26,8 +26,11 @@ extension SelectQuery {
         return result
     }
 
+    /// `commonTables` nil means the enclosing WITH scopes are unknown, as
+    /// for a list requirement that admission and execution each compute
+    /// from the query alone.
     private func forEachOrderingDependency(entity: Schema.Entity?, schema: Schema,
-        sqlResolution: SQLReadResolution?, commonTables: [DatabaseFieldReadAuthorizationPlan.CommonTableLevel] = [],
+        sqlResolution: SQLReadResolution?, commonTables: [DatabaseFieldReadAuthorizationPlan.CommonTableLevel]? = nil,
         _ body: ([String: Set<String>]) -> Void) throws {
         guard let orderBy else { return }
         let scope = try DatabaseFieldReadAuthorizationPlan.OrderingScope(schema: schema,

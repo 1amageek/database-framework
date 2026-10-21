@@ -160,6 +160,7 @@ struct FieldSecuritySQLiteTests {
             "WITH a AS (SELECT secret AS s FROM \(table)) SELECT (SELECT s FROM a ORDER BY s LIMIT 1)",
             "WITH a AS (SELECT secret AS s FROM \(table)), b AS (SELECT s FROM a ORDER BY s LIMIT 1) SELECT s FROM b",
             "SELECT x FROM \(table) r, unnest(ARRAY[r.secret]) AS u(x) WHERE r.title = 'Visible' ORDER BY x",
+            "WITH a AS (SELECT secret AS s FROM \(table)) SELECT (SELECT a.s FROM \(table) r, a ORDER BY a.s LIMIT 1)",
         ] {
             await #expect(throws: SecurityError.self, "\(sql)") { try await orderRestricted.executeSQL(sql) }
         }
@@ -179,6 +180,9 @@ struct FieldSecuritySQLiteTests {
             "WITH a AS (SELECT title FROM \(table)) SELECT x FROM (SELECT title AS x FROM a ORDER BY title LIMIT 1) d",
             "WITH a AS (SELECT title, secret FROM \(table)) SELECT (SELECT title FROM a ORDER BY title LIMIT 1)",
             "WITH a AS (SELECT title FROM \(table)), b AS (SELECT title FROM a ORDER BY title LIMIT 1) SELECT title FROM b",
+            // A nested query reading a table beside an outer CTE keeps one list requirement at admission and execution.
+            "WITH a AS (SELECT title AS t FROM \(table)) SELECT (SELECT r.title FROM \(table) r, a ORDER BY r.title LIMIT 1)",
+            "WITH a AS (SELECT secret AS s FROM \(table)) SELECT (SELECT r.title FROM \(table) r, a ORDER BY r.title LIMIT 1)",
         ] {
             do { #expect(try await orderRestricted.executeSQL(sql).rows.count == 1, "\(sql)") }
             catch { Issue.record("\(sql) was denied: \(error)") }

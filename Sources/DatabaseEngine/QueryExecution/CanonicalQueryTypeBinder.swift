@@ -162,11 +162,20 @@ struct CanonicalQueryTypeBinder {
                     projection: &projection, reservation: reservation)
             } else {
                 let bound = try bind(expression, parameterContext: .output)
-                try appendProjection(bound, name: alias ?? Self.outputName(expression, index: index,
-                        subqueryName: { Self.boundSubqueryName($0, in: [bound]) }),
+                try appendProjection(bound, name: Self.projectionName(expression, alias: alias, index: index, bound: bound),
                     columns: &columns, projection: &projection, reservation: reservation)
             }
         }
+    }
+
+    /// Names one bound projection item. Nested scalar subqueries recurse
+    /// through `appendProjectionItem`, so the naming closure that captures
+    /// `bound` lives in this out-of-line frame instead of every level's.
+    @inline(never)
+    private static func projectionName(_ expression: Expression, alias: String?, index: Int,
+        bound: CanonicalBoundExpression) -> String {
+        if let alias { return alias }
+        return outputName(expression, index: index, subqueryName: { boundSubqueryName($0, in: [bound]) })
     }
 
     private func appendProjection(_ bound: CanonicalBoundExpression, name: String,
