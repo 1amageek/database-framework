@@ -521,6 +521,62 @@ struct SPARQLFunctionTransactionTests {
         await scenario.container.shutdown()
     }
 
+    @Test("Graph-enabled SQL preparation preserves aggregate input and window phases", .timeLimit(.minutes(1)))
+    func preparesSQLAggregatesAndWindows() async throws {
+        let scenario = try await makeScenario()
+        do {
+            let context = scenario.container.testBaseContext()
+            let count = try await executePreparedSQL(
+                "SELECT pg_catalog.count(*) FROM (VALUES (1),(2),(3)) v(score) LIMIT 1", context: context,
+                container: scenario.container)
+            #expect(count.rows.map(\.values) == [[.primitive(.int64(3))]])
+            let window = try await executePreparedSQL(
+                "SELECT row_number() OVER (ORDER BY score), sum(score) OVER () FROM (VALUES (3),(1),(2)) v(score) ORDER BY score LIMIT 2",
+                context: context, container: scenario.container)
+            #expect(window.rows.map(\.values) == [[.primitive(.int64(1)), .primitive(.int64(6))],
+                [.primitive(.int64(2)), .primitive(.int64(6))]])
+        } catch {
+            await scenario.container.shutdown()
+            throw error
+        }
+        await scenario.container.shutdown()
+    }
+
+    @Test("SQL aggregate and window preparation keeps graph producers in one transaction", .timeLimit(.minutes(1)))
+    func preparesHybridAggregatesAndWindows() async throws {
+        let scenario = try await makeScenario()
+        do {
+            let context = scenario.container.testBaseContext()
+            try await seedGraph(context)
+            let before = scenario.engine.transactionCount
+            let response = try await executePreparedSQL(
+                """
+                SELECT count(*), row_number() OVER () FROM "SPARQLTransactionUser"
+                WHERE resource IN (SPARQL("SPARQLTransactionStatement", 'SELECT ?s WHERE { ?s <urn:predicate:active> "true" }'))
+                LIMIT 1
+                """, context: context, container: scenario.container)
+            #expect(response.rows.map(\.values) == [[.primitive(.int64(2)), .primitive(.int64(1))]])
+            #expect(scenario.engine.transactionCount - before == 1)
+        } catch {
+            await scenario.container.shutdown()
+            throw error
+        }
+        await scenario.container.shutdown()
+    }
+
+    private func executePreparedSQL(_ sql: String, context: DatabaseContext, container: DBContainer) async throws -> QueryResponse {
+        let parsed = try SQLParser().parseSelectWithSource(sql)
+        let options = ReadExecutionOptions()
+        let meter = DatabaseWorkMeter(budget: options.budget, monotonicClock: container.monotonicClock)
+        let execution = ReadExecutionContext(options: options, monotonicClock: container.monotonicClock, workMeter: meter)
+        return try await context.indexQueryContext.withSession(workMeter: meter) { session in
+            let prepared = try await context.prepareSQLSelectForCanonicalExecution(parsed.query,
+                workMeter: meter, session: session, structuralLimits: .default,
+                occurrences: parsed.occurrences, occurrence: parsed.root)
+            return try await prepared.execute(in: session, execution: execution)
+        }
+    }
+
     private func seedGraph(_ context: DatabaseContext) async throws {
         for ordinal in 1...2 {
             let iri = try RDFIRI("urn:user:source-\(ordinal)")

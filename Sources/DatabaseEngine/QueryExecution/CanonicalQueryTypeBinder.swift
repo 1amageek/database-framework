@@ -2763,7 +2763,8 @@ struct CanonicalQueryTypeBinder {
 extension CanonicalQueryTypeBinder {
     private func bindSQLAggregate(_ call: SQLAggregateCall, asWindow: Bool = false,
         indexedArgumentOccurrences: Bool = true) throws -> CanonicalBoundExpression {
-        guard !allowingSPARQLFunctions, call.schema == nil || call.schema == "pg_catalog" else {
+        // The optional SPARQL producer does not change this explicitly selected SQL call.
+        guard call.schema == nil || call.schema == "pg_catalog" else {
             throw mismatch("SQL aggregate namespace or language")
         }
         let ordered = [.percentileCont, .percentileDisc, .mode].contains(call.function)
@@ -3047,7 +3048,6 @@ extension CanonicalQueryTypeBinder {
     }
 
     private func bindWindow(_ call: WindowCall, expression: Expression) throws -> CanonicalBoundExpression {
-        guard !allowingSPARQLFunctions else { throw mismatch("window expression in SPARQL") }
         let reference = childBinder(.windowReference)
         let definition: CanonicalBoundWindowDefinition
         switch call.reference {

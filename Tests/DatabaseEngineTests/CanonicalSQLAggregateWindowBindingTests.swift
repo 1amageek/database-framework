@@ -216,6 +216,35 @@ struct CanonicalSQLAggregateWindowBindingTests {
         #expect(try binder().bind(analytic(.nthValue, [.string("x"), .null])).type == .sql(.text))
     }
 
+    @Test("Optional graph producers preserve explicitly selected SQL aggregates and windows")
+    func graphProducerCapabilityPreservesSQL() throws {
+        let selected = CanonicalQueryTypeBinder(columns: [], allowingSPARQLFunctions: true,
+            resolveColumn: { throw DatabaseExpressionEvaluationError.missingColumn($0.column) },
+            wildcardSlots: { _ in [] })
+        let count = try selected.bind(sql(.count, []))
+        #expect(count.type == .sql(.bigint))
+        #expect(count.aggregate?.call.function == .count)
+        #expect(try selected.bind(analytic(.rowNumber)).window != nil)
+        let over = Expression.window(WindowCall(function: .aggregate(SQLAggregateCall(function: .sum,
+            arguments: [.int(1)])), reference: .specification(WindowSpecification())))
+        #expect(try selected.bind(over).window?.aggregate?.aggregate?.call.function == .sum)
+        // Generic aggregates retain the existing SPARQL evaluator selection.
+        #expect(try selected.bind(.aggregate(.count(nil, distinct: false))).aggregate == nil)
+    }
+
+    @Test("Optional graph producers preserve SQL namespace, clause and nesting rejection")
+    func graphProducerCapabilityPreservesRejection() throws {
+        let selected = CanonicalQueryTypeBinder(columns: [], allowingSPARQLFunctions: true,
+            resolveColumn: { throw DatabaseExpressionEvaluationError.missingColumn($0.column) },
+            wildcardSlots: { _ in [] })
+        #expect(throws: DatabaseExpressionEvaluationError.self) {
+            try selected.bind(.aggregate(.sql(SQLAggregateCall(function: .count, arguments: [], schema: "other"))))
+        }
+        #expect(throws: DatabaseExpressionEvaluationError.self) { try selected.bindPredicate(sql(.count, [])) }
+        #expect(throws: DatabaseExpressionEvaluationError.self) { try selected.bind(sql(.sum, [analytic(.rowNumber)])) }
+        #expect(throws: DatabaseExpressionEvaluationError.self) { try selected.bind(analytic(.lag, [analytic(.rank)])) }
+    }
+
     private func sql(_ function: SQLAggregateFunction, _ arguments: [Expression]) -> Expression {
         .aggregate(.sql(SQLAggregateCall(function: function, arguments: arguments)))
     }

@@ -155,6 +155,8 @@ SQL text + supplied parameters
 typed Engine failure(address, cause) -> optional local source annotation
 ```
 
+SQL preflight may enable graph producers without changing SQL aggregate or window admission; the binding contract is owned by [QueryExecution](../DatabaseEngine/QueryExecution/DESIGN.md#sql-expression-admission-and-optional-graph-producers).
+
 The product SPARQL producer may have data-dependent output types. Preflight
 checks its exact unqualified signature, raw SPARQL syntax and all determinable
 SQL names/types/parameter contexts before graph reads. Deferred producer output

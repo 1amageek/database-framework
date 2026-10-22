@@ -78,6 +78,23 @@ Fusion sealed projection + retained primary-key source
 
 ## Contracts and Invariants
 
+### SQL expression admission and optional graph producers
+
+`allowingSPARQLFunctions` enables the explicitly recognized `SPARQL()` producer
+in SQL parameter preflight; it does not change the language of explicitly
+selected SQL aggregate or window nodes. Those nodes retain SQL signatures,
+namespace checks, clause phases and nesting rules with either flag value.
+Generic aggregate nodes retain their existing SQL normalization or SPARQL
+semantics. Enabling graph producers must therefore preserve the result of an
+ordinary SQL SELECT, including aggregation before LIMIT and window evaluation.
+
+The Database facade owns graph rewriting in the parent read transaction. This
+component only binds the admitted expression and keeps the same work meter,
+source occurrences, lexical scope and authorization-bound read resources. No
+fallback execution route or new snapshot is introduced. Regression owners are
+`CanonicalSQLAggregateWindowBindingTests` and the Graph-enabled
+`SPARQLFunctionTransactionTests` facade preparation tests.
+
 ### S12 collecting-only block composition
 
 [SQLBlock](../SQLBlock/DESIGN.md) owns the aggregate statement-result lifecycle.
