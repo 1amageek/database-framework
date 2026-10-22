@@ -8,14 +8,14 @@ struct SQLResolvedPagination: Sendable {
 
 func sqlSingleRow(_ row: CanonicalSourceRow, schema: CanonicalRelationSchema,
                   retaining lease: DatabaseQueryPayloadLease? = nil,
-                  meter: DatabaseWorkMeter) throws -> CanonicalRelation {
+                  meter: DatabaseWorkMeter, stage: DatabaseWorkStage = .bindingCandidate) throws -> CanonicalRelation {
     var builder = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(workMeter: meter,
-        stage: .bindingCandidate, layout: DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self), expectedCount: 1)
+        stage: stage, layout: DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self), expectedCount: 1)
     try builder.append(footprint: CanonicalRelationalFootprintMeter.sourceAliasFootprint(of: row,
-        workMeter: meter, stage: .bindingCandidate)) {
+        workMeter: meter, stage: stage)) {
         lease.map { row.retainingPayload($0) } ?? row
     }
-    return CanonicalRelation(schema: schema, rows: try builder.finish().moveToSharedOwnership(at: .bindingCandidate))
+    return CanonicalRelation(schema: schema, rows: try builder.finish().moveToSharedOwnership(at: stage))
 }
 
 /// A streaming SELECT keeps filters before offset and output projection after it.

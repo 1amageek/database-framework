@@ -330,8 +330,9 @@ struct CanonicalSQLRetainedOwnershipTests {
     func projectionRejectsBeforeDestinationAdmission() async throws {
         let container = try await makeContainer()
         defer { await container.shutdown() }
+        // The first retained output and the next input fit; the next projection must be admitted separately.
         let meter = makeMeter(
-            maximumIntermediateRows: 2,
+            maximumIntermediateRows: 4,
             maximumIntermediateBytes: 1_024 * 1_024
         )
         let execution = makeExecution(
@@ -363,9 +364,9 @@ struct CanonicalSQLRetainedOwnershipTests {
                 return
             }
             #expect(stage == .projection)
-            #expect(consumed == 2)
+            #expect(consumed == 4)
             #expect(requested == 1)
-            #expect(maximum == 2)
+            #expect(maximum == 4)
         }
 
         #expect(meter.retainedIntermediateRows == 0)

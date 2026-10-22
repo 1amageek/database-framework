@@ -130,7 +130,9 @@ payload owners; this path avoids the intermediate public QueryRow container and
 per-row public schema/lease-vector construction. Computed, composite-field,
 outer-frame, aggregate and volatile targets continue through the selected projection owner.
 Scratch cell storage is admitted before allocation and output storage before
-publication, on the same invocation meter.
+publication, on the same invocation meter. Selected destination containers are
+admitted at `projection`, including direct-column transfers. Failed admission
+preserves that stage and releases the complete ledger.
 
 An alias reframe may reuse the immutable positional value buffer and the target
 schema's immutable layout when the input mapping is dense identity and the

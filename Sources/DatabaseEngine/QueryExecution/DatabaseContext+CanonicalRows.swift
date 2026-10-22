@@ -3250,7 +3250,7 @@ extension DatabaseContext {
                         // Bound column evaluation borrows cells from the retained source owner.
                         return try sqlSingleRow(CanonicalSourceRow(values: values, layout: outputSchema.layout,
                             annotations: row.annotations, version: row.version, payloadLeases: row.payloadLeases),
-                            schema: outputSchema, meter: meter)
+                            schema: outputSchema, meter: meter, stage: .projection)
                     }
                     let relation = try sqlSingleRow(row, schema: sourcePlan.schema, meter: meter)
                     let projected = try await projectRows(relation.rows, projection: query.projection,
