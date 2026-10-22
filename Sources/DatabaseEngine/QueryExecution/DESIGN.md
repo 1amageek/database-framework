@@ -1969,6 +1969,26 @@ Row-policy predicates are preserved by the original admission and applied before
 the retained entry is exposed. Retained bytes/rows and registry growth are charged
 before allocation on the same meter.
 
+Expression capture is one owned asynchronous preparation operation, including
+an expression with no subquery. It yields before traversing its admitted bound
+expression and before returning, and checks cancellation/deadline on the same
+meter after each successful resumption. Failure unwind also yields and preserves
+the original error. These boundaries follow SQLRelations' owned-advance
+scheduling contract and bound synchronous continuation accumulation across a
+multi-row VALUES statement on standard WASM. They do not split a statement,
+spawn a task, enlarge the runtime stack, consume extra work units, or evaluate a
+scalar expression. The existing iterative traversal, child-query capture,
+prewrite snapshot timing and retained payload owners remain authoritative.
+
+`SQLBlockExecutionTests.bulkInsertRetainsOrderedResults` verifies one 100-row
+INSERT with ordered RETURNING and independent committed reads;
+`bulkInsertFailureRollsBack` verifies a late scalar failure, exact affected-row
+budget rejection and subsequent recovery. Exact standard/Embedded WASM runtime
+verification must also execute one 100-row VALUES INSERT without setup batching
+under the unchanged host stack configuration. Native success alone cannot
+establish the WASM continuation bound. Existing statement-read authorization,
+correlation and SQLBlock cancellation/lifecycle tests remain regressions.
+
 The existing `CanonicalQueryBindingResources` retains the originating SELECT
 through one metered, immutable `SQLStatementReadOrigin` reference per
 statement-scope query. A derived resources owner shares parameter/resolution

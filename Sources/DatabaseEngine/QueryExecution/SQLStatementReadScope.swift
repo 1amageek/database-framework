@@ -97,20 +97,30 @@ final class SQLStatementReadScope: Sendable {
     }
 
     func capture(_ expression: CanonicalBoundExpression, outerLayout: CanonicalSourceLayout? = nil) async throws {
-        var pending = try SQLArrayBuffer<CanonicalBoundExpression>(meter: execution.workMeter)
-        try pending.append(expression)
-        var index = 0
-        while index < pending.values.count {
-            let value = pending.values[index]
-            index += 1
-            let query: SelectQuery?
-            switch value.expression {
-            case .subquery(let body), .arraySubquery(let body), .exists(let body), .inSubquery(_, let body): query = body
-            case .quantifiedComparison(_, _, _, .subquery(let body)): query = body
-            default: query = nil
+        // Even literal-only preparation must not accumulate synchronous WASM continuations.
+        await Task.yield()
+        try execution.workMeter.checkpoint(at: .expressionEvaluation)
+        do {
+            var pending = try SQLArrayBuffer<CanonicalBoundExpression>(meter: execution.workMeter)
+            try pending.append(expression)
+            var index = 0
+            while index < pending.values.count {
+                let value = pending.values[index]
+                index += 1
+                let query: SelectQuery?
+                switch value.expression {
+                case .subquery(let body), .arraySubquery(let body), .exists(let body), .inSubquery(_, let body): query = body
+                case .quantifiedComparison(_, _, _, .subquery(let body)): query = body
+                default: query = nil
+                }
+                if let query { try await capture(query, outerLayout: outerLayout) }
+                for child in value.children { try pending.append(child) }
             }
-            if let query { try await capture(query, outerLayout: outerLayout) }
-            for child in value.children { try pending.append(child) }
+            await Task.yield()
+            try execution.workMeter.checkpoint(at: .expressionEvaluation)
+        } catch {
+            await Task.yield()
+            throw error
         }
     }
 

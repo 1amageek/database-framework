@@ -513,6 +513,12 @@ query entry points keep their read-admission factory.
 
 ### Bounded async row and candidate advances
 
+Prewrite expression capture consumes QueryExecution's
+[statement-read preparation contract](../QueryExecution/DESIGN.md#s14-statement-read-and-mutation-projection-scope).
+Mutation still supplies every bound assignment and RETURNING expression before
+sealing the one statement scope. Cooperative capture does not evaluate or apply
+an assignment, change source authorization, or publish a partial mutation.
+
 Mutation applies the existing [SQLRelations owned-advance scheduling
 contract](../QueryExecution/SQLRelations/DESIGN.md) at two operation boundaries:
 `sqlRow` converts one captured/RETURNING model image, and `sqlMatches` evaluates

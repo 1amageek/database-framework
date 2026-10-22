@@ -210,6 +210,62 @@ struct SQLBlockExecutionTests {
         #expect(try await context.model(for: "temporary", as: BlockItem.self) == nil)
     }
 
+    @Test("One hundred VALUES rows retain ordered RETURNING and committed values")
+    func bulkInsertRetainsOrderedResults() async throws {
+        let container = try await makeContainer()
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        let values = (0..<100).map { "('bulk-\($0)', 'value-\($0)')" }.joined(separator: ",")
+        let result = try await context.executeSQLBlock(
+            "INSERT INTO \"BlockItem\" (id, title) VALUES " + values + " RETURNING id, title",
+            options: options())
+        let returned = try rows(#require(result.results.first))
+        #expect(returned.affectedRows == 100)
+        #expect(returned.columns.map(\.name) == ["id", "title"])
+        #expect(returned.rows.map(\.values) == (0..<100).map {
+            [.primitive(.string("bulk-\($0)")), .primitive(.string("value-\($0)"))]
+        })
+        for index in [0, 50, 99] {
+            #expect(try await context.model(for: "bulk-\(index)", as: BlockItem.self)?.title == "value-\(index)")
+        }
+        let count = try await context.executeSQL("SELECT COUNT(*) FROM \"BlockItem\"")
+        #expect(count.rows.map(\.values) == [[.primitive(.int64(100))]])
+    }
+
+    @Test("Late bulk value failure and row budget rejection preserve whole-statement rollback")
+    func bulkInsertFailureRollsBack() async throws {
+        let container = try await makeContainer()
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        let values = (0..<99).map { "('bulk-\($0)', 'value-\($0)')" }.joined(separator: ",")
+        do {
+            _ = try await context.executeSQLBlock(
+                "INSERT INTO \"BlockItem\" (id, title) VALUES " + values
+                    + ",('bulk-99', CAST(1 / 0 AS TEXT))", options: options())
+            Issue.record("The last value must fail without publishing earlier rows")
+        } catch let failure as SQLExecutionFailure {
+            guard failure.diagnostic.sqlState == "22012" else { throw failure }
+        }
+        let complete = values + ",('bulk-99', 'value-99')"
+        await #expect {
+            try await context.executeSQLBlock(
+                "INSERT INTO \"BlockItem\" (id, title) VALUES " + complete,
+                options: options(budget: ExecutionBudget(maximumRows: 99)))
+        } throws: { error in
+            guard let failure = error as? SQLExecutionFailure,
+                  let cause = failure.underlyingError as? DatabaseEntityMutationError,
+                  case .changeLimitExceeded(let actual, let maximum) = cause else { return false }
+            return actual == 100 && maximum == 99
+        }
+        let empty = try await context.executeSQL("SELECT COUNT(*) FROM \"BlockItem\"")
+        #expect(empty.rows.map(\.values) == [[.primitive(.int64(0))]])
+        let recovered = try await context.executeSQLBlock(
+            "INSERT INTO \"BlockItem\" (id, title) VALUES " + complete,
+            options: options(budget: ExecutionBudget(maximumRows: 100)))
+        #expect(recovered.results.count == 1)
+        expectCommand(recovered.results[0], .insert, 100)
+    }
+
     private func makeContainer() async throws -> DBContainer {
         let schema = try Schema(entities: [BlockItem.schemaEntity])
         #if SQLITE
