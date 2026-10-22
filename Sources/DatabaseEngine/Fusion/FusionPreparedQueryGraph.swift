@@ -154,7 +154,7 @@ enum FusionSelectQueryGraphWalker {
                 if case .table(let tableRef) = source {
                     let isCommonTable = try tableRef.schema == nil
                         && (stack.scope?.contains(tableRef.table, workMeter: workMeter) == true
-                            || ActiveSQLStatementReads.scope?.relation(named: tableRef.table) != nil)
+                            || ActiveSQLStatementReads.relation(named: tableRef.table) != nil)
                     if !isCommonTable { try visitTable(tableRef, query) }
                 } else if case .logical(let logicalSource) = source,
                     logicalSource.kindIdentifier

@@ -6,20 +6,24 @@ final class SQLStatementSourceSnapshot: Sendable {
     let table: TableRef
     let query: SelectQuery
     let sqlResolution: SQLReadResolution?
+    let declarations: SQLStatementReadDeclarations
     private let meter: DatabaseWorkMeter
     private let scopeIdentity: ObjectIdentifier
     private let reservation: DatabaseIntermediateReservation
     private let value = Mutex<CanonicalRelation?>(nil)
 
-    init(table: TableRef, query: SelectQuery, scopeIdentity: ObjectIdentifier, meter: DatabaseWorkMeter, sqlResolution: SQLReadResolution? = nil) throws {
+    init(table: TableRef, query: SelectQuery, scopeIdentity: ObjectIdentifier, meter: DatabaseWorkMeter, declarations: SQLStatementReadDeclarations, sqlResolution: SQLReadResolution? = nil) throws {
         self.table = table; self.query = query; self.meter = meter
         self.scopeIdentity = scopeIdentity
         self.sqlResolution = sqlResolution
         reservation = try meter.reserveIntermediate(bytes: 256, at: .bindingCandidate)
+        self.declarations = declarations
     }
     var isCaptured: Bool { value.withLock { $0 != nil } }
-    func matches(_ table: TableRef, query: SelectQuery, sqlResolution: SQLReadResolution? = nil) -> Bool {
-        self.sqlResolution?.viewBindings == sqlResolution?.viewBindings
+    func matches(_ table: TableRef, query: SelectQuery, declarations: SQLStatementReadDeclarations,
+        sqlResolution: SQLReadResolution? = nil) -> Bool {
+        guard self.declarations.samePrefix(as: declarations) else { return false }
+        return self.sqlResolution?.viewBindings == sqlResolution?.viewBindings
             && CanonicalSourceName.equal(self.table.schema, table.schema)
             && CanonicalSourceName.equal(self.table.table, table.table)
             && CanonicalSourceName.equal(self.table.alias, table.alias)

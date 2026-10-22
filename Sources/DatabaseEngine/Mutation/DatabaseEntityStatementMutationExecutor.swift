@@ -89,11 +89,13 @@ public struct DatabaseEntityStatementMutationExecutor: Sendable {
         let statement = preparation.executor
         let temporal = SQLTemporalStatementBinding(container: container, environment: statement.temporalEnvironment!)
         return try await ActiveSQLTemporalStatement.$binding.withValue(temporal) {
-            try await ActiveSQLSession.$binding.withValue(statement.sqlSession) {
+            try await ActiveSQLStatementReads.$declarations.withValue(preparation.declarations) {
+              try await ActiveSQLSession.$binding.withValue(statement.sqlSession) {
                 try await DatabaseEntityMutationExecutor(container: container, limits: limits)
                     .validate(preconditions, transaction: transaction, workMeter: workMeter)
                 return try await statement.executePreparedSQL(input, preparation: preparation, scope: readScope,
                     transaction: transaction, workMeter: workMeter)
+              }
             }
         }
     }
@@ -958,7 +960,10 @@ extension DatabaseEntityStatementMutationExecutor {
         executor.sqlCatalog = catalog
         executor.sqlSchema = schema
         executor.sqlSession = try await transaction.makeSQLSessionBinding(searchPath: scope.searchPath, workMeter: workMeter)
-        return try await executor.prepareSQL(input, scope: scope, transaction: transaction, workMeter: workMeter)
+        let declarations = try scope.declarationSnapshot()
+        return try await ActiveSQLStatementReads.$declarations.withValue(declarations) {
+            try await executor.prepareSQL(input, scope: scope, transaction: transaction, workMeter: workMeter)
+        }
     }
 
     private struct SQLStatementBinding {
@@ -1116,14 +1121,14 @@ extension DatabaseEntityStatementMutationExecutor {
         } else { sourceProjection = [] }
         let readQuery = source.map { SelectQuery(projection: sourceProjection.isEmpty ? [.expression(.literal(.int(1)))] : sourceProjection, source: $0) }
         let bindings = try sqlPreparationBindings(input, entity: entity, targetLayout: layout, joinedLayout: joined, scope: scope)
-        for bound in bindings { try await scope.capture(bound, outerLayout: joined) }
-        if let insertSourceQuery { try await scope.capture(insertSourceQuery) }
-        if let readQuery { try await scope.capture(readQuery, outerLayout: layout) }
+        for bound in bindings { try scope.prepare(bound, outerLayout: joined) }
+        if let insertSourceQuery { try scope.prepare(insertSourceQuery) }
+        if let readQuery { try scope.prepare(readQuery, outerLayout: layout) }
         let returnLayout = try sqlReturningRow(current: sqlNullRow(layout), old: nil, new: nil,
             source: sourceLayout.map(sqlNullRow), aliases: aliases, merge: { if case .merge = input { return true }; return false }(),
             action: nil, workMeter: workMeter).layout
         let returningPlan = try returning.map { try scope.bindProjection($0, layout: returnLayout, allowingMergeAction: { if case .merge = input { return true }; return false }()) }
-        if let returningPlan { for expression in returningPlan.projection { try await scope.capture(expression, outerLayout: returnLayout) } }
+        if let returningPlan { for expression in returningPlan.projection { try scope.prepare(expression, outerLayout: returnLayout) } }
         var returningFields: (current: Set<String>, old: Set<String>, new: Set<String>) = ([], [], [])
         let oldName = aliases?.old ?? "old"
         let newName = aliases?.new ?? "new"
@@ -1144,6 +1149,7 @@ extension DatabaseEntityStatementMutationExecutor {
             else if qualifier == newName { returningFields.new.formUnion(selected) }
             else if qualifier == nil || qualifier == table.effectiveName { returningFields.current.formUnion(selected) }
         }
+        try await scope.capture()
         let models: DatabaseRetainedPersistedModels
         if case .insert(let query) = input, query.onConflict == nil {
             let empty = try DatabaseRetainedArrayBuilder<DatabaseRetainedPersistedModels.Entry?>(workMeter: workMeter,
@@ -1154,7 +1160,8 @@ extension DatabaseEntityStatementMutationExecutor {
                 maximumRows: maximumRows, workMeter: workMeter)
         }
         return try SQLMutationPreparation(executor: self, input: input, scopeIdentity: ObjectIdentifier(scope),
-            transactionIdentity: ObjectIdentifier(transaction), mutationOwner: scope.allocateMutationOwner(), target: table, relation: relation, models: models,
+            transactionIdentity: ObjectIdentifier(transaction), mutationOwner: scope.allocateMutationOwner(),
+            declarations: try scope.declarationSnapshot(), target: table, relation: relation, models: models,
             targetLayout: layout, source: source, sourceReadQuery: readQuery, sourceLayout: sourceLayout,
             returningPlan: returningPlan, returningReadFields: returningFields, readClaims: readClaims.finish().moveToSharedOwnership(at: .mutationPlanning))
     }

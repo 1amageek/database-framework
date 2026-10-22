@@ -7,6 +7,7 @@ struct SQLMutationPreparation: Sendable {
     let scopeIdentity: ObjectIdentifier
     let transactionIdentity: ObjectIdentifier
     let mutationOwner: UInt64
+    let declarations: SQLStatementReadDeclarations
     let target: TableRef
     let relation: SQLRelation
     let models: DatabaseRetainedPersistedModels

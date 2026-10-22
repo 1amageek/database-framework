@@ -52,21 +52,47 @@ final class SQLStatementReadScope: Sendable {
     func physicalSource(_ table: TableRef, query: SelectQuery, sqlResolution: SQLReadResolution? = nil) throws -> SQLStatementSourceSnapshot {
         try validate()
         return try state.withLock { state in
-            if let existing = state.snapshots.first(where: { $0.matches(table, query: query, sqlResolution: sqlResolution) }) { return existing }
+            let declarations = try ActiveSQLStatementReads.declarations
+                ?? SQLStatementReadDeclarations(scope: self, count: state.relations.count, meter: execution.workMeter)
+            try declarations.requireScope(self)
+            if let existing = state.snapshots.first(where: { $0.matches(table, query: query,
+                declarations: declarations, sqlResolution: sqlResolution) }) { return existing }
             guard !state.sealed else { throw SQLStatementReadError.uncapturedSource }
             let value = try SQLStatementSourceSnapshot(table: table, query: query,
-                scopeIdentity: ObjectIdentifier(self), meter: execution.workMeter, sqlResolution: sqlResolution)
+                scopeIdentity: ObjectIdentifier(self), meter: execution.workMeter,
+                declarations: declarations, sqlResolution: sqlResolution)
             try CanonicalBindingStorage.append(value, to: &state.$snapshots, reservation: reservation)
             return value
         }
     }
 
-    func relation(named name: String) -> SQLStatementRelation? {
-        state.withLock { $0.relations.last(where: { CanonicalSourceName.equal($0.name, name) }) }
+    func relation(named name: String, visibleCount: Int? = nil) -> SQLStatementRelation? {
+        state.withLock { state in
+            guard !state.closed else { return nil }
+            let count = visibleCount ?? state.relations.count
+            guard count <= state.relations.count else { return nil }
+            return state.relations.prefix(count).last { CanonicalSourceName.equal($0.name, name) }
+        }
     }
 
-    var relationColumns: [(name: String, columns: [QueryColumn]?)] {
-        state.withLock { $0.relations.map { ($0.name, $0.columns) } }
+    func relationColumns(visibleCount: Int? = nil) -> [(name: String, columns: [QueryColumn]?)] {
+        state.withLock { state in
+            guard !state.closed else { return [] }
+            let count = visibleCount ?? state.relations.count
+            guard count <= state.relations.count else { return [] }
+            return state.relations.prefix(count).map { ($0.name, $0.columns) }
+        }
+    }
+
+    func declarationSnapshot() throws -> SQLStatementReadDeclarations {
+        try validate()
+        if let declarations = ActiveSQLStatementReads.declarations {
+            try declarations.requireScope(self)
+            return declarations
+        }
+        return try state.withLock {
+            try SQLStatementReadDeclarations(scope: self, count: $0.relations.count, meter: execution.workMeter)
+        }
     }
 
     func register(name: String, columns: [QueryColumn]?, aliases: [String]? = nil) throws -> SQLStatementRelation {
@@ -82,39 +108,50 @@ final class SQLStatementReadScope: Sendable {
         return relation
     }
 
-    func capture(_ query: SelectQuery, outerLayout: CanonicalSourceLayout? = nil) async throws {
+    @discardableResult
+    func prepare(_ query: SelectQuery, outerLayout: CanonicalSourceLayout? = nil) throws -> CanonicalBoundSelect {
         try validate()
         guard !state.withLock({ $0.sealed }) else { throw SQLStatementReadError.uncapturedSource }
-        _ = try context.bindStatementReadQuery(query, scope: self, outerLayout: outerLayout)
+        return try context.bindStatementReadQuery(query, scope: self, outerLayout: outerLayout)
+    }
+
+    func prepare(_ expression: CanonicalBoundExpression, outerLayout: CanonicalSourceLayout? = nil) throws {
+        try validate()
+        guard !state.withLock({ $0.sealed }) else { throw SQLStatementReadError.uncapturedSource }
+        var pending = try SQLArrayBuffer<CanonicalBoundExpression>(meter: execution.workMeter)
+        try pending.append(expression)
         var index = 0
-        while let source = state.withLock({ index < $0.snapshots.count ? $0.snapshots[index] : nil }) {
+        while index < pending.values.count {
+            let value = pending.values[index]
             index += 1
-            if !source.isCaptured {
-                let relation = try await context.captureStatementReadSource(source, scope: self)
-                try source.install(relation)
+            let query: SelectQuery?
+            switch value.expression {
+            case .subquery(let body), .arraySubquery(let body), .exists(let body), .inSubquery(_, let body): query = body
+            case .quantifiedComparison(_, _, _, .subquery(let body)): query = body
+            default: query = nil
             }
+            if let query { try prepare(query, outerLayout: outerLayout) }
+            for child in value.children { try pending.append(child) }
         }
     }
 
-    func capture(_ expression: CanonicalBoundExpression, outerLayout: CanonicalSourceLayout? = nil) async throws {
-        // Even literal-only preparation must not accumulate synchronous WASM continuations.
+    /// One same-task I/O driver; metadata-only preparation never awaits per input node.
+    func capture() async throws {
         await Task.yield()
         try execution.workMeter.checkpoint(at: .expressionEvaluation)
         do {
-            var pending = try SQLArrayBuffer<CanonicalBoundExpression>(meter: execution.workMeter)
-            try pending.append(expression)
+            try validate()
+            guard !state.withLock({ $0.sealed }) else { throw SQLStatementReadError.uncapturedSource }
             var index = 0
-            while index < pending.values.count {
-                let value = pending.values[index]
+            while let source = state.withLock({ index < $0.snapshots.count ? $0.snapshots[index] : nil }) {
                 index += 1
-                let query: SelectQuery?
-                switch value.expression {
-                case .subquery(let body), .arraySubquery(let body), .exists(let body), .inSubquery(_, let body): query = body
-                case .quantifiedComparison(_, _, _, .subquery(let body)): query = body
-                default: query = nil
+                try execution.workMeter.consume(at: .bindingCandidate)
+                if !source.isCaptured {
+                    let relation = try await context.captureStatementReadSource(source, scope: self)
+                    try source.install(relation)
+                    await Task.yield()
+                    try execution.workMeter.checkpoint(at: .expressionEvaluation)
                 }
-                if let query { try await capture(query, outerLayout: outerLayout) }
-                for child in value.children { try pending.append(child) }
             }
             await Task.yield()
             try execution.workMeter.checkpoint(at: .expressionEvaluation)
@@ -237,6 +274,17 @@ final class SQLStatementReadScope: Sendable {
 
 enum ActiveSQLStatementReads {
     @TaskLocal static var scope: SQLStatementReadScope?
+    @TaskLocal static var declarations: SQLStatementReadDeclarations?
+
+    static func relation(named name: String) -> SQLStatementRelation? {
+        if let declarations { return declarations.relation(named: name) }
+        return scope?.relation(named: name)
+    }
+
+    static var relationColumns: [(name: String, columns: [QueryColumn]?)] {
+        if let declarations { return declarations.columns }
+        return scope?.relationColumns() ?? []
+    }
     @TaskLocal static var metadataOnly = false
     @TaskLocal static var mergeReturning = false
 }

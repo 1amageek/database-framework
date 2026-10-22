@@ -406,6 +406,7 @@ public struct SQLBlockExecutor: Sendable {
                     do {
                         let prepared = try await prepare(bound, scope: scope, transaction: transaction,
                             options: options, workMeter: workMeter)
+                        try await scope.capture()
                         try scope.seal()
                         let result = try await run(prepared, scope: scope, transaction: transaction,
                             options: options, temporal: temporal, workMeter: workMeter)
@@ -464,7 +465,7 @@ public struct SQLBlockExecutor: Sendable {
         switch statement {
         case .select(let query):
             guard !query.source.usesSPARQLSemantics else { throw SQLBlockExecutionError.unsupportedStatement }
-            try await scope.capture(query)
+            try scope.prepare(query)
             return .select(query)
         case .insert, .update, .delete, .merge:
             let executor = try mutationExecutor(options: options, workMeter: workMeter)
@@ -482,7 +483,7 @@ public struct SQLBlockExecutor: Sendable {
                 }
                 let query = body.replacing(subqueries: definitions + (body.subqueries ?? []))
                     .replacing(withRecursive: with.recursive || body.withRecursive)
-                try await scope.capture(query)
+                try scope.prepare(query)
                 return .select(query)
             }
             var definitions = try SQLArrayBuffer<PreparedNamedStatement>(meter: workMeter)
@@ -497,7 +498,7 @@ public struct SQLBlockExecutor: Sendable {
                         query = SelectQuery(projection: [.wildcard()], source: .table(TableRef(definition.name)),
                             subqueries: [selected], withRecursive: true)
                     } else { query = body }
-                    _ = try await context.prepareStatementSelect(query, name: definition.name,
+                    _ = try context.prepareStatementSelect(query, name: definition.name,
                         aliases: with.recursive ? nil : definition.columns, scope: scope)
                 case .insert, .update, .delete, .merge:
                     guard definition.search == nil, definition.cycle == nil else {

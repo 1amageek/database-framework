@@ -10632,7 +10632,7 @@ extension DatabaseContext {
             let names = try aliasedColumnNames(plan.columns.map { $0.name }, overrides: named.columns)
             schema = try CanonicalRelationSchema(scopes: [CanonicalRelationScope(name: table.table,
                 columns: names, types: plan.columns.map { $0.type }, nullability: plan.columns.map { $0.isNullable })])
-        } else if table.schema == nil, let relation = ActiveSQLStatementReads.scope?.relation(named: table.table) {
+        } else if table.schema == nil, let relation = ActiveSQLStatementReads.relation(named: table.table) {
             guard table.partitions.isEmpty, let columns = relation.columns else {
                 throw SQLStatementReadError.unreadableRelation(table.table)
             }
@@ -11705,7 +11705,8 @@ extension DatabaseContext {
 
     func captureStatementReadSource(_ source: SQLStatementSourceSnapshot,
         scope: SQLStatementReadScope) async throws -> CanonicalRelation {
-        try await scope.session.withCanonicalExecution(workMeter: scope.execution.workMeter) { _ in
+        try await ActiveSQLStatementReads.$declarations.withValue(source.declarations) {
+          try await scope.session.withCanonicalExecution(workMeter: scope.execution.workMeter) { _ in
             try scope.validate()
             let execution = source.sqlResolution.map { scope.execution.withSQLResolution($0) } ?? scope.execution
             let graph = try FusionPreflight.resolveGraph(source.query, context: self,
@@ -11716,6 +11717,7 @@ extension DatabaseContext {
                 return try await materializeUnwindowedTableSourceRows(source.table,
                     options: execution, transaction: session.transaction, authorizationQuery: source.query)
             }
+          }
         }
     }
 
@@ -11844,12 +11846,13 @@ extension DatabaseContext {
     }
 
     func prepareStatementSelect(_ query: SelectQuery, name: String, aliases: [String]?,
-        scope: SQLStatementReadScope) async throws -> SQLStatementRelation {
-        let plan = try bindStatementReadQuery(query, scope: scope)
-        try await scope.capture(query)
+        scope: SQLStatementReadScope) throws -> SQLStatementRelation {
+        let declarations = try scope.declarationSnapshot()
+        let plan = try scope.prepare(query)
         let declaration = try scope.register(name: name, columns: plan.columns, aliases: aliases)
         let schema = try outputSchema(declaration.columns ?? [])
-        let cache = try SQLCTECache(schema: schema, meter: scope.execution.workMeter) { [self] in
+        let cache = try SQLCTECache(schema: schema, meter: scope.execution.workMeter,
+            declarations: declarations) { [self] in
             let context = try statementEvaluationContext(query, plan: plan, scope: scope, outer: nil)
             return reframedProducer(try await makeSelectProducer(query, plan: plan, context: context),
                 schema: schema, meter: scope.execution.workMeter)

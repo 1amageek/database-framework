@@ -164,7 +164,7 @@ struct SQLViewsExecutor: Sendable {
         try await withScope { scope in
             let definition = try ddl.context.admitSQLViewDefinition(query: query, columnNames: columns, scope: scope)
             if withData {
-                try await scope.capture(definition.query); try scope.seal()
+                try scope.prepare(definition.query); try await scope.capture(); try scope.seal()
                 let rows = try await scope.select(definition.query)
                 try admitPopulationRows(rows)
                 return (definition, rows)
@@ -175,7 +175,7 @@ struct SQLViewsExecutor: Sendable {
 
     private func captureStored(_ definition: SQLViewDefinition, id: String) async throws -> SQLBlockCollectedRows {
         try await withScope(definition: definition, id: id) { scope in
-            try await scope.capture(definition.query); try scope.seal()
+            try scope.prepare(definition.query); try await scope.capture(); try scope.seal()
             let rows = try await scope.select(definition.query)
             try admitPopulationRows(rows)
             return rows

@@ -5,6 +5,7 @@ actor SQLCTECache {
     nonisolated let schema: CanonicalRelationSchema
     private let gate = SQLRelationSerialGate()
     private let meter: DatabaseWorkMeter
+    private let declarations: SQLStatementReadDeclarations?
     private let reservation: DatabaseIntermediateReservation
     private var factory: (@Sendable () async throws -> any SQLRelationProducer)?
     private var producer: (any SQLRelationProducer)?
@@ -15,16 +16,20 @@ actor SQLCTECache {
     private var failure: (any Error)?
 
     init(schema: CanonicalRelationSchema, meter: DatabaseWorkMeter,
+         declarations: SQLStatementReadDeclarations? = ActiveSQLStatementReads.declarations,
          factory: @escaping @Sendable () async throws -> any SQLRelationProducer) throws {
         self.schema = schema
         self.meter = meter
+        self.declarations = declarations
         self.reservation = try meter.reserveIntermediate(bytes: 256, at: .bindingCandidate)
         self.factory = factory
     }
 
     nonisolated func consumer() -> any SQLRelationProducer {
         SQLRelationPullProducer(schema: schema, meter: meter, operation: { [self] index in
-            try await row(at: index)
+            try await ActiveSQLStatementReads.$declarations.withValue(declarations) {
+                try await row(at: index)
+            }
         })
     }
 

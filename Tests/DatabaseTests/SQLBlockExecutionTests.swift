@@ -266,6 +266,52 @@ struct SQLBlockExecutionTests {
         expectCommand(recovered.results[0], .insert, 100)
     }
 
+    @Test("Wide CTE metadata and nested expression preparation preserve atomic writes")
+    func wideStatementPreparation() async throws {
+        let container = try await makeContainer()
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        let definitions = (0..<100).map { "c\($0) AS (SELECT \($0) AS n)" }.joined(separator: ",")
+        let subqueries = (0..<100).map { "(SELECT \($0))" }.joined(separator: ",")
+        let prefix = "WITH " + definitions + " INSERT INTO \"BlockItem\" (id, title) VALUES "
+        let result = try await context.executeSQLBlock(prefix + "('wide', CAST(cardinality(ARRAY[" + subqueries + "]) AS TEXT))",
+            options: options())
+        expectCommand(try #require(result.results.first), .insert, 1)
+        #expect(try await context.model(for: "wide", as: BlockItem.self)?.title == "100")
+        do {
+            _ = try await context.executeSQLBlock(prefix + "('failed', CAST(1 / 0 AS TEXT))", options: options())
+            Issue.record("A prepared CTE list must not turn a late value failure into success")
+        } catch let failure as SQLExecutionFailure {
+            guard failure.diagnostic.sqlState == "22012" else { throw failure }
+        }
+        #expect(try await context.model(for: "failed", as: BlockItem.self) == nil)
+        #expect(try await context.model(for: "wide", as: BlockItem.self)?.title == "100")
+    }
+
+    @Test("A later CTE name does not hide an earlier physical snapshot")
+    func preparationRetainsLexicalDeclarations() async throws {
+        let container = try await makeContainer()
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        _ = try await context.executeStatement(insert("seed", "original"), options: options())
+        let result = try await context.executeSQLBlock("""
+            WITH source AS (SELECT title FROM "BlockItem" WHERE id = 'seed'),
+                 "BlockItem" AS (SELECT 'shadowed' AS title)
+            INSERT INTO "BlockItem" (id, title) SELECT 'copy', title FROM source
+            """, options: options())
+        expectCommand(try #require(result.results.first), .insert, 1)
+        #expect(try await context.model(for: "copy", as: BlockItem.self)?.title == "original")
+        let eager = try await context.executeSQLBlock("""
+            WITH copied AS (INSERT INTO "BlockItem" (id, title)
+                    VALUES ('eager', (SELECT title FROM "BlockItem" WHERE id = 'seed')) RETURNING title),
+                 "BlockItem" AS (SELECT 'shadowed' AS title)
+            INSERT INTO "BlockItem" (id, title) SELECT 'eager-copy', title FROM copied
+            """, options: options())
+        expectCommand(try #require(eager.results.first), .insert, 1)
+        #expect(try await context.model(for: "eager", as: BlockItem.self)?.title == "original")
+        #expect(try await context.model(for: "eager-copy", as: BlockItem.self)?.title == "original")
+    }
+
     private func makeContainer() async throws -> DBContainer {
         let schema = try Schema(entities: [BlockItem.schemaEntity])
         #if SQLITE

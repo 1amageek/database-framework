@@ -175,7 +175,7 @@ extension SQLDDLExecutor {
                             type: column.type, isNullable: column.isNullable)
                     }
                     let rows: SQLBlockCollectedRows?
-                    if withData { try await scope.capture(query); try scope.seal(); rows = try await scope.select(query) }
+                    if withData { try scope.prepare(query); try await scope.capture(); try scope.seal(); rows = try await scope.select(query) }
                     else { rows = nil }
                     try await scope.close()
                     return (columns, rows)
