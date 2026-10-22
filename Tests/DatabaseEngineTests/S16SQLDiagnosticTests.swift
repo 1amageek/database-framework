@@ -110,6 +110,7 @@ struct S16SQLDiagnosticTests {
             (SQLBlockExecutionError.statementTimeout, "57014", .cancellation),
             (StorageError(code: .transactionCancelled, message: "cancel"), "57014", .cancellation),
             (StorageError(code: .transactionTooLarge, message: "limit"), "54000", .resource),
+            (DatabaseEntityMutationError.changeLimitExceeded(actual: 100, maximum: 99), "54000", .resource),
             (StorageError.unsupportedOperation("feature"), "0A000", .unsupported),
             (SecurityError(operation: .list, targetType: "Entity", reason: "denied"), "42501", .authorization),
             (QueryStructuralValidationError.invalidSQLControl, "42601", .syntax),

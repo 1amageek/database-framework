@@ -114,6 +114,10 @@ public enum SQLDiagnostics {
             if case .deadline = error { return make("57014", .cancellation, "SQL request deadline exceeded") }
             return make("54000", .resource, "SQL request resource limit exceeded")
         }
+        if let mutation = error as? DatabaseEntityMutationError,
+           case .changeLimitExceeded = mutation {
+            return make("54000", .resource, "SQL mutation change limit exceeded")
+        }
         if error is SecurityError { return make("42501", .authorization, "SQL access denied") }
         if let error = error as? FieldSecurityError {
             switch error {

@@ -256,6 +256,8 @@ struct SQLBlockExecutionTests {
                   let cause = failure.underlyingError as? DatabaseEntityMutationError,
                   case .changeLimitExceeded(let actual, let maximum) = cause else { return false }
             return actual == 100 && maximum == 99
+                && failure.diagnostic.sqlState == "54000"
+                && failure.diagnostic.category == .resource
         }
         let empty = try await context.executeSQL("SELECT COUNT(*) FROM \"BlockItem\"")
         #expect(empty.rows.map(\.values) == [[.primitive(.int64(0))]])
