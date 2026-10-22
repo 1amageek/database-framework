@@ -51,3 +51,13 @@ Construction remains internal to their owners. Server can distinguish the
 original primary and mandatory-cleanup causes after text/semantic encoded entry
 classification without a duplicate failure DTO or flattening. The lifetime and
 publication contract belongs to [SQLBlock](../SQLBlock/DESIGN.md#s17-complete-response-projection).
+
+### SQL mutation change budgets
+
+A typed `DatabaseEntityMutationError.changeLimitExceeded` is a resource failure
+(`54000`, resource category), including SQLBlock's nonzero maximumRows-derived
+mutation limit. The diagnostic retains the original typed actual/maximum cause
+and source position; it does not map all mutation errors as resources or parse
+messages. Rollback and mandatory cleanup finish before the facade reports it.
+The public bulk-INSERT test covers99 versus100 rows, zero persisted rows after
+rejection and successful subsequent execution at the admitted limit.

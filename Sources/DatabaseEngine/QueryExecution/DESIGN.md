@@ -1969,25 +1969,64 @@ Row-policy predicates are preserved by the original admission and applied before
 the retained entry is exposed. Retained bytes/rows and registry growth are charged
 before allocation on the same meter.
 
-Expression capture is one owned asynchronous preparation operation, including
-an expression with no subquery. It yields before traversing its admitted bound
-expression and before returning, and checks cancellation/deadline on the same
-meter after each successful resumption. Failure unwind also yields and preserves
-the original error. These boundaries follow SQLRelations' owned-advance
-scheduling contract and bound synchronous continuation accumulation across a
-multi-row VALUES statement on standard WASM. They do not split a statement,
-spawn a task, enlarge the runtime stack, consume extra work units, or evaluate a
-scalar expression. The existing iterative traversal, child-query capture,
-prewrite snapshot timing and retained payload owners remain authoritative.
+Statement preparation separates synchronous metadata from asynchronous I/O.
+`SQLStatementReadScope.prepare` binds a query or iteratively visits an expression's
+selected children, admitting all registry/worklist growth on the existing meter.
+It does not suspend or evaluate values. Ordinary CTE declaration preparation is
+also synchronous: the selected columns, lexical declaration and lazy factory
+are installed in declaration order before preparing the next declaration.
+The immutable origin query, resolution and exact preceding statement declarations
+stay attached to each snapshot. `SQLStatementReadDeclarations` is an admitted
+fixed-length view of the scope's append-only declaration registry. It retains
+one scope and count, not a copied prefix array. Snapshot capture, lazy CTE
+consumer advances and prepared mutation evaluation restore that view. Later
+CTEs cannot shadow an earlier physical source or correlated nested query.
+Snapshot reuse requires the same registry owner and prefix length in addition
+to the existing table/query/resolution identity. This carries lexical metadata,
+not an authority grant. Prefix views cannot outlive an operational scope:
+all execution validates the scope; close invalidates and detaches the registry
+before awaiting child cleanup. Keeping a closed view cannot reopen a read.
 
-`SQLBlockExecutionTests.bulkInsertRetainsOrderedResults` verifies one 100-row
-INSERT with ordered RETURNING and independent committed reads;
-`bulkInsertFailureRollsBack` verifies a late scalar failure, exact affected-row
-budget rejection and subsequent recovery. Exact standard/Embedded WASM runtime
-verification must also execute one 100-row VALUES INSERT without setup batching
-under the unchanged host stack configuration. Native success alone cannot
-establish the WASM continuation bound. Existing statement-read authorization,
-correlation and SQLBlock cancellation/lifecycle tests remain regressions.
+| State | Native / standard WASM / Embedded WASM | Access and lifetime |
+|---|---|---|
+| Declaration registry | Same append-only array in `Mutex<State>` | Admission before append; no mutation of existing entries; detach at scope close |
+| Declaration prefix | Same immutable scope/count owner | Bounded registry lookup through Mutex; constant storage per prefix, no copied array |
+| Private relation cache/output | Same relation Mutex and producer actor/gate | No direct mutation through the prefix; awaited scope close |
+| Invocation authority/meter | Same admitted session/transaction/meter | Validated before reuse; never replaced by scheduling or lexical metadata |
+
+`SQLStatementReadScope.capture()` is the sole asynchronous snapshot-drain owner.
+It yields/checks the same meter at entry and after each owned physical capture,
+and yields on success/error exit. Even an empty drain owns this boundary.
+An unbounded metadata loop must not repeatedly await a metadata-only function:
+WASM fast-path continuations can accumulate independently of the Swift source
+call depth. The driver retains the same Task, session, transaction, clock and
+meter; it does not detach tasks, increase stacks or introduce per-row commits.
+Existing scalar/producer/cleanup boundaries remain with their semantic owners.
+
+Mutation drains queued reads before scanning candidate models, preserving the
+original source-read/authorization order. SQLBlock drains after preparation and
+before seal/run; CTAS and materialized-view population use the same sequence.
+Every physical snapshot is authorized before its storage read and installed
+before writes. A later declaration never rewrites an earlier snapshot's origin.
+Failure/cancellation awaits existing scope/transaction cleanup and keeps the
+primary and secondary causes. Cleanup remains runnable after cancellation.
+
+```text
+query / expression / CTE declarations
+    -> synchronous admitted binding and lexical registration
+    -> queued exact physical source occurrences
+    -> one same-task capture driver -> authorize/read/install each occurrence
+    -> seal -> existing selected execution / atomic mutation
+    -> awaited producer/session/transaction close -> Ready
+```
+
+SQLBlockExecutionTests covers100 constant CTE declarations before INSERT,
+wide scalar-subquery capture, one100-row INSERT, late failure and resource
+rejection followed by recovery. Versioned portable fixtures must run these on
+standard and Embedded WASM with unchanged stack settings; a100-CTE standard-WASM
+trap on Framework57ca30f5 is the failing witness. Native success is not a
+substitute for either target. Existing statement-read authority, correlation,
+CTAS/materialized-view, cancellation and lifecycle suites remain regressions.
 
 The existing `CanonicalQueryBindingResources` retains the originating SELECT
 through one metered, immutable `SQLStatementReadOrigin` reference per

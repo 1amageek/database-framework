@@ -558,3 +558,12 @@ ordinary DML -> same binding -> capture -> effects -> retained outcome
 S16Preparation tests must reject invalid unused definitions and prove that
 analysis creates no rows or sequence effects; existing S14 tests own ordinary
 mutation regression behavior.
+
+### Metadata preparation and source capture
+
+SQL preparation synchronously registers selected expression/query read metadata,
+then awaits the QueryExecution-owned [capture driver](../QueryExecution/DESIGN.md#s14-statement-read-and-mutation-projection-scope)
+before scanning mutation candidates. Returning metadata uses the same synchronous
+registration. This preserves prewrite snapshots and source authorization while
+removing one asynchronous capture call per VALUES cell. Existing row/predicate
+borrow boundaries, atomic mutation execution and failure cleanup remain unchanged.

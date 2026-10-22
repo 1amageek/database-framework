@@ -366,3 +366,12 @@ its CTE caches; cleanup failure preserves the original error. Construction does
 not start a new task/session, alter output demand, increase the VM stack, or
 change query/fixture limits. The existing 30-level S08 derived-source fixture on
 the ordinary/Embedded default-stack runtime is the behavioral regression owner.
+
+### Private statement declaration visibility
+
+A CTE cache retains the immutable statement declaration prefix supplied at
+preparation and restores it while advancing its existing consumer. This uses
+QueryExecution's [statement declaration contract](../DESIGN.md#s14-statement-read-and-mutation-projection-scope),
+not a policy grant. Cache/frontier state, gates, demand, work meter and terminal
+cleanup retain their existing owners on all targets. No additional producer or
+Task is created to carry lexical metadata.

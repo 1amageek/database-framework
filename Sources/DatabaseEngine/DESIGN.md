@@ -409,6 +409,12 @@ when an unqualified name could resolve locally or in an outer frame. Unknown
 columns never allow a public outer name to discard a secret local dependency.
 This scope contains provenance only, and no policy decision is reused.
 
+Known FROM-function output names and arity come from the QueryExecution-owned
+[function output contract](QueryExecution/SQLTableFunctions/DESIGN.md#fixed-output-layout-authority).
+JOIN and whole-source alias remapping use this shape without merging unrelated
+physical fields into every output. Dynamic/composite shapes remain conservative;
+source argument reads retain their provenance regardless of output shape.
+
 The ordering field-security regressions own local constant-shadow allowance and
 secret-dependent opaque ordering denial with physical derived/CTE neighbours.
 They also preserve real outer correlation, alias/ordinal mapping, whole-row

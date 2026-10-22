@@ -85,3 +85,19 @@ All lower typed semantic causes propagate through that envelope, with pattern er
 ## Verification and Change Impact
 
 New Engine component tests own binder selection/typed empty metadata, strict NULL/zero step, inclusive/descending integer and numeric boundaries, temporal months/DST/infinity, multi-array/composite expansion, ordinality, demand, cancellation/deadline, exact/one-past resource limits, close/failure and retained-output lifetime. Public SQL tests owned by QueryExecution prove implicit/explicit lateral scope, aliases and LEFT null extension. Parent integration owns native affected/consolidated and exact WASM/Embedded runtime proof; host-only tests do not prove target-specific behavior. Changes to lower cursor contracts require rechecking their adapter and this parent; signature or output changes require parent scope/binding and public SQL regressions.
+
+### Fixed output layout authority
+
+`SQLTableFunctionOutput` owns the names/arity of the closed families whose output
+layout does not depend on an argument type. Binding consumes those names and
+validates the selected arity. Field-read provenance consumes the same layout,
+including WITH ORDINALITY, before JOIN/alias ordinal remapping. It collects
+argument dependencies independently of output layout; an unrelated projected
+field never becomes a known public function output's ordering dependency.
+UNNEST/composite/scalar results whose width requires type selection remain
+explicitly unknown to untyped provenance and keep conservative dependencies.
+No alias list is treated as proof of complete width. Policy decisions stay in
+DatabaseEngine Security; the descriptor owns no principal, meter or mutable state.
+Tests compare selected metadata, aliases on both JOIN sides and actual SQLite
+policy allowance/rejection. Native and portable scalar/JSON/function regressions
+preserve binding failures and real secret-input dependencies.

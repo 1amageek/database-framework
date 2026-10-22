@@ -698,3 +698,16 @@ SQLSequenceRequestCleanupError immutable cause pairs through execution SPI;
 [SQLDiagnostics](../SQLDiagnostics/DESIGN.md#s17-cleanup-relay-visibility) owns
 the classification/relay assumption. Neither is converted into direct
 cancellation or a second failure representation.
+
+### Statement preparation boundary
+
+SQLBlock registers SELECT CTE metadata synchronously in dependency order and
+uses QueryExecution's [statement capture driver](../QueryExecution/DESIGN.md#s14-statement-read-and-mutation-projection-scope)
+before sealing/running the statement. Mutation retains its earlier drain before
+candidate scans. This changes scheduling, not CTE demand, snapshot visibility,
+transaction boundaries or authoritative close. A large list of unused SELECT
+CTEs before DML must complete without accumulating asynchronous metadata frames.
+
+A mutation change limit derived from `ExecutionBudget.maximumRows` is a SQL
+resource rejection, including a nonzero limit exceeded by one row. Its SQLSTATE
+and retained cause belong to [SQLDiagnostics](../SQLDiagnostics/DESIGN.md).
