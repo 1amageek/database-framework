@@ -973,10 +973,12 @@ public struct EntityRuntimeDefinition: Sendable {
         let budgetReadLimit = try options.workMeter.storageReadLimitWithSentinel(
             at: .storageRow
         )
-        let readLimit = min(
-            stablePageWindow?.fetchLimit ?? budgetReadLimit,
-            budgetReadLimit
-        )
+        let readLimit: Int
+        if case .count(.fixed(0), _) = selectQuery.pagination.limit {
+            readLimit = 0
+        } else {
+            readLimit = min(stablePageWindow?.fetchLimit ?? budgetReadLimit, budgetReadLimit)
+        }
         let models = try await context.scanPersistedModels(
             entity: entity,
             partitions: table.partitions,

@@ -95,6 +95,22 @@ struct SQLiteStorageTests {
             .replacing(pagination: QueryPagination(limit: .count(.fixed(1), withTies: false)))
         let result = try await context.query(indexed)
         #expect(result.rows.map(\.values) == [[.primitive(.int64(99))]])
+        let zeroOptions = ReadExecutionOptions(budget: ExecutionBudget(maximumIntermediateRows: 32,
+            maximumIntermediateBytes: 4 * 1024 * 1024))
+        let zero = indexed.replacing(pagination: QueryPagination(limit: .count(.fixed(0), withTies: false)))
+        let indexedZero = try await context.query(zero, options: zeroOptions)
+        #expect(indexedZero.rows.isEmpty)
+        #expect(indexedZero.columns == result.columns)
+        let scannedZero = try await context.executeSQL("SELECT MAX(age),COUNT(*) FROM \(table) LIMIT 0", options: zeroOptions)
+        #expect(scannedZero.rows.isEmpty)
+        #expect(scannedZero.columns == empty.columns)
+        do {
+            _ = try await context.query(zero.replacing(accessPath: .index(IndexScanSource(
+                indexName: "missing_zero_index", indexType: .ordered))), options: zeroOptions)
+            Issue.record("Zero demand must validate the requested index")
+        } catch let error as CanonicalReadError {
+            guard case .indexHintNotFound = error else { throw error }
+        }
         await #expect(throws: (any Error).self) {
             _ = try await context.executeSQL("SELECT MAX(age) FROM \(table) LIMIT -1")
         }

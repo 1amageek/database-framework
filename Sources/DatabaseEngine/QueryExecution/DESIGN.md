@@ -151,7 +151,13 @@ A nested SELECT owns its own aggregation and window and does not classify the
 enclosing scalar projection as an aggregate.
 
 LIMIT zero still binds, authorizes and validates source/index metadata while
-fetching no data and returning the bound zero-row descriptor. LIMIT one over
+fetching no data and returning the bound zero-row descriptor.
+The zero-demand boundary precedes both schema-driven row fetch and SQL-index
+candidate acquisition. It does not rely on an adapter pushing a physical LIMIT
+into storage. Source and explicit-access metadata validation still runs under
+the admitted transaction before publishing the bound empty descriptor. The
+schema-driven and indexed 100-row regressions use a small intermediate-row
+budget to detect any accidental input retention. LIMIT one over
 an empty global aggregate returns COUNT zero or the reducer's typed NULL;
 OFFSET one removes that single aggregate output row. Neither physical index
 selection nor a scalar-subquery wrapper may change these results. List policy

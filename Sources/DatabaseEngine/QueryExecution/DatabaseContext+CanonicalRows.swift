@@ -4678,7 +4678,7 @@ extension DatabaseContext {
             (selectQuery.accessPath != nil &&
              (expressionCount || boundPlan.pagination.withTies || distinctOn || compositeOutput || selectedPlanIsVolatile(boundPlan))) {
             guard let evaluationContext else {
-                throw CanonicalReadError.unsupportedSelectQuery("Selected index operators require an admitted invocation scope")
+                throw CanonicalReadError.unsupportedSelectQuery("Selected SQL operators require an admitted invocation scope")
             }
             selectedPagination = try await evaluatePagination(boundPlan.pagination, context: evaluationContext)
         } else { selectedPagination = nil }
@@ -4729,6 +4729,7 @@ extension DatabaseContext {
             if selectedPagination.limit == 0 {
                 // Typed planning still validates the explicit path and source metadata, then fetches no candidates.
                 physicalQuery = physicalQuery.replacing(filter: nil).replacing(orderBy: nil)
+                    .replacing(projection: [.wildcard()])
                     .replacing(pagination: QueryPagination(limit: .count(.fixed(0), withTies: false)))
             }
         }
@@ -4741,7 +4742,8 @@ extension DatabaseContext {
         } else { physicalOptions = options }
         let pushdown: EntityTableRows
         let usedSQLIndex: Bool
-        if let indexed = try await sqlIndexSourceRows(tableRef: tableRef, options: options,
+        if selectedPagination?.limit != 0,
+           let indexed = try await sqlIndexSourceRows(tableRef: tableRef, options: options,
             transaction: transaction, authorizationQuery: selectQuery,
             authorizationRequirement: authorizationRequirement) {
             pushdown = indexed

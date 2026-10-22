@@ -203,3 +203,15 @@ continues to expose catalog-authorized columns. Missing or null identifiers fail
 `SchemaDrivenEntityRuntimeError.invalidIdentifier`; the existing candidate
 constructor validates the exact identifier type before routing. This
 adds no scan, authorization transition, mutable state or platform-specific owner.
+
+### Zero-demand physical windows
+
+QueryExecution resolves logical pagination and authorizes the original query.
+Registry consumes its fixed physical zero limit without reading retained models,
+even when no external stable page window is active. The existing zero-limit
+scan boundary still validates authority, partition metadata and the exact meter;
+canonical conversion of the empty model owner supplies the admitted source
+layout. Registry does not infer aggregate semantics or return a synthetic
+schema. QueryExecution owns SQL-index demand and the selected output descriptor.
+The SQLite aggregate zero-demand regression verifies this boundary before and
+after catalog-index creation, alongside the compiled-model zero-window case.

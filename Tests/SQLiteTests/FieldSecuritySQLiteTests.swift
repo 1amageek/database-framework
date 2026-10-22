@@ -434,6 +434,39 @@ struct FieldSecuritySQLiteTests {
         }
     }
 
+    @Test("Aggregate zero demand preserves metadata without retaining stored rows", .timeLimit(.minutes(2)))
+    func aggregateZeroDemandPreservesMetadata() async throws {
+        let container = try await makeContainer()
+        defer { await container.shutdown() }
+        let writer = context(in: container, roles: ["security"])
+        let blockOptions = SQLBlockExecutionOptions(checkpointLimits: try TransactionCheckpointLimits(
+            maximumEntries: 1000, maximumDepth: 16, maximumRetainedBytes: 8_000_000,
+            maximumWorkUnits: 1_000_000, maximumReadPageRows: 128))
+        _ = try await writer.executeSQLBlock("CREATE TABLE zero_demand_items (n INTEGER)", options: blockOptions)
+        let values = (0..<100).map { "(\($0))" }.joined(separator: ",")
+        _ = try await writer.executeSQLBlock("INSERT INTO zero_demand_items VALUES " + values, options: blockOptions)
+        let selected = "SELECT MAX(n),COUNT(*) FROM zero_demand_items"
+        let complete = try await writer.executeSQL(selected + " LIMIT 1")
+        #expect(complete.rows.map(\.values) == [[.primitive(.int32(99)), .primitive(.int64(100))]])
+        let options = ReadExecutionOptions(budget: ExecutionBudget(maximumRows: 1000,
+            maximumWorkUnits: 1_000_000, maximumIntermediateRows: 32,
+            maximumIntermediateBytes: 16 * 1024 * 1024, timeoutMilliseconds: 30_000))
+        for indexed in [false, true] {
+            if indexed {
+                _ = try await writer.executeSQLBlock("CREATE INDEX zero_demand_n ON zero_demand_items(n)", options: blockOptions)
+            }
+            for suffix in [" LIMIT 0", " LIMIT (0)", " LIMIT 0 OFFSET 1"] {
+                let result = try await writer.executeSQL(selected + suffix, options: options)
+                #expect(result.rows.isEmpty)
+                #expect(result.columns == complete.columns)
+            }
+        }
+        let restricted = context(in: container, roles: ["security", "deny-secret-order"])
+        await #expect(throws: SecurityError.self) {
+            _ = try await restricted.executeSQL("SELECT MAX(secret) FROM \"\(FieldSecuritySQLiteRecord.persistableType)\" ORDER BY MAX(secret) LIMIT 0")
+        }
+    }
+
     private func makeContainer() async throws -> DBContainer {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
         #if MultiBase
