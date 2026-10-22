@@ -57,7 +57,7 @@ jobs:
             --expected-target-count DatabaseEngineTests=1417 \
             --expected-target-count GraphIndexTests=913 \
             --expected-target-count DatabaseRuntimeTests=18 \
-            --expected-target-count DatabaseTests=14 \
+            --expected-target-count DatabaseTests=15 \
             --require-zero-skips \
             --require-zero-expected-failures \
             --require-zero-runtime-warnings \

@@ -1981,15 +1981,25 @@ fixed-length view of the scope's append-only declaration registry. It retains
 one scope and count, not a copied prefix array. Snapshot capture, lazy CTE
 consumer advances and prepared mutation evaluation restore that view. Later
 CTEs cannot shadow an earlier physical source or correlated nested query.
-Snapshot reuse requires the same registry owner and prefix length in addition
-to the existing table/query/resolution identity. This carries lexical metadata,
-not an authority grant. Prefix views cannot outlive an operational scope:
+Snapshot reuse requires the same registry owner and existing table/query/resolution
+identity. Prefix lengths may differ only when no declaration added between them
+has a name occurring as an unqualified external table in the complete origin
+query, including nested queries, CTE definitions, function arguments and JOIN
+predicates. The existing lexical walker excludes query-local WITH bindings,
+while retaining references to statement-private declarations. Thus a local
+shadow does not prevent sharing, and a newly visible external binding does.
+The original prefix stays attached to a shared snapshot; each CTE cache and
+prepared mutation retains its own prefix. This carries lexical metadata, not an
+authority grant. The complete source-name inventory and traversal are admitted
+on the same meter. Inventory construction occurs outside the registry lock;
+lookup/recheck and publication occur under the same Mutex on all targets. Prefix views cannot outlive an operational scope:
 all execution validates the scope; close invalidates and detaches the registry
 before awaiting child cleanup. Keeping a closed view cannot reopen a read.
 
 | State | Native / standard WASM / Embedded WASM | Access and lifetime |
 |---|---|---|
 | Declaration registry | Same append-only array in `Mutex<State>` | Admission before append; no mutation of existing entries; detach at scope close |
+| Source-name inventory | Same immutable `[String]`, admitted on the snapshot meter | Syntactic query traversal outside the registry lock; strings share retained query storage; released with snapshot |
 | Declaration prefix | Same immutable scope/count owner | Bounded registry lookup through Mutex; constant storage per prefix, no copied array |
 | Private relation cache/output | Same relation Mutex and producer actor/gate | No direct mutation through the prefix; awaited scope close |
 | Invocation authority/meter | Same admitted session/transaction/meter | Validated before reuse; never replaced by scheduling or lexical metadata |
@@ -2059,8 +2069,9 @@ never inferred from visible SQL columns.
 
 Mutation's `prepareSQLReads(_:scope:transaction:workMeter:) async throws ->
 SQLMutationPreparation` retains target models, field/layout requirements and
-prebound plans. It invokes `capture(_:outerLayout:)` for each original SELECT
-source and scalar-subquery root. SQLBlock prepares every writable definition
+prebound plans. It invokes synchronous `prepare(_:outerLayout:)` for each
+original SELECT source and scalar-subquery root, then awaits the shared
+`capture()` drain before scanning mutation candidates. SQLBlock prepares every writable definition
 and the main mutation before `seal()` changes the scope to its write phase.
 `executeSQL(_:searchPath:preparation:readScope:preconditions:transaction:workMeter:temporalEnvironment:)`
 then consumes those same prepared owners. A preparation is not reusable with a
@@ -2107,6 +2118,16 @@ read, projection or consumer callback executes under a lock. TaskLocal bindings
 select the current immutable context and never replace synchronization. The
 same declarations and Sendable contracts compile on native, ordinary WASM and
 Embedded; this implementation introduces no conditional synchronization path.
+
+Snapshot-sharing regression evidence uses100 persisted source rows and eight
+writable CTEs with one identical scalar read: a1000 intermediate-row budget
+must succeed, while a genuinely insufficient budget must reject with54000,
+leave no partial writes and permit subsequent work. Later same-name CTEs,
+nested subqueries and restricted field reads must retain their own lexical
+binding and authorization. Standard WASM and Embedded evidence must use the
+same selected traits/toolchain/stack settings before and after the change,
+count physical storage reads, measure complete invocation latency, and await
+shutdown and reopen. This changes no Task.yield boundary or transaction owner.
 
 Focused evidence must distinguish old base rows from new RETURNING rows, capture
 two aliases without cross-authorizing fields, reject forbidden columns before

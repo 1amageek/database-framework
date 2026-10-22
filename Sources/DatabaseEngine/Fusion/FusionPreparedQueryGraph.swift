@@ -137,7 +137,8 @@ enum FusionSelectQueryGraphWalker {
         visitTable: (TableRef, SelectQuery) throws -> Void,
         visitPolymorphic: (LogicalSourceRef, SelectQuery) throws -> Void,
         visitExpression: (Expression) throws -> Void = { _ in },
-        visitOrdering: (SelectQuery, [DatabaseFieldReadAuthorizationPlan.CommonTableLevel]) throws -> Void = { _, _ in }
+        visitOrdering: (SelectQuery, [DatabaseFieldReadAuthorizationPlan.CommonTableLevel]) throws -> Void = { _, _ in },
+        visitExternalTable: (TableRef, SelectQuery) throws -> Void = { _, _ in }
     ) throws {
         var stack = try WorkStack(
             root: .query(root),
@@ -152,9 +153,11 @@ enum FusionSelectQueryGraphWalker {
                 try appendChildren(of: query, to: &stack)
             case .source(let source, let query):
                 if case .table(let tableRef) = source {
-                    let isCommonTable = try tableRef.schema == nil
-                        && (stack.scope?.contains(tableRef.table, workMeter: workMeter) == true
-                            || ActiveSQLStatementReads.relation(named: tableRef.table) != nil)
+                    let isQueryCommonTable = try tableRef.schema == nil
+                        && stack.scope?.contains(tableRef.table, workMeter: workMeter) == true
+                    if !isQueryCommonTable { try visitExternalTable(tableRef, query) }
+                    let isCommonTable = isQueryCommonTable || (tableRef.schema == nil
+                        && ActiveSQLStatementReads.relation(named: tableRef.table) != nil)
                     if !isCommonTable { try visitTable(tableRef, query) }
                 } else if case .logical(let logicalSource) = source,
                     logicalSource.kindIdentifier

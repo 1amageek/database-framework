@@ -416,8 +416,9 @@ Mutation owns the internal Sendable `SQLMutationPreparation` retained handoff.
 physical target snapshot through Transaction's
 `scanSQLMutationModels(relation:fields:maximumRows:workMeter:)`, constructs the
 old-target logical layout and prebinds required plans. It asks the same
-`SQLStatementReadScope.capture(_:outerLayout:)` to authorize/capture the original
-SELECT source and scalar-subquery roots. SQLBlock prepares every writable CTE
+`SQLStatementReadScope.prepare(_:outerLayout:)` to synchronously register the
+original SELECT source and scalar-subquery roots, then awaits `capture()` to
+authorize and retain those reads before candidate scanning. SQLBlock prepares every writable CTE
 and main statement before sealing the scope and before applying any mutation.
 `executeSQL` consumes the same preparation and read scope; it cannot acquire a
 fresh target/source snapshot after a sibling writes. Read fields supplied to

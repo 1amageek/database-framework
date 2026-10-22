@@ -314,6 +314,41 @@ struct SQLBlockExecutionTests {
         #expect(try await context.model(for: "eager-copy", as: BlockItem.self)?.title == "original")
     }
 
+    @Test("Unrelated writable CTE declarations share physical snapshots within one budget")
+    func snapshotSharingPreservesBudgetsAndRollback() async throws {
+        let container = try await makeContainer()
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        _ = try await context.executeSQLBlock("CREATE TABLE snapshot_source(n INTEGER); CREATE TABLE snapshot_target(n INTEGER)", options: options())
+        let values = (1...100).map { "(\($0))" }.joined(separator: ",")
+        _ = try await context.executeSQLBlock("INSERT INTO snapshot_source VALUES " + values, options: options())
+        let definitions = (0..<8).map {
+            "c\($0) AS (INSERT INTO snapshot_target VALUES ((SELECT n FROM snapshot_source ORDER BY n LIMIT 1)) RETURNING n)"
+        }.joined(separator: ",")
+        let prefix = "WITH " + definitions + " INSERT INTO snapshot_target VALUES "
+        let budget = ExecutionBudget(maximumIntermediateRows: 1000)
+        _ = try await context.executeSQLBlock(prefix + "(7)", options: options(budget: budget))
+        let selected = try rows(try await context.executeStatement(parse("SELECT COUNT(*),SUM(n) FROM snapshot_target"), options: options()))
+        #expect(selected.rows.first?.values == [.primitive(.int64(9)), .primitive(.int64(15))])
+        _ = try await context.executeSQLBlock("DELETE FROM snapshot_target", options: options())
+        do {
+            _ = try await context.executeSQLBlock(prefix + "(7)",
+                options: options(budget: ExecutionBudget(maximumIntermediateRows: 500)))
+            Issue.record("Expected intermediate row rejection")
+        } catch let failure as SQLExecutionFailure {
+            #expect(failure.diagnostic.sqlState == "54000")
+            #expect(failure.diagnostic.category == .resource)
+        }
+        _ = try await context.executeSQLBlock("SELECT 1 / CASE WHEN (SELECT COUNT(*) FROM snapshot_target) = 0 THEN 1 ELSE 0 END", options: options())
+        do {
+            _ = try await context.executeSQLBlock(prefix + "(1 / 0)", options: options(budget: budget))
+            Issue.record("Expected late expression rejection")
+        } catch let failure as SQLExecutionFailure { #expect(failure.diagnostic.sqlState == "22012") }
+        _ = try await context.executeSQLBlock("SELECT 1 / CASE WHEN (SELECT COUNT(*) FROM snapshot_target) = 0 THEN 1 ELSE 0 END", options: options())
+        _ = try await context.executeSQLBlock(prefix + "(7)", options: options(budget: budget))
+        _ = try await context.executeSQLBlock("SELECT 1 / CASE WHEN (SELECT COUNT(*) FROM snapshot_target) = 9 THEN 1 ELSE 0 END", options: options())
+    }
+
     private func makeContainer() async throws -> DBContainer {
         let schema = try Schema(entities: [BlockItem.schemaEntity])
         #if SQLITE

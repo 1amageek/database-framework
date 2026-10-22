@@ -628,3 +628,8 @@ ready owner. External encoders borrow only noncopyable provisional views;
 Framework imports no Wire implementation. The existing kernel, retry,
 checkpoint and mandatory-close contracts remain authoritative, and no ready
 callback or publication I/O is introduced inside data execution.
+
+Snapshot reuse consumes [QueryExecution's lexical compatibility contract](QueryExecution/DESIGN.md):
+unchanged query/resolution and source bindings may share one admitted prewrite
+frame across irrelevant declaration additions. Execution authority, mutation
+atomicity and awaited closure remain owned by their existing components.

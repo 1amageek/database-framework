@@ -2182,8 +2182,11 @@ struct FusionExecutionContractTests {
             subqueries: definitions, withRecursive: true)
         func physicalSources(_ query: SelectQuery) throws -> [String] {
             var names: [String] = []
+            var external: [String] = []
             try FusionSelectQueryGraphWalker.forEachQuery(in: query, workMeter: makeMeter(), { _ in },
-                visitTable: { table, _ in names.append(table.table) }, visitPolymorphic: { _, _ in })
+                visitTable: { table, _ in names.append(table.table) }, visitPolymorphic: { _, _ in },
+                visitExternalTable: { table, _ in external.append(table.table) })
+            #expect(external.sorted() == names.sorted())
             return names.sorted()
         }
         #expect(try physicalSources(root) == ["physical"])

@@ -50,20 +50,42 @@ final class SQLStatementReadScope: Sendable {
     }
 
     func physicalSource(_ table: TableRef, query: SelectQuery, sqlResolution: SQLReadResolution? = nil) throws -> SQLStatementSourceSnapshot {
-        try validate()
+        let declarations = try declarationSnapshot()
+        if let existing = try state.withLock({ state in
+            try reusableSource(table, query: query, declarations: declarations,
+                sqlResolution: sqlResolution, state: state)
+        }) { return existing }
+        // Traversal can consult lexical declarations; never run it under the registry lock.
+        let value = try SQLStatementSourceSnapshot(table: table, query: query,
+            scopeIdentity: ObjectIdentifier(self), meter: execution.workMeter,
+            declarations: declarations, sqlResolution: sqlResolution)
         return try state.withLock { state in
-            let declarations = try ActiveSQLStatementReads.declarations
-                ?? SQLStatementReadDeclarations(scope: self, count: state.relations.count, meter: execution.workMeter)
-            try declarations.requireScope(self)
-            if let existing = state.snapshots.first(where: { $0.matches(table, query: query,
-                declarations: declarations, sqlResolution: sqlResolution) }) { return existing }
-            guard !state.sealed else { throw SQLStatementReadError.uncapturedSource }
-            let value = try SQLStatementSourceSnapshot(table: table, query: query,
-                scopeIdentity: ObjectIdentifier(self), meter: execution.workMeter,
-                declarations: declarations, sqlResolution: sqlResolution)
+            if let existing = try reusableSource(table, query: query, declarations: declarations,
+                sqlResolution: sqlResolution, state: state) { return existing }
             try CanonicalBindingStorage.append(value, to: &state.$snapshots, reservation: reservation)
             return value
         }
+    }
+
+    private func reusableSource(_ table: TableRef, query: SelectQuery,
+        declarations: SQLStatementReadDeclarations, sqlResolution: SQLReadResolution?,
+        state: borrowing State) throws -> SQLStatementSourceSnapshot? {
+        guard !state.closed else { throw DatabaseTransactionError.invalidOperationContext }
+        for source in state.snapshots where source.matches(table, query: query, sqlResolution: sqlResolution) {
+            let difference = try declarations.differingRange(from: source.declarations)
+            guard difference.upperBound <= state.relations.count else { throw DatabaseTransactionError.invalidOperationContext }
+            var compatible = true
+            for index in difference {
+                try execution.workMeter.consume(at: .bindingCandidate)
+                if try source.refersToUnqualifiedSource(state.relations[index].name) {
+                    compatible = false
+                    break
+                }
+            }
+            if compatible { return source }
+        }
+        guard !state.sealed else { throw SQLStatementReadError.uncapturedSource }
+        return nil
     }
 
     func relation(named name: String, visibleCount: Int? = nil) -> SQLStatementRelation? {

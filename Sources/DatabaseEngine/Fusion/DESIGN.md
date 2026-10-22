@@ -32,6 +32,13 @@ prepared stages + frozen invocation parameters + admitted session
 
 ## Contracts and Invariants
 
+- The metered query graph walker exposes an external-table observer after query-local WITH filtering
+  and before statement-private filtering.
+  QueryExecution uses it only to inventory syntax for
+  [snapshot lexical compatibility](../QueryExecution/DESIGN.md). Observing a
+  table name grants no list/field authority; existing physical-source and ordering
+  callbacks retain their filtering, scope and failure contracts.
+
 - S05 preflight visits every concatenation and dynamic pattern child under
   [QueryExecution's traversal contract](../QueryExecution/DESIGN.md#s05-selected-string-pattern-binary-and-cast-execution),
   preserving physical source admission even when a child contains a subquery.

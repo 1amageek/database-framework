@@ -10,6 +10,7 @@ final class SQLStatementSourceSnapshot: Sendable {
     private let meter: DatabaseWorkMeter
     private let scopeIdentity: ObjectIdentifier
     private let reservation: DatabaseIntermediateReservation
+    private let unqualifiedSourceNames: [String]
     private let value = Mutex<CanonicalRelation?>(nil)
 
     init(table: TableRef, query: SelectQuery, scopeIdentity: ObjectIdentifier, meter: DatabaseWorkMeter, declarations: SQLStatementReadDeclarations, sqlResolution: SQLReadResolution? = nil) throws {
@@ -18,16 +19,36 @@ final class SQLStatementSourceSnapshot: Sendable {
         self.sqlResolution = sqlResolution
         reservation = try meter.reserveIntermediate(bytes: 256, at: .bindingCandidate)
         self.declarations = declarations
+        unqualifiedSourceNames = try Self.sourceNames(in: query, meter: meter, reservation: reservation)
     }
     var isCaptured: Bool { value.withLock { $0 != nil } }
-    func matches(_ table: TableRef, query: SelectQuery, declarations: SQLStatementReadDeclarations,
+    func matches(_ table: TableRef, query: SelectQuery,
         sqlResolution: SQLReadResolution? = nil) -> Bool {
-        guard self.declarations.samePrefix(as: declarations) else { return false }
         return self.sqlResolution?.viewBindings == sqlResolution?.viewBindings
             && CanonicalSourceName.equal(self.table.schema, table.schema)
             && CanonicalSourceName.equal(self.table.table, table.table)
             && CanonicalSourceName.equal(self.table.alias, table.alias)
             && self.table.partitions == table.partitions && self.query == query
+    }
+    func refersToUnqualifiedSource(_ name: String) throws -> Bool {
+        for source in unqualifiedSourceNames {
+            try meter.consume(at: .bindingCandidate)
+            if CanonicalSourceName.equal(source, name) { return true }
+        }
+        return false
+    }
+
+    private static func sourceNames(in query: SelectQuery, meter: DatabaseWorkMeter,
+        reservation: DatabaseIntermediateReservation) throws -> [String] {
+        @AdmittedArray var names: [String] = []
+        // Retain existing query strings; the walker excludes only query-local WITH bindings.
+        try FusionSelectQueryGraphWalker.forEachQuery(in: query, workMeter: meter, { _ in },
+            visitTable: { _, _ in }, visitPolymorphic: { _, _ in }, visitExternalTable: { table, _ in
+                if table.schema == nil {
+                    try CanonicalBindingStorage.append(table.table, to: &$names, reservation: reservation)
+                }
+            })
+        return names
     }
     func install(_ relation: CanonicalRelation) throws {
         guard relation.rows.workMeter === meter else { throw DatabaseIntermediateReservationError.workMeterMismatch }

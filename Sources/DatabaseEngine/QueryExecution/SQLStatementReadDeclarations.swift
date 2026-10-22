@@ -16,8 +16,9 @@ final class SQLStatementReadDeclarations: Sendable {
         guard self.scope === scope else { throw DatabaseTransactionError.invalidOperationContext }
     }
 
-    func samePrefix(as other: SQLStatementReadDeclarations) -> Bool {
-        scope === other.scope && count == other.count
+    func differingRange(from other: SQLStatementReadDeclarations) throws -> Range<Int> {
+        try other.requireScope(scope)
+        return min(count, other.count)..<max(count, other.count)
     }
 
     func relation(named name: String) -> SQLStatementRelation? {
