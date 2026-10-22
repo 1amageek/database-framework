@@ -120,6 +120,32 @@ operator adapters internally; it does not duplicate their scalar algorithms.
   after detaching terminal state. Cleanup does not add cancellation checks: all owned children
   must still close before the same-task scope returns or reports a failure.
 
+### Positional column transfer
+
+A streaming SELECT whose every selected expression is a bound local column transfers
+normalized cells directly into its retained source-row output. It still invokes
+the selected evaluator, including occurrence failures,
+work/cancellation/deadline checks and normalization. The source row retains the
+payload owners; this path avoids the intermediate public QueryRow container and
+per-row public schema/lease-vector construction. Computed, composite-field,
+outer-frame, aggregate and volatile targets continue through the selected projection owner.
+Scratch cell storage is admitted before allocation and output storage before
+publication, on the same invocation meter.
+
+An alias reframe may reuse the immutable positional value buffer and the target
+schema's immutable layout when the input mapping is dense identity and the
+visible ordinals cover the complete physical vector in order. Sparse presence,
+USING-hidden slots, reordered slots and outer frames use the existing checked
+mapping path. Both paths retain the original row-container payload lease and
+produce the same target addresses, annotations and version. No producer gate,
+cooperative yield, CTE cache, demand boundary or cleanup lifetime is removed.
+
+The SQLite positional CTE regression covers reordered/duplicate columns, NULL
+from an outer join, aliases, filtering/offset and rich payloads after close.
+Existing S08 producer tests remain the replay, failure, cancellation, admission
+and concurrent-frontier witnesses. Native and portable behavior plus matched
+optimized nested-depth/RSS measurements are required before task completion.
+
 ## Runtime Flows
 
 ```text

@@ -100,6 +100,22 @@ struct SQLiteStorageTests {
         }
     }
 
+    @Test("Positional CTE transfers retain aliases, sparse NULLs and rich cells", .timeLimit(.minutes(2)))
+    func positionalCTETransfers() async throws {
+        let container = try await makeItemContainer()
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        let reordered = try await context.executeSQL("WITH c AS (SELECT 1 a,2 b UNION ALL SELECT 3,4) SELECT b,a,b FROM c WHERE a > 1 OFFSET 0 LIMIT 1")
+        #expect(reordered.rows.map(\.values) == [[.primitive(.int32(4)), .primitive(.int32(3)), .primitive(.int32(4))]])
+        let sparse = try await context.executeSQL("WITH c AS (SELECT l.a,r.b FROM (VALUES(1),(2)) l(a) LEFT JOIN (VALUES(1,7)) r(a,b) USING(a)) SELECT a,b FROM c ORDER BY a")
+        #expect(sparse.rows.map(\.values) == [[.primitive(.int32(1)), .primitive(.int32(7))], [.primitive(.int32(2)), .primitive(.null)]])
+        let rich = try await context.executeSQL("WITH c(x,y) AS (SELECT ARRAY[1,2],ROW(3,'retained')) SELECT a.y,a.x,a.y FROM c a")
+        let direct = try await context.executeSQL("SELECT ROW(3,'retained'),ARRAY[1,2],ROW(3,'retained')")
+        #expect(rich.rows.map(\.values) == direct.rows.map(\.values))
+        let limited = try await context.executeSQL("WITH c AS MATERIALIZED (SELECT 1/(2-n) x FROM (VALUES(1),(2)) v(n)) SELECT x FROM c LIMIT 1")
+        #expect(limited.rows.map(\.values) == [[.primitive(.int32(1))]])
+    }
+
     @Test("Declared rich values survive SQLite save, update and restart", .timeLimit(.minutes(2)))
     func richValuesSurviveSQLiteRestart() async throws {
         let database = try SQLiteTestDatabase(prefix: "sqlite-rich-values")

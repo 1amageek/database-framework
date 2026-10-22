@@ -3226,11 +3226,32 @@ extension DatabaseContext {
                         if let failure { throw failure }
                     })
             }
+            let transfersColumns = !plan.projection.isEmpty && plan.projection.allSatisfy {
+                guard let slot = $0.columnSlot else { return false }
+                return sourcePlan.schema.layout.slots.indices.contains(slot)
+            }
             return SQLSelectRowProducer(schema: outputSchema, meter: meter, source: source,
                 pagination: pagination, caches: caches, predicate: { [self] row in
                     guard let filter = plan.filter else { return true }
                     return try await evaluateBoundBoolean(filter, on: row, context: active, workMeter: meter)
                 }, projection: { [self] row in
+                    if transfersColumns {
+                        try meter.consume(at: .projection)
+                        let claim = try meter.reserveIntermediate(bytes:
+                            DatabaseIntermediateCollectionMeter.arrayFootprint(count: plan.projection.count,
+                                element: QueryValue.self).bytes, at: .projection)
+                        defer { claim.release() }
+                        var values: [QueryValue] = []
+                        values.reserveCapacity(plan.projection.count)
+                        for (index, bound) in plan.projection.enumerated() {
+                            let cell = try await evaluateBoundValue(bound, on: row, context: active, workMeter: meter)
+                            values.append(try CanonicalQueryTypeBinder.normalize(cell.value, to: plan.columns[index].type))
+                        }
+                        // Bound column evaluation borrows cells from the retained source owner.
+                        return try sqlSingleRow(CanonicalSourceRow(values: values, layout: outputSchema.layout,
+                            annotations: row.annotations, version: row.version, payloadLeases: row.payloadLeases),
+                            schema: outputSchema, meter: meter)
+                    }
                     let relation = try sqlSingleRow(row, schema: sourcePlan.schema, meter: meter)
                     let projected = try await projectRows(relation.rows, projection: query.projection,
                         columns: plan.columns, sourceSchema: sourcePlan.schema, workMeter: meter,
@@ -3493,6 +3514,16 @@ extension DatabaseContext {
         var builder = try DatabaseRetainedArrayBuilder<CanonicalSourceRow>(workMeter: workMeter,
             stage: .bindingCandidate, layout: DatabaseRetainedArrayLayout.forElement(CanonicalSourceRow.self), expectedCount: source.rows.count)
         for row in source.rows {
+            if row.layout.bindingSlots.usesIdentityMapping && schema.layout.bindingSlots.usesIdentityMapping
+                && logical.elementsEqual(row.values.indices) {
+                try builder.append(footprint: CanonicalRelationalFootprintMeter.sourceAliasFootprint(of: row,
+                    workMeter: workMeter, stage: .bindingCandidate)) {
+                    // Dense aliases share the value buffer and the already admitted immutable schema layout.
+                    CanonicalSourceRow(values: row.values, layout: schema.layout, annotations: row.annotations,
+                        version: row.version, payloadLeases: row.payloadLeases + [source.rows.payloadLease])
+                }
+                continue
+            }
             let claim = try workMeter.reserveIntermediate(bytes:
                 DatabaseIntermediateCollectionMeter.arrayFootprint(count: logical.count,
                     element: CanonicalSourceLayout.BindingSlot.self).multiplied(by: 8).bytes,
