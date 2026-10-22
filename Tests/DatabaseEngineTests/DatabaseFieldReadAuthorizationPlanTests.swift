@@ -315,6 +315,33 @@ struct DatabaseFieldReadAuthorizationPlanTests {
         #expect(plan.fieldsByEntity["Child"] == ["secret"])
     }
 
+    @Test("Known function layouts keep aliased JOIN ordering on the selected output")
+    func knownFunctionJoinOrdering() throws {
+        let schema = try makeSchema()
+        for functionFirst in [true, false] {
+            let hidden = DataSource.aliased(.subquery(SelectQuery(
+                projection: [.expression(.col("r", "token"), alias: "hidden")], source: .values([[]]))), name: "d")
+            let function = DataSource.aliased(.tableFunction(TableFunctionSource(function:
+                FunctionCall(name: "generate_series", arguments: [.literal(.int(1)), .literal(.int(2))]))),
+                name: "f", columns: ["n"])
+            let source = DataSource.aliased(.join(JoinClause(type: .cross,
+                left: functionFirst ? function : hidden, right: functionFirst ? hidden : function)),
+                name: "j", columns: functionFirst ? ["public_key", "hidden"] : ["hidden", "public_key"])
+            func query(_ key: String) -> SelectQuery {
+                let inner = SelectQuery(projection: [.expression(.col("j", "hidden"))], source: source,
+                    orderBy: [SortKey(.col("j", key))])
+                return SelectQuery(projection: [.expression(.subquery(inner))],
+                    source: .aliased(.table(TableRef("Parent")), name: "r"))
+            }
+            let allowed = try DatabaseFieldReadAuthorizationPlan.orderingDependencies(query: query("public_key"),
+                schema: schema, sqlResolution: nil)
+            #expect(allowed.values.allSatisfy { $0.isEmpty })
+            let denied = try DatabaseFieldReadAuthorizationPlan.orderingDependencies(query: query("hidden"),
+                schema: schema, sqlResolution: nil)
+            #expect(denied["Parent"] == ["token"])
+        }
+    }
+
     private func makeSchema() throws -> Schema {
         let parent = try Schema.Entity(
             name: "Parent",

@@ -460,6 +460,10 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                         collector.collect(argument, localBindings: [], outerScopes: outerScopes)
                     }
                 }
+                if let names = SQLTableFunctionOutput.names(for: source.function, withOrdinality: source.withOrdinality) {
+                    return orderingBindings(names: names, lineage: Array(repeating: dependencies, count: names.count),
+                        qualifiers: [source.function.name])
+                }
                 return opaqueBindings(dependencies, qualifiers: [source.function.name])
             case .table:
                 return collectTableBindings(source, commonTableNames: commonTableNames)
@@ -710,8 +714,9 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
                     )
                 }
             }
-            // Function aliases follow the visible left columns without changing their ordinals.
-            if isFunctionSource(join.right), !isNatural(join.type) {
+            // Unknown function widths retain the existing explicit leading aliases after a known left prefix.
+            if isFunctionSource(join.right), !isNatural(join.type),
+               sourceColumnNames(join.right, bindings: rightBindings) == nil {
                 switch join.condition {
                 case .using: break
                 default:
@@ -1182,7 +1187,8 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
             bindings: [SourceBinding]
         ) -> [String]? {
             switch source {
-            case .tableFunction: return nil
+            case .tableFunction(let source):
+                return SQLTableFunctionOutput.names(for: source.function, withOrdinality: source.withOrdinality)
             case .table(let table):
                 if table.schema == nil, let declaration = commonTableColumns[CanonicalSourceName(table.table)] { return declaration.names }
                 if let sqlResolution {

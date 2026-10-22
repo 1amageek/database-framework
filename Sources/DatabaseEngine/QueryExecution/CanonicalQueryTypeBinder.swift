@@ -3299,14 +3299,18 @@ extension CanonicalQueryTypeBinder {
             bound = try bindFunction(call, expression: expression)
             try appendTableColumns(name: name, type: bound.type, nullable: bound.isNullable, to: &$output, reservation: reservation)
         }
+        let fixedNames = SQLTableFunctionOutput.names(for: call, withOrdinality: false)
+        guard fixedNames == nil || fixedNames?.count == output.count else { throw mismatch("table function output layout") }
         @AdmittedArray var columns: [QueryColumn] = []
         for (name, type, nullable) in output {
-            try reservation?.reserveAdditional(bytes: UInt64(name.utf8.count), at: .bindingCandidate)
-            try CanonicalBindingStorage.append(QueryColumn(number: ordinal(columns.count), name: name, type: type, isNullable: nullable), to: &$columns, reservation: reservation)
+            let selectedName = fixedNames?[columns.count] ?? name
+            try reservation?.reserveAdditional(bytes: UInt64(selectedName.utf8.count), at: .bindingCandidate)
+            try CanonicalBindingStorage.append(QueryColumn(number: ordinal(columns.count), name: selectedName, type: type, isNullable: nullable), to: &$columns, reservation: reservation)
         }
         if withOrdinality {
-            try reservation?.reserveAdditional(bytes: 10, at: .bindingCandidate)
-            try CanonicalBindingStorage.append(QueryColumn(number: ordinal(columns.count), name: "ordinality", type: .sql(.bigint), isNullable: false), to: &$columns, reservation: reservation)
+            let name = SQLTableFunctionOutput.ordinalityName
+            try reservation?.reserveAdditional(bytes: UInt64(name.utf8.count), at: .bindingCandidate)
+            try CanonicalBindingStorage.append(QueryColumn(number: ordinal(columns.count), name: name, type: .sql(.bigint), isNullable: false), to: &$columns, reservation: reservation)
         }
         try bindingMetadata.retain(reservation)
         return CanonicalBoundTableFunction(bound: try finalizing(bound), columns: columns, kind: kind, withOrdinality: withOrdinality)

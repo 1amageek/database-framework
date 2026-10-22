@@ -434,6 +434,37 @@ struct FieldSecuritySQLiteTests {
         }
     }
 
+    @Test("Known function JOIN aliases preserve public ordering and secret denial", .timeLimit(.minutes(2)))
+    func knownFunctionJoinOrdering() async throws {
+        let container = try await makeContainer()
+        defer { await container.shutdown() }
+        let writer = context(in: container, roles: ["security"])
+        var record = FieldSecuritySQLiteRecord(title: "Visible")
+        record.secret = "classified"
+        try writer.insert(record); try await writer.save()
+        let restricted = context(in: container, roles: ["security", "deny-secret-order"])
+        let table = "\"\(FieldSecuritySQLiteRecord.persistableType)\""
+        for (function, names) in [
+            ("generate_series(1,2) f(n)", ["public_key"]),
+            ("json_each_text('{\"x\":\"y\"}') f(k,v)", ["public_key", "public_value"]),
+            ("generate_series(1,2) WITH ORDINALITY f(n,i)", ["public_key", "public_index"])
+        ] {
+            for functionFirst in [true, false] {
+                let hidden = "(SELECT r.secret AS hidden) d"
+                let source = functionFirst ? "\(function) CROSS JOIN \(hidden)" : "d CROSS JOIN \(function)"
+                let columns = functionFirst ? names + ["hidden"] : ["hidden"] + names
+                let declaration = functionFirst ? "" : "WITH d AS (SELECT r.secret AS hidden) "
+                let prefix = "SELECT (\(declaration)SELECT j.hidden FROM (\(source)) j(\(columns.joined(separator: ","))) ORDER BY j."
+                let suffix = " LIMIT 1) FROM \(table) r"
+                let sql = prefix + "public_key" + suffix
+                let control = try await writer.executeSQL(sql)
+                #expect(control.rows.map(\.values) == [[.primitive(.string("classified"))]], "\(sql)")
+                #expect(try await restricted.executeSQL(sql).rows.map(\.values) == control.rows.map(\.values))
+                await #expect(throws: SecurityError.self) { _ = try await restricted.executeSQL(prefix + "hidden" + suffix) }
+            }
+        }
+    }
+
     @Test("Aggregate zero demand preserves metadata without retaining stored rows", .timeLimit(.minutes(2)))
     func aggregateZeroDemandPreservesMetadata() async throws {
         let container = try await makeContainer()
