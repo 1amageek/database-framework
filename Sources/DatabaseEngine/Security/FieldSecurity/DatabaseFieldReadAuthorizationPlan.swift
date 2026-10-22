@@ -107,7 +107,6 @@ package struct DatabaseFieldReadAuthorizationPlan: Sendable {
         }
 
         func projection(of query: SelectQuery) throws -> [(expression: Expression, alias: String?)]? {
-            var collector = collector
             var items: [(expression: Expression, alias: String?)] = []
             for item in query.projection {
                 switch item {
