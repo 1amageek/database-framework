@@ -62,6 +62,44 @@ struct SQLiteStorageTests {
         )
     }
 
+    @Test("Aggregate pagination consumes complete physical input", .timeLimit(.minutes(2)))
+    func aggregatePaginationUsesCompleteInput() async throws {
+        let container = try await makeItemContainer()
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        for value in 0..<100 {
+            try context.insert(SQLiteStoredItem(id: String(format: "%03d", value), name: "item", age: Int64(value)))
+        }
+        try await context.save()
+        let table = "\"SQLiteStoredItem\""
+        for suffix in ["LIMIT 1", "LIMIT 2 OFFSET 0", "LIMIT (1)"] {
+            let actual = try await context.executeSQL("SELECT MAX(age), COUNT(*) FROM \(table) \(suffix)")
+            #expect(actual.rows.map(\.values) == [[.primitive(.int64(99)), .primitive(.int64(100))]])
+        }
+        let nested = try await context.executeSQL("SELECT (SELECT MAX(age) FROM \(table) LIMIT 1)")
+        #expect(nested.rows.map(\.values) == [[.primitive(.int64(99))]])
+        let filtered = try await context.executeSQL("SELECT MAX(age), COUNT(*) FROM \(table) WHERE age >= 90 LIMIT 1")
+        #expect(filtered.rows.map(\.values) == [[.primitive(.int64(99)), .primitive(.int64(10))]])
+        let empty = try await context.executeSQL("SELECT MAX(age), COUNT(*) FROM \(table) WHERE age < 0 LIMIT 1")
+        #expect(empty.rows.map(\.values) == [[.primitive(.null), .primitive(.int64(0))]])
+        for suffix in ["LIMIT 0", "LIMIT 1 OFFSET 1"] {
+            let result = try await context.executeSQL("SELECT MAX(age), COUNT(*) FROM \(table) \(suffix)")
+            #expect(result.rows.isEmpty)
+            #expect(result.columns == empty.columns)
+        }
+        let query = SQLQueryBuilder(from: "SQLiteStoredItem")
+            .select(ProjectionItem(.aggregate(.max(.column(ColumnRef("age"))))))
+            .where("age", .greaterThanOrEqual, .int(0))
+            .buildAST()
+        let indexed = query.replacing(accessPath: .index(IndexScanSource(indexName: "SQLiteStoredItem_age", indexType: .ordered)))
+            .replacing(pagination: QueryPagination(limit: .count(.fixed(1), withTies: false)))
+        let result = try await context.query(indexed)
+        #expect(result.rows.map(\.values) == [[.primitive(.int64(99))]])
+        await #expect(throws: (any Error).self) {
+            _ = try await context.executeSQL("SELECT MAX(age) FROM \(table) LIMIT -1")
+        }
+    }
+
     @Test("Declared rich values survive SQLite save, update and restart", .timeLimit(.minutes(2)))
     func richValuesSurviveSQLiteRestart() async throws {
         let database = try SQLiteTestDatabase(prefix: "sqlite-rich-values")

@@ -139,6 +139,32 @@ WASM/Embedded obligation retain the boundaries recorded by
 - Public output promotion consumes the aggregate and is allowed only at a
   top-level API boundary. Intermediate feature paths cannot invoke it.
 
+### Aggregate input and output pagination
+
+The physical single-table path may provide aggregate input, but the logical
+SELECT window belongs to the selected aggregate output. An aggregate in the
+current SELECT scope requires selected pagination even when LIMIT/OFFSET are
+fixed and no index is explicitly requested. Physical candidate fetch clears
+that window and external page-window hints; grouping and aggregate reduction
+consume every admitted matching input before the selected output window runs.
+A nested SELECT owns its own aggregation and window and does not classify the
+enclosing scalar projection as an aggregate.
+
+LIMIT zero still binds, authorizes and validates source/index metadata while
+fetching no data and returning the bound zero-row descriptor. LIMIT one over
+an empty global aggregate returns COUNT zero or the reducer's typed NULL;
+OFFSET one removes that single aggregate output row. Neither physical index
+selection nor a scalar-subquery wrapper may change these results. List policy
+continues to receive the caller's logical window, never the unwindowed physical
+query. Selected binding, read-session ownership, meter and awaited cleanup
+remain unchanged across Native, ordinary WASM and Embedded.
+
+`SQLiteTests/SQLiteStorageTests.aggregatePaginationUsesCompleteInput` owns the
+physical success/empty/nested/indexed/invalid-count regression. The shared
+selected aggregate and binding suites own reducer/type failures. A change to
+this boundary rechecks the Read and SQLAggregation child contracts and the
+native SQLite target; the task's final portable lanes exercise the same source.
+
 ## Runtime Flows
 
 ```text

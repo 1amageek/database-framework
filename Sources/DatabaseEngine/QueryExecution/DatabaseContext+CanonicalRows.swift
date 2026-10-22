@@ -4642,8 +4642,10 @@ extension DatabaseContext {
         let compositeOutput = boundPlan.columns.contains { column in
             if case .sql(.composite) = column.type { return true }; return false
         }
-        if selectQuery.accessPath != nil,
-           expressionCount || boundPlan.pagination.withTies || distinctOn || compositeOutput || selectedPlanIsVolatile(boundPlan) {
+        // Aggregate output windows must not restrict the physical input rows.
+        if canonicalQueryRequiresAggregation(selectQuery) ||
+            (selectQuery.accessPath != nil &&
+             (expressionCount || boundPlan.pagination.withTies || distinctOn || compositeOutput || selectedPlanIsVolatile(boundPlan))) {
             guard let evaluationContext else {
                 throw CanonicalReadError.unsupportedSelectQuery("Selected index operators require an admitted invocation scope")
             }
