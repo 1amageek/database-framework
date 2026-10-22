@@ -377,6 +377,63 @@ struct FieldSecuritySQLiteTests {
     }
     #endif
 
+    @Test("Local constant columns shadow outer ordering fields", .timeLimit(.minutes(2)))
+    func localOrderingShadowsOuterFields() async throws {
+        let container = try await makeContainer()
+        defer { await container.shutdown() }
+        let writer = context(in: container, roles: ["security"])
+        var record = FieldSecuritySQLiteRecord(title: "Visible")
+        record.secret = "classified"
+        try writer.insert(record)
+        try await writer.save()
+        let restricted = context(in: container, roles: ["security", "deny-secret-order"])
+        let table = "\"\(FieldSecuritySQLiteRecord.persistableType)\""
+        for sql in [
+            "SELECT (SELECT secret FROM (VALUES(2),(1)) t(secret) ORDER BY secret LIMIT 1) FROM \(table) r",
+            "SELECT (SELECT secret FROM generate_series(1,2) t(secret) ORDER BY secret LIMIT 1) FROM \(table) r",
+            "SELECT (SELECT d.secret FROM (SELECT 1 AS secret) d ORDER BY d.secret LIMIT 1) FROM \(table) r",
+            "SELECT (WITH c(secret) AS (SELECT 1) SELECT secret FROM c ORDER BY secret LIMIT 1) FROM \(table) r",
+            "SELECT (SELECT r.secret FROM (VALUES(1)) r(secret) ORDER BY r.secret LIMIT 1) FROM \(table) r"
+        ] {
+            let control = try await writer.executeSQL(sql)
+            #expect(control.rows.count == 1)
+            let actual = try await restricted.executeSQL(sql)
+            #expect(actual.rows.map(\.values) == control.rows.map(\.values))
+            let publicReader = context(in: container, roles: ["deny-secret-order"])
+            let publicResult = try await publicReader.executeSQL(sql)
+            #expect(publicResult.rows.map(\.values) == control.rows.map(\.values))
+        }
+    }
+
+    @Test("Opaque local ordering keeps secret lineage", .timeLimit(.minutes(2)))
+    func opaqueLocalOrderingRequiresInputFields() async throws {
+        let container = try await makeContainer()
+        defer { await container.shutdown() }
+        let writer = context(in: container, roles: ["security"])
+        var record = FieldSecuritySQLiteRecord(title: "Visible")
+        record.secret = "classified"
+        try writer.insert(record)
+        try await writer.save()
+        let restricted = context(in: container, roles: ["security", "deny-secret-order"])
+        let table = "\"\(FieldSecuritySQLiteRecord.persistableType)\""
+        for sql in [
+            "SELECT (SELECT u.n FROM (SELECT id FROM \(table)) z CROSS JOIN unnest(ARRAY[r.secret,'public']) WITH ORDINALITY u(title,n) ORDER BY title LIMIT 1) FROM \(table) r",
+            "SELECT (WITH c AS (SELECT id FROM \(table)) SELECT u.n FROM c CROSS JOIN unnest(ARRAY[r.secret,'public']) WITH ORDINALITY u(title,n) ORDER BY title LIMIT 1) FROM \(table) r"
+        ] {
+            let control = try await writer.executeSQL(sql)
+            #expect(control.rows.count == 1)
+            await #expect(throws: SecurityError.self, "\(sql)") { _ = try await restricted.executeSQL(sql) }
+        }
+        for sql in [
+            "SELECT (SELECT u.n FROM (SELECT id FROM \(table)) z CROSS JOIN unnest(ARRAY[r.title,'public']) WITH ORDINALITY u(title,n) ORDER BY title LIMIT 1) FROM \(table) r",
+            "SELECT (SELECT u.n FROM (SELECT id FROM \(table)) z CROSS JOIN unnest(ARRAY[r.secret,'public']) WITH ORDINALITY u(value,n) ORDER BY r.title LIMIT 1) FROM \(table) r"
+        ] {
+            let control = try await writer.executeSQL(sql)
+            let actual = try await restricted.executeSQL(sql)
+            #expect(actual.rows.map(\.values) == control.rows.map(\.values))
+        }
+    }
+
     private func makeContainer() async throws -> DBContainer {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
         #if MultiBase

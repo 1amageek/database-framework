@@ -399,6 +399,21 @@ ordering requirements into the caller without losing their own catalog scope.
 Fusion consumes this union to create companions preserving each original list
 window. Independent walker visits cannot reconstruct correlated row authority.
 
+Lexical source bindings retain declared local names even when a column has no
+physical field dependency. A resolved local name, including a constant VALUES,
+derived or CTE output, stops outer-frame lookup. A qualifier bound locally also
+stops lookup of the same qualifier in outer frames. Table-function arguments
+retain their physical input provenance; explicit output aliases bind that
+provenance locally. Unknown output shapes retain conservative input dependencies
+when an unqualified name could resolve locally or in an outer frame. Unknown
+columns never allow a public outer name to discard a secret local dependency.
+This scope contains provenance only, and no policy decision is reused.
+
+The ordering field-security regressions own local constant-shadow allowance and
+secret-dependent opaque ordering denial with physical derived/CTE neighbours.
+They also preserve real outer correlation, alias/ordinal mapping, whole-row
+reads and the existing per-column lineage and list-window contracts.
+
 FieldSecuritySQLiteTests.queryAuthorizesEveryObservedField is the real policy
 witness: secret ordering through scalar/LATERAL/CTE outer rows fails with
 SecurityError, title ordering succeeds, and existing ordinal/alias/whole-row,
