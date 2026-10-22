@@ -148,6 +148,9 @@ struct FieldSecuritySQLiteTests {
             await #expect(throws: Never.self, "\(block)") { _ = try await writer.executeSQLBlock(block, options: blockOptions) }
         }
         for sql in [
+            "SELECT (SELECT n FROM (VALUES(1),(2)) t(n) ORDER BY n * length(r.secret) LIMIT 1) FROM \(table) r",
+            "SELECT n FROM \(table) r, LATERAL (SELECT n FROM generate_series(1,2) g(n) ORDER BY n * length(r.secret) LIMIT 1) d",
+            "SELECT (WITH c AS (SELECT r.secret s) SELECT n FROM (VALUES(1),(2)) t(n),c ORDER BY n * length(c.s) LIMIT 1) FROM \(table) r",
             "SELECT d.secret FROM (SELECT secret FROM \(table)) d ORDER BY d.secret",
             "SELECT q.x FROM (SELECT (SELECT * FROM unnest(ARRAY[r.secret]) AS u(x)) FROM \(table) r) q ORDER BY q.x",
             "WITH c AS (SELECT secret FROM \(table)) SELECT secret FROM c ORDER BY secret",
@@ -165,6 +168,9 @@ struct FieldSecuritySQLiteTests {
             await #expect(throws: SecurityError.self, "\(sql)") { try await orderRestricted.executeSQL(sql) }
         }
         for sql in [
+            "SELECT (SELECT n FROM (VALUES(1),(2)) t(n) ORDER BY n * length(r.title) LIMIT 1) FROM \(table) r",
+            "SELECT n FROM \(table) r, LATERAL (SELECT n FROM generate_series(1,2) g(n) ORDER BY n * length(r.title) LIMIT 1) d",
+            "SELECT (WITH c AS (SELECT r.title s) SELECT n FROM (VALUES(1),(2)) t(n),c ORDER BY n * length(c.s) LIMIT 1) FROM \(table) r",
             "SELECT d.title FROM (SELECT title FROM \(table)) d ORDER BY d.title",
             "WITH c AS (SELECT title FROM \(table)) SELECT title FROM c ORDER BY title",
             "SELECT title FROM title_view ORDER BY title",

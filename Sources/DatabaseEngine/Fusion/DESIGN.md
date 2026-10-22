@@ -36,6 +36,9 @@ prepared stages + frozen invocation parameters + admitted session
   [QueryExecution's traversal contract](../QueryExecution/DESIGN.md#s05-selected-string-pattern-binary-and-cast-execution),
   preserving physical source admission even when a child contains a subquery.
 
+- Ordering companions consume the statement collector's lexical row/CTE provenance
+  under [Engine's field-security contract](../DESIGN.md#execution-composition-and-transaction-authority).
+  They preserve each original requirement window and contain no cached policy decision.
 - Bind every relational filter/order input before the first source executor read.
 - Feature preflight validates index and connection contracts after field
   authorization. `FusionExecution.make` sends all relational inputs through

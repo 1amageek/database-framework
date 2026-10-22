@@ -26,14 +26,25 @@ extension SelectQuery {
         return result
     }
 
+    func orderingDependencies(in scope: DatabaseFieldReadAuthorizationPlan.OrderingScope,
+        schema: Schema, sqlResolution: SQLReadResolution?) throws -> [String: Set<String>] {
+        var result: [String: Set<String>] = [:]
+        try forEachOrderingDependency(entity: nil, schema: schema, sqlResolution: sqlResolution,
+            preparedScope: scope) { dependencies in
+            for (entity, fields) in dependencies { result[entity, default: []].formUnion(fields) }
+        }
+        return result
+    }
+
     /// `commonTables` nil means the enclosing WITH scopes are unknown, as
     /// for a list requirement that admission and execution each compute
     /// from the query alone.
     private func forEachOrderingDependency(entity: Schema.Entity?, schema: Schema,
         sqlResolution: SQLReadResolution?, commonTables: [DatabaseFieldReadAuthorizationPlan.CommonTableLevel]? = nil,
+        preparedScope: DatabaseFieldReadAuthorizationPlan.OrderingScope? = nil,
         _ body: ([String: Set<String>]) -> Void) throws {
         guard let orderBy else { return }
-        let scope = try DatabaseFieldReadAuthorizationPlan.OrderingScope(schema: schema,
+        let scope = try preparedScope ?? DatabaseFieldReadAuthorizationPlan.OrderingScope(query: self, schema: schema,
             sqlResolution: sqlResolution, commonTables: commonTables)
         let items: [(expression: Expression, alias: String?)]?
         if sqlResolution != nil {

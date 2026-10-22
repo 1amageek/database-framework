@@ -22,7 +22,7 @@ enum FusionPreflight {
         var featureAuthorizationPlan = DatabaseFieldReadAuthorizationPlan(
             fieldsByEntity: [:]
         )
-        var orderingDependencies: [String: Set<String>] = [:]
+        var hasOrdering = false
         var logicalNodes = try DatabaseRetainedArrayBuilder<LogicalNode>(
             workMeter: workMeter,
             stage: .validation,
@@ -40,6 +40,7 @@ enum FusionPreflight {
             in: root,
             workMeter: workMeter
         ) { query in
+            if query.orderBy != nil { hasOrdering = true }
             featureAuthorizationPlan = featureAuthorizationPlan.merging(
                 try additionalIndexAuthorizationPlan(
                     for: query,
@@ -118,12 +119,11 @@ enum FusionPreflight {
                     )
                 )
             }
-        } visitOrdering: { query, commonTables in
-            for (entity, fields) in try query.orderingDependencies(schema: policy.schema,
-                sqlResolution: sqlResolution, commonTables: commonTables) {
-                orderingDependencies[entity, default: []].formUnion(fields)
-            }
         }
+        let orderingDependencies = hasOrdering
+            ? try DatabaseFieldReadAuthorizationPlan.orderingDependencies(
+                query: root, schema: policy.schema, sqlResolution: sqlResolution)
+            : [:]
         let retainedViewGraphs = try viewGraphs.finish().moveToSharedOwnership(at: .validation)
         let retainedLogicalNodes = try logicalNodes.finish()
             .moveToSharedOwnership(at: .validation)

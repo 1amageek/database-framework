@@ -384,6 +384,28 @@ an alias must neither widen access nor require unrelated hidden fields.
 Focused authorization-plan and public permission tests must agree with bound
 source layout before the changed SQL path is accepted.
 
+Ordering analysis prepares one immutable source/CTE binding scope per query,
+then resolves all selected keys against that scope. The scope lasts only for
+that analysis and schema/catalog resolution; it contains provenance, never a
+principal decision or reusable authorization grant. Filters, grouping and
+unrelated output columns do not become a selected key's lineage.
+
+The full-statement provenance collector also gathers each nested query's ORDER
+requirements while its lexical outer-row bindings are available. Scalar and
+EXISTS/ARRAY queries inherit local plus outer frames; LATERAL/function inputs
+inherit only their admitted left scope; ordinary derived sources retain their
+existing outer-scope rules. CTE definition and view collectors merge nested
+ordering requirements into the caller without losing their own catalog scope.
+Fusion consumes this union to create companions preserving each original list
+window. Independent walker visits cannot reconstruct correlated row authority.
+
+FieldSecuritySQLiteTests.queryAuthorizesEveryObservedField is the real policy
+witness: secret ordering through scalar/LATERAL/CTE outer rows fails with
+SecurityError, title ordering succeeds, and existing ordinal/alias/whole-row,
+opaque source, per-column lineage and bounded-window cases keep their meaning.
+Matched reference/key-count benchmarks and the final portable lanes establish
+the performance and target scope of this task's completion evidence.
+
 ```text
 statement/block operation owner
     -> schema lease + authority + one exact work meter

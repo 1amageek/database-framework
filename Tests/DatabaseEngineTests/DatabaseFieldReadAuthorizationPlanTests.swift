@@ -140,6 +140,10 @@ struct DatabaseFieldReadAuthorizationPlanTests {
             schema: schema
         )
 
+        let orderedChild = childQuery.replacing(orderBy: [SortKey(.col("parent", "token"))])
+        let scalar = query.replacing(projection: [.expression(.subquery(orderedChild))])
+        #expect(try DatabaseFieldReadAuthorizationPlan.orderingDependencies(query: scalar,
+            schema: schema, sqlResolution: nil) == ["Parent": ["token"]])
         #expect(plan.fieldsByEntity["Parent"] == ["id", "groupID"])
         #expect(
             plan.fieldsByEntity["Child"]
