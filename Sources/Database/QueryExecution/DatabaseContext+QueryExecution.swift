@@ -134,10 +134,20 @@ private func graphNamespace(_ statement: QueryStatement, limits: DatabaseWireLim
                             meter: DatabaseWorkMeter) throws -> GraphResultNodeNamespace {
     var hash = SHA256Accumulator()
     hash.update(utf8: "query-result-graph-v1")
-    try QueryIRWireFormat.emitCanonicalEncoding(statement, limits: limits,
-        prepare: { count in
-            try meter.consume(UInt64(count / 256 + (count % 256 == 0 ? 0 : 1)), at: .resultMaterialization)
-        }, consume: { hash.update($0) })
+    do {
+        try QueryIRWireFormat.emitCanonicalEncoding(statement, limits: limits,
+            prepare: { count in
+                try meter.consume(UInt64(count / 256 + (count % 256 == 0 ? 0 : 1)), at: .resultMaterialization)
+            }, consume: { hash.update($0) })
+    } catch {
+        switch error {
+        case .encoding(let cause):
+            guard QueryResponseEncodingError.isResourceLimit(cause) else { throw cause }
+            throw QueryResponseEncodingError.resourceLimit(cause)
+        case .destination(let cause):
+            throw cause
+        }
+    }
     return try GraphResultNodeNamespace(hash.finalize())
 }
 

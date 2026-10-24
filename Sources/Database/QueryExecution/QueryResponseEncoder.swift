@@ -47,17 +47,7 @@ public struct QueryResponseEncoder: SQLBlockResponseEncoder {
     }
 
     private func throwResponseFailure(_ error: DatabaseWireError) throws -> Never {
-        let isLimit: Bool
-        switch error {
-        case .frameTooLarge, .stringTooLarge, .byteStringTooLarge,
-             .collectionTooLarge, .nestingTooDeep, .objectBudgetExceeded:
-            isLimit = true
-        case .invalidQueryValue(.resourceLimit),
-             .invalidQueryStructure(.resourceLimitExceeded):
-            isLimit = true
-        default: isLimit = false
-        }
-        guard isLimit else { throw error }
+        guard QueryResponseEncodingError.isResourceLimit(error) else { throw error }
         throw SQLExecutionFailure(underlyingError: QueryResponseEncodingError.resourceLimit(error),
             diagnostic: try SQLDiagnostic(sqlState: "54000", category: .resource,
                 message: "SQL response exceeds the configured Wire resource limits"))

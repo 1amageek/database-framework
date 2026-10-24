@@ -79,6 +79,14 @@ Close is idempotent; cancellation of the closing caller does not cancel the drai
 The drain awaits each Task.value on every target. Execute retains the individual
 success/failure contract; close consumes those outcomes only to prove termination.
 Typed SQL diagnostics retain their underlying failure; IR positions remain absent.
+SQL and graph projections share one classification of Wire response limits.
+Canonical Graph namespace emission unwraps its encoding/destination envelope at
+that boundary: encoding limits use the same resource classification, while the
+original meter/cancellation failure propagates unchanged. A
+graph projection raises QueryResponseEncodingError.resourceLimit after data
+cleanup; SQL retains its SQL diagnostic around the same underlying typed limit.
+Malformed representations remain Wire failures and are never reclassified as a
+resource limit. No synthetic SQL diagnostic is added to a graph result.
 The row adapter does not silently invent NULL, numeric conversions or read points.
 No actor/mutex/Sendable contract varies with Embedded mode. Source parsing,
 structural limits and checkpoint ceilings remain bounded by the selected policy.
@@ -88,6 +96,8 @@ structural limits and checkpoint ceilings remain bounded by the selected policy.
 Focused behavior compares text/IR/block rows, columns, rich values, commands,
 RETURNING and COPY. It checks default-deny/field denial, parameter injection,
 work/row/memory exhaustion, late-error rollback, cancellation and concurrent close,
-new-call rejection and container usability after connection closure. Native plus
+new-call rejection and container usability after connection closure. A bounded
+Graph frame must fail as a typed response resource limit and the same connection
+must remain usable after the failed read is closed. Native plus
 standard/Embedded tests exercise the actual connection and projection. Server and
 Client differential tests validate the same final contract over real transport.

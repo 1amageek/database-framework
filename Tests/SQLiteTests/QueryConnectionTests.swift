@@ -204,6 +204,44 @@ struct QueryConnectionTests {
             default: Issue.record("Graph outcome changed kinds")
             }
         }
+        let limits = try DatabaseWireLimits(maximumFrameBytes: 1_024, maximumStringBytes: 10_000,
+            maximumByteStringBytes: 10_000, maximumCollectionCount: 1_000,
+            maximumNestingDepth: 64, maximumObjectCount: 10_000)
+        let bounded = try await container.testBaseContext().openConnection(limits: limits)
+        defer { await bounded.close() }
+        let tinyLimits = try DatabaseWireLimits(maximumFrameBytes: 1, maximumStringBytes: 10_000,
+            maximumByteStringBytes: 10_000, maximumCollectionCount: 1_000,
+            maximumNestingDepth: 64, maximumObjectCount: 10_000)
+        let tiny = try await container.testBaseContext().openConnection(limits: tinyLimits)
+        defer { await tiny.close() }
+        do {
+            _ = try await tiny.execute(QueryInput.text(language: .sparql, statement: "ASK {}"))
+            Issue.record("Expected a bounded Boolean response failure")
+        } catch let error as QueryResponseEncodingError {
+            guard case .resourceLimit(.frameTooLarge(_, let maximum)) = error else {
+                Issue.record("Expected the Boolean response frame limit cause"); return
+            }
+            #expect(maximum == 1)
+        }
+        let largeValue = String(repeating: "g", count: 2_000)
+        do {
+            _ = try await bounded.execute(QueryInput.text(language: .sparql,
+                statement: "CONSTRUCT { <urn:s> <urn:p> \"\(largeValue)\" } WHERE {}"))
+            Issue.record("Expected a bounded Graph response failure")
+        } catch let error as QueryResponseEncodingError {
+            guard case .resourceLimit(.frameTooLarge(let actual, let maximum)) = error else {
+                Issue.record("Expected the original frame limit cause"); return
+            }
+            #expect(actual > maximum && maximum == 1_024)
+        }
+        await #expect(throws: DatabaseWorkLimitError.self) {
+            _ = try await connection.execute(QueryInput.text(language: .sparql,
+                statement: "CONSTRUCT { <urn:s> <urn:p> \"\(largeValue)\" } WHERE {}"),
+                options: .init(budget: .init(maximumWorkUnits: 1)))
+        }
+        let next = try await bounded.execute(QueryInput.text(language: .sparql, statement: "ASK {}"))
+        guard case .boolean(let answer) = next else { Issue.record("Expected a closed failed read"); return }
+        #expect(answer.value)
     }
 
     private var identity: DatabaseExecutionRuntimeIdentity { .init(identifier: "query-connections", revision: 1) }

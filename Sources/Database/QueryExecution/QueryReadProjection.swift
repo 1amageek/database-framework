@@ -11,19 +11,29 @@ package struct QueryReadProjection: Sendable {
     func measure(_ output: borrowing QueryReadOutput) throws -> UInt64 {
         // The synchronous projection retains only the immutable owner header.
         // Rows, quads and their reservations remain shared without materialization.
-        let retained = copy output
-        let count = try DatabaseWireEncoder(limits: limits).measureQueryResponse(
-            requestID: requestID, resultCount: 1) { writer in try write(retained, into: &writer) }
-        guard let count = UInt64(exactly: count) else { throw DatabaseWireError.byteCountOverflow }
-        return count
+        do {
+            let retained = copy output
+            let count = try DatabaseWireEncoder(limits: limits).measureQueryResponse(
+                requestID: requestID, resultCount: 1) { writer in try write(retained, into: &writer) }
+            guard let count = UInt64(exactly: count) else { throw DatabaseWireError.byteCountOverflow }
+            return count
+        } catch let error as DatabaseWireError {
+            guard QueryResponseEncodingError.isResourceLimit(error) else { throw error }
+            throw QueryResponseEncodingError.resourceLimit(error)
+        }
     }
 
     func encode(_ output: borrowing QueryReadOutput,
                 into destination: inout MutableSpan<UInt8>) throws {
-        let retained = copy output
-        try destination.withUnsafeMutableBytes { bytes in
-            try DatabaseWireEncoder(limits: limits).encodeQueryResponse(requestID: requestID,
-                resultCount: 1, into: bytes) { writer in try write(retained, into: &writer) }
+        do {
+            let retained = copy output
+            try destination.withUnsafeMutableBytes { bytes in
+                try DatabaseWireEncoder(limits: limits).encodeQueryResponse(requestID: requestID,
+                    resultCount: 1, into: bytes) { writer in try write(retained, into: &writer) }
+            }
+        } catch let error as DatabaseWireError {
+            guard QueryResponseEncodingError.isResourceLimit(error) else { throw error }
+            throw QueryResponseEncodingError.resourceLimit(error)
         }
     }
 

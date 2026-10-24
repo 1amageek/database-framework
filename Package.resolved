@@ -6,8 +6,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/database-kit.git",
       "state" : {
-        "revision" : "9ba081a10f16473e5846672ab8727cc394e56db5",
-        "version" : "26.1021.0"
+        "revision" : "1bf2fdc3a874fddccf305c4902b5a16383d3369d"
       }
     },
     {
