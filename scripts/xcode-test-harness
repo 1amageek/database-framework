@@ -696,9 +696,9 @@ if grep -En '\.package\(path:' "$normalized_package" >/dev/null; then
     exit 2
   fi
   if grep -En '\.package\(path:' "$normalized_package" \
-      | grep -Ev '\.package\(path:[[:space:]]*"\.\./database-(kit|client)"' \
+      | grep -Ev '\.package\(path:[[:space:]]*"\.\./(database-(kit|client)|storage-kit)"' \
       | grep -q .; then
-    echo "error: local dependency diagnosis supports only ../database-kit and ../database-client" >&2
+    echo "error: local dependency diagnosis supports only ../database-kit, ../database-client and ../storage-kit" >&2
     exit 2
   fi
   if [[ "$REUSE_BUILT_TESTS" == true ]]; then
@@ -790,7 +790,7 @@ if [[ "$reuse_compiled_tests" == false ]]; then
   fi
 
   if [[ "$has_local_dependencies" == true ]]; then
-    for dependency_name in database-kit database-client; do
+    for dependency_name in database-kit database-client storage-kit; do
       if ! grep -Eq "\.package\(path:[[:space:]]*\"\.\./$dependency_name\"" "$source_copy/Package.swift"; then
         continue
       fi

@@ -10,6 +10,11 @@ WORK_ROOT="${DATABASE_ACCESS_RUNTIME_WORK_ROOT:-$ROOT_DIR/.build/access-runtime}
 RESULT_ROOT="${DATABASE_ACCESS_RUNTIME_RESULT_DIRECTORY:-${TMPDIR:-/tmp}/database-access-runtime-results}"
 BUILD_TIMEOUT="${DATABASE_ACCESS_RUNTIME_BUILD_TIMEOUT_SECONDS:-1200}"
 RUN_TIMEOUT="${DATABASE_ACCESS_RUNTIME_TIMEOUT_SECONDS:-120}"
+STANDARD_CONFIGURATION="${DATABASE_ACCESS_STANDARD_CONFIGURATION:-release}"
+EMBEDDED_CONFIGURATION="${DATABASE_ACCESS_EMBEDDED_CONFIGURATION:-release}"
+for configuration in "$STANDARD_CONFIGURATION" "$EMBEDDED_CONFIGURATION"; do
+    [[ "$configuration" == release || "$configuration" == debug ]] || exit 2
+done
 
 timeout_command() {
     local seconds="$1"
@@ -52,31 +57,34 @@ unicode_archive="$SDK_ROOT/$SDK_PREFIX.artifactbundle/$SDK_PREFIX/wasm32-unknown
 [[ -f "$unicode_archive" ]] || exit 2
 
 for lane in standard embedded; do
+    CONFIGURATION="$STANDARD_CONFIGURATION"
+    if [[ "$lane" == embedded ]]; then CONFIGURATION="$EMBEDDED_CONFIGURATION"; fi
+    if [[ "$CONFIGURATION" == debug ]]; then CONFIGURATION_DIRECTORY=Debug; else CONFIGURATION_DIRECTORY=Release; fi
     sdk="$SDK_PREFIX"
     archive=""
     if [[ "$lane" == embedded ]]; then sdk="$SDK_PREFIX-embedded"; archive="$unicode_archive"; fi
     scratch="$WORK_ROOT/$lane"
-    printf 'Building access runtime: lane=%s sdk=%s triple=wasm32-unknown-wasip1\n' "$lane" "$sdk"
+    printf 'Building access runtime: lane=%s sdk=%s configuration=%s triple=wasm32-unknown-wasip1\n' "$lane" "$sdk" "$CONFIGURATION"
     DATABASE_ACCESS_UNICODE_ARCHIVE="$archive" timeout_command "$BUILD_TIMEOUT" \
         xcrun --toolchain "$TOOLCHAIN" swift build --package-path "$SOURCE_ROOT" \
         --swift-sdks-path "$SDK_ROOT" --swift-sdk "$sdk" --triple wasm32-unknown-wasip1 \
         --scratch-path "$scratch" --disable-default-traits --only-use-versions-from-resolved-file \
-        --jobs 4 --traits ScalarIndexes --product DatabaseEmbeddedRuntimeContract -c release -debug-info-format none \
+        --jobs 4 --traits ScalarIndexes --product DatabaseEmbeddedRuntimeContract -c "$CONFIGURATION" -debug-info-format none \
         2>&1 | tee "$RESULT_ROOT/$lane-build.log"
     if rg -n -i 'internal error:|fatal error encountered|warning:.*debug.*information|LLVM ERROR' "$RESULT_ROOT/$lane-build.log"; then exit 1; fi
-    artifact="$scratch/out/Products/Release-webassembly-wasm32/DatabaseEmbeddedRuntimeContract.wasm"
+    artifact="$scratch/out/Products/$CONFIGURATION_DIRECTORY-webassembly-wasm32/DatabaseEmbeddedRuntimeContract.wasm"
     [[ -f "$artifact" ]] || exit 1
     cp "$artifact" "$RESULT_ROOT/$lane.wasm"
     shasum -a 256 "$RESULT_ROOT/$lane.wasm" > "$RESULT_ROOT/$lane.sha256"
     timeout_command "$RUN_TIMEOUT" node "$ROOT_DIR/Tests/DatabaseEmbeddedRuntimeContract/run.mjs" \
         "$RESULT_ROOT/$lane.wasm" 2>&1 | tee "$RESULT_ROOT/$lane-runtime.log"
-    for marker in representations budget-rollback lifecycle; do
+    for marker in representations budget-rollback lifecycle named-access; do
         [[ "$(rg -F -x -c "EMBEDDED_ACCESS_CASE $marker PASS" "$RESULT_ROOT/$lane-runtime.log")" == 1 ]] || exit 1
     done
-    [[ "$(rg -c '^EMBEDDED_ACCESS_CASE ' "$RESULT_ROOT/$lane-runtime.log")" == 3 ]] || exit 1
-    [[ "$(rg -F -x -c 'EMBEDDED_ACCESS_PASS cases=3' "$RESULT_ROOT/$lane-runtime.log")" == 1 ]] || exit 1
+    [[ "$(rg -c '^EMBEDDED_ACCESS_CASE ' "$RESULT_ROOT/$lane-runtime.log")" == 4 ]] || exit 1
+    [[ "$(rg -F -x -c 'EMBEDDED_ACCESS_PASS cases=4' "$RESULT_ROOT/$lane-runtime.log")" == 1 ]] || exit 1
     [[ "$(rg -F -x -c 'ACCESS_WASI_EXIT code=0' "$RESULT_ROOT/$lane-runtime.log")" == 1 ]] || exit 1
     if rg -n 'EMBEDDED_ACCESS_FAIL|RuntimeError:|fatal error:|Error:|error:' "$RESULT_ROOT/$lane-runtime.log"; then exit 1; fi
 done
 shasum -a 256 -c "$RESULT_ROOT/inputs.sha256"
-echo 'Access runtime: standard and Embedded three cases each passed'
+echo 'Access runtime: standard and Embedded four cases each passed'

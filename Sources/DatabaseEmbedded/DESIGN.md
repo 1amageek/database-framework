@@ -31,6 +31,7 @@ single-use; the same owner is not transferred to two aliases.
 | [Results](../../../database-client/Sources/DatabaseAccess/Results/DESIGN.md) | depends on | Lazy result adaptation | Wraps final Framework pages | No extra encoding |
 | [Framework connection](../Database/QueryExecution/DESIGN.md) | depends on | Original-authority execution/close | Performs all query semantics | Container still exclusively owns engine |
 | [Engine core](../DatabaseEngine/Core/DESIGN.md) | depends on | Container/context lifecycle | Owns storage admission and shutdown | No raw-engine operational bypass |
+| [Storage operations](../../../storage-kit/Sources/StorageKit/Storage/DESIGN.md#compound-operation-scheduling) | depends on | Joined compound operation and inherited authority | Bounds immediate-resume continuation stacks | No new transaction or budget owner |
 
 ## Architecture
 
@@ -123,4 +124,18 @@ restart and actual HTTP remain separate Native evidence.
 
 The portable fixture links the matching SDK's `libc++abi`, as the existing
 Framework consumers do for Swift Concurrency TaskGroup support. It supplies no
-replacement runtime symbols and preserves the SDK's default stack limits.
+replacement runtime symbols. Its WASI executable uses the existing Framework
+portable stack budget of 8 MiB in both debug and release configurations;
+production library targets do not select a consumer's stack limit.
+
+N03 adds named two-database isolation, typed projection/predicate parity,
+100-row insertion and stale-generation rejection to the portable fixture.
+Final optimized integration is owned by N05. Native shared-container tests additionally prove separate original
+request authorities and independently owned per-call budgets.
+
+Immediately completing nested storage operations use the StorageKit-owned
+[compound scheduling boundary](../../../storage-kit/Sources/StorageKit/Storage/DESIGN.md#compound-operation-scheduling).
+This adapter forwards the original operation and does not add per-query yields,
+a second budget meter or a transaction boundary. Standalone WASI and hosted
+execution are separate runtime evidence; the common API never installs or
+replaces a global executor.

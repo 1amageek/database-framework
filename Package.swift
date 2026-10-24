@@ -102,14 +102,14 @@ let package = Package(
         .trait(name: "Relationships"),
     ],
     dependencies: [
-        .package(url: "https://github.com/1amageek/database-client.git", revision: "91eee0ff9fd111ddb39c18b5c7277035a3206f1b", traits: multiBaseTraits),
+        .package(url: "https://github.com/1amageek/database-client.git", revision: "20053e44fdbc9083ded4a7daa28c04178fb26d92", traits: multiBaseTraits),
         .package(
             url: "https://github.com/1amageek/database-types.git",
             from: "26.1021.0"
         ),
         .package(
             url: "https://github.com/1amageek/database-kit.git",
-            revision: "add565be81994149a53f6cbd408cc50eb5c875ed",
+            revision: "6eb05bd06a3a3174310343672717e22bd2b9d732",
             traits: multiBaseTraits
         ),
         .package(
@@ -118,7 +118,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/storage-kit.git",
-            from: "26.1021.0"
+            revision: "b63d99931a511c5e339ed257e4936fb3c692f30f"
         ),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.7.0"),
         .package(url: "https://github.com/apple/swift-metrics.git", from: "2.7.0"),
@@ -138,6 +138,8 @@ let package = Package(
             swiftSettings: [.define("DATABASE_EMBEDDED_MULTI_BASE", .when(traits: ["MultiBase"]))],
             linkerSettings: accessRuntimeLinkerSettings + [.unsafeFlags([
                 "-Xlinker", "--undefined=__cxa_pure_virtual", "-Xlinker", "-lc++abi"
+            ], .when(platforms: [.wasi])), .unsafeFlags([
+                "-Xlinker", "-z", "-Xlinker", "stack-size=8388608"
             ], .when(platforms: [.wasi]))]
         ),
         .target(
