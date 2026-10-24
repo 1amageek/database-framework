@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SOURCE_ROOT="${DATABASE_ACCESS_DIAGNOSTIC_SOURCE_ROOT:-$ROOT_DIR}"
+TOOLCHAIN="org.swift.640202609131a"
+SDK_PREFIX="swift-6.4.0-RELEASE_wasm"
+SDK_ROOT="${DATABASE_ACCESS_SWIFT_SDKS_PATH:-$HOME/Library/org.swift.swiftpm/swift-sdks}"
+WORK_ROOT="${DATABASE_ACCESS_RUNTIME_WORK_ROOT:-$ROOT_DIR/.build/access-runtime}"
+RESULT_ROOT="${DATABASE_ACCESS_RUNTIME_RESULT_DIRECTORY:-${TMPDIR:-/tmp}/database-access-runtime-results}"
+BUILD_TIMEOUT="${DATABASE_ACCESS_RUNTIME_BUILD_TIMEOUT_SECONDS:-1200}"
+RUN_TIMEOUT="${DATABASE_ACCESS_RUNTIME_TIMEOUT_SECONDS:-120}"
+
+timeout_command() {
+    local seconds="$1"
+    shift
+    perl -e 'alarm shift; exec @ARGV' "$seconds" "$@"
+}
+
+[[ "$WORK_ROOT" == /* && "$WORK_ROOT" != / && ! -L "$WORK_ROOT" ]] || exit 2
+mkdir -p "$WORK_ROOT" "$RESULT_ROOT"
+if [[ -f "$WORK_ROOT/.embedded-access-runtime-owner" ]]; then
+    [[ "$(cat "$WORK_ROOT/.embedded-access-runtime-owner")" == "$ROOT_DIR|$TOOLCHAIN|$SDK_PREFIX" ]] || exit 2
+else
+    [[ -z "$(ls -A "$WORK_ROOT")" ]] || exit 2
+    printf '%s\n' "$ROOT_DIR|$TOOLCHAIN|$SDK_PREFIX" > "$WORK_ROOT/.embedded-access-runtime-owner"
+fi
+mkdir "$WORK_ROOT/.embedded-access-runtime-lock"
+trap 'rmdir "$WORK_ROOT/.embedded-access-runtime-lock"' EXIT
+
+compiler="$(xcrun --toolchain "$TOOLCHAIN" --find swiftc)"
+[[ "$compiler" == *"/swift-6.4.0-RELEASE.xctoolchain/usr/bin/swiftc" ]] || exit 2
+xcrun --toolchain "$TOOLCHAIN" swiftc --version > "$RESULT_ROOT/compiler.txt"
+rg -F 'Swift version 6.4' "$RESULT_ROOT/compiler.txt" >/dev/null
+xcrun --toolchain "$TOOLCHAIN" swift sdk list --swift-sdks-path "$SDK_ROOT" > "$RESULT_ROOT/sdk-list.txt"
+rg -x "$SDK_PREFIX" "$RESULT_ROOT/sdk-list.txt" >/dev/null
+rg -x "$SDK_PREFIX-embedded" "$RESULT_ROOT/sdk-list.txt" >/dev/null
+if [[ "$SOURCE_ROOT" != "$ROOT_DIR" && "${DATABASE_ACCESS_ALLOW_LOCAL_DEPENDENCIES:-0}" != 1 ]]; then exit 2; fi
+[[ "$SOURCE_ROOT" == /* && -f "$SOURCE_ROOT/Package.swift" ]] || exit 2
+if rg -n '\.package\(path:' "$SOURCE_ROOT/Package.swift" && [[ "${DATABASE_ACCESS_ALLOW_LOCAL_DEPENDENCIES:-0}" != 1 ]]; then
+    echo 'error: portable acceptance requires URL dependencies' >&2
+    exit 2
+fi
+if [[ "${DATABASE_ACCESS_ALLOW_LOCAL_DEPENDENCIES:-0}" == 1 ]]; then
+    echo 'Verification mode: diagnostic-local; final URL verification remains required'
+else
+    echo 'Verification mode: URL dependencies'
+fi
+[[ -f "$SOURCE_ROOT/Package.resolved" ]] || exit 2
+shasum -a 256 "$SOURCE_ROOT/Package.swift" "$SOURCE_ROOT/Package.resolved" > "$RESULT_ROOT/inputs.sha256"
+unicode_archive="$SDK_ROOT/$SDK_PREFIX.artifactbundle/$SDK_PREFIX/wasm32-unknown-wasip1/swift.xctoolchain/usr/lib/swift/embedded/wasm32-unknown-wasip1/libswiftUnicodeDataTables.a"
+[[ -f "$unicode_archive" ]] || exit 2
+
+for lane in standard embedded; do
+    sdk="$SDK_PREFIX"
+    archive=""
+    if [[ "$lane" == embedded ]]; then sdk="$SDK_PREFIX-embedded"; archive="$unicode_archive"; fi
+    scratch="$WORK_ROOT/$lane"
+    printf 'Building access runtime: lane=%s sdk=%s triple=wasm32-unknown-wasip1\n' "$lane" "$sdk"
+    DATABASE_ACCESS_UNICODE_ARCHIVE="$archive" timeout_command "$BUILD_TIMEOUT" \
+        xcrun --toolchain "$TOOLCHAIN" swift build --package-path "$SOURCE_ROOT" \
+        --swift-sdks-path "$SDK_ROOT" --swift-sdk "$sdk" --triple wasm32-unknown-wasip1 \
+        --scratch-path "$scratch" --disable-default-traits --only-use-versions-from-resolved-file \
+        --jobs 4 --traits ScalarIndexes --product DatabaseEmbeddedRuntimeContract -c release -debug-info-format none \
+        2>&1 | tee "$RESULT_ROOT/$lane-build.log"
+    if rg -n -i 'internal error:|fatal error encountered|warning:.*debug.*information|LLVM ERROR' "$RESULT_ROOT/$lane-build.log"; then exit 1; fi
+    artifact="$scratch/out/Products/Release-webassembly-wasm32/DatabaseEmbeddedRuntimeContract.wasm"
+    [[ -f "$artifact" ]] || exit 1
+    cp "$artifact" "$RESULT_ROOT/$lane.wasm"
+    shasum -a 256 "$RESULT_ROOT/$lane.wasm" > "$RESULT_ROOT/$lane.sha256"
+    timeout_command "$RUN_TIMEOUT" node "$ROOT_DIR/Tests/DatabaseEmbeddedRuntimeContract/run.mjs" \
+        "$RESULT_ROOT/$lane.wasm" 2>&1 | tee "$RESULT_ROOT/$lane-runtime.log"
+    for marker in representations budget-rollback lifecycle; do
+        [[ "$(rg -F -x -c "EMBEDDED_ACCESS_CASE $marker PASS" "$RESULT_ROOT/$lane-runtime.log")" == 1 ]] || exit 1
+    done
+    [[ "$(rg -c '^EMBEDDED_ACCESS_CASE ' "$RESULT_ROOT/$lane-runtime.log")" == 3 ]] || exit 1
+    [[ "$(rg -F -x -c 'EMBEDDED_ACCESS_PASS cases=3' "$RESULT_ROOT/$lane-runtime.log")" == 1 ]] || exit 1
+    [[ "$(rg -F -x -c 'ACCESS_WASI_EXIT code=0' "$RESULT_ROOT/$lane-runtime.log")" == 1 ]] || exit 1
+    if rg -n 'EMBEDDED_ACCESS_FAIL|RuntimeError:|fatal error:|Error:|error:' "$RESULT_ROOT/$lane-runtime.log"; then exit 1; fi
+done
+shasum -a 256 -c "$RESULT_ROOT/inputs.sha256"
+echo 'Access runtime: standard and Embedded three cases each passed'

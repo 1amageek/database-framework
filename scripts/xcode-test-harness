@@ -696,9 +696,9 @@ if grep -En '\.package\(path:' "$normalized_package" >/dev/null; then
     exit 2
   fi
   if grep -En '\.package\(path:' "$normalized_package" \
-      | grep -Ev '\.package\(path:[[:space:]]*"\.\./database-kit"' \
+      | grep -Ev '\.package\(path:[[:space:]]*"\.\./database-(kit|client)"' \
       | grep -q .; then
-    echo "error: local dependency diagnosis supports only ../database-kit" >&2
+    echo "error: local dependency diagnosis supports only ../database-kit and ../database-client" >&2
     exit 2
   fi
   if [[ "$REUSE_BUILT_TESTS" == true ]]; then
@@ -790,18 +790,20 @@ if [[ "$reuse_compiled_tests" == false ]]; then
   fi
 
   if [[ "$has_local_dependencies" == true ]]; then
-    database_kit_source="$ROOT_DIR/../database-kit"
-    database_kit_copy="$XCODE_HARNESS_WORK_ROOT/database-kit"
-    if [[ ! -f "$database_kit_source/Package.swift" ]]; then
-      echo "error: local database-kit source is unavailable" >&2
-      exit 2
-    fi
-    rsync -a --checksum --delete \
-      --exclude '.git' \
-      --exclude '.build' \
-      --exclude '.swiftpm' \
-      --exclude '*.xcresult' \
-      "$database_kit_source/" "$database_kit_copy/"
+    for dependency_name in database-kit database-client; do
+      if ! grep -Eq "\.package\(path:[[:space:]]*\"\.\./$dependency_name\"" "$source_copy/Package.swift"; then
+        continue
+      fi
+      dependency_source="$ROOT_DIR/../$dependency_name"
+      dependency_copy="$XCODE_HARNESS_WORK_ROOT/$dependency_name"
+      if [[ ! -f "$dependency_source/Package.swift" ]]; then
+        echo "error: local $dependency_name source is unavailable" >&2
+        exit 2
+      fi
+      rsync -a --checksum --delete \
+        --exclude '.git' --exclude '.build' --exclude '.swiftpm' --exclude '*.xcresult' \
+        "$dependency_source/" "$dependency_copy/"
+    done
   fi
 fi
 rm -f -- "$normalized_package"

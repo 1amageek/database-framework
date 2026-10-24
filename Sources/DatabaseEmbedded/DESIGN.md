@@ -2,7 +2,7 @@
 
 ## Purpose and Scope
 
-Status: proposed, unimplemented SwiftPM module. Parent: [SDK package](../../../database-client/Sources/DatabaseAccess/DESIGN.md).
+Status: implemented optional SwiftPM module. Parent: [Framework package](../../DESIGN.md).
 Children: none. Owns in-process composition for application access. Dependencies
 are Client-owned DatabaseAccess and Framework Database/DatabaseEngine targets;
 selected runtime/backend traits stay explicit. No remote Client invocation or Server target dependency.
@@ -25,7 +25,8 @@ single-use; the same owner is not transferred to two aliases.
 
 | Design | Relationship | Contract Used | Summary | Cautions |
 |---|---|---|---|---|
-| [Package](../../../database-client/Sources/DatabaseAccess/DESIGN.md) | parent | Optional local composition | Owns dependencies and use | Not a replacement execution engine |
+| [Framework package](../../DESIGN.md) | parent | Optional module composition | Owns dependency direction | Not a replacement execution engine |
+| [Common access](../../../database-client/Sources/DatabaseAccess/DESIGN.md) | depends on | DatabaseOpening/DatabaseExecuting and lazy results | Supplies application access contracts | No transport dependency |
 | [NamedAccess](../../../database-client/Sources/DatabaseAccess/NamedAccess/DESIGN.md) | used by | Opener and access lifetime | Publishes prepared access | No partial publication |
 | [Results](../../../database-client/Sources/DatabaseAccess/Results/DESIGN.md) | depends on | Lazy result adaptation | Wraps final Framework pages | No extra encoding |
 | [Framework connection](../Database/QueryExecution/DESIGN.md) | depends on | Original-authority execution/close | Performs all query semantics | Container still exclusively owns engine |
@@ -96,3 +97,30 @@ request budgets, SQL/IR/block equality, first-error rollback, restart and close.
 N03 adds named generations and concurrent use. The ordinary/Embedded gates
 exercise actual local invocation with the selected traits, not host-only
 declarations. A backend/trait not executed remains explicitly unverified.
+
+### N02 concrete composition
+
+DatabaseConfiguration.owningEmbedded receives a fresh-container factory and an
+explicit async context selector. This makes principal/target selection visible
+and supports ordinary/MultiBase composition without a default privileged
+context. borrowingEmbedded retains a caller-owned context. Existing frame,
+structural and checkpoint limits are forwarded to openConnection.
+EmbeddedOpening serializes its single-use acquisition claim. EmbeddedExecution
+forwards execution without another admission queue or meter, rejecting any set
+traceID/idempotencyKey before invoking the local connection. Its cleanup actor
+coalesces close: drain the connection, then await shutdown of an owned container.
+Borrowed close leaves the external container usable. These actors and Sendable
+contracts are identical on Native/ordinary WASM/Embedded.
+
+The module-owned `scripts/access-runtime-harness` pins Swift 6.4.0 release and
+its matching standard/Embedded WASI SDKs for the new adapter runtime suite.
+This does not replace or change the older Framework release-gate pin in
+`docs/production-readiness.md`. The suite executes ScalarIndexes SQL/IR/block
+results, work-budget rollback, retained rows and owned/borrowed closure through
+DatabaseExecuting witnesses. Its InMemoryEngine and deterministic clocks prove
+adapter/executor behavior, not durable storage or elapsed-time limits. SQLite
+restart and actual HTTP remain separate Native evidence.
+
+The portable fixture links the matching SDK's `libc++abi`, as the existing
+Framework consumers do for Swift Concurrency TaskGroup support. It supplies no
+replacement runtime symbols and preserves the SDK's default stack limits.

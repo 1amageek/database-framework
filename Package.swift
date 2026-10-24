@@ -1,7 +1,14 @@
 // swift-tools-version: 6.4
 import PackageDescription
 
-let databaseKitTraits: Set<Package.Dependency.Trait> = [
+let accessRuntimeLinkerSettings: [LinkerSetting]
+if let archive = Context.environment["DATABASE_ACCESS_UNICODE_ARCHIVE"], !archive.isEmpty {
+    accessRuntimeLinkerSettings = [.unsafeFlags(["-Xlinker", archive], .when(platforms: [.wasi]))]
+} else {
+    accessRuntimeLinkerSettings = []
+}
+
+let multiBaseTraits: Set<Package.Dependency.Trait> = [
     .trait(
         name: "MultiBase",
         condition: .when(traits: ["MultiBase"])
@@ -59,6 +66,7 @@ let package = Package(
         // QueryIR is provided by database-kit
         .library(name: "QueryAST", targets: ["QueryAST"]),
         .library(name: "Database", targets: ["Database"]),
+        .library(name: "DatabaseEmbedded", targets: ["DatabaseEmbedded"]),
     ],
     traits: [
         .trait(name: "FoundationDB"),
@@ -94,6 +102,7 @@ let package = Package(
         .trait(name: "Relationships"),
     ],
     dependencies: [
+        .package(url: "https://github.com/1amageek/database-client.git", revision: "91eee0ff9fd111ddb39c18b5c7277035a3206f1b", traits: multiBaseTraits),
         .package(
             url: "https://github.com/1amageek/database-types.git",
             from: "26.1021.0"
@@ -101,7 +110,7 @@ let package = Package(
         .package(
             url: "https://github.com/1amageek/database-kit.git",
             revision: "add565be81994149a53f6cbd408cc50eb5c875ed",
-            traits: databaseKitTraits
+            traits: multiBaseTraits
         ),
         .package(
             url: "https://github.com/1amageek/swift-hnsw.git",
@@ -119,6 +128,29 @@ let package = Package(
         ),
     ],
     targets: [
+        .executableTarget(
+            name: "DatabaseEmbeddedRuntimeContract",
+            dependencies: ["DatabaseEmbedded", "DatabaseRuntime", "QueryAST",
+                .product(name: "DatabaseTypes", package: "database-types"),
+                .product(name: "StorageKit", package: "storage-kit")],
+            path: "Tests/DatabaseEmbeddedRuntimeContract",
+            exclude: ["run.mjs"],
+            swiftSettings: [.define("DATABASE_EMBEDDED_MULTI_BASE", .when(traits: ["MultiBase"]))],
+            linkerSettings: accessRuntimeLinkerSettings + [.unsafeFlags([
+                "-Xlinker", "--undefined=__cxa_pure_virtual", "-Xlinker", "-lc++abi"
+            ], .when(platforms: [.wasi]))]
+        ),
+        .target(
+            name: "DatabaseEmbedded",
+            dependencies: [
+                "Database", "DatabaseEngine",
+                .product(name: "DatabaseAccess", package: "database-client"),
+                .product(name: "DatabaseKit", package: "database-kit"),
+                .product(name: "DatabaseWire", package: "database-kit"),
+                .product(name: "StorageKit", package: "storage-kit"),
+            ],
+            exclude: ["DESIGN.md"]
+        ),
         .target(name: "DecimalFormatting", exclude: ["DESIGN.md"]),
         .target(
             name: "DatabaseMath",
@@ -922,6 +954,7 @@ let package = Package(
         .testTarget(
             name: "SQLiteTests",
             dependencies: [
+                "DatabaseEmbedded",
                 "Database",
                 "DatabaseEngine",
                 "DatabaseRuntime",

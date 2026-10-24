@@ -1,0 +1,100 @@
+import Database
+import DatabaseEmbedded
+@_spi(Testing) import DatabaseEngine
+import DatabaseKit
+import DatabaseRuntime
+import DatabaseTypes
+import QueryAST
+import StorageKit
+#if canImport(WASILibc)
+import WASILibc
+#elseif canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
+
+@main
+struct EmbeddedRuntimeContract {
+    enum Failure: Error { case assertion }
+
+    static func main() async {
+        #if DATABASE_EMBEDDED_MULTI_BASE
+        // This fixture owns the ordinary-root portable adapter contract only.
+        print("EMBEDDED_ACCESS_UNSUPPORTED MultiBase")
+        exit(2)
+        #else
+        var phase = "container-open"
+        do {
+            let container = try await DBContainer.open(for: Schema(entities: []),
+                configuration: DBConfiguration(storageEngine: InMemoryEngine(),
+                    monotonicClock: FrozenMonotonicClock(), wallClock: FrozenWallClock()),
+                runtimeConfiguration: DatabaseFrameworkRuntime.configuration(
+                    executionIdentity: .init(identifier: "embedded-access-runtime", revision: 1), entityRuntimes: []),
+                security: .disabledForTesting)
+            defer { await container.shutdown() }
+            phase = "context"
+            let context = container.newContext(authorization: .authenticated(.init(identifier: "runtime", roles: ["admin"])))
+            phase = "borrowed-open"
+            let access = try await DatabaseConfiguration.borrowingEmbedded(context: context, maximumConcurrentExecutions: 2).open()
+            defer { await access.close() }
+            for text in ["SELECT 7 AS n", "WITH c AS (SELECT 2 AS n) SELECT sum(n)::bigint AS n FROM c LIMIT 1"] {
+                phase = "representations:\(text)"
+                let statement = try SQLParser(preservesCastOutputNames: true).parse(text)
+                let textResult = try await execute(access, .sql(text))
+                let ir = try await execute(access, .statement(statement))
+                let block = try await execute(access, .block(SQLBlock(steps: [.statement(statement)])))
+                try require(textResult.columns == ir.columns && ir.columns == block.columns)
+                try require(try await values(textResult.rows) == values(ir.rows))
+                try require(try await values(ir.rows) == values(block.rows))
+            }
+            print("EMBEDDED_ACCESS_CASE representations PASS")
+            _ = try await execute(access, .sql("CREATE TABLE items(id integer); INSERT INTO items VALUES(1)"))
+            var rejected = false
+            do { _ = try await execute(access, .sql("INSERT INTO items VALUES(2); SELECT missing; INSERT INTO items VALUES(3)")) }
+            catch { rejected = true }
+            try require(rejected)
+            rejected = false
+            do {
+                _ = try await access.execute(.sql("INSERT INTO items VALUES(4)"), parameters: [], options: .init(budget: .init(maximumWorkUnits: 0)), metadata: .init())
+            } catch { rejected = true }
+            try require(rejected)
+            try require(try await values(execute(access, .sql("SELECT id FROM items")).rows) == [[.primitive(.int32(1))]])
+            print("EMBEDDED_ACCESS_CASE budget-rollback PASS")
+            let retained = try await execute(access, .sql("SELECT id FROM items"))
+            await access.close()
+            try require(try await values(retained.rows) == [[.primitive(.int32(1))]])
+            let direct = try await context.openConnection()
+            await direct.close()
+            let owned = try await DatabaseConfiguration.owningEmbedded(maximumConcurrentExecutions: 1,
+                makeContainer: { container }, context: { _ in context }).open()
+            await owned.close()
+            let closed = try await context.openConnection()
+            defer { await closed.close() }
+            rejected = false
+            do { _ = try await closed.execute("SELECT 1") } catch { rejected = true }
+            try require(rejected)
+            print("EMBEDDED_ACCESS_CASE lifecycle PASS")
+            print("EMBEDDED_ACCESS_PASS cases=3")
+        } catch {
+            print("EMBEDDED_ACCESS_FAIL phase=\(phase)")
+            #if !hasFeature(Embedded)
+            print(error)
+            #endif
+            exit(1)
+        }
+        #endif
+    }
+
+    static func require(_ condition: Bool) throws(Failure) {
+        guard condition else { throw .assertion }
+    }
+    static func execute(_ access: any DatabaseExecuting, _ input: QueryInput) async throws -> AccessResult {
+        try await access.execute(input, parameters: [], options: .init(), metadata: .init())
+    }
+    static func values(_ rows: RowStream) async throws -> [[QueryValue]] {
+        var output: [[QueryValue]] = []
+        for try await row in rows { output.append(row.values) }
+        return output
+    }
+}
