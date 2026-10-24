@@ -639,3 +639,12 @@ atomicity and awaited closure remain owned by their existing components.
 [Query Results](QueryResults/DESIGN.md) owns the admitted response allocation and
 one-time promotion shared by SQLBlock and the read-snapshot runner. Producing
 runners establish authoritative closure; projection callbacks do not.
+
+## N00 Typed Predicate Declaration Ownership
+
+The [Fetch component](Fetch/DESIGN.md) owns model comparison and existing fetch
+composition. [Kit Fluent](../../../database-kit/Sources/DatabaseKit/Query/Fluent/DESIGN.md)
+owns pure predicate/field declarations and new canonical SQL construction.
+This module reexports those semantic declarations while retaining its original
+execution, authority and resource contracts. Only the optional DatabaseEmbedded
+adapter may depend on Client-owned access; Engine has no Client dependency.

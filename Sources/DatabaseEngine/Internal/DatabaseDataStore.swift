@@ -613,7 +613,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
     /// A scalar comparison encoded for an index-key prefix.
     private struct ScalarIndexCondition: Sendable {
         let fieldName: String
-        let op: ComparisonOperator
+        let op: FieldComparisonOperator
         let valueTuple: Tuple
         let matchedFieldCount: Int
     }
@@ -654,7 +654,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
                 "Scalar index selection requires at least one predicate clause"
             )
         }
-        let comparison: ComparisonOperator = selection.clauses.count > 1
+        let comparison: FieldComparisonOperator = selection.clauses.count > 1
             ? .equal
             : firstClause.comparison
         return ScalarIndexAccessPath(

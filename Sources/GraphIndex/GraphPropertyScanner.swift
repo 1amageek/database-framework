@@ -40,12 +40,12 @@ public struct GraphEdgeWithProperties: Sendable, Equatable {
 /// A covering-index property predicate evaluated after structural key pruning.
 public struct PropertyFilter: Sendable {
     public let fieldName: String
-    public let op: DatabaseEngine.ComparisonOperator
+    public let op: DatabaseKit.FieldComparisonOperator
     public let value: FieldValue
 
     public init(
         fieldName: String,
-        op: DatabaseEngine.ComparisonOperator,
+        op: DatabaseKit.FieldComparisonOperator,
         value: FieldValue
     ) {
         self.fieldName = fieldName
@@ -222,7 +222,7 @@ public struct GraphPropertyScanner: Sendable {
 public enum GraphPropertyFilterError: Error, Sendable, Equatable {
     case fieldNotStored(String)
     case unsupportedPropertyValue(field: String, value: FieldValue)
-    case operatorTypeMismatch(field: String, operation: DatabaseEngine.ComparisonOperator)
+    case operatorTypeMismatch(field: String, operation: DatabaseKit.FieldComparisonOperator)
 }
 
 public struct GraphPropertyScan: Sendable {

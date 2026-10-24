@@ -13,6 +13,34 @@ import Testing
 
 @Suite("Canonical query connections", .timeLimit(.minutes(1)))
 struct QueryConnectionTests {
+    @Test("Typed fluent IR agrees with SQL including SQL NULL negation")
+    func fluentRepresentationAgreement() async throws {
+        let database = try SQLiteTestDatabase(prefix: "fluent-representations")
+        defer { database.remove() }
+        let container = try await open(database)
+        defer { await container.shutdown() }
+        let connection = try await container.testBaseContext().openConnection()
+        defer { await connection.close() }
+        _ = try await connection.execute("CREATE TABLE \"FluentExecutionPerson\"(id text, name text, age integer, \"isActive\" boolean, nickname text)")
+        _ = try await connection.execute("INSERT INTO \"FluentExecutionPerson\" VALUES ('1','Alice',30,true,NULL), ('2','Bob',15,true,'b'), ('3','Carol',40,false,NULL)")
+        let query = try FluentExecutionPerson.select(
+            #field(\FluentExecutionPerson.name), #field(\FluentExecutionPerson.age)
+        ).where(#field(\FluentExecutionPerson.age) > Int32(18) && #field(\FluentExecutionPerson.isActive) == true)
+            .orderBy(#field(\FluentExecutionPerson.name)).limit(20)
+        let typed = try await connection.execute(QueryStatement.select(query.definition))
+        let sql = try await connection.execute("SELECT name, age FROM \"FluentExecutionPerson\" WHERE age > 18 AND \"isActive\" = true ORDER BY name LIMIT 20")
+        #expect(typed.columns == sql.columns)
+        #expect(try await values(typed.rows) == values(sql.rows))
+        #expect(try await values(typed.rows) == [[.primitive(.string("Alice")), .primitive(.int32(30))]])
+        let nullComparison = Predicate<FluentExecutionPerson>.comparison(FieldComparison(
+            field: #field(\FluentExecutionPerson.nickname), op: .equal, value: FieldValue.null))
+        let negated = try FluentExecutionPerson.select(#field(\FluentExecutionPerson.name)).where(!nullComparison)
+        let actual = try await connection.execute(QueryStatement.select(negated.definition))
+        let expected = try await connection.execute("SELECT name FROM \"FluentExecutionPerson\" WHERE NOT (nickname = NULL)")
+        #expect(try await values(actual.rows) == values(expected.rows))
+        #expect(try await values(actual.rows).isEmpty)
+    }
+
     @Test("SQL, semantic statements and blocks preserve exact values and independent schemas")
     func representationAgreement() async throws {
         let database = try SQLiteTestDatabase(prefix: "query-representations")

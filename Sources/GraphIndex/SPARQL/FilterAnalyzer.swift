@@ -148,7 +148,7 @@ struct FilterAnalyzer: Sendable {
     /// Returns (filter, nil) if pushable, or ([], originalExpr) if not pushable
     private func tryPush(
         _ variable: String,
-        _ op: DatabaseEngine.ComparisonOperator,
+        _ op: DatabaseKit.FieldComparisonOperator,
         _ value: FieldValue,
         originalExpr: FilterExpression
     ) -> (pushable: [PropertyFilter], remaining: FilterExpression?) {

@@ -1,5 +1,11 @@
 # database-framework
 
+The approved [common access API](../database-client/Sources/DatabaseAccess/DESIGN.md)
+is consumed by the optional [DatabaseEmbedded adapter](Sources/DatabaseEmbedded/DESIGN.md).
+Only that adapter depends on the Client-owned DatabaseAccess product; Database,
+DatabaseEngine and storage execution targets retain their current dependencies.
+Existing context/container/connection APIs remain independently available.
+
 ## Purpose and Scope
 
 Package-level design authority and design index for the in-process
@@ -8,7 +14,7 @@ dependency direction, and the direct-child index. It does not copy the
 contracts owned by a child design.
 
 - Parent: the workspace system design at [../DESIGN.md](../DESIGN.md).
-- Direct children: [Database](Sources/Database/DESIGN.md),
+- Direct children: [DatabaseEmbedded](Sources/DatabaseEmbedded/DESIGN.md), [Database](Sources/Database/DESIGN.md),
   [DatabaseEngine](Sources/DatabaseEngine/DESIGN.md),
   [DatabaseRuntime](Sources/DatabaseRuntime/DESIGN.md),
   [DatabaseMath](Sources/DatabaseMath/DESIGN.md),

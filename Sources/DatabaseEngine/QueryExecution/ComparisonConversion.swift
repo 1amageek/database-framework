@@ -1,15 +1,15 @@
 // ComparisonConversion.swift
-// DatabaseEngine - Conversion between ComparisonOperator and Expression
+// DatabaseEngine - Conversion between FieldComparisonOperator and Expression
 
 import DatabaseTypes
 import DatabaseKit
 
-// MARK: - ComparisonOperator → Expression
+// MARK: - FieldComparisonOperator → Expression
 
-extension ComparisonOperator {
+extension FieldComparisonOperator {
     /// Build a QueryIR Expression from this comparison operator, a column name, and a FieldValue.
     ///
-    /// Maps all 12 ComparisonOperator cases to their QueryIR equivalents:
+    /// Maps all 12 FieldComparisonOperator cases to their QueryIR equivalents:
     /// - Simple comparisons (==, !=, <, <=, >, >=) → binary Expression
     /// - String operations (contains, hasPrefix, hasSuffix) → function calls
     /// - Set membership (in, notIn) → inList / notInList

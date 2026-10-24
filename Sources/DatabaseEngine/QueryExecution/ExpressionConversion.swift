@@ -180,7 +180,7 @@ extension Expression {
     private func columnLiteralPredicate<T: Persistable>(
         lhs: Expression,
         rhs: Expression,
-        op: ComparisonOperator
+        op: FieldComparisonOperator
     ) throws(LiteralConversionError) -> Predicate<T>? {
         guard case .column(let col) = lhs,
               case .literal(let literal) = rhs else { return nil }

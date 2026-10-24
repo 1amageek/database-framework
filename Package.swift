@@ -100,7 +100,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/database-kit.git",
-            revision: "b325109676a4b9b3431e2e306ca8c0dcf1d9a7bf",
+            revision: "add565be81994149a53f6cbd408cc50eb5c875ed",
             traits: databaseKitTraits
         ),
         .package(
@@ -140,6 +140,7 @@ let package = Package(
                 "DESIGN.md",
                 "Configuration/DESIGN.md",
                 "Core/DESIGN.md",
+                "Fetch/DESIGN.md",
                 "Directory/DESIGN.md",
                 "QueryExecution/DESIGN.md",
                 "QueryExecution/SQLPatternMatching/DESIGN.md",

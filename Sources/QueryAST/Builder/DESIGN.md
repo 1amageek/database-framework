@@ -1,5 +1,10 @@
 # Builder
 
+NDB24's proposed [Kit Fluent contract](../../../../database-kit/Sources/DatabaseKit/Query/Fluent/DESIGN.md)
+owns the future migration of pure SQLQueryBuilder construction and its callers.
+This file still describes the current implementation. Parsing and canonical
+SQL serialization remain QueryAST responsibilities after that migration.
+
 ## Purpose and Scope
 
 Builder owns fluent SQL/SPARQL semantic construction and the canonical SQL

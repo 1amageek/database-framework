@@ -3,7 +3,7 @@ import DatabaseTypes
 
 struct ScalarIndexClause: Sendable {
     let fieldName: String
-    let comparison: ComparisonOperator
+    let comparison: FieldComparisonOperator
     let value: FieldValue
 }
 

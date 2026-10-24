@@ -1,5 +1,10 @@
 # Query Execution
 
+The proposed [SDK local adapter](../../DatabaseEmbedded/DESIGN.md)
+consumes this public connection contract. Named access remains an upper
+application composition concern; global runtime registration and new query
+interpretation do not enter Framework. This adapter is currently design-only.
+
 ## Purpose and Scope
 
 This component owns the common in-process connection surface and final result
