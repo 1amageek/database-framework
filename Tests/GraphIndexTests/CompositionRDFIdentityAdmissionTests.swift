@@ -16,7 +16,7 @@ struct CompositionRDFIdentityAdmissionTests {
             QueryColumn(number: 1, name: "subject", type: .primitive(.rdfTerm), isNullable: false),
             QueryColumn(number: 2, name: "object", type: .primitive(.rdfTerm, isArray: true), isNullable: false),
         ]
-        let row = try QueryRow(values: [
+        let row = try ExecutionQueryRow(values: [
             .primitive(.rdfTerm(.blankNode(try RDFBlankNodeIdentifier("subject")))),
             .primitive(.array([.rdfTerm(.blankNode(try RDFBlankNodeIdentifier("nested")))])),
         ], columns: columns)

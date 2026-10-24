@@ -140,8 +140,8 @@ struct FusionExecutionContractTests {
         let entity = try FusionExecutionContractItem.schemaEntity
         let domain = try FusionCandidateDomain.make(
             rows: [
-                try QueryRow(values: [.primitive(.string("b")), .primitive(.int64(2))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
-                try QueryRow(values: [.primitive(.string("a")), .primitive(.int64(1))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
+                try ExecutionQueryRow(values: [.primitive(.string("b")), .primitive(.int64(2))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
+                try ExecutionQueryRow(values: [.primitive(.string("a")), .primitive(.int64(1))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
             ],
             columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)],
             entity: entity,
@@ -206,8 +206,8 @@ struct FusionExecutionContractTests {
     func rawFixtureAndScopedPageShareCandidateValidation() throws {
         let entity = try FusionExecutionContractItem.schemaEntity
         let orderedRows = [
-            try QueryRow(values: [.primitive(.string("b")), .primitive(.int64(2))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
-            try QueryRow(values: [.primitive(.string("a")), .primitive(.int64(1))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
+            try ExecutionQueryRow(values: [.primitive(.string("b")), .primitive(.int64(2))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
+            try ExecutionQueryRow(values: [.primitive(.string("a")), .primitive(.int64(1))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
         ]
         let keyA = try primaryKey("a")
         let keyB = try primaryKey("b")
@@ -241,7 +241,7 @@ struct FusionExecutionContractTests {
         }
 
         let missingIdentityRows = [
-            try QueryRow(values: [.primitive(.int64(1))], columns: [QueryColumn(number: 1, name: "value", type: .primitive(.int64), isNullable: false)]),
+            try ExecutionQueryRow(values: [.primitive(.int64(1))], columns: [QueryColumn(number: 1, name: "value", type: .primitive(.int64), isNullable: false)]),
         ]
         do {
             let meter = makeMeter()
@@ -278,8 +278,8 @@ struct FusionExecutionContractTests {
         }
 
         let duplicateIdentityRows = [
-            try QueryRow(values: [.primitive(.string("a")), .primitive(.int64(1))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
-            try QueryRow(values: [.primitive(.string("a")), .primitive(.int64(2))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
+            try ExecutionQueryRow(values: [.primitive(.string("a")), .primitive(.int64(1))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
+            try ExecutionQueryRow(values: [.primitive(.string("a")), .primitive(.int64(2))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
         ]
         do {
             let meter = makeMeter()
@@ -320,7 +320,7 @@ struct FusionExecutionContractTests {
     func scopedCandidatesAdmitDestinationBeforeConstruction() throws {
         let entity = try FusionExecutionContractItem.schemaEntity
         let rows = [
-            try QueryRow(
+            try ExecutionQueryRow(
                 values: [.primitive(.string("candidate")), .primitive(.int64(1))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]
             )
         ]
@@ -1076,8 +1076,8 @@ struct FusionExecutionContractTests {
         let entity = try FusionExecutionContractItem.schemaEntity
         let left = try FusionCandidateDomain.make(
             rows: [
-                try QueryRow(values: [.primitive(.string("c")), .primitive(.int64(3))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
-                try QueryRow(values: [.primitive(.string("a")), .primitive(.int64(1))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
+                try ExecutionQueryRow(values: [.primitive(.string("c")), .primitive(.int64(3))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
+                try ExecutionQueryRow(values: [.primitive(.string("a")), .primitive(.int64(1))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
             ],
             columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)],
             entity: entity,
@@ -1085,8 +1085,8 @@ struct FusionExecutionContractTests {
         )
         let right = try FusionCandidateDomain.make(
             rows: [
-                try QueryRow(values: [.primitive(.string("b")), .primitive(.int64(2))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
-                try QueryRow(values: [.primitive(.string("c")), .primitive(.int64(3))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
+                try ExecutionQueryRow(values: [.primitive(.string("b")), .primitive(.int64(2))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
+                try ExecutionQueryRow(values: [.primitive(.string("c")), .primitive(.int64(3))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
             ],
             columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)],
             entity: entity,
@@ -1108,7 +1108,7 @@ struct FusionExecutionContractTests {
 
         let inconsistent = try FusionCandidateDomain.make(
             rows: [
-                try QueryRow(values: [.primitive(.string("c")), .primitive(.int64(30))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)])
+                try ExecutionQueryRow(values: [.primitive(.string("c")), .primitive(.int64(30))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)])
             ],
             columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)],
             entity: entity,
@@ -1128,8 +1128,8 @@ struct FusionExecutionContractTests {
         let entity = try FusionExecutionContractItem.schemaEntity
         let candidates = try FusionCandidateDomain.make(
             rows: [
-                try QueryRow(values: [.primitive(.string("a")), .primitive(.int64(1))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
-                try QueryRow(values: [.primitive(.string("b")), .primitive(.int64(2))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
+                try ExecutionQueryRow(values: [.primitive(.string("a")), .primitive(.int64(1))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
+                try ExecutionQueryRow(values: [.primitive(.string("b")), .primitive(.int64(2))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)]),
             ],
             columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false)],
             entity: entity,
@@ -1213,7 +1213,7 @@ struct FusionExecutionContractTests {
         )
         let payload = String(repeating: "x", count: 4_096)
         let rows = try (0..<64).map { index in
-            try QueryRow(values: [.primitive(.string(paddedIdentity(index))), .primitive(.int64(Int64(index))), .primitive(.string(payload))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false), QueryColumn(number: 3, name: "payload", type: .primitive(.string), isNullable: false)])
+            try ExecutionQueryRow(values: [.primitive(.string(paddedIdentity(index))), .primitive(.int64(Int64(index))), .primitive(.string(payload))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false), QueryColumn(number: 2, name: "value", type: .primitive(.int64), isNullable: false), QueryColumn(number: 3, name: "payload", type: .primitive(.string), isNullable: false)])
         }
         let candidates = try FusionCandidateDomain.make(
             rows: rows,
@@ -1259,8 +1259,8 @@ struct FusionExecutionContractTests {
         let setupMeter = makeMeter()
         let candidates = try FusionCandidateDomain.make(
             rows: [
-                try QueryRow(values: [.primitive(.string("a"))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false)]),
-                try QueryRow(values: [.primitive(.string("b"))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false)]),
+                try ExecutionQueryRow(values: [.primitive(.string("a"))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false)]),
+                try ExecutionQueryRow(values: [.primitive(.string("b"))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false)]),
             ],
             columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false)],
             entity: try FusionExecutionContractItem.schemaEntity,
@@ -2217,11 +2217,11 @@ struct FusionExecutionContractTests {
     }
 
     private func makeScopedRowPage(
-        rows: [QueryRow],
+        rows: [ExecutionQueryRow],
         columns: [QueryColumn],
         workMeter: DatabaseWorkMeter
     ) throws -> CanonicalRetainedQueryRowView {
-        func paddingRow(_ identity: String) throws -> QueryRow {
+        func paddingRow(_ identity: String) throws -> ExecutionQueryRow {
             let values = try columns.map { column -> QueryValue in
                 switch column.name {
                 case "id": return .primitive(.string(identity))
@@ -2229,13 +2229,13 @@ struct FusionExecutionContractTests {
                 default: throw QueryRowCodecError.unknownField(type: "Fusion fixture", field: column.name)
                 }
             }
-            return try QueryRow(values: values, columns: columns)
+            return try ExecutionQueryRow(values: values, columns: columns)
         }
         let ownerRows = [try paddingRow("page-prefix")] + rows + [try paddingRow("page-suffix")]
-        var builder = try DatabaseRetainedArrayBuilder<QueryRow>(
+        var builder = try DatabaseRetainedArrayBuilder<ExecutionQueryRow>(
             workMeter: workMeter,
             stage: .bindingCandidate,
-            layout: try DatabaseRetainedArrayLayout.forElement(QueryRow.self),
+            layout: try DatabaseRetainedArrayLayout.forElement(ExecutionQueryRow.self),
             expectedCount: ownerRows.count
         )
         for row in ownerRows {

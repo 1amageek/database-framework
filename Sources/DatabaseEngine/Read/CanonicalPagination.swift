@@ -101,14 +101,14 @@ public enum CanonicalQueryPagination {
     }
 
     public static func window(
-        rows: consuming [QueryRow],
+        rows: consuming [ExecutionQueryRow],
         columns: [QueryColumn],
         selectQuery: SelectQuery,
         options: ReadExecutionContext,
         rowsAreContinuationRelative: Bool = false,
         continuationPosition: ByteString? = nil,
         prevalidatedQueryFingerprint: ByteString? = nil
-    ) throws -> CanonicalPageWindow<QueryRow> {
+    ) throws -> CanonicalPageWindow<ExecutionQueryRow> {
         let selection = try retainedWindowSelection(
             rowCount: rows.count,
             columns: columns,
@@ -154,7 +154,7 @@ public enum CanonicalQueryPagination {
     private static func retainedWindowSelection(
         rowCount: Int,
         columns: [QueryColumn],
-        withRow: (Int, (borrowing QueryRow) throws -> Void) throws -> Void,
+        withRow: (Int, (borrowing ExecutionQueryRow) throws -> Void) throws -> Void,
         selectQuery: SelectQuery,
         options: ReadExecutionContext,
         rowsAreLogicalQueryRelative: Bool = false,
@@ -431,9 +431,9 @@ public enum CanonicalQueryPagination {
     /// consumed so pagination never allocates ArraySlice and Array copies for
     /// the visible page.
     private static func trimOwnedRows(
-        _ rows: consuming [QueryRow],
+        _ rows: consuming [ExecutionQueryRow],
         to range: Range<Int>
-    ) -> [QueryRow] {
+    ) -> [ExecutionQueryRow] {
         guard !range.isEmpty else { return [] }
         var result = consume rows
         if range.upperBound < result.count {
@@ -585,7 +585,7 @@ public enum CanonicalQueryPagination {
     private static func resultFingerprint(
         rowCount: Int,
         columns: [QueryColumn],
-        withRow: (Int, (borrowing QueryRow) throws -> Void) throws -> Void,
+        withRow: (Int, (borrowing ExecutionQueryRow) throws -> Void) throws -> Void,
         workMeter: DatabaseWorkMeter
     ) throws -> ByteString {
         var hasher = SHA256Accumulator()

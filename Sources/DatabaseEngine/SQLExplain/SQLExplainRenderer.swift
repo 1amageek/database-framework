@@ -39,7 +39,7 @@ enum SQLExplainRenderer {
                 .adding(DatabaseIntermediateFootprint(bytes: UInt64(slice.utf8.count)).multiplied(by: 8))
             // Each caller-visible TEXT row requires its own canonical String owner.
             try rows.append(footprint: footprint) {
-                try QueryRow(values: [.primitive(.string(String(slice)))], columns: columns)
+                try ExecutionQueryRow(values: [.primitive(.string(String(slice)))], columns: columns)
             }
             try meter.recordOutputRows()
             start = end == buffer.text.endIndex ? end : buffer.text.index(after: end)
@@ -62,7 +62,7 @@ enum SQLExplainRenderer {
             .adding(DatabaseIntermediateFootprint(bytes: 128))
         try rows.append(footprint: footprint) {
             let json = try QueryJSONValue(bytes: ByteString(utf8: buffer.text), limits: CanonicalBindingStorage.limits(meter))
-            return try QueryRow(values: [.json(json)], columns: columns)
+            return try ExecutionQueryRow(values: [.json(json)], columns: columns)
         }
         try meter.recordOutputRows()
         return SQLBlockCollectedRows(rows: try rows.finish().moveToSharedOwnership(at: .resultMaterialization),

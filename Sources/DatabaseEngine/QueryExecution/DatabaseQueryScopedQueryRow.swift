@@ -1,6 +1,6 @@
 import DatabaseTypes
 
-/// Linear production token for one destination QueryRow and its exact request
+/// Linear production token for one destination ExecutionQueryRow and its exact request
 /// admission. Consuming the token yields the reference owner that must travel
 /// with every retained alias of the row.
 package struct DatabaseQueryScopedQueryRow: ~Copyable, Sendable {
@@ -15,8 +15,8 @@ package struct DatabaseQueryScopedQueryRow: ~Copyable, Sendable {
         workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage,
         retaining sourcePayloadLeases: [DatabaseQueryPayloadLease] = [],
-        measuring measure: ((borrowing QueryRow) throws -> DatabaseIntermediateFootprint)? = nil,
-        _ makeRow: () throws -> QueryRow
+        measuring measure: ((borrowing ExecutionQueryRow) throws -> DatabaseIntermediateFootprint)? = nil,
+        _ makeRow: () throws -> ExecutionQueryRow
     ) throws -> Self {
         guard sourcePayloadLeases.allSatisfy({ $0.workMeter === workMeter }) else {
             throw DatabaseIntermediateReservationError.workMeterMismatch
@@ -61,7 +61,7 @@ package struct DatabaseQueryScopedQueryRow: ~Copyable, Sendable {
     }
 
     package borrowing func withRow<Result, Failure: Error>(
-        _ body: (borrowing QueryRow) throws(Failure) -> Result
+        _ body: (borrowing ExecutionQueryRow) throws(Failure) -> Result
     ) throws(Failure) -> Result {
         try owner.withRow(body)
     }

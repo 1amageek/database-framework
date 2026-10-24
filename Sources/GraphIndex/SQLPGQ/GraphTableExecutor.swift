@@ -227,7 +227,7 @@ package struct GraphTableExecutor: Sendable {
                         }
                         return .primitive(value)
                     }
-                    return try QueryRow(values: values, columns: columns)
+                    return try ExecutionQueryRow(values: values, columns: columns)
                 }
             }
         }

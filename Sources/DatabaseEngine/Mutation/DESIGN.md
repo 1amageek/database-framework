@@ -118,7 +118,7 @@ mutation lifecycle, precondition, net-effect and version tests remain required
 regressions for the preserved public executor path.
 
 Mutation footprint measurement consumes primitive named fields directly and
-does not construct QueryRow or infer a query schema. A model encoding failure
+does not construct ExecutionQueryRow or infer a query schema. A model encoding failure
 with QueryValueError is preserved as
 DatabaseEntityMutationError.invalidQueryValue(entity:cause:). Existing scalar,
 field identity and compiled-schema errors retain their prior mappings.

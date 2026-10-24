@@ -333,3 +333,7 @@ use with dependencies only on Kit/Types; it has no Engine or storage dependency.
 This does not reverse specialized feature ownership or move parsing, authorization
 or execution into the serializer. The corresponding module contract is
 [QueryAST](Sources/QueryAST/DESIGN.md#s16-canonical-catalog-text-consumption).
+
+## IR-centered Execution Integration
+
+[Database facade](Sources/Database/DESIGN.md) owns the directly consumed contract for the accepted QueryStatement/SQLBlock unification. Existing authorization, exact work budgets, first-error rollback, retained ownership and authoritative shutdown remain required. Runtime state and publication do not move into Kit declarations.

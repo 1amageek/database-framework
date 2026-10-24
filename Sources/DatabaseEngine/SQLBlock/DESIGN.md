@@ -90,7 +90,7 @@ at the block result boundary, including surviving results of rolled-back steps.
 
 Concrete collecting and Ready block owners are noncopyable and retain every
 row, column and command reservation until the destination transfer. They
-expose no early callback, stream or public array. Existing Framework QueryRow
+expose no early callback, stream or public array. Existing Framework ExecutionQueryRow
 is reused. No generic box or caller-accessible readiness factory proves close.
 
 The fixed lower-level entry is
@@ -599,7 +599,7 @@ public protocol SQLBlockResponseEncoder: Sendable {
 extension SQLBlockExecutor {
     public func executeEncoded(_ block: SQLBlock,
         parameters: [QueryParameter] = [], options: SQLBlockExecutionOptions,
-        encoder: any SQLBlockResponseEncoder) async throws -> SQLEncodedResponse
+        encoder: any SQLBlockResponseEncoder) async throws -> EncodedQueryResponse
 }
 ```
 
@@ -651,7 +651,7 @@ rollback demand. No frame becomes ready before commit/rollback, schema
 publication, sequence close, operation-lease release and final cancellation
 admission have completed.
 
-`SQLEncodedResponse` is a concrete final Sendable reference owner with no public
+`EncodedQueryResponse` is a concrete final Sendable reference owner with no public
 initializer, raw payload getter or callback. It contains immutable byteCount and
 one private `Mutex<Payload?>` holding frame bytes plus their reservation. Its
 `promoteToOutput() throws -> ByteString` takes the payload exactly once and ends
@@ -665,7 +665,7 @@ collect under one admitted transaction
     -> exact same-meter frame reservation -> encode one ByteString
     -> private frame + claim in collecting result
     -> commit / rollback + schema / sequence / lease close
-    -> final cancellation admission -> SQLEncodedResponse
+    -> final cancellation admission -> EncodedQueryResponse
     -> endpoint terminal promotion -> caller-owned ByteString
 
 measurement / codec / budget failure -> discard frame -> rollback + close
@@ -711,3 +711,15 @@ CTEs before DML must complete without accumulating asynchronous metadata frames.
 A mutation change limit derived from `ExecutionBudget.maximumRows` is a SQL
 resource rejection, including a nonzero limit exceeded by one row. Its SQLSTATE
 and retained cause belong to [SQLDiagnostics](../SQLDiagnostics/DESIGN.md).
+
+## Common Entry and Result Projection
+
+[Database Query Execution](../../Database/QueryExecution/DESIGN.md) adapts the same
+SQLBlock executor for SQL text, semantic statements and immutable blocks. Runtime
+rows are ExecutionQueryRow; final Kit rows are not execution storage. The output
+view exposes metadata through a bounded synchronous borrow, charging conversion
+scratch to the same meter. Shared SQLCheckpointPolicy derives portable checkpoint
+ceilings from the admitted budget with exact integer conversion. Optional
+read-only-query admission rejects blocks, sequence calls and write effects before
+transaction entry; default complete execution preserves the existing profile.
+No public result or connection can bypass Collecting -> Ready -> promotion.

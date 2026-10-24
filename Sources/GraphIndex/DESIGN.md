@@ -136,7 +136,7 @@ create a SQL relation qualifier for those raw columns.
   and labels are primitive strings; included properties retain their declared
   primitive storage type and optionality. An empty result carries the same
   columns. Graph-owned match bindings remain internal until the final admitted
-  positional `QueryRow` boundary; SQL COLUMNS expressions remain execution-owner
+  positional `ExecutionQueryRow` boundary; SQL COLUMNS expressions remain execution-owner
   work rather than graph row type inference.
 - A `Literal.queryValue(.primitive(value))` delegates through DatabaseKit's
   lossless `FieldValue.queryLiteral` conversion into the existing RDF literal

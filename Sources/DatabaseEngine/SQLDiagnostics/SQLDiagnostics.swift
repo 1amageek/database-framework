@@ -88,6 +88,9 @@ public enum SQLDiagnostics {
             case .invalidTransactionControl: return make("25000", .transaction, "Invalid transaction control")
             case .invalidSettingValue: return make("22023", .data, "Invalid SQL setting value")
             case .mutationLimitOutOfRange: return make("54000", .resource, "SQL mutation limit exceeds runtime range")
+            case .executionLimitOutOfRange: return make("54000", .resource, "SQL execution limit exceeds runtime range")
+            case .unsupportedPagedQuery: return make("0A000", .unsupported, "Paged delivery requires a single read-only query without sequence calls")
+            case .enclosingTransaction: return make("25001", .transaction, "Query connection execution requires its own transaction boundary")
             }
         }
         if let error = error as? SQLMutationError {

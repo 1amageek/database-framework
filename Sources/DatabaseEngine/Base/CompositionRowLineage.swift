@@ -98,7 +98,7 @@ final class CompositionRowLineage: Sendable {
         return merged
     }
 
-    func result(_ row: borrowing QueryRow, retaining leases: [DatabaseQueryPayloadLease],
+    func result(_ row: borrowing ExecutionQueryRow, retaining leases: [DatabaseQueryPayloadLease],
         allowingEmptyAggregate: Bool = false) throws -> CompositionQueryRow {
         let bits: ByteString?
         if let annotation = row.annotations[Self.annotation] {
@@ -141,7 +141,7 @@ final class CompositionRowLineage: Sendable {
         // Snapshot member order is the canonical order fixed by its Composition lease.
         var annotations = row.annotations
         annotations.removeValue(forKey: Self.annotation)
-        let output = QueryRow(validatedValues: row.values, annotations: annotations, version: row.version)
+        let output = ExecutionQueryRow(validatedValues: row.values, annotations: annotations, version: row.version)
         let origin: CompositionOrigin = contributors.count == 1
             ? .source(contributors[0]) : .derived(contributors: contributors)
         var retainedLeases: [DatabaseQueryPayloadLease] = []

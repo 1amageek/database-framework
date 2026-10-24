@@ -111,7 +111,7 @@ package struct SPARQLRetainedResult: ~Copyable, Sendable {
                     for variable in projectedVariables {
                         values.append(.primitive(binding[variable] ?? .null))
                     }
-                    return try QueryRow(values: values, columns: columns)
+                    return try ExecutionQueryRow(values: values, columns: columns)
                 }
             }
         }

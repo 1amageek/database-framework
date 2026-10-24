@@ -10,12 +10,14 @@ extension DatabaseContext {
     public func withReadSnapshot<T: Sendable>(
         configuration: TransactionConfiguration = .default,
         workMeter: DatabaseWorkMeter,
+        executionDeadline: TransactionExecutionDeadline? = nil,
         _ operation: @Sendable @escaping (DatabaseReadSnapshot) async throws -> T
     ) async throws -> T {
         try await withReadSnapshot(
             restoring: nil,
             configuration: configuration,
             workMeter: workMeter,
+            executionDeadline: executionDeadline,
             operation
         )
     }
@@ -27,11 +29,13 @@ extension DatabaseContext {
         restoring requestedPosition: DatabaseReadPosition?,
         configuration: TransactionConfiguration = .default,
         workMeter: DatabaseWorkMeter,
+        executionDeadline: TransactionExecutionDeadline? = nil,
         _ operation: @Sendable @escaping (DatabaseReadSnapshot) async throws -> T
     ) async throws -> T {
         try await withStorageAccess(
             requiredAccess: .read,
             configuration: configuration,
+            executionDeadline: executionDeadline,
             restoringReadPosition: requestedPosition
         ) { transaction in
             guard let admittedTransaction = transaction

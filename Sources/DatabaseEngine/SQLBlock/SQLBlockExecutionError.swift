@@ -8,4 +8,7 @@ public enum SQLBlockExecutionError: Error, Sendable, Equatable {
     case statementTimeout
     case unsupportedStatement
     case mutationLimitOutOfRange(UInt32)
+    case executionLimitOutOfRange(UInt64)
+    case unsupportedPagedQuery
+    case enclosingTransaction
 }

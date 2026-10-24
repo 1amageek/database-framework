@@ -24,7 +24,7 @@ public struct SQLBlockExecutor: Sendable {
     }
 
     public func executeEncoded(_ block: SQLBlock, parameters: [QueryParameter] = [],
-        options: SQLBlockExecutionOptions, encoder: any SQLBlockResponseEncoder) async throws -> SQLEncodedResponse {
+        options: SQLBlockExecutionOptions, encoder: any SQLBlockResponseEncoder) async throws -> EncodedQueryResponse {
         let clock = context.container.monotonicClock
         let deadline = TransactionExecutionDeadline(
             instant: clock.now.advanced(by: .milliseconds(Int64(options.budget.timeoutMilliseconds))),
@@ -52,7 +52,7 @@ public struct SQLBlockExecutor: Sendable {
         occurrences: QueryOccurrenceArena? = nil, occurrence: QueryOccurrenceID? = nil,
         occurrenceRoots: [QueryOccurrenceID?]? = nil, failurePosition: SQLBlockFailurePosition? = nil,
         encoder: any SQLBlockResponseEncoder
-    ) async throws -> SQLEncodedResponse {
+    ) async throws -> EncodedQueryResponse {
         let boxed = try await executeCollecting(block, parameters: parameters, options: options,
             workMeter: meter, executionDeadline: deadline, occurrences: occurrences, occurrence: occurrence,
             occurrenceRoots: occurrenceRoots, failurePosition: failurePosition, encoder: encoder)
@@ -95,6 +95,13 @@ public struct SQLBlockExecutor: Sendable {
         try QueryStructuralValidator.validate(block, parameters: parameters, limits: options.structuralLimits)
         let binder = try QueryParameterBinder(parameters: parameters, structuralLimits: options.structuralLimits)
         try binder.validate(block)
+        if options.requiresReadOnlyQuery {
+            guard block.steps.count == 1,
+                  case .statement(let statement) = block.steps[0] else {
+                throw SQLBlockExecutionError.unsupportedPagedQuery
+            }
+            try SQLReadOnlyQueryAdmission.validate(statement, workMeter: meter)
+        }
         try validateTransactionControls(block)
         let timeline = try SQLBlockStatementTimeline(count: block.steps.count, workMeter: meter)
         let requiredAccess: Security.Access = try requiredAccess(for: block, workMeter: meter)
@@ -356,8 +363,8 @@ public struct SQLBlockExecutor: Sendable {
         try await SQLDDLExecutor(context: context, transaction: transaction, options: options, workMeter: workMeter,
             parameters: parameters, request: ddlRequest).cleanupTemporaryObjects(step: block.steps.count)
         let output = SQLBlockOutputView(statements: results.finish())
-        let encoded: SQLEncodedPayload?
-        if let encoder { encoded = try SQLEncodedPayload.encode(output, encoder: encoder, workMeter: workMeter) }
+        let encoded: EncodedQueryPayload?
+        if let encoder { encoded = try EncodedQueryPayload.encode(output, encoder: encoder, workMeter: workMeter) }
         else { encoded = nil }
         return Collecting(output: consume output, outputClaim: outputClaim, encoded: encoded)
     }
@@ -771,16 +778,16 @@ public struct SQLBlockExecutor: Sendable {
     private struct Collecting: ~Copyable, Sendable {
         let output: SQLBlockOutputView
         let outputClaim: DatabaseIntermediateReservation?
-        let encoded: SQLEncodedPayload?
+        let encoded: EncodedQueryPayload?
     }
 
     private struct Ready: ~Copyable {
         private let collecting: Collecting
         init(_ collecting: consuming Collecting) { self.collecting = consume collecting }
 
-        consuming func promoteToEncodedOutput() throws -> SQLEncodedResponse {
+        consuming func promoteToEncodedOutput() throws -> EncodedQueryResponse {
             guard let encoded = collecting.encoded else { throw SQLBlockProjectionError.unexpectedOutputMode }
-            return SQLEncodedResponse(encoded)
+            return EncodedQueryResponse(encoded)
         }
 
         consuming func promoteToOutput() throws -> SQLBlockResult {

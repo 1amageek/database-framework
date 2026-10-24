@@ -211,7 +211,7 @@ struct S17SQLBlockProjectionTests {
     }
 
     private func execute(_ container: DBContainer, block: SQLBlock, options: SQLBlockExecutionOptions,
-        meter: DatabaseWorkMeter, encoder: any SQLBlockResponseEncoder) async throws -> SQLEncodedResponse {
+        meter: DatabaseWorkMeter, encoder: any SQLBlockResponseEncoder) async throws -> EncodedQueryResponse {
         try await SQLBlockExecutor(context: container.testBaseContext()).executeEncoded(block, options: options,
             workMeter: meter, executionDeadline: TransactionExecutionDeadline(
                 instant: container.monotonicClock.now.advanced(by: .milliseconds(Int64(options.budget.timeoutMilliseconds))),

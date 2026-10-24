@@ -208,16 +208,16 @@ owns S01-C01–C13 meanings.
 
 | API | Frozen S01 contract |
 |---|---|
-| Framework `QueryRow.values: [QueryValue]` | Ordered cells only; annotations remain primitive and version unchanged. Remove stored name-keyed fields rather than keeping duplicate row representations. |
+| Framework `ExecutionQueryRow.values: [QueryValue]` | Ordered cells only; annotations remain primitive and version unchanged. Remove stored name-keyed fields rather than keeping duplicate row representations. |
 | Framework `QueryResponse.columns: [QueryColumn]` | Ordered immutable Kit declarations carried even when rows are empty. Columns have consecutive one-based numbers; each row matches arity and declared compatible type. |
-| `QueryRow.namedValues(columns:) throws` | Explicit dictionary projection preserving QueryValue; duplicate names, arity or invalid declarations fail. No first/last-wins behavior. |
-| `QueryRow.primitiveFields(columns:) throws` | Explicit primitive dictionary projection; additionally rejects rich cells whose metadata cannot be represented by FieldValue. No automatic metadata dropping. |
+| `ExecutionQueryRow.namedValues(columns:) throws` | Explicit dictionary projection preserving QueryValue; duplicate names, arity or invalid declarations fail. No first/last-wins behavior. |
+| `ExecutionQueryRow.primitiveFields(columns:) throws` | Explicit primitive dictionary projection; additionally rejects rich cells whose metadata cannot be represented by FieldValue. No automatic metadata dropping. |
 | `QueryRowCodec.decode(_:columns:as:) throws` | Explicit typed model projection; validates unique names and expected admitted field metadata, encodes rich cells with the matching declared adapter, then uses existing persisted-field reconstruction. |
 | `QueryRowCodec.persistedModel(from:columns:entity:) throws` | Same explicit declared conversion for schema-driven destinations; incompatible value/type/missing required field is a typed error. |
 
 Public construction validates columns/row arity/type with a throwing
 initializer or explicit validated factory; there is no default inferred
-schema from rows. QueryRow cannot independently claim a row schema: its
+schema from rows. ExecutionQueryRow cannot independently claim a row schema: its
 column contract is the response/relation's schema. Internal code cannot call
 name projection merely to avoid migrating slot consumers. Typed convenience
 `executeSQL(as:)` passes response.columns to the explicit codec, so duplicate
@@ -429,3 +429,20 @@ permission denial hides metadata; operational failure propagates. QueryExecution
 retains the descriptor explicitly and bypasses physical source/list admission,
 statement physical capture and physical fast paths while preserving ordinary
 relational operators and typed empty results.
+
+## Execution Rows and Final Interoperability
+
+ExecutionQueryRow owns Engine values, dictionary annotations and the native
+PersistableVersionToken. It replaces the ambiguous Engine QueryRow name. Kit
+QueryRow is the final interoperability value, with FieldObject annotations and
+opaque version bytes. The [Database Query Execution adapter](../../Database/QueryExecution/DESIGN.md)
+owns that final conversion without changing read binding or lifetime.
+
+## Encoded Read Closure
+
+withEncodedReadSnapshot retains its concrete producer payload through synchronous
+measurement and encoding, forwards the original absolute TransactionExecutionDeadline
+to the storage runner, and constructs the [encoded result owner](../QueryResults/DESIGN.md)
+only after snapshot/session/transaction closure. Nested transaction bindings are
+rejected. Function-generic payloads retain the producing rows/graph claims;
+no generic root, authority or lifecycle state is introduced.

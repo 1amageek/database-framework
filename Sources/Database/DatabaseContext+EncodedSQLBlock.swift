@@ -6,7 +6,7 @@ extension DatabaseContext {
     @_spi(DatabaseExecution)
     public func executeEncodedSQLBlock(_ block: SQLBlock,
         parameters: [QueryParameter] = [], options: SQLBlockExecutionOptions,
-        encoder: any SQLBlockResponseEncoder) async throws -> SQLEncodedResponse {
+        encoder: any SQLBlockResponseEncoder) async throws -> EncodedQueryResponse {
         do {
             return try await SQLBlockExecutor(context: self).executeEncoded(block,
                 parameters: parameters, options: options, encoder: encoder)
@@ -20,7 +20,7 @@ extension DatabaseContext {
     @_spi(DatabaseExecution)
     public func executeEncodedStatement(_ statement: QueryStatement,
         parameters: [QueryParameter] = [], options: SQLBlockExecutionOptions,
-        encoder: any SQLBlockResponseEncoder) async throws -> SQLEncodedResponse {
+        encoder: any SQLBlockResponseEncoder) async throws -> EncodedQueryResponse {
         do {
             let block = try SQLBlock(steps: [.statement(statement)], limits: options.structuralLimits)
             return try await executeEncodedSQLBlock(block, parameters: parameters, options: options, encoder: encoder)

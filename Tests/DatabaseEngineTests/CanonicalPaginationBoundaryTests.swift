@@ -103,7 +103,7 @@ struct CanonicalPaginationBoundaryTests {
         )
         let continuation = try #require(first.continuation)
         var changed = try rows(3)
-        changed[1] = try QueryRow(values: [.primitive(.int64(99))], columns: try paginationColumns())
+        changed[1] = try ExecutionQueryRow(values: [.primitive(.int64(99))], columns: try paginationColumns())
 
         #expect(throws: CanonicalReadError.self) {
             _ = try CanonicalQueryPagination.window(
@@ -144,10 +144,10 @@ struct CanonicalPaginationBoundaryTests {
     func retainedPaginationPreservesReservation() throws {
         let execution = execution(pageSize: 2)
         do {
-            var builder = try DatabaseRetainedArrayBuilder<DatabaseEngine.QueryRow>(
+            var builder = try DatabaseRetainedArrayBuilder<DatabaseEngine.ExecutionQueryRow>(
                 workMeter: execution.workMeter,
                 stage: .resultMaterialization,
-                layout: try DatabaseRetainedArrayLayout.forElement(DatabaseEngine.QueryRow.self),
+                layout: try DatabaseRetainedArrayLayout.forElement(DatabaseEngine.ExecutionQueryRow.self),
                 expectedCount: 4
             )
             for row in try rows(4) {
@@ -197,9 +197,9 @@ struct CanonicalPaginationBoundaryTests {
         try [QueryColumn(number: 1, name: "id", type: .primitive(.int64), isNullable: false)]
     }
 
-    private func rows(_ count: Int) throws -> [DatabaseEngine.QueryRow] {
+    private func rows(_ count: Int) throws -> [DatabaseEngine.ExecutionQueryRow] {
         try (0..<count).map {
-            try DatabaseEngine.QueryRow(
+            try DatabaseEngine.ExecutionQueryRow(
                 values: [.primitive(.int64(Int64($0)))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.int64), isNullable: false)]
             )
         }

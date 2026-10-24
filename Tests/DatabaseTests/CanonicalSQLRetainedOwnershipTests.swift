@@ -242,8 +242,8 @@ struct CanonicalSQLRetainedOwnershipTests {
         )
         let first = try CanonicalQueryPagination.window(
             rows: [
-                try DatabaseEngine.QueryRow(values: [.primitive(.string("first"))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false)]),
-                try DatabaseEngine.QueryRow(values: [.primitive(.string("second"))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false)]),
+                try DatabaseEngine.ExecutionQueryRow(values: [.primitive(.string("first"))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false)]),
+                try DatabaseEngine.ExecutionQueryRow(values: [.primitive(.string("second"))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false)]),
             ],
             columns: [QueryColumn(number: 1, name: "id", type: .primitive(.string), isNullable: false)],
             selectQuery: query,
@@ -1204,7 +1204,7 @@ struct CanonicalSQLRetainedOwnershipTests {
             "facet": .string("books"),
         ]
         let metadataFootprint = try CanonicalRelationalFootprintMeter.footprint(
-            of: try DatabaseEngine.QueryRow(
+            of: try DatabaseEngine.ExecutionQueryRow(
                 values: [], columns: [],
                 annotations: expectedMetadata
             ),
@@ -1264,7 +1264,7 @@ struct CanonicalSQLRetainedOwnershipTests {
             maximumIntermediateBytes: UInt64.max
         )
         let metadataFootprint = try CanonicalRelationalFootprintMeter.footprint(
-            of: try DatabaseEngine.QueryRow(values: [], columns: [], annotations: metadata),
+            of: try DatabaseEngine.ExecutionQueryRow(values: [], columns: [], annotations: metadata),
             workMeter: measurementMeter,
             stage: .indexScan
         )
@@ -1528,11 +1528,11 @@ struct CanonicalSQLRetainedOwnershipTests {
     private func makeEmptyCanonicalRows(
         workMeter: DatabaseWorkMeter
     ) throws -> DatabaseSharedRetainedQueryRows {
-        let builder = try DatabaseRetainedArrayBuilder<DatabaseEngine.QueryRow>(
+        let builder = try DatabaseRetainedArrayBuilder<DatabaseEngine.ExecutionQueryRow>(
             workMeter: workMeter,
             stage: .projection,
             layout: try DatabaseRetainedArrayLayout.forElement(
-                DatabaseEngine.QueryRow.self
+                DatabaseEngine.ExecutionQueryRow.self
             )
         )
         return DatabaseSharedRetainedQueryRows(

@@ -74,7 +74,7 @@ package enum CanonicalRelationalFootprintMeter {
     }
 
     package static func footprint(
-        of row: QueryRow,
+        of row: ExecutionQueryRow,
         workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage = .projection
     ) throws -> DatabaseIntermediateFootprint {
@@ -83,7 +83,7 @@ package enum CanonicalRelationalFootprintMeter {
     }
 
     package static func queryRowAliasFootprint(
-        of row: borrowing QueryRow,
+        of row: borrowing ExecutionQueryRow,
         prefixingRDFBlankNodeIdentifiersWith prefix: String? = nil,
         workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage
@@ -314,7 +314,7 @@ package enum CanonicalRelationalFootprintMeter {
 
     /// Only primitive RDF terms change; declared rich SQL values remain intact.
     package static func footprint(
-        of row: borrowing QueryRow,
+        of row: borrowing ExecutionQueryRow,
         prefixingRDFBlankNodeIdentifiersWith prefix: String,
         workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage
@@ -538,7 +538,7 @@ package enum CanonicalRelationalFootprintMeter {
         return try adding(layout.containerByteCount, growth.additionalByteCount)
     }
 
-    /// Returns the retained claim for one prospective QueryRow field.
+    /// Returns the retained claim for one prospective ExecutionQueryRow field.
     ///
     /// Supplying the UTF-8 count lets a feature executor reserve memory before
     /// allocating a composed field-name String.
@@ -642,7 +642,7 @@ package enum CanonicalRelationalFootprintMeter {
     }
 
     package static func footprint(
-        of row: QueryRow,
+        of row: ExecutionQueryRow,
         appendingAnnotationNamed name: String,
         value: FieldValue,
         workMeter: DatabaseWorkMeter
@@ -732,7 +732,7 @@ package enum CanonicalRelationalFootprintMeter {
     }
 
     package static func footprint(
-        of rows: [QueryRow],
+        of rows: [ExecutionQueryRow],
         workMeter: DatabaseWorkMeter
     ) throws -> DatabaseIntermediateFootprint {
         var total = DatabaseIntermediateFootprint()

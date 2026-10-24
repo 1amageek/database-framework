@@ -67,7 +67,7 @@ struct CanonicalQueryTypeBinderTests {
         for precision: Int? in [nil, 0, 3, 6] {
             let column = try QueryColumn(number: 1, name: "clock",
                 type: .sql(.timestamp(withTimeZone: true, precision: precision)), isNullable: true)
-            let row = try DatabaseEngine.QueryRow(values: [.primitive(.null)], columns: [column])
+            let row = try DatabaseEngine.ExecutionQueryRow(values: [.primitive(.null)], columns: [column])
             fingerprints.insert(try CanonicalRowFingerprint.compute(row, columns: [column], workMeter: meter))
         }
         #expect(fingerprints.count == 4)

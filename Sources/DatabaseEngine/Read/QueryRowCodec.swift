@@ -6,7 +6,7 @@ public enum QueryRowCodec {
         _ item: T,
         columns: [QueryColumn],
         annotations: [String: FieldValue] = [:]
-    ) throws -> QueryRow {
+    ) throws -> ExecutionQueryRow {
         try encode(
             PersistedModel(item),
             schemas: T.fieldSchemas,
@@ -20,7 +20,7 @@ public enum QueryRowCodec {
         entity: Schema.Entity,
         columns: [QueryColumn],
         annotations: [String: FieldValue] = [:]
-    ) throws -> QueryRow {
+    ) throws -> ExecutionQueryRow {
         guard item.entity == entity.name else {
             throw QueryRowCodecError.entityMismatch(expected: entity.name, actual: item.entity)
         }
@@ -28,7 +28,7 @@ public enum QueryRowCodec {
     }
 
     public static func decode<T: Persistable>(
-        _ row: QueryRow,
+        _ row: ExecutionQueryRow,
         columns: [QueryColumn],
         as type: T.Type
     ) throws -> T {
@@ -39,7 +39,7 @@ public enum QueryRowCodec {
     }
 
     public static func persistedModel(
-        from row: QueryRow,
+        from row: ExecutionQueryRow,
         columns: [QueryColumn],
         entity: Schema.Entity
     ) throws -> PersistedModel {
@@ -50,7 +50,7 @@ public enum QueryRowCodec {
     }
 
     private static func persistedFields(
-        from row: QueryRow,
+        from row: ExecutionQueryRow,
         columns: [QueryColumn],
         schemas: [FieldSchema],
         entityName: String
@@ -105,7 +105,7 @@ public enum QueryRowCodec {
         schemas: [FieldSchema],
         columns: [QueryColumn],
         annotations: [String: FieldValue]
-    ) throws -> QueryRow {
+    ) throws -> ExecutionQueryRow {
         try QueryColumn.validate(columns)
         let schemasByName = try fieldMap(schemas, entityName: item.entity)
         for stored in item.fields {
@@ -158,7 +158,7 @@ public enum QueryRowCodec {
         var fields: [String: FieldValue] = [:]
         fields.reserveCapacity(item.fields.count)
         for field in item.fields { fields[field.name] = field.value }
-        return try QueryRow(
+        return try ExecutionQueryRow(
             values: values, columns: columns, annotations: annotations,
             version: PersistableVersionTokenCodec.token(for: fields)
         )

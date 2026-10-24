@@ -3,7 +3,7 @@ import DatabaseKit
 /// Linear row, schema and source-payload ownership until final output transfer.
 public struct DatabaseRetainedQueryRows: ~Copyable, Sendable {
     private enum Storage: ~Copyable, Sendable {
-        case unique(DatabaseRetainedBuffer<QueryRow>)
+        case unique(DatabaseRetainedBuffer<ExecutionQueryRow>)
         case shared(DatabaseSharedRetainedQueryRows.View)
     }
 
@@ -14,7 +14,7 @@ public struct DatabaseRetainedQueryRows: ~Copyable, Sendable {
 
     /// The producing owner has admitted schema/payload and validated rows.
     package init(
-        storage: consuming DatabaseRetainedBuffer<QueryRow>,
+        storage: consuming DatabaseRetainedBuffer<ExecutionQueryRow>,
         columns: [QueryColumn],
         payloadLeases: [DatabaseQueryPayloadLease] = [],
         schemaLeases: [DatabaseIntermediateReservation] = []
@@ -48,7 +48,7 @@ public struct DatabaseRetainedQueryRows: ~Copyable, Sendable {
 
     package borrowing func withElement<Failure: Error>(
         at index: Int,
-        _ body: (borrowing QueryRow) throws(Failure) -> Void
+        _ body: (borrowing ExecutionQueryRow) throws(Failure) -> Void
     ) throws(Failure) {
         defer {
             withExtendedLifetime(payloadLeases) {}
@@ -62,7 +62,7 @@ public struct DatabaseRetainedQueryRows: ~Copyable, Sendable {
 
     package borrowing func withElement<Failure: Error>(
         at index: Int,
-        _ body: (borrowing QueryRow) async throws(Failure) -> Void
+        _ body: (borrowing ExecutionQueryRow) async throws(Failure) -> Void
     ) async throws(Failure) {
         defer {
             withExtendedLifetime(payloadLeases) {}
@@ -75,7 +75,7 @@ public struct DatabaseRetainedQueryRows: ~Copyable, Sendable {
     }
 
     package borrowing func withSpan<Result, Failure: Error>(
-        _ body: (Span<QueryRow>) throws(Failure) -> Result
+        _ body: (Span<ExecutionQueryRow>) throws(Failure) -> Result
     ) throws(Failure) -> Result {
         defer {
             withExtendedLifetime(payloadLeases) {}
@@ -87,7 +87,7 @@ public struct DatabaseRetainedQueryRows: ~Copyable, Sendable {
         }
     }
 
-    public consuming func promoteToOutput() -> [QueryRow] {
+    public consuming func promoteToOutput() -> [ExecutionQueryRow] {
         let retainedPayload = payloadLeases
         let retainedSchema = schemaLeases
         defer {

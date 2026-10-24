@@ -3,7 +3,7 @@ import DatabaseTypes
 
 public enum CanonicalRowFingerprint {
     public static func compute(
-        _ row: QueryRow,
+        _ row: ExecutionQueryRow,
         columns: [QueryColumn],
         workMeter: DatabaseWorkMeter
     ) throws -> ByteString {

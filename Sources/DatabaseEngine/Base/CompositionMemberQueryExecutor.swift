@@ -26,7 +26,7 @@ public protocol CompositionMemberQueryExecutor: Sendable {
 
     /// Measures the exact destination row before `prepare` allocates it.
     func preparedFootprint(
-        of row: borrowing QueryRow,
+        of row: borrowing ExecutionQueryRow,
         sourceBaseID: Base.ID,
         workMeter: DatabaseWorkMeter
     ) throws -> (rows: UInt64, bytes: UInt64)
@@ -34,21 +34,21 @@ public protocol CompositionMemberQueryExecutor: Sendable {
     /// Measures the actual prepared destination under the same payload-sharing
     /// contract as the prospective footprint.
     func observedPreparedFootprint(
-        of row: borrowing QueryRow,
+        of row: borrowing ExecutionQueryRow,
         workMeter: DatabaseWorkMeter
     ) throws -> (rows: UInt64, bytes: UInt64)
 
     func prepare(
-        _ row: QueryRow,
+        _ row: ExecutionQueryRow,
         columns: [QueryColumn],
         sourceBaseID: Base.ID
-    ) throws -> QueryRow
+    ) throws -> ExecutionQueryRow
 }
 
 extension CompositionMemberQueryExecutor {
     /// Arbitrary conformers conservatively own their complete prepared row.
     public func observedPreparedFootprint(
-        of row: borrowing QueryRow,
+        of row: borrowing ExecutionQueryRow,
         workMeter: DatabaseWorkMeter
     ) throws -> (rows: UInt64, bytes: UInt64) {
         let footprint = try CanonicalRelationalFootprintMeter.footprint(

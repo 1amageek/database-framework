@@ -20,7 +20,7 @@ extension DatabaseContext {
     @_spi(DatabaseExecution)
     public func executeEncodedSQLBlock(_ sql: String,
         parameters: [QueryParameter] = [], options: SQLBlockExecutionOptions,
-        encoder: any SQLBlockResponseEncoder) async throws -> SQLEncodedResponse {
+        encoder: any SQLBlockResponseEncoder) async throws -> EncodedQueryResponse {
         try await executeSQLText(sql, context: self, options: options) { parsed, meter, deadline, position in
             try await SQLBlockExecutor(context: self).executeEncoded(parsed.block, parameters: parameters,
                 options: options, workMeter: meter, executionDeadline: deadline,

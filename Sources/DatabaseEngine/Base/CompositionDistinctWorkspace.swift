@@ -6,7 +6,7 @@ import DatabaseTypes
 /// Durable result paging belongs to a host adapter, not this workspace.
 package actor CompositionDistinctWorkspace {
     package struct Result: Sendable {
-        package let row: QueryRow
+        package let row: ExecutionQueryRow
         package let origin: CompositionOrigin
         package let ownedRow: DatabaseQueryScopedQueryRowOwner
         package let workspacePayloadLease: DatabaseQueryPayloadLease

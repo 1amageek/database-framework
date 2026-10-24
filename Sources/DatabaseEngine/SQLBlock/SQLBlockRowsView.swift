@@ -6,9 +6,25 @@ import DatabaseTypes
 public struct SQLBlockRowsView: ~Copyable, Sendable {
     private let rows: SQLBlockCollectedRows
     init(rows: SQLBlockCollectedRows) { self.rows = rows }
+    public init(rows: DatabaseSharedRetainedQueryRows) {
+        self.rows = SQLBlockCollectedRows(rows: rows, affectedRows: nil)
+    }
     public var columnCount: Int { rows.rows.columns.count }
     public var rowCount: Int { rows.visibleRange.count }
     public var affectedRows: Int? { rows.affectedRows }
+
+    public borrowing func withMetadata(
+        _ body: (borrowing [String: FieldValue]) throws -> Void
+    ) throws {
+        let meter = rows.rows.workMeter
+        try meter.consume(UInt64(rows.metadata.count), at: .resultMaterialization)
+        let footprint = try DatabaseIntermediateCollectionMeter.arrayFootprint(
+            count: rows.metadata.count, element: (key: String, value: FieldValue).self)
+        let claim = footprint.bytes == 0 ? nil
+            : try meter.reserveIntermediate(bytes: footprint.bytes, at: .resultMaterialization)
+        defer { withExtendedLifetime(claim) {} }
+        try body(rows.metadata)
+    }
 
     public borrowing func withColumn(at index: Int,
         _ body: (borrowing QueryColumn) throws -> Void) throws {

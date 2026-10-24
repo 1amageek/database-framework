@@ -145,9 +145,9 @@ struct CanonicalPaginationFingerprintTests {
         try [QueryColumn(number: 1, name: "id", type: .primitive(.int64), isNullable: false)]
     }
 
-    private func rows(_ count: Int) throws -> [DatabaseEngine.QueryRow] {
+    private func rows(_ count: Int) throws -> [DatabaseEngine.ExecutionQueryRow] {
         try (0..<count).map {
-            try DatabaseEngine.QueryRow(
+            try DatabaseEngine.ExecutionQueryRow(
                 values: [.primitive(.int64(Int64($0)))], columns: [QueryColumn(number: 1, name: "id", type: .primitive(.int64), isNullable: false)]
             )
         }

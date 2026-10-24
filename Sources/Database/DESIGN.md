@@ -8,8 +8,9 @@ canonical execution contracts, and composes the selected runtime feature
 products.
 
 - Parent: [database-framework](../../DESIGN.md).
-- Children: none. This module has no nested design authority; parser and AST
-  semantics remain owned by the `QueryAST`/`DatabaseKit` dependencies.
+- Child: [Query Execution](QueryExecution/DESIGN.md), the common connection and
+  final-result adapter. Parser and AST semantics remain owned by the
+  `QueryAST`/`DatabaseKit` dependencies.
   PostgreSQL compatibility additions below are planned S00 contracts.
 
 ## Responsibilities and Boundaries
@@ -372,7 +373,7 @@ Framework backend path, with wire/CLI publication verified by their owners.
 
 S01 keeps the read-only SELECT entry and adds typed carriage for its existing
 syntax rather than exposing later statement/block capabilities early.
-Database passes QueryResponse.columns with every positional QueryRow through
+Database passes QueryResponse.columns with every positional ExecutionQueryRow through
 its caller-facing response. Typed executeSQL(as:) explicitly calls the
 Read-owned codec with those columns; duplicate-name or incompatible rich-value
 model projection throws. It never recreates schema from the first row or
@@ -528,23 +529,23 @@ The Database facade adapts text/source diagnostics and semantic declarations to
 SQLBlock's [complete response projection](../DatabaseEngine/SQLBlock/DESIGN.md#s17-complete-response-projection).
 It owns no codec, frame allocation, transaction or publication policy.
 
-The execution SPI adds these exact overloads, each returning SQLEncodedResponse:
+The execution SPI adds these exact overloads, each returning EncodedQueryResponse:
 
 ```swift
 @_spi(DatabaseExecution)
 public func executeEncodedSQLBlock(_ sql: String,
     parameters: [QueryParameter] = [], options: SQLBlockExecutionOptions,
-    encoder: any SQLBlockResponseEncoder) async throws -> SQLEncodedResponse
+    encoder: any SQLBlockResponseEncoder) async throws -> EncodedQueryResponse
 
 @_spi(DatabaseExecution)
 public func executeEncodedSQLBlock(_ block: SQLBlock,
     parameters: [QueryParameter] = [], options: SQLBlockExecutionOptions,
-    encoder: any SQLBlockResponseEncoder) async throws -> SQLEncodedResponse
+    encoder: any SQLBlockResponseEncoder) async throws -> EncodedQueryResponse
 
 @_spi(DatabaseExecution)
 public func executeEncodedStatement(_ statement: QueryStatement,
     parameters: [QueryParameter] = [], options: SQLBlockExecutionOptions,
-    encoder: any SQLBlockResponseEncoder) async throws -> SQLEncodedResponse
+    encoder: any SQLBlockResponseEncoder) async throws -> EncodedQueryResponse
 ```
 
 Text parsing shares the exact request meter/deadline with Engine and passes the
@@ -568,3 +569,11 @@ The existing public native SQLBlockResult / SQLStatementResult overloads are
 unchanged. SPI options continue to require checkpoint limits; Server or the
 application selects its immutable execution policy and supplies an encoder.
 Endpoint routing and Wire request/response declarations remain external owners.
+
+## Common Query Execution Surface
+
+[Query Execution](QueryExecution/DESIGN.md) owns openConnection/execute/close,
+canonical result projection and the connection actor. Existing lower-level SQL
+entries remain migration-only until consumers use this surface; they are moved
+behind execution SPI in EIR24-05. Typed model adaptation remains distinct from
+canonical row execution and does not create another SQL interpreter.

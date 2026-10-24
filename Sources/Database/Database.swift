@@ -8,6 +8,7 @@
 @_exported import DatabaseEngine
 // database-kit (client-safe model definitions)
 @_exported import DatabaseKit
+@_exported import DatabaseWire
 @_exported import DatabaseRuntime
 @_exported import QueryAST
 // storage-kit (storage engine abstraction)

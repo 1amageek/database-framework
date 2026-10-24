@@ -47,7 +47,7 @@ retained PersistedModel
 
 Current [EntityRuntimeRegistration](EntityRuntimeRegistration.swift) regular
 conversion measures model fields before admitted append, then builds an
-intermediate QueryRow dictionary. S01 replaces only that assembly with the
+intermediate ExecutionQueryRow dictionary. S01 replaces only that assembly with the
 purpose-limited shared canonical-slot constructor used by regular and
 polymorphic models. Existing transaction, index selection, retained model and
 schema generation owners remain unchanged.
@@ -68,7 +68,7 @@ schema generation owners remain unchanged.
 - Direct model-to-slot conversion measures before constructing rich values
   and row storage, preserves exact work-meter identity, and runs inside the
   admitted append closure. It does not produce an uncharged intermediate
-  dictionary, QueryRow, raw array or general-purpose escaping model borrow.
+  dictionary, ExecutionQueryRow, raw array or general-purpose escaping model borrow.
 - Rich field writes and defaults use Kit's declared measurement and encode
   contract before primitive persistence. Generic model traversal continues
   carrying FieldValue. No storage codec tag or primitive algebra changes

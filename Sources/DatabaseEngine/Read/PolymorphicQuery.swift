@@ -6,14 +6,14 @@ public struct PolymorphicQueryResult: Sendable {
     public let model: PersistedModel
     public let typeName: String
     public let typeCode: Int64
-    public let row: QueryRow
+    public let row: ExecutionQueryRow
     public let columns: [QueryColumn]
 
     public init(
         model: PersistedModel,
         typeName: String,
         typeCode: Int64,
-        row: QueryRow,
+        row: ExecutionQueryRow,
         columns: [QueryColumn]
     ) throws {
         try row.validate(columns: columns)
@@ -323,7 +323,7 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
     }
 
     private func decodeResult(
-        from row: QueryRow,
+        from row: ExecutionQueryRow,
         columns: [QueryColumn],
         schema: Schema
     ) throws -> PolymorphicQueryResult {
@@ -354,7 +354,7 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
                                                 isNullable: column.isNullable))
             modelValues.append(value)
         }
-        let modelRow = try QueryRow(values: modelValues, columns: modelColumns)
+        let modelRow = try ExecutionQueryRow(values: modelValues, columns: modelColumns)
         let model = try QueryRowCodec.persistedModel(from: modelRow, columns: modelColumns, entity: entity)
         let typeCode = row.annotations[PolymorphicRowAnnotation.typeCode]?.int64Value
             ?? Member.typeCode(for: typeName)

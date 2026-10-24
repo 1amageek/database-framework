@@ -4,13 +4,13 @@
 /// release before the last retained row alias is destroyed or promoted at a
 /// public output boundary.
 package final class DatabaseQueryScopedQueryRowOwner: Sendable {
-    private let row: QueryRow
+    private let row: ExecutionQueryRow
     package let footprint: DatabaseIntermediateFootprint
     private let reservation: DatabaseIntermediateReservation
     private let sourcePayloadLeases: [DatabaseQueryPayloadLease]
 
     init(
-        row: QueryRow,
+        row: ExecutionQueryRow,
         footprint: DatabaseIntermediateFootprint,
         reservation: DatabaseIntermediateReservation,
         sourcePayloadLeases: [DatabaseQueryPayloadLease] = []
@@ -28,7 +28,7 @@ package final class DatabaseQueryScopedQueryRowOwner: Sendable {
     }
 
     package func withRow<Result, Failure: Error>(
-        _ body: (borrowing QueryRow) throws(Failure) -> Result
+        _ body: (borrowing ExecutionQueryRow) throws(Failure) -> Result
     ) throws(Failure) -> Result {
         defer { withExtendedLifetime(reservation) {} }
         return try body(row)

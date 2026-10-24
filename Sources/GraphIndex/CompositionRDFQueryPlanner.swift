@@ -276,8 +276,8 @@ public struct CompositionRDFQueryPlanner: Sendable {
         }
     }
 
-    private static func row(from quad: RDFQuad, columns: [QueryColumn]) throws -> QueryRow {
-        try QueryRow(values: (0..<4).map { .primitive(value(from: quad, at: $0)) }, columns: columns)
+    private static func row(from quad: RDFQuad, columns: [QueryColumn]) throws -> ExecutionQueryRow {
+        try ExecutionQueryRow(values: (0..<4).map { .primitive(value(from: quad, at: $0)) }, columns: columns)
     }
 
     private static func qualifiedRowFootprint(
@@ -297,7 +297,7 @@ public struct CompositionRDFQueryPlanner: Sendable {
         )
     }
 
-    private static func quad(from row: QueryRow) throws -> RDFQuad {
+    private static func quad(from row: ExecutionQueryRow) throws -> RDFQuad {
         guard row.values.count == 4,
               case .primitive(.rdfTerm(let subjectTerm)) = row.values[0],
               case .primitive(.rdfTerm(let predicateTerm)) = row.values[1],

@@ -633,3 +633,9 @@ Snapshot reuse consumes [QueryExecution's lexical compatibility contract](QueryE
 unchanged query/resolution and source bindings may share one admitted prewrite
 frame across irrelevant declaration additions. Execution authority, mutation
 atomicity and awaited closure remain owned by their existing components.
+
+## Encoded Result Ownership
+
+[Query Results](QueryResults/DESIGN.md) owns the admitted response allocation and
+one-time promotion shared by SQLBlock and the read-snapshot runner. Producing
+runners establish authoritative closure; projection callbacks do not.

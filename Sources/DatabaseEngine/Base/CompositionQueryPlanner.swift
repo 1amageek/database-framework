@@ -34,7 +34,7 @@ public struct CompositionQueryPlanner: Sendable {
         }
 
         func preparedFootprint(
-            of row: borrowing DatabaseEngine.QueryRow,
+            of row: borrowing DatabaseEngine.ExecutionQueryRow,
             sourceBaseID: Base.ID,
             workMeter: DatabaseWorkMeter
         ) throws -> (rows: UInt64, bytes: UInt64) {
@@ -47,7 +47,7 @@ public struct CompositionQueryPlanner: Sendable {
         }
 
         func observedPreparedFootprint(
-            of row: borrowing DatabaseEngine.QueryRow,
+            of row: borrowing DatabaseEngine.ExecutionQueryRow,
             workMeter: DatabaseWorkMeter
         ) throws -> (rows: UInt64, bytes: UInt64) {
             let footprint = try CanonicalRelationalFootprintMeter.queryRowAliasFootprint(
@@ -56,16 +56,16 @@ public struct CompositionQueryPlanner: Sendable {
         }
 
         func prepare(
-            _ row: DatabaseEngine.QueryRow,
+            _ row: DatabaseEngine.ExecutionQueryRow,
             columns: [QueryColumn],
             sourceBaseID: Base.ID
-        ) throws -> DatabaseEngine.QueryRow {
+        ) throws -> DatabaseEngine.ExecutionQueryRow {
             row
         }
     }
 
     private struct OriginRow: Sendable {
-        let row: DatabaseEngine.QueryRow
+        let row: DatabaseEngine.ExecutionQueryRow
         var origin: CompositionOrigin
         let sequence: UInt64
         let orderingFingerprint: ByteString?
@@ -1222,7 +1222,7 @@ public struct CompositionQueryPlanner: Sendable {
         var sequence: UInt64 = 0
 
         func prepared(
-            _ row: DatabaseEngine.QueryRow,
+            _ row: DatabaseEngine.ExecutionQueryRow,
             member: DatabaseCompositionMember,
             sourceLeases: [DatabaseQueryPayloadLease]
         ) throws -> RetainedOriginRow {
@@ -1406,7 +1406,7 @@ public struct CompositionQueryPlanner: Sendable {
         snapshot: DatabaseCompositionReadSnapshot,
         workMeter: DatabaseWorkMeter,
         memberExecutor: any CompositionMemberQueryExecutor
-    ) async throws -> DatabaseEngine.QueryRow? {
+    ) async throws -> DatabaseEngine.ExecutionQueryRow? {
         while cursor.rows.map({ cursor.nextRowIndex >= $0.count }) ?? true {
             cursor.releaseConsumedRows()
             guard !cursor.reachedEnd else { return nil }
@@ -1628,7 +1628,7 @@ public struct CompositionQueryPlanner: Sendable {
             var values: [QueryValue] = []
             values.reserveCapacity(columns.count)
             for index in columns.indices { values.append(try outputValue(at: index)) }
-            return try DatabaseEngine.QueryRow(values: values, columns: columns)
+            return try DatabaseEngine.ExecutionQueryRow(values: values, columns: columns)
         }
         let ownedRow = producedRow.moveToRetainedOwner()
         let value = ownedRow.withRow { row in

@@ -257,7 +257,7 @@ struct S14SQLMutationExecutionTests {
     private struct Output {
         let count: UInt64
         let columns: [QueryColumn]
-        let rows: [QueryRow]
+        let rows: [ExecutionQueryRow]
     }
     private func execute(_ statement: QueryStatement, _ container: DBContainer) async throws -> Output {
         let work = DatabaseWorkMeter(budget: ExecutionBudget(maximumRows: 1_024), monotonicClock: container.monotonicClock)

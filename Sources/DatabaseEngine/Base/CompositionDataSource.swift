@@ -5,7 +5,7 @@ import StorageKit
 
 private actor CompositionRowResultCollector {
     private var metadata: CompositionQueryMetadata?
-    private var values: [CompositionResult<QueryRow>] = []
+    private var values: [CompositionResult<ExecutionQueryRow>] = []
 
     func receive(
         _ event: CompositionQueryEvent,

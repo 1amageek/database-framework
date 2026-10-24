@@ -229,7 +229,7 @@ typed failures; no partial destination row is committed.
 - Source audit must reject any general copyable model/identifier borrow or raw
   collection-returning intermediate API.
 - Canonical-row tests prove direct retained-to-destination construction without
-  an intermediate `QueryRow` array.
+  an intermediate `ExecutionQueryRow` array.
 - Specialized index migration tests own annotation and field-comparison
   semantics; this component owns only noncopyable access, footprint-first
   append, and same-meter rejection.
@@ -646,7 +646,7 @@ Registry's regular-table path and retained-polymorphic source append use one
 purpose-limited canonical-slot append operation. It borrows the model only
 inside the existing retained entry, measures directly from its fields and
 admitted descriptor, and builds the destination inside the admitted append
-closure. It does not construct an intermediate QueryRow, field dictionary,
+closure. It does not construct an intermediate ExecutionQueryRow, field dictionary,
 public model array, or permissive generic model borrow. Field ordering is
 schema order, not model field iteration. Missing required fields fail;
 optional absence maps to NULL only where the admitted schema permits it.

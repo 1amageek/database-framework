@@ -33,7 +33,7 @@ struct PositionalQueryRowCodecTests {
             QueryColumn(number: 1, name: "same", type: .sql(.integer), isNullable: false),
             QueryColumn(number: 2, name: "same", type: .sql(.integer), isNullable: false)
         ]
-        let row = try QueryRow(values: [.primitive(.int32(1)), .primitive(.int32(2))], columns: columns)
+        let row = try ExecutionQueryRow(values: [.primitive(.int32(1)), .primitive(.int32(2))], columns: columns)
         let response = try QueryResponse(columns: columns, rows: [row])
         #expect(response.rows[0].values == [.primitive(.int32(1)), .primitive(.int32(2))])
         #expect(throws: QueryRowCodecError.duplicateColumn("same")) {
@@ -62,20 +62,20 @@ struct PositionalQueryRowCodecTests {
     func invalidPublicConstruction() throws {
         let column = try QueryColumn(number: 1, name: "count", type: .sql(.integer), isNullable: false)
         #expect(throws: QueryRowCodecError.arityMismatch(expected: 1, actual: 0)) {
-            try QueryRow(values: [], columns: [column])
+            try ExecutionQueryRow(values: [], columns: [column])
         }
         #expect(throws: QueryRowCodecError.incompatibleValue(column: 1)) {
-            try QueryRow(values: [.primitive(.string("wrong"))], columns: [column])
+            try ExecutionQueryRow(values: [.primitive(.string("wrong"))], columns: [column])
         }
         #expect(throws: QueryRowCodecError.nullInRequiredColumn(column: 1)) {
-            try QueryRow(values: [.primitive(.null)], columns: [column])
+            try ExecutionQueryRow(values: [.primitive(.null)], columns: [column])
         }
         let invalid = try QueryColumn(number: 2, name: "count", type: .sql(.integer), isNullable: false)
         #expect(throws: QueryValueError.invalidColumnNumber(2)) {
             try QueryResponse(columns: [invalid])
         }
         let other = try QueryColumn(number: 1, name: "count", type: .sql(.text), isNullable: false)
-        let row = try QueryRow(values: [.primitive(.string("text"))], columns: [other])
+        let row = try ExecutionQueryRow(values: [.primitive(.string("text"))], columns: [other])
         #expect(throws: QueryRowCodecError.incompatibleValue(column: 1)) {
             try QueryResponse(columns: [column], rows: [row])
         }
@@ -116,7 +116,7 @@ struct PositionalQueryRowCodecTests {
             QueryColumn(number: 1, name: "count", type: .sql(.integer), isNullable: false),
             QueryColumn(number: 2, name: "id", type: .sql(.text), isNullable: false)
         ]
-        let row = try QueryRow(values: [.primitive(.int32(4)), .primitive(.string("p"))], columns: columns)
+        let row = try ExecutionQueryRow(values: [.primitive(.int32(4)), .primitive(.string("p"))], columns: columns)
         let decoded = try QueryRowCodec.decode(row, columns: columns, as: PositionalPrimitiveModel.self)
         #expect(decoded.id == "p")
         #expect(decoded.count == 4)
@@ -126,7 +126,7 @@ struct PositionalQueryRowCodecTests {
     @Test("Model projection rejects missing required fields, unknown names and incompatible descriptors")
     func invalidModelProjection() throws {
         let idColumns = try [QueryColumn(number: 1, name: "id", type: .sql(.text), isNullable: false)]
-        let idRow = try QueryRow(values: [.primitive(.string("p"))], columns: idColumns)
+        let idRow = try ExecutionQueryRow(values: [.primitive(.string("p"))], columns: idColumns)
         #expect(throws: QueryRowCodecError.missingField(type: PositionalPrimitiveModel.persistableType, field: "count")) {
             try QueryRowCodec.decode(idRow, columns: idColumns, as: PositionalPrimitiveModel.self)
         }
@@ -138,7 +138,7 @@ struct PositionalQueryRowCodecTests {
             QueryColumn(number: 1, name: "id", type: .sql(.text), isNullable: false),
             QueryColumn(number: 2, name: "count", type: .sql(.bigint), isNullable: false)
         ]
-        let wrongRow = try QueryRow(values: [.primitive(.string("p")), .primitive(.int64(4))], columns: wrong)
+        let wrongRow = try ExecutionQueryRow(values: [.primitive(.string("p")), .primitive(.int64(4))], columns: wrong)
         #expect(throws: QueryRowCodecError.incompatibleField(type: PositionalPrimitiveModel.persistableType, field: "count")) {
             try QueryRowCodec.decode(wrongRow, columns: wrong, as: PositionalPrimitiveModel.self)
         }
@@ -194,8 +194,8 @@ struct PositionalQueryRowCodecTests {
         ]
         let first = QueryValue.numeric(try QueryNumericValue(value: ExactDecimal(coefficient: 1, scale: 0), displayScale: 2))
         let second = QueryValue.numeric(try QueryNumericValue(value: ExactDecimal(coefficient: 1, scale: 0), displayScale: 6))
-        let row = try QueryRow(values: [first, second], columns: columns)
-        let reordered = try QueryRow(values: [second, first], columns: columns)
+        let row = try ExecutionQueryRow(values: [first, second], columns: columns)
+        let reordered = try ExecutionQueryRow(values: [second, first], columns: columns)
         let fingerprint = try CanonicalRowFingerprint.compute(row, columns: columns, workMeter: meter)
         #expect(try fingerprint != CanonicalRowFingerprint.compute(reordered, columns: columns, workMeter: meter))
         let renamed = try [
@@ -219,7 +219,7 @@ struct PositionalQueryRowCodecTests {
         ]
         func digest(_ value: QueryValue, _ type: DataType) throws -> ByteString {
             let column = try QueryColumn(number: 1, name: "temporal", type: .sql(type), isNullable: true)
-            return try CanonicalRowFingerprint.compute(QueryRow(values: [value], columns: [column]), columns: [column], workMeter: meter)
+            return try CanonicalRowFingerprint.compute(ExecutionQueryRow(values: [value], columns: [column]), columns: [column], workMeter: meter)
         }
         for (type, values) in temporal {
             var scalars: Set<ByteString> = [], arrays: Set<ByteString> = []
@@ -267,7 +267,7 @@ struct PositionalQueryRowCodecTests {
         let type = try descriptor("same")
         func digest(_ value: QueryValue, type: QueryCompositeType) throws -> ByteString {
             let column = try QueryColumn(number: 1, name: "row", type: .sql(.composite(type)), isNullable: true)
-            return try CanonicalRowFingerprint.compute(QueryRow(values: [value], columns: [column]),
+            return try CanonicalRowFingerprint.compute(ExecutionQueryRow(values: [value], columns: [column]),
                 columns: [column], workMeter: meter)
         }
         let present = QueryValue.composite(try QueryCompositeValue(type: type,
@@ -334,8 +334,8 @@ struct PositionalQueryRowCodecTests {
             return try QueryJSONBValue(json: QueryJSONValue(bytes: ByteString(utf8: text), limits: limits), limits: limits)
         }
         let columns = try [QueryColumn(number: 1, name: "deep", type: .sql(.jsonb), isNullable: false)]
-        let first = try QueryRow(values: [.jsonb(value(leaf: "1"))], columns: columns)
-        let second = try QueryRow(values: [.jsonb(value(leaf: "2"))], columns: columns)
+        let first = try ExecutionQueryRow(values: [.jsonb(value(leaf: "1"))], columns: columns)
+        let second = try ExecutionQueryRow(values: [.jsonb(value(leaf: "2"))], columns: columns)
         let meter = DatabaseWorkMeter(unbounded: ExecutionBudget(timeoutMilliseconds: UInt32.max))
         let fingerprint = try CanonicalRowFingerprint.compute(first, columns: columns, workMeter: meter)
         #expect(try fingerprint == CanonicalRowFingerprint.compute(first, columns: columns, workMeter: meter))

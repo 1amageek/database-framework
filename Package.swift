@@ -100,7 +100,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/database-kit.git",
-            from: "26.1021.0",
+            revision: "1bf2fdc3a874fddccf305c4902b5a16383d3369d",
             traits: databaseKitTraits
         ),
         .package(
@@ -169,6 +169,7 @@ let package = Package(
                 "SQLViews/DESIGN.md",
                 "Schema/DESIGN.md",
                 "SQLBlock/DESIGN.md",
+                "QueryResults/DESIGN.md",
                 "Base/DESIGN.md",
                 "Fusion/DESIGN.md",
                 "Serialization/DESIGN.md",
@@ -453,6 +454,7 @@ let package = Package(
             name: "Database",
             dependencies: [
                 .product(name: "DatabaseKit", package: "database-kit"),
+                .product(name: "DatabaseWire", package: "database-kit"),
                 .product(name: "DatabaseTypes", package: "database-types"),
                 "DatabaseEngine",
                 "DatabaseRuntime",
@@ -516,7 +518,7 @@ let package = Package(
                     name: "PostgreSQLStorage", package: "storage-kit",
                     condition: .when(platforms: nativeRuntimePlatforms, traits: ["PostgreSQL"])),
             ],
-            exclude: ["README.md", "DESIGN.md"],
+            exclude: ["README.md", "DESIGN.md", "QueryExecution/DESIGN.md"],
             swiftSettings: [
                 .define("FOUNDATION_DB", .when(platforms: foundationDBClientPlatforms, traits: ["FoundationDB"])),
                 .define("SQLITE", .when(platforms: nativeRuntimePlatforms, traits: ["SQLite"])),

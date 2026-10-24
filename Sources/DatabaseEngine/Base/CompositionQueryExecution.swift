@@ -69,11 +69,11 @@ public struct CompositionQueryMetadata: Sendable {
 /// One canonical row and its complete Base lineage.
 @_spi(DatabaseExecution)
 public struct CompositionQueryRow: Sendable {
-    public let row: QueryRow
+    public let row: ExecutionQueryRow
     public let origin: CompositionOrigin
     package let payloadLeases: [DatabaseQueryPayloadLease]?
 
-    public init(row: QueryRow, origin: CompositionOrigin) {
+    public init(row: ExecutionQueryRow, origin: CompositionOrigin) {
         self.row = row
         self.origin = origin
         self.payloadLeases = nil
@@ -85,7 +85,7 @@ public struct CompositionQueryRow: Sendable {
         self.payloadLeases = ownedRow.payloadLeases
     }
 
-    package init(row: QueryRow, origin: CompositionOrigin, payloadLeases: [DatabaseQueryPayloadLease]) {
+    package init(row: ExecutionQueryRow, origin: CompositionOrigin, payloadLeases: [DatabaseQueryPayloadLease]) {
         self.row = row
         self.origin = origin
         self.payloadLeases = payloadLeases

@@ -3,7 +3,7 @@ import DatabaseKit
 /// Shared caller-visible schema and request-accounted canonical rows.
 @_spi(DatabaseExecution)
 public struct DatabaseSharedRetainedQueryRows: Sendable {
-    private let storage: DatabaseSharedRetainedArray<QueryRow>
+    private let storage: DatabaseSharedRetainedArray<ExecutionQueryRow>
     public let columns: [QueryColumn]
     package let payloadLeases: [DatabaseQueryPayloadLease]
     package let schemaLeases: [DatabaseIntermediateReservation]
@@ -11,7 +11,7 @@ public struct DatabaseSharedRetainedQueryRows: Sendable {
     /// The producing owner has validated every row and admitted the complete
     /// schema and payload before transferring its immutable storage here.
     package init(
-        storage: consuming DatabaseSharedRetainedArray<QueryRow>,
+        storage: consuming DatabaseSharedRetainedArray<ExecutionQueryRow>,
         columns: [QueryColumn],
         payloadLeases: [DatabaseQueryPayloadLease] = [],
         schemaLeases: [DatabaseIntermediateReservation] = []
@@ -42,7 +42,7 @@ public struct DatabaseSharedRetainedQueryRows: Sendable {
 
     package func withElement<Result, Failure: Error>(
         at index: Int,
-        _ body: (borrowing QueryRow) throws(Failure) -> Result
+        _ body: (borrowing ExecutionQueryRow) throws(Failure) -> Result
     ) throws(Failure) -> Result {
         defer { withExtendedLifetime(self) {} }
         return try storage.withElement(at: index, body)
@@ -51,14 +51,14 @@ public struct DatabaseSharedRetainedQueryRows: Sendable {
     package func withElement<Result, Failure: Error>(
         at index: Int,
         isolation actor: isolated (any Actor)? = #isolation,
-        _ body: (borrowing QueryRow) async throws(Failure) -> Result
+        _ body: (borrowing ExecutionQueryRow) async throws(Failure) -> Result
     ) async throws(Failure) -> Result {
         defer { withExtendedLifetime(self) {} }
         return try await storage.withElement(at: index, isolation: actor, body)
     }
 
     package func withSpan<Result, Failure: Error>(
-        _ body: (Span<QueryRow>) throws(Failure) -> Result
+        _ body: (Span<ExecutionQueryRow>) throws(Failure) -> Result
     ) throws(Failure) -> Result {
         defer { withExtendedLifetime(self) {} }
         return try storage.withSpan(body)
@@ -69,7 +69,7 @@ public struct DatabaseSharedRetainedQueryRows: Sendable {
     }
 
     /// The caller consumes the result at its final public array boundary.
-    package consuming func promoteToOutput() -> [QueryRow] {
+    package consuming func promoteToOutput() -> [ExecutionQueryRow] {
         defer {
             withExtendedLifetime(payloadLeases) {}
             withExtendedLifetime(schemaLeases) {}
@@ -79,11 +79,11 @@ public struct DatabaseSharedRetainedQueryRows: Sendable {
 
     /// Copies a final output page while this snapshot retains its complete
     /// schema, source payload and row claims for subsequent pages.
-    public func materializePage(_ range: Range<Int>) -> [QueryRow] {
+    public func materializePage(_ range: Range<Int>) -> [ExecutionQueryRow] {
         precondition(range.lowerBound >= 0 && range.upperBound <= storage.count,
                      "Page range is outside the shared retained rows")
         defer { withExtendedLifetime(self) {} }
-        var output: [QueryRow] = []
+        var output: [ExecutionQueryRow] = []
         output.reserveCapacity(range.count)
         for index in range {
             storage.withElement(at: index) { output.append(copy $0) }
@@ -115,7 +115,7 @@ public struct DatabaseSharedRetainedQueryRows: Sendable {
 
         package func withElement<Result, Failure: Error>(
             at index: Int,
-            _ body: (borrowing QueryRow) throws(Failure) -> Result
+            _ body: (borrowing ExecutionQueryRow) throws(Failure) -> Result
         ) throws(Failure) -> Result {
             precondition(index >= 0 && index < count)
             return try owner.withElement(at: range.lowerBound + index, body)
@@ -124,16 +124,16 @@ public struct DatabaseSharedRetainedQueryRows: Sendable {
         package func withElement<Result, Failure: Error>(
             at index: Int,
             isolation actor: isolated (any Actor)? = #isolation,
-            _ body: (borrowing QueryRow) async throws(Failure) -> Result
+            _ body: (borrowing ExecutionQueryRow) async throws(Failure) -> Result
         ) async throws(Failure) -> Result {
             precondition(index >= 0 && index < count)
             return try await owner.withElement(at: range.lowerBound + index, isolation: actor, body)
         }
 
         package func withSpan<Result, Failure: Error>(
-            _ body: (Span<QueryRow>) throws(Failure) -> Result
+            _ body: (Span<ExecutionQueryRow>) throws(Failure) -> Result
         ) throws(Failure) -> Result {
-            try owner.withSpan { (span: Span<QueryRow>) throws(Failure) -> Result in
+            try owner.withSpan { (span: Span<ExecutionQueryRow>) throws(Failure) -> Result in
                 try body(span.extracting(range))
             }
         }

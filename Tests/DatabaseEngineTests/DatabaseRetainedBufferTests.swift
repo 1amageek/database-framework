@@ -564,7 +564,7 @@ struct DatabaseRetainedBufferTests {
                 stage: .projection
             )
             try builder.append(
-                try QueryRow(values: [.primitive(.string("retained-row"))], columns: [QueryColumn(number: 1, name: "value", type: .primitive(.string), isNullable: false)])
+                try ExecutionQueryRow(values: [.primitive(.string("retained-row"))], columns: [QueryColumn(number: 1, name: "value", type: .primitive(.string), isNullable: false)])
             )
             let rows = builder.finish()
             #expect(rows.workMeter === meter)
@@ -581,7 +581,7 @@ struct DatabaseRetainedBufferTests {
             let retainedBytes = meter.retainedIntermediateBytes
             let consumedWorkUnits = meter.consumedWorkUnits
             let layout = try DatabaseRetainedArrayLayout.forElement(
-                DatabaseEngine.QueryRow.self
+                DatabaseEngine.ExecutionQueryRow.self
             )
             let shared = try rows.moveToSharedOwnership(
                 at: .resultMaterialization
@@ -610,8 +610,8 @@ struct DatabaseRetainedBufferTests {
                 workMeter: meter,
                 stage: .projection
             )
-            try builder.append(try QueryRow(values: [.primitive(.string("hidden"))], columns: [QueryColumn(number: 1, name: "value", type: .primitive(.string), isNullable: false)]))
-            try builder.append(try QueryRow(values: [.primitive(.string("visible"))], columns: [QueryColumn(number: 1, name: "value", type: .primitive(.string), isNullable: false)]))
+            try builder.append(try ExecutionQueryRow(values: [.primitive(.string("hidden"))], columns: [QueryColumn(number: 1, name: "value", type: .primitive(.string), isNullable: false)]))
+            try builder.append(try ExecutionQueryRow(values: [.primitive(.string("visible"))], columns: [QueryColumn(number: 1, name: "value", type: .primitive(.string), isNullable: false)]))
             let rows = builder.finish()
             let shared = try rows.moveToSharedOwnership(at: .joinCandidate)
             let sourceAddress = shared.withSpan { span in
@@ -874,7 +874,7 @@ struct DatabaseRetainedBufferTests {
     func sharedQueryRowsOutliveLinearOwnerAndPageInBounds() throws {
         let meter = makeMeter(rows: 16, bytes: 16_384, workUnits: 16)
         let expected = try (0..<4).map { identifier in
-            try QueryRow(values: [.primitive(.string("row-\(identifier)"))], columns: [QueryColumn(number: 1, name: "value", type: .primitive(.string), isNullable: false)])
+            try ExecutionQueryRow(values: [.primitive(.string("row-\(identifier)"))], columns: [QueryColumn(number: 1, name: "value", type: .primitive(.string), isNullable: false)])
         }
         do {
             let shared: DatabaseSharedRetainedQueryRows

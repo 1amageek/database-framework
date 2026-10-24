@@ -757,7 +757,7 @@ struct CompositionQueryExecutorTests {
         let base = try Base.ID("response-shape")
         let composition = try CompositionResolution.derived([base])
         let columns = try [QueryColumn(number: 1, name: "value", type: .sql(.bigint), isNullable: false)]
-        let malformed = QueryRow(validatedValues: [.primitive(.string("wrong"))])
+        let malformed = ExecutionQueryRow(validatedValues: [.primitive(.string("wrong"))])
         #expect(throws: QueryRowCodecError.self) {
             try CompositionQueryResponse(columns: columns, rows: [
                 CompositionResult(composition: composition, origin: .source(base), value: malformed),
@@ -1528,7 +1528,7 @@ struct CompositionQueryExecutorTests {
         }
 
         func owned(
-            _ row: QueryRow,
+            _ row: ExecutionQueryRow,
             workMeter: DatabaseWorkMeter
         ) throws -> DatabaseQueryScopedQueryRow {
             let footprint = try CanonicalRelationalFootprintMeter.footprint(
@@ -1746,7 +1746,7 @@ struct CompositionQueryExecutorTests {
         }
 
         func owned(
-            _ row: QueryRow,
+            _ row: ExecutionQueryRow,
             workMeter: DatabaseWorkMeter
         ) throws -> DatabaseQueryScopedQueryRow {
             let footprint = try CanonicalRelationalFootprintMeter.footprint(
@@ -1978,8 +1978,8 @@ struct CompositionQueryExecutorTests {
     private func priorityRow(
         _ value: Int64, annotations: [String: FieldValue] = [:],
         version: PersistableVersionToken? = nil
-    ) throws -> QueryRow {
-        try QueryRow(values: [.primitive(.int64(value))], columns: [
+    ) throws -> ExecutionQueryRow {
+        try ExecutionQueryRow(values: [.primitive(.int64(value))], columns: [
             QueryColumn(number: 1, name: "priority", type: .primitive(.int64), isNullable: false),
         ], annotations: annotations, version: version)
     }
@@ -2195,7 +2195,7 @@ struct CompositionQueryExecutorTests {
         _ query: SelectQuery,
         source: CompositionDataSource,
         maximumIntermediateRows: UInt32 = 100
-    ) async throws -> [CompositionResult<QueryRow>] {
+    ) async throws -> [CompositionResult<ExecutionQueryRow>] {
         let readOptions = ReadExecutionOptions(
             pageSize: 8,
             budget: ExecutionBudget(

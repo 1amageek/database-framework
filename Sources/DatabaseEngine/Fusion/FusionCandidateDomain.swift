@@ -11,13 +11,13 @@ private protocol FusionCandidateRowInput {
     var schemaLeases: [DatabaseIntermediateReservation] { get }
 
     func forEachRow(
-        _ body: (borrowing QueryRow) throws -> Void
+        _ body: (borrowing ExecutionQueryRow) throws -> Void
     ) throws
 }
 
 private struct FusionCandidateCollectionRowInput<Rows: Collection>:
     FusionCandidateRowInput
-where Rows.Element == QueryRow {
+where Rows.Element == ExecutionQueryRow {
     let rows: Rows
     let columns: [QueryColumn]
     var payloadLeases: [DatabaseQueryPayloadLease] { [] }
@@ -26,7 +26,7 @@ where Rows.Element == QueryRow {
     var count: Int { rows.count }
 
     func forEachRow(
-        _ body: (borrowing QueryRow) throws -> Void
+        _ body: (borrowing ExecutionQueryRow) throws -> Void
     ) throws {
         for row in rows {
             try body(row)
@@ -43,7 +43,7 @@ private struct FusionCandidateScopedRowInput: FusionCandidateRowInput {
     var count: Int { rows.count }
 
     func forEachRow(
-        _ body: (borrowing QueryRow) throws -> Void
+        _ body: (borrowing ExecutionQueryRow) throws -> Void
     ) throws {
         for position in 0..<rows.count {
             try rows.withElement(at: position) { row in
@@ -61,7 +61,7 @@ package struct FusionCandidateDomain: Sendable {
     struct Entry: Sendable {
         let identity: FieldValue
         let packedPrimaryKey: ByteString
-        let row: QueryRow
+        let row: ExecutionQueryRow
         let rowFootprint: DatabaseIntermediateFootprint
         let retainedFootprint: DatabaseIntermediateFootprint
         let payloadLeases: [DatabaseQueryPayloadLease]
@@ -153,7 +153,7 @@ package struct FusionCandidateDomain: Sendable {
         entity: Schema.Entity,
         workMeter: DatabaseWorkMeter,
         stage: DatabaseWorkStage = .bindingCandidate
-    ) throws -> FusionCandidateDomain where Rows.Element == QueryRow {
+    ) throws -> FusionCandidateDomain where Rows.Element == ExecutionQueryRow {
         try make(
             input: FusionCandidateCollectionRowInput(rows: rows, columns: columns),
             entity: entity,
@@ -414,7 +414,7 @@ package struct FusionCandidateDomain: Sendable {
                             let values = try EntityRuntimeDefinition.canonicalSourceValues(
                                 model, entity: entity, layout: layout, workMeter: workMeter, stage: .storageRow
                             )
-                            let row = QueryRow(validatedValues: values,
+                            let row = ExecutionQueryRow(validatedValues: values,
                                                version: try PersistableVersionTokenCodec.token(for: model.fields))
                             // Internal candidate routing does not require an
                             // identifier slot in the authorized projection.
@@ -596,7 +596,7 @@ package struct FusionCandidateDomain: Sendable {
         return slot
     }
 
-    static func identity(in row: borrowing QueryRow, slot: Int) throws -> FieldValue {
+    static func identity(in row: borrowing ExecutionQueryRow, slot: Int) throws -> FieldValue {
         guard row.values.indices.contains(slot), case .primitive(let identity) = row.values[slot], identity != .null else {
             throw FusionExecutionContractError.missingIdentity(field: "id")
         }
@@ -605,7 +605,7 @@ package struct FusionCandidateDomain: Sendable {
 
     /// This is the explicit primitive persistence destination for a partial
     /// Fusion projection; fields outside its admitted columns are not added.
-    func indexFields(for row: borrowing QueryRow) throws -> [String: FieldValue] {
+    func indexFields(for row: borrowing ExecutionQueryRow) throws -> [String: FieldValue] {
         try row.validate(columns: columns)
         var fields: [String: FieldValue] = [:]
         fields.reserveCapacity(columns.count)
@@ -619,7 +619,7 @@ package struct FusionCandidateDomain: Sendable {
         return fields
     }
 
-    func indexRowFootprint(for row: borrowing QueryRow, workMeter: DatabaseWorkMeter) throws -> DatabaseIntermediateFootprint {
+    func indexRowFootprint(for row: borrowing ExecutionQueryRow, workMeter: DatabaseWorkMeter) throws -> DatabaseIntermediateFootprint {
         var footprint = CanonicalRelationalFootprintMeter.queryRowBaseFootprint()
         for (column, value) in zip(columns, row.values) {
             let descriptor = try persistenceDescriptor(for: column)

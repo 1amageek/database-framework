@@ -50,7 +50,7 @@ private actor CompositionRDFQuadProbe {
 private final class CompositionSPARQLWorkMeterControl: Sendable {
     private struct State: Sendable {
         var workMeter: DatabaseWorkMeter? = nil
-        var row: QueryRow? = nil
+        var row: ExecutionQueryRow? = nil
         var quad: RDFQuad? = nil
     }
 
@@ -58,7 +58,7 @@ private final class CompositionSPARQLWorkMeterControl: Sendable {
 
     func output(
         defaultWorkMeter: DatabaseWorkMeter
-    ) -> (workMeter: DatabaseWorkMeter, row: QueryRow?) {
+    ) -> (workMeter: DatabaseWorkMeter, row: ExecutionQueryRow?) {
         state.withLock {
             ($0.workMeter ?? defaultWorkMeter, $0.row)
         }
@@ -68,7 +68,7 @@ private final class CompositionSPARQLWorkMeterControl: Sendable {
         state.withLock { $0.workMeter = workMeter }
     }
 
-    func setRow(_ row: QueryRow?) {
+    func setRow(_ row: ExecutionQueryRow?) {
         state.withLock { $0.row = row }
     }
 
@@ -334,7 +334,7 @@ struct CompositionSPARQLAuthorizationTests {
         #expect(readContext.workMeter.retainedIntermediateBytes == 0)
 
         let columns = try [QueryColumn(number: 1, name: "subject", type: .primitive(.rdfTerm), isNullable: true)]
-        let sourceRow = try QueryRow(
+        let sourceRow = try ExecutionQueryRow(
             values: [.primitive(.rdfTerm(.blankNode(try RDFBlankNodeIdentifier("subject"))))],
             columns: columns,
             annotations: [

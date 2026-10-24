@@ -645,7 +645,7 @@ struct CanonicalRetainedQueryRowView: Sendable {
 
     func withElement<Failure: Error>(
         at position: Int,
-        _ body: (borrowing QueryRow) throws(Failure) -> Void
+        _ body: (borrowing ExecutionQueryRow) throws(Failure) -> Void
     ) throws(Failure) {
         precondition(position >= 0 && position < count)
         try owner.withElement(at: range.lowerBound + position, body)
@@ -653,7 +653,7 @@ struct CanonicalRetainedQueryRowView: Sendable {
 
     func withElement<Failure: Error>(
         at position: Int,
-        _ body: (borrowing QueryRow) async throws(Failure) -> Void
+        _ body: (borrowing ExecutionQueryRow) async throws(Failure) -> Void
     ) async throws(Failure) {
         precondition(position >= 0 && position < count)
         try await owner.withElement(at: range.lowerBound + position, body)
@@ -2174,7 +2174,7 @@ extension DatabaseContext {
         evaluation: CanonicalQueryEvaluationContext, origins: [DatabaseQueryPayloadLease],
         physicalColumns: [QueryColumn], originalCount: Int, identityColumn: QueryColumn,
         paginationOverride: SQLResolvedPagination? = nil,
-        originalRow: (Int) throws -> (QueryRow, FieldValue)
+        originalRow: (Int) throws -> (ExecutionQueryRow, FieldValue)
     ) async throws -> CanonicalRetainedQueryResponse {
         guard let source = plan.sourcePlan else { throw FusionExecutionError.executionContractViolation }
         let meter = evaluation.options.workMeter
@@ -2201,8 +2201,8 @@ extension DatabaseContext {
             columns.append(try QueryColumn(number: UInt32(columnCount), name: identityColumn.name,
                 type: identityColumn.type, isNullable: false))
         }
-        var rows = try DatabaseRetainedArrayBuilder<QueryRow>(workMeter: meter, stage: .projection,
-            layout: DatabaseRetainedArrayLayout.forElement(QueryRow.self), expectedCount: ordered.count)
+        var rows = try DatabaseRetainedArrayBuilder<ExecutionQueryRow>(workMeter: meter, stage: .projection,
+            layout: DatabaseRetainedArrayLayout.forElement(ExecutionQueryRow.self), expectedCount: ordered.count)
         var emitted: UInt64 = 0
         for (position, row) in ordered.enumerated() {
             try meter.consume(at: .projection)
@@ -2221,7 +2221,7 @@ extension DatabaseContext {
                     values.reserveCapacity(columnCount)
                     values.append(.primitive(identity))
                 }
-                return QueryRow(validatedValues: values, annotations: original.annotations, version: original.version)
+                return ExecutionQueryRow(validatedValues: values, annotations: original.annotations, version: original.version)
             }
             emitted += 1
         }
@@ -3614,7 +3614,7 @@ extension DatabaseContext {
             stage: .resultMaterialization, expectedCount: relation.rows.count,
             payloadLeases: [relation.rows.payloadLease] + metadataLeases, schemaLeases: [])
         for row in relation.rows {
-            try builder.append(QueryRow(values: row.values, columns: columns, annotations: row.annotations, version: row.version))
+            try builder.append(ExecutionQueryRow(values: row.values, columns: columns, annotations: row.annotations, version: row.version))
         }
         return try builder.finish().moveToSharedOwnership(at: .resultMaterialization)
     }
@@ -4788,7 +4788,7 @@ extension DatabaseContext {
                 identityColumn: try fusionIdentityColumn(entity: entity), paginationOverride: remaining) { ordinal in
                     let row = decoded.rows[ordinal]
                     guard let identity = row.candidateIdentity else { throw FusionExecutionError.executionContractViolation }
-                    return (QueryRow(validatedValues: row.values, annotations: row.annotations, version: row.version), identity)
+                    return (ExecutionQueryRow(validatedValues: row.values, annotations: row.annotations, version: row.version), identity)
                 }
         }
 
@@ -6947,7 +6947,7 @@ extension DatabaseContext {
             }
             let sourceColumns = try relationSchema(for: row.layout).typedColumns()
             let fingerprint = try CanonicalRowFingerprint.compute(
-                QueryRow(validatedValues: row.values, annotations: row.annotations, version: row.version),
+                ExecutionQueryRow(validatedValues: row.values, annotations: row.annotations, version: row.version),
                 columns: sourceColumns, workMeter: workMeter)
             decorated.append((row, values, fingerprint))
         }
@@ -8047,9 +8047,9 @@ extension DatabaseContext {
             }
             leases.append(contentsOf: incoming)
         }
-        var retained = try DatabaseRetainedArrayBuilder<QueryRow>(
+        var retained = try DatabaseRetainedArrayBuilder<ExecutionQueryRow>(
             workMeter: workMeter, stage: .projection,
-            layout: DatabaseRetainedArrayLayout.forElement(QueryRow.self), expectedCount: rows.count)
+            layout: DatabaseRetainedArrayLayout.forElement(ExecutionQueryRow.self), expectedCount: rows.count)
         let selectedSlots: [Int]? = nil
         let expressions = boundPlan.projection.map { $0.expression }
         for row in rows {
@@ -8089,7 +8089,7 @@ extension DatabaseContext {
                         retainedPayload[index] ? .primitive(.null) : cells[index]
                     }, annotations: row.annotations, version: row.version,
                     workMeter: workMeter, stage: .projection),
-                make: { QueryRow(validatedValues: cells, annotations: row.annotations, version: row.version) })
+                make: { ExecutionQueryRow(validatedValues: cells, annotations: row.annotations, version: row.version) })
         }
         let result = DatabaseSharedRetainedQueryRows(
             storage: try retained.finish().moveToSharedOwnership(at: .projection), columns: columns,
@@ -8718,7 +8718,7 @@ extension DatabaseContext {
                 resultLeases.append(contentsOf: cell.leases)
                 values.append(cell.value)
             }
-            try output.append(QueryRow(values: values, columns: columns, annotations: group.representative.annotations))
+            try output.append(ExecutionQueryRow(values: values, columns: columns, annotations: group.representative.annotations))
         }
         let rows = try output.finish().moveToSharedOwnership(at: .projection)
         return DatabaseSharedRetainedQueryRows(storage: try retainedQueryRowStorage(rows, workMeter: workMeter),
@@ -8727,9 +8727,9 @@ extension DatabaseContext {
     }
 
     private func retainedQueryRowStorage(_ rows: DatabaseSharedRetainedQueryRows,
-        workMeter: DatabaseWorkMeter) throws -> DatabaseSharedRetainedArray<QueryRow> {
-        var builder = try DatabaseRetainedArrayBuilder<QueryRow>(workMeter: workMeter, stage: .projection,
-            layout: DatabaseRetainedArrayLayout.forElement(QueryRow.self), expectedCount: rows.count)
+        workMeter: DatabaseWorkMeter) throws -> DatabaseSharedRetainedArray<ExecutionQueryRow> {
+        var builder = try DatabaseRetainedArrayBuilder<ExecutionQueryRow>(workMeter: workMeter, stage: .projection,
+            layout: DatabaseRetainedArrayLayout.forElement(ExecutionQueryRow.self), expectedCount: rows.count)
         for index in 0..<rows.count {
             try rows.withElement(at: index) { row in
                 try builder.append(footprint: CanonicalRelationalFootprintMeter.positionalValueArrayFootprint(
@@ -9229,10 +9229,10 @@ extension DatabaseContext {
         defer { setReservation.release() }
         var seen = try CanonicalSQLIdentitySet(workMeter: workMeter,
             stage: .deduplication, expectedCount: rows.count)
-        var unique = try DatabaseRetainedArrayBuilder<QueryRow>(
+        var unique = try DatabaseRetainedArrayBuilder<ExecutionQueryRow>(
             workMeter: workMeter,
             stage: .deduplication,
-            layout: try DatabaseRetainedArrayLayout.forElement(QueryRow.self),
+            layout: try DatabaseRetainedArrayLayout.forElement(ExecutionQueryRow.self),
             expectedCount: rows.count
         )
         for index in 0..<rows.count {

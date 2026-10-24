@@ -126,7 +126,7 @@ A streaming SELECT whose every selected expression is a bound local column trans
 normalized cells directly into its retained source-row output. It still invokes
 the selected evaluator, including occurrence failures,
 work/cancellation/deadline checks and normalization. The source row retains the
-payload owners; this path avoids the intermediate public QueryRow container and
+payload owners; this path avoids the intermediate public ExecutionQueryRow container and
 per-row public schema/lease-vector construction. Computed, composite-field,
 outer-frame, aggregate and volatile targets continue through the selected projection owner.
 Scratch cell storage is admitted before allocation and output storage before

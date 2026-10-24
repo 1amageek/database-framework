@@ -2,7 +2,7 @@ import DatabaseKit
 
 /// Admitted builder for rows and their explicit shared schema.
 public struct DatabaseRetainedQueryRowsBuilder: ~Copyable {
-    private var storage: DatabaseRetainedArrayBuilder<QueryRow>
+    private var storage: DatabaseRetainedArrayBuilder<ExecutionQueryRow>
     public let columns: [QueryColumn]
     package let workMeter: DatabaseWorkMeter
     package let payloadLeases: [DatabaseQueryPayloadLease]
@@ -52,7 +52,7 @@ public struct DatabaseRetainedQueryRowsBuilder: ~Copyable {
         }
         self.storage = try DatabaseRetainedArrayBuilder(
             workMeter: workMeter, stage: stage,
-            layout: try DatabaseRetainedArrayLayout.forElement(QueryRow.self), expectedCount: expectedCount
+            layout: try DatabaseRetainedArrayLayout.forElement(ExecutionQueryRow.self), expectedCount: expectedCount
         )
         self.columns = columns
         self.workMeter = workMeter
@@ -64,7 +64,7 @@ public struct DatabaseRetainedQueryRowsBuilder: ~Copyable {
     public var count: Int { storage.count }
     public var isEmpty: Bool { storage.isEmpty }
 
-    public mutating func append(_ row: consuming QueryRow) throws {
+    public mutating func append(_ row: consuming ExecutionQueryRow) throws {
         try row.validate(columns: columns)
         try workMeter.consume(at: stage)
         let footprint = try CanonicalRelationalFootprintMeter.footprint(of: row, workMeter: workMeter, stage: stage)
@@ -76,7 +76,7 @@ public struct DatabaseRetainedQueryRowsBuilder: ~Copyable {
     /// against the same schema before the builder accepts the result.
     package mutating func append<Failure: Error>(
         footprint: DatabaseIntermediateFootprint,
-        make: () throws(Failure) -> QueryRow
+        make: () throws(Failure) -> ExecutionQueryRow
     ) throws {
         try workMeter.consume(at: stage)
         let columns = columns

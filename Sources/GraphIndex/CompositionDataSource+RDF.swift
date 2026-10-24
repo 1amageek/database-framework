@@ -36,7 +36,7 @@ private actor CompositionRDFResultCollector {
 
 private actor CompositionSPARQLResultCollector {
     private var metadata: CompositionQueryMetadata?
-    private var values: [CompositionResult<QueryRow>] = []
+    private var values: [CompositionResult<ExecutionQueryRow>] = []
 
     func receive(
         _ event: CompositionQueryEvent,

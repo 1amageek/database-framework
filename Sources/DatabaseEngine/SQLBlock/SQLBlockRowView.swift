@@ -4,9 +4,9 @@ import DatabaseTypes
 /// One row whose payload and conversion scratch remain owned by its caller.
 @_spi(DatabaseExecution)
 public struct SQLBlockRowView: ~Copyable, Sendable {
-    private let row: QueryRow
+    private let row: ExecutionQueryRow
     private let workMeter: DatabaseWorkMeter
-    init(row: QueryRow, workMeter: DatabaseWorkMeter) { self.row = row; self.workMeter = workMeter }
+    init(row: ExecutionQueryRow, workMeter: DatabaseWorkMeter) { self.row = row; self.workMeter = workMeter }
     public var valueCount: Int { row.values.count }
 
     public borrowing func withValue(at index: Int,
