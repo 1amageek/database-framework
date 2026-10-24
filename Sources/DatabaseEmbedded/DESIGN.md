@@ -133,6 +133,13 @@ N03 adds named two-database isolation, typed projection/predicate parity,
 Final optimized integration is owned by N05. Native shared-container tests additionally prove separate original
 request authorities and independently owned per-call budgets.
 
+N05 composes the same named API with authenticated Native HTTP, verifies
+parameterized SQL/IR/block results and denied request scopes, and compares
+direct connection execution with the facade. The stable Swift 6.4.0 ordinary
+and Embedded release fixtures also execute a fluent CTE/grouped aggregate with
+LIMIT over the inserted data. Snapshot-only Kit evidence is recorded separately.
+Final consumers resolve the committed URL graph without local overrides.
+
 Immediately completing nested storage operations use the StorageKit-owned
 [compound scheduling boundary](../../../storage-kit/Sources/StorageKit/Storage/DESIGN.md#compound-operation-scheduling).
 This adapter forwards the original operation and does not add per-query yields,
