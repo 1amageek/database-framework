@@ -19,6 +19,9 @@ extension DatabaseContext {
                 diagnostic: SQLDiagnostics.diagnostic(for: SQLBlockExecutionError.enclosingTransaction))
         }
         switch input {
+        case .block where options.pageSize != nil:
+            let error = SQLBlockExecutionError.unsupportedPagedQuery
+            throw SQLExecutionFailure(underlyingError: error, diagnostic: SQLDiagnostics.diagnostic(for: error))
         case .text(language: .sparql, statement: let text):
             return try await executeGraphEncoded(text: text, statement: nil, parameters: parameters,
                 options: options, requestID: requestID, limits: limits, structuralLimits: structuralLimits)

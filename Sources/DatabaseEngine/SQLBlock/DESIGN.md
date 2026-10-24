@@ -720,6 +720,8 @@ rows are ExecutionQueryRow; final Kit rows are not execution storage. The output
 view exposes metadata through a bounded synchronous borrow, charging conversion
 scratch to the same meter. Shared SQLCheckpointPolicy derives portable checkpoint
 ceilings from the admitted budget with exact integer conversion. Optional
-read-only-query admission rejects blocks, sequence calls and write effects before
-transaction entry; default complete execution preserves the existing profile.
+read-only-query admission validates the lowered single SELECT and rejects sequence
+calls and write effects before transaction entry. The original explicit-block
+rejection belongs to the linked Database Query Execution entry contract, before
+lowering loses the input kind; default complete execution preserves the profile.
 No public result or connection can bypass Collecting -> Ready -> promotion.

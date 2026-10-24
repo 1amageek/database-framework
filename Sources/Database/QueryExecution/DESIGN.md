@@ -54,7 +54,11 @@ DatabaseContext.openConnection() -> QueryConnection (actor)
   nor converted back into text. Both enter the same statement/block executor.
 - Complete execution is the default. An explicit page size requests the existing
   read-only query profile; sequences, writable CTEs, blocks and mutations are
-  rejected before effects rather than replayed by continuation. In-process rows
+  rejected before effects rather than replayed by continuation. The original
+  QueryInput.block is rejected at this entry boundary even when it contains one
+  SELECT; Engine's single-statement check separately admits parsed SQL and IR
+  read requests. This preserves the remote Server admission contract before the
+  block is lowered into an Engine execution unit. In-process rows
   already reside in memory, so this retrieval preference does not alter LIMIT,
   aggregate semantics or result values.
 - Columns, duplicate labels, exact QueryValue, annotations, opaque version,
@@ -101,7 +105,9 @@ structural limits and checkpoint ceilings remain bounded by the selected policy.
 ## Verification and Change Impact
 
 Focused behavior compares text/IR/block rows, columns, rich values, commands,
-RETURNING and COPY. It checks default-deny/field denial, parameter injection,
+RETURNING and COPY. Explicit paged single/multiple-statement blocks must fail
+before opening a transaction, while equivalent SQL/IR reads and complete blocks
+retain their results. It checks default-deny/field denial, parameter injection,
 work/row/memory exhaustion, late-error rollback, cancellation and concurrent close,
 new-call rejection and container usability after connection closure. A bounded
 Graph frame must fail as a typed response resource limit and the same connection

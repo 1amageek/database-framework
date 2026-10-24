@@ -56,6 +56,36 @@ struct QueryConnectionTests {
         #expect(try await values(bound.rows) == [[.primitive(.string(hostile))]])
     }
 
+    @Test("Explicit paged blocks are rejected before storage while SQL and IR reads remain equivalent")
+    func pagedBlockAdmission() async throws {
+        let database = try SQLiteTestDatabase(prefix: "query-paged-block")
+        defer { database.remove() }
+        let engine = ControlledStorageEngine(base: try SQLiteStorageEngine(configuration: .file(database.path)))
+        let container = try await open(database, engine: engine)
+        defer { await container.shutdown() }
+        let connection = try await container.testBaseContext().openConnection()
+        defer { await connection.close() }
+        let statement = try SQLParser(preservesCastOutputNames: true).parse("SELECT 7 AS n")
+        for block in [try SQLBlock(steps: [.statement(statement)]),
+                      try SQLBlock(steps: [.statement(statement), .statement(statement)])] {
+            let reads = engine.control.dataReadOperationCount
+            do {
+                _ = try await connection.execute(block, options: .init(pageSize: 1))
+                Issue.record("Expected explicit paged block admission to fail")
+            } catch let failure as SQLExecutionFailure {
+                #expect(failure.underlyingError as? SQLBlockExecutionError == .unsupportedPagedQuery)
+                #expect(failure.diagnostic.sqlState == "0A000")
+            }
+            #expect(engine.control.dataReadOperationCount == reads)
+        }
+        let sql = try await connection.execute("SELECT 7 AS n", options: .init(pageSize: 1))
+        let ir = try await connection.execute(statement, options: .init(pageSize: 1))
+        let complete = try await connection.execute(SQLBlock(steps: [.statement(statement)]))
+        #expect(sql.columns == ir.columns && ir.columns == complete.columns)
+        #expect(try await values(sql.rows) == [[.primitive(.int32(7))]])
+        #expect(try await values(ir.rows) == values(complete.rows))
+    }
+
     @Test("Effects, RETURNING, first-error rollback and restart share one completed execution")
     func effectsRollbackAndRestart() async throws {
         let database = try SQLiteTestDatabase(prefix: "query-effects")
