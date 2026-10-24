@@ -14,6 +14,7 @@ extension DatabaseContext {
     ///
     /// Parsing and parameter binding use the same structural limits. SPARQL
     /// rewriting and relational execution share one work meter and read snapshot.
+    @_spi(DatabaseExecution)
     public func executeSQL(
         _ sql: String,
         parameters: [QueryParameter] = [],
@@ -131,6 +132,7 @@ extension DatabaseContext {
     /// - Returns: Array of matching models
     /// - Throws: `SQLParseError` for invalid SQL, `SPARQLFunctionError` for SPARQL errors,
     ///           `CanonicalReadError` for conversion errors, or any underlying fetch errors
+    @_spi(DatabaseExecution)
     public func executeSQL<T: Persistable>(
         _ sql: String,
         as type: T.Type,

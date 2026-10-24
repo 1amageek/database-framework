@@ -4,6 +4,7 @@ import QueryAST
 
 extension DatabaseContext {
     /// Executes one bounded SQL text request and retains typed diagnostics.
+    @_spi(DatabaseExecution)
     public func executeSQLBlock(
         _ sql: String,
         parameters: [QueryParameter] = [],

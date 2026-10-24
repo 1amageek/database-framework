@@ -3,6 +3,7 @@ import DatabaseKit
 
 extension DatabaseContext {
     /// Executes one semantic statement and publishes its outcome after closure.
+    @_spi(DatabaseExecution)
     public func executeStatement(
         _ statement: QueryStatement,
         parameters: [QueryParameter] = [],
@@ -14,6 +15,7 @@ extension DatabaseContext {
     }
 
     /// Executes an immutable block, rolling back the entire request at its first error.
+    @_spi(DatabaseExecution)
     public func executeSQLBlock(
         _ block: SQLBlock,
         parameters: [QueryParameter] = [],

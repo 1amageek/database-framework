@@ -4,7 +4,7 @@ import DatabaseTypes
 import StorageKit
 import TestSupport
 import Testing
-@testable import Database
+@_spi(DatabaseExecution) @testable import Database
 @testable import DatabaseEngine
 
 @Suite("Selected SQL temporal execution")

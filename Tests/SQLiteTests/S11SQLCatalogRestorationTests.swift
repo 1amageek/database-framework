@@ -1,5 +1,5 @@
 #if SQLITE
-import Database
+@_spi(DatabaseExecution) import Database
 import DatabaseKit
 import DatabaseRuntime
 import DatabaseTypes

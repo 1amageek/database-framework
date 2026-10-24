@@ -8,7 +8,7 @@ trait.
 
 - **Stable umbrella import**: `import Database` is unchanged across trait sets
 - **Trait-selected indexes**: Only enabled index modules enter the dependency graph
-- **SQL Query Support**: Execute SQL queries with `executeSQL(_:as:)`
+- **SQL Query Support**: Execute SQL and IR through `QueryConnection.execute`
 - **Graph query support**: `GraphIndexes` adds GraphIndex, OntologyIndex, SPARQL execution, and scalar support
 - **Unified API**: Consistent interface across all index types
 
@@ -60,18 +60,20 @@ deinitialization share one exactly-once shutdown path.
 
 ## SQL Query Execution
 
-The Database module extends `DatabaseContext` with SQL query execution capabilities.
+Open a logical connection from the existing context. SQL text, QueryStatement and SQLBlock share execution, canonical results and original authorization. Connection closure drains its work; the container continues to own the engine.
 
 ### Basic SQL Queries
 
 ```swift
 import Database
 
-let sql = """
+let sql: SQL = """
 SELECT * FROM User
 WHERE age > 18 AND email LIKE '%@example.com'
 """
-let users = try await context.executeSQL(sql, as: User.self)
+let connection = try await context.openConnection()
+defer { await connection.close() }
+let users = try await connection.execute(sql)
 ```
 
 ### Supported SQL Features
@@ -144,13 +146,15 @@ struct Triple {
 }
 
 // Execute hybrid query
-let sql = """
+let sql: SQL = """
 SELECT * FROM User
 WHERE resource IN (
     SPARQL(Triple, 'SELECT ?user WHERE { ?user <urn:predicate:follows> <urn:user:alice> }')
 )
 """
-let users = try await context.executeSQL(sql, as: User.self)
+let connection = try await context.openConnection()
+defer { await connection.close() }
+let users = try await connection.execute(sql)
 // Returns all users who follow alice
 ```
 
@@ -166,7 +170,7 @@ converting the term to text.
 Combine multiple graph patterns with SQL logic:
 
 ```swift
-let sql = """
+let sql: SQL = """
 SELECT * FROM User
 WHERE resource IN (SPARQL(Follow, 'SELECT ?follower WHERE { ?follower <urn:predicate:follows> ?user }'))
   AND resource IN (SPARQL(Interest, 'SELECT ?user WHERE { ?user <urn:predicate:likes> "technology" }'))
@@ -180,7 +184,7 @@ WHERE resource IN (SPARQL(Follow, 'SELECT ?follower WHERE { ?follower <urn:predi
 When SPARQL returns multiple variables, specify which one to use:
 
 ```swift
-let sql = """
+let sql: SQL = """
 SELECT * FROM User
 WHERE resource IN (
     SPARQL(Follow, 'SELECT ?follower ?following WHERE { ?follower <urn:predicate:follows> ?following }', '?follower')
@@ -194,7 +198,7 @@ WHERE resource IN (
 Use SPARQL's expressive pattern matching:
 
 ```swift
-let sql = """
+let sql: SQL = """
 SELECT * FROM Product
 WHERE resource IN (
     SPARQL(Recommendation, 'SELECT ?product WHERE {
@@ -212,26 +216,19 @@ AND price < 100
 
 ### Error Handling
 
-The SPARQL() function provides type-safe error handling:
+SQL failures retain a typed diagnostic and their underlying execution error:
 
 ```swift
+let connection = try await context.openConnection()
+defer { await connection.close() }
 do {
-    let users = try await context.executeSQL(sql, as: User.self)
-} catch let error as SPARQLFunctionError {
-    switch error {
-    case .typeNotFound(let typeName):
-        print("Type '\(typeName)' not found in schema")
-    case .graphIndexNotFound(let typeName):
-        print("Type '\(typeName)' has no graph index")
-    case .multipleVariablesNotSupported:
-        print("Query returns multiple variables - specify which one to use")
-    case .invalidArguments(let message):
-        print("Invalid SPARQL() arguments: \(message)")
-    case .missingVariable(let varName):
-        print("Variable '\(varName)' not found in SPARQL results")
-    case .ambiguousGraphIndexes(let typeName, let candidates):
-        print("Type '\(typeName)' has multiple RDF indexes: \(candidates)")
+    let result = try await connection.execute(sql)
+    for try await row in result.rows {
+        print(row.values)
     }
+} catch let failure as SQLExecutionFailure {
+    print(failure.diagnostic)
+    throw failure
 }
 ```
 
@@ -282,7 +279,7 @@ do {
 
 ```swift
 // Find mutual followers
-let sql = """
+let sql: SQL = """
 SELECT * FROM User
 WHERE resource IN (
     SPARQL(Follow, 'SELECT ?user WHERE {
@@ -293,7 +290,7 @@ WHERE resource IN (
 """
 
 // Find influencers (users with many followers)
-let sql = """
+let sql: SQL = """
 SELECT * FROM User
 WHERE resource IN (
     SPARQL(Follow, 'SELECT ?user WHERE {
@@ -306,7 +303,7 @@ WHERE resource IN (
 
 ```swift
 // Find related articles
-let sql = """
+let sql: SQL = """
 SELECT * FROM Article
 WHERE resource IN (
     SPARQL(ArticleGraph, 'SELECT ?article WHERE {
@@ -321,7 +318,7 @@ AND publishDate > '2024-01-01'
 
 ```swift
 // Find accessible resources
-let sql = """
+let sql: SQL = """
 SELECT * FROM Resource
 WHERE resource IN (
     SPARQL(Permission, 'SELECT ?resource WHERE {
@@ -334,57 +331,29 @@ AND type = 'document'
 
 ## API Reference
 
-### DatabaseContext Extensions
-
-#### executeSQL(_:parameters:options:structuralLimits:)
-
-Executes a SQL query string and returns canonical rows.
+### Common execution
 
 ```swift
-public func executeSQL(
-    _ sql: String,
-    parameters: [QueryParameter] = [],
-    options: ReadExecutionOptions = .default,
-    structuralLimits: QueryStructuralLimits = .default
-) async throws -> QueryResponse
-```
-
-#### executeSQL(_:as:)
-
-Executes a SQL query string and returns typed results.
-
-```swift
-public func executeSQL<T: Persistable>(
-    _ sql: String,
-    as type: T.Type,
-    parameters: [QueryParameter] = [],
-    budget: ExecutionBudget = ExecutionBudget(),
-    structuralLimits: QueryStructuralLimits = .default
-) async throws -> [T]
-```
-
-**Parameters**:
-- `sql`: SQL query string
-- `type`: The Persistable type to fetch
-- `parameters`: Named or positional canonical query values
-- `budget`: Work and intermediate-memory limits for the complete execution
-- `structuralLimits`: Shared parser, binder, and QueryIR structure limits
-
-**Returns**: Array of matching models
-
-**Throws**:
-- `SQLParseError`: Invalid SQL syntax
-- `SPARQLFunctionError`: SPARQL execution errors
-- `CanonicalReadError`: Query conversion errors
-- typed errors from the selected `StorageEngine`
-
-**Example**:
-```swift
-let users = try await context.executeSQL(
-    "SELECT * FROM User WHERE age > 18",
-    as: User.self
+let connection = try await context.openConnection()
+defer { await connection.close() }
+let minimumAge = 18
+let result = try await connection.execute(
+    "SELECT * FROM User WHERE age > \(minimumAge)"
 )
+for try await row in result.rows {
+    print(row.values)
+}
 ```
+
+The same execute family accepts QueryStatement, SQLBlock and explicit QueryInput.
+Interpolation binds parameters. Dynamic SQL uses SQL(text:parameters:). A block
+retains each statement's result and schema in order; command, Boolean, RDF and
+COPY outcomes keep their own kinds. The default is complete execution; explicit
+paging preserves the read-only snapshot contract. No result requires close().
+
+See [QueryExecution](QueryExecution/DESIGN.md) for execution, error, budget and
+lifetime contracts. The language-specific collecting kernels and model-adaptation
+path are DatabaseExecution SPI for framework composition and owner tests.
 
 ### Error Types
 
@@ -486,21 +455,9 @@ struct Follow {
 
 ### 4. Handle Errors Explicitly
 
-Don't use `try?` - handle SPARQL errors explicitly:
-
-```swift
-// ❌ Bad
-let users = try? await context.executeSQL(sql, as: User.self)
-
-// ✅ Good
-do {
-    let users = try await context.executeSQL(sql, as: User.self)
-} catch let error as SPARQLFunctionError {
-    // Handle specific SPARQL errors
-    logger.error("SPARQL query failed: \(error)")
-    throw error
-}
-```
+Propagate typed execution failures and inspect their diagnostic when presenting
+an error. Cancellation, resource exhaustion and transaction failure must not
+be converted into an empty result.
 
 ## See Also
 

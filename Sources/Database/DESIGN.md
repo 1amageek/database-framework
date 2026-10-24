@@ -96,7 +96,7 @@ transaction.
 - SQL parsing, parameter binding, unsupported-statement rejection, and
   execution failures remain typed failures; malformed input is not converted
   to an empty response.
-- `executeSQL` accepts only the statements supported by its public contract.
+- `executeSQL` accepts only the statements supported by its DatabaseExecution SPI contract.
   A non-SELECT statement is rejected before execution.
 - A SQL SPARQL function is detected and rewritten before the parent plan is
   executed. The rewriter receives the exact parent read transaction and work
@@ -263,7 +263,7 @@ this module's design.
 
 ### S12 Semantic Entry Contract
 
-The proposed semantic overloads are
+The DatabaseExecution SPI semantic kernels are
 `executeStatement(_:parameters:options:)` for an existing `QueryStatement`
 and `executeSQLBlock(_:parameters:options:)` for Kit's `SQLBlock`. The first
 uses the same block execution path with one statement and returns that
@@ -328,8 +328,8 @@ close it or introduce a new deferral.
 
 The current `executeSQL` implementation parses one statement, binds values,
 and rejects non-SELECT statements. That read-only API remains read-only.
-S01–S17 add `executeStatement` and `executeSQLBlock` public entry points;
-names here describe accepted proposed APIs, not existing declarations.
+The `executeStatement` and `executeSQLBlock` kernels remain DatabaseExecution
+SPI behind the common [QueryConnection](QueryExecution/DESIGN.md) surface.
 Their DatabaseKit input/output types and wire shapes follow the linked SQL
 design. Database owns parsing and admission, not execution-policy decisions.
 
@@ -429,7 +429,7 @@ tests own provenance and inlining regression witnesses.
 
 ### S11 SQL entry and prepared search path
 
-**Implementation contract; not completion evidence.** Both public `executeSQL`
+**Implementation contract; not completion evidence.** Both DatabaseExecution SPI `executeSQL`
 overloads and `prepareSQLSelectForCanonicalExecution` accept
 `searchPath: SQLSearchPath = .default`. SQL entry captures one Read-owned
 immutable reference resolution inside `withDataOperation` (which enters

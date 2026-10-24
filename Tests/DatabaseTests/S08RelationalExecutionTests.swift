@@ -5,7 +5,7 @@ import StorageKit
 import Synchronization
 import TestSupport
 import Testing
-@testable import Database
+@_spi(DatabaseExecution) @testable import Database
 @_spi(Testing) @_spi(DatabaseExecution) @testable import DatabaseEngine
 
 @Suite("S08 selected relational SQL", .timeLimit(.minutes(2)))

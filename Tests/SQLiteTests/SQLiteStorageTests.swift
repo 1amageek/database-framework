@@ -1,7 +1,7 @@
 #if SQLITE
 import Testing
 import Foundation
-import Database
+@_spi(DatabaseExecution) import Database
 import DatabaseRuntime
 import DatabaseTypes
 import DatabaseWire

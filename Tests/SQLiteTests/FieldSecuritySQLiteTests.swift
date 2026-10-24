@@ -1,5 +1,5 @@
 #if SQLITE
-import Database
+@_spi(DatabaseExecution) import Database
 @_spi(Testing) import DatabaseEngine
 import DatabaseRuntime
 import SQLiteStorage

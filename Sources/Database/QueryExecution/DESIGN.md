@@ -8,6 +8,13 @@ and SQLBlock use one execute family and Kit's canonical result algebra.
 
 ## Responsibilities and Boundaries
 
+QueryConnection.execute is the general public execution surface. Language-specific
+DatabaseContext collecting kernels (executeSQL, executeStatement and
+executeSQLBlock) remain DatabaseExecution SPI for execution composition and owner
+behavior tests. They are not alternate application execution interfaces. Their
+working SQL, model-adaptation and transaction behavior is retained under that
+explicit boundary.
+
 A connection attenuates one existing DatabaseContext; it never substitutes a
 principal, owns the container's engine, or makes a successful open into execution
 authority. The Database umbrella reexports the Wire-owned retained carriers so
