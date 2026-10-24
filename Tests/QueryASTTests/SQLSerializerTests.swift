@@ -22,9 +22,8 @@ struct SQLSerializerTests {
 
     @Test("Identifiers quote exact semantic names and embedded quotes")
     func identifiers() throws {
-        let query = SQLQueryBuilder(from: TableRef(schema: "Mixed Schema", table: "a\"b", alias: "t"))
+        let query = TableRef(schema: "Mixed Schema", table: "a\"b", alias: "t")
             .select(ProjectionItem(.column(ColumnRef(table: "t", column: "a\"b")), alias: "Answer"))
-            .buildAST()
         let sql = try serializer.serialize(query)
         #expect(sql == "SELECT \"t\".\"a\"\"b\" AS \"Answer\" FROM \"Mixed Schema\".\"a\"\"b\" AS \"t\"")
         #expect(try SQLParser().parseSelect(sql) == query)

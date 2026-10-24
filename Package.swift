@@ -102,14 +102,14 @@ let package = Package(
         .trait(name: "Relationships"),
     ],
     dependencies: [
-        .package(url: "https://github.com/1amageek/database-client.git", revision: "20053e44fdbc9083ded4a7daa28c04178fb26d92", traits: multiBaseTraits),
+        .package(url: "https://github.com/1amageek/database-client.git", revision: "f3d06e907206371be3a1dc35c73646de09a00568", traits: multiBaseTraits),
         .package(
             url: "https://github.com/1amageek/database-types.git",
             from: "26.1021.0"
         ),
         .package(
             url: "https://github.com/1amageek/database-kit.git",
-            revision: "6eb05bd06a3a3174310343672717e22bd2b9d732",
+            revision: "678b70daee9ef9d72966f147d6e6bb4110a7da95",
             traits: multiBaseTraits
         ),
         .package(

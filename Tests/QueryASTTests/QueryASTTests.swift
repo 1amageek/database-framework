@@ -328,17 +328,16 @@ struct QueryASTTests {
         #expect(ranged.toSPARQL() == "<http://example.org/forward>{2,4}")
     }
 
-    // MARK: - SQL Query Builder Tests
+    // MARK: - SQL Construction Tests
 
-    @Test("SQLQueryBuilder basic query")
-    func testSQLQueryBuilder() throws {
-        // Note: We can't test actual execution without a Persistable model
-        // This test verifies the builder API compiles correctly
-        let ast = SelectQuery(projection: [.wildcard()],
-            source: .table(TableRef("users")),
-            filter: .greaterThan(.column(ColumnRef(column: "age")), .literal(.int(18))),
-            orderBy: [SortKey(.column(ColumnRef(column: "name")), direction: .ascending)],
-            pagination: QueryPagination(limit: .count(.fixed(10), withTies: false)))
+    @Test("Canonical fluent selection preserves executable SQL meaning")
+    func testFluentSelection() throws {
+        let ast = TableRef("users").selectAll().where("age", .greaterThan, Literal.int(18))
+            .orderBy("name").limit(10)
+        let parsed = try SQLParser().parseSelect(ast.toSQL())
+        #expect(parsed.filter == .greaterThan(.col("age"), .literal(.queryValue(
+            .primitive(.int64(18)), type: .sql(.bigint)))))
+        #expect(parsed.replacing(filter: ast.filter) == ast)
 
         #expect(ast.pagination.limit == .count(.fixed(10), withTies: false))
         #expect(ast.orderBy?.count == 1)

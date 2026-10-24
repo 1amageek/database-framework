@@ -87,10 +87,10 @@ struct SQLiteStorageTests {
             #expect(result.rows.isEmpty)
             #expect(result.columns == empty.columns)
         }
-        let query = SQLQueryBuilder(from: "SQLiteStoredItem")
+        let query = TableRef("SQLiteStoredItem")
             .select(ProjectionItem(.aggregate(.max(.column(ColumnRef("age"))))))
             .where("age", .greaterThanOrEqual, .int(0))
-            .buildAST()
+
         let indexed = query.replacing(accessPath: .index(IndexScanSource(indexName: "SQLiteStoredItem_age", indexType: .ordered)))
             .replacing(pagination: QueryPagination(limit: .count(.fixed(1), withTies: false)))
         let result = try await context.query(indexed)
@@ -206,14 +206,14 @@ struct SQLiteStorageTests {
         #expect(literals.rows[0].values == expected)
         #expect(literals.columns == selected.columns)
 
-        let literalBuilder = SQLQueryBuilder(source: literalQuery.source).select(
+        let serializationQuery = literalQuery.source.select(
             ProjectionItem(.literal(.queryValue(expected[0], type: types[0])), alias: names[0]),
             ProjectionItem(.literal(.queryValue(expected[1], type: types[1])), alias: names[1]),
             ProjectionItem(.literal(.queryValue(expected[2], type: types[2])), alias: names[2]),
             ProjectionItem(.literal(.queryValue(expected[3], type: types[3])), alias: names[3]),
             ProjectionItem(.literal(.queryValue(expected[4], type: types[4])), alias: names[4])
         )
-        let emitted = try await context.executeSQL(literalBuilder.toSQL())
+        let emitted = try await context.executeSQL(serializationQuery.toSQL())
         #expect(emitted.columns == literals.columns)
         #expect(emitted.rows.map(\.values) == literals.rows.map(\.values))
 
@@ -268,10 +268,10 @@ struct SQLiteStorageTests {
         let context = container.testBaseContext()
         try context.insert(SQLiteStoredItem(id: "syntax", name: "quoted", age: 7))
         try await context.save()
-        let builder = SQLQueryBuilder(from: "SQLiteStoredItem")
+        let query = TableRef("SQLiteStoredItem")
             .select("id", "name").where("age", .greaterThanOrEqual, .int(7))
-        let direct = try await context.query(builder.buildAST())
-        let emitted = try await context.executeSQL(builder.toSQL())
+        let direct = try await context.query(query)
+        let emitted = try await context.executeSQL(query.toSQL())
         #expect(emitted.columns == direct.columns)
         #expect(emitted.rows.map(\.values) == direct.rows.map(\.values))
         #expect(emitted.rows.count == 1)
@@ -323,10 +323,10 @@ struct SQLiteStorageTests {
             .timestamp(withTimeZone: false, precision: 3),
             .timestamp(withTimeZone: true, precision: 6),
         ] {
-            let nullBuilder = SQLQueryBuilder(source: .values([[]]))
+            let nullQuery = DataSource.values([[]])
                 .select(ProjectionItem(.cast(.null, targetType: type), alias: "clock"))
-            let directNull = try await context.query(nullBuilder.buildAST())
-            let emittedNull = try await context.executeSQL(nullBuilder.toSQL())
+            let directNull = try await context.query(nullQuery)
+            let emittedNull = try await context.executeSQL(nullQuery.toSQL())
             #expect(directNull.columns == emittedNull.columns)
             #expect(directNull.rows.map(\.values) == emittedNull.rows.map(\.values))
             #expect(emittedNull.columns.map(\.type) == [.sql(type)])

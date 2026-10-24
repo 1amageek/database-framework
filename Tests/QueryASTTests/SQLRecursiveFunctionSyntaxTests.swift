@@ -103,7 +103,7 @@ struct SQLRecursiveFunctionSyntaxTests {
     func fluentCarriage() throws {
         let query = try roundTrip("WITH RECURSIVE t(n) AS (VALUES(1) UNION ALL SELECT n FROM t) SEARCH DEPTH FIRST BY n SET seq CYCLE n SET c USING p SELECT * FROM t")
         let cte = try #require(query.subqueries?.first)
-        let built = SQLQueryBuilder(from: "t").with(cte).withRecursive().buildAST()
+        let built = TableRef("t").selectAll().with(cte).withRecursive()
         #expect(built == query)
         #expect(try SQLParser().parseSelect(SQLSerializer().serialize(built)) == built)
     }

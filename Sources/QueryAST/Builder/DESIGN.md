@@ -1,20 +1,19 @@
 # Builder
 
-NDB24's proposed [Kit Fluent contract](../../../../database-kit/Sources/DatabaseKit/Query/Fluent/DESIGN.md)
-owns the future migration of pure SQLQueryBuilder construction and its callers.
-This file still describes the current implementation. Parsing and canonical
-SQL serialization remain QueryAST responsibilities after that migration.
+The [Kit Fluent contract](../../../../database-kit/Sources/DatabaseKit/Query/Fluent/DESIGN.md#canonical-sql-construction)
+owns canonical SQL query construction. This component owns its existing text
+adaptation and SPARQL/pattern construction boundaries.
 
 ## Purpose and Scope
 
-Builder owns fluent SQL/SPARQL semantic construction and the canonical SQL
+Builder owns SPARQL/pattern semantic construction and the canonical SQL
 serializer. Parent: [QueryAST](../DESIGN.md). Children: none.
 [SQLSerializer](SQLSerializer.swift) owns executable SQL emission;
-[SQLQueryBuilder](SQLQueryBuilder.swift) delegates to that owner.
+SelectQuery.toSQL delegates to that owner without an intermediate builder.
 
 ## Responsibilities and Boundaries
 
-Construct DatabaseKit semantic values and emit supported SQL preserving their
+Construct SPARQL/pattern semantic values and emit supported SQL preserving their
 meaning. The builder does not infer schema types, plan access, execute SQL,
 or own DatabaseKit semantics. SPARQL emission remains its explicit contract.
 
@@ -25,6 +24,7 @@ or own DatabaseKit semantics. SPARQL emission remains its explicit contract.
 | [QueryAST](../DESIGN.md) | parent | Syntax adaptation | Owns module composition. | One serialization owner. |
 | [Parser](../Parser/DESIGN.md) | coordinates with | Strict emitted SQL acceptance | Validates round trips. | Compare semantic structure, not formatting equality. |
 | [DatabaseKit SQL](../../../../database-kit/Sources/DatabaseKit/Query/SQL/DESIGN.md) | depends on | Types, statement/block and profile | Defines emit-able semantic constructs. | Non-SQL product values require explicit unsupported result. |
+| [Kit Fluent](../../../../database-kit/Sources/DatabaseKit/Query/Fluent/DESIGN.md#canonical-sql-construction) | depends on | Canonical SelectQuery construction | Owns pure SQL clauses and typed literal conversion | No shadow SQL builder state or buildAST step |
 | [Database](../../Database/DESIGN.md) | used by | Built statements and serialized SQL | Consumes equivalent semantic inputs. | No generation-time execution or authorization decisions. |
 
 ## Architecture
@@ -56,7 +56,7 @@ fluent input -> DatabaseKit semantic value -> structural validation
 
 This component is the sole owner of executable SQL text, including SQL/PGQ
 MATCH/GRAPH_TABLE/property-graph DDL and type/identifier escaping formerly in
-Kit. SQLQueryBuilder.toSQL delegates to this serializer. A public pure
+Kit. SelectQuery.toSQL delegates to this serializer. A public pure
 SQLSerializing protocol declares the required root serialization operations;
 the immutable SQLSerializer implementation accepts existing QueryStatement/SelectQuery/Expression/
 Literal/DataType roots as required by callers; all roots share one bounded
@@ -576,7 +576,7 @@ unrelated S07 intrinsic constant capability and S10 public SRF gates remain.
 canonical S09 declarations and [Parser's shared grammar](../Parser/DESIGN.md#s09-grouping-aggregate-and-window-grammar).
 One SQLTextWriter emits every SQL aggregate through SQLAggregateCall; retained
 SPARQL aggregate variants and the GROUP_CONCAT extension keep their language
-meaning. Existing SQLQueryBuilder aggregate conveniences migrate to .sql.
+meaning. Kit aggregate conveniences construct the canonical .sql case.
 
 GroupingElement emission preserves ordered grouping expressions, empty grouping
 sets, ROLLUP/CUBE compound units and nested GROUPING SETS without expansion or

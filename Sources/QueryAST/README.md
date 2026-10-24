@@ -19,7 +19,7 @@ QueryAST provides the following capabilities:
 ```text
 SQL text -> Parser/SQLParser -> DatabaseKit semantic values
                                       ^              |
-Builder/SQLQueryBuilder ---------------+              v
+DatabaseKit fluent queries -----------+              v
                                   Builder/SQLSerializer
                                       -> bounded SQLTextWriter -> owned SQL text
 
@@ -44,8 +44,8 @@ UTF-8 output is checked against `maximumRetainedBytes` before growth.
 |---|---|
 | `SQLParser.parseSelect(_:)` | `SelectQuery` |
 | `SQLParser.parse(_:)` / `parseStatements(_:)` | `QueryStatement` / `[QueryStatement]` |
-| `SQLQueryBuilder.buildAST()` | `SelectQuery` |
-| `SQLQueryBuilder.toSQL()` | Delegates to `SQLSerializer().serialize(buildAST())` |
+| `TableRef(...).select(...)` | Canonical immutable `SelectQuery` from Kit |
+| `SelectQuery.toSQL()` | Delegates to `SQLSerializer().serialize(self)` |
 | `SQLSerializer.serialize(_:)` | SQL for statements, SELECT, expressions, literals, types, sources, aggregates and SQL/PGQ roots |
 
 All serialization roots throw `SQLSerializationError` for unsupported
@@ -144,8 +144,8 @@ let serializer = SQLSerializer()
 print(try serializer.serialize(query))
 
 // Fluent construction uses the same serializer.
-let builder = SQLQueryBuilder(from: "users").select("name")
-print(try builder.toSQL())
+let fluentQuery = TableRef("users").select("name")
+print(try fluentQuery.toSQL())
 ```
 
 ### Parsing SPARQL Queries

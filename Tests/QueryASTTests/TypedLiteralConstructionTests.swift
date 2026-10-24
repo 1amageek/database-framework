@@ -2,13 +2,12 @@ import DatabaseTypes
 import Testing
 @testable import QueryAST
 
-@Suite("Typed literal builders")
-struct TypedLiteralBuilderTests {
+@Suite("Typed literal construction")
+struct TypedLiteralConstructionTests {
     @Test("SQL builder preserves unsigned integer range")
     func sqlBuilderPreservesUnsignedRange() throws {
-        let query = try SQLQueryBuilder(from: "events")
+        let query = try TableRef("events").selectAll()
             .where("sequence", equals: UInt64.max)
-            .buildAST()
 
         #expect(
             query.filter
@@ -21,9 +20,8 @@ struct TypedLiteralBuilderTests {
 
     @Test("SQL IN accepts only one compile-time element type")
     func sqlInConvertsHomogeneousValues() throws {
-        let query = try SQLQueryBuilder(from: "events")
+        let query = try TableRef("events").selectAll()
             .whereIn("priority", [Int16.min, Int16.max])
-            .buildAST()
 
         #expect(
             query.filter
@@ -55,7 +53,7 @@ struct TypedLiteralBuilderTests {
     @Test("unsupported database values fail before query construction")
     func unsupportedFieldValueFails() {
         #expect(throws: QueryLiteralConversionError.unsupportedFieldValue) {
-            try SQLQueryBuilder(from: "events")
+            try TableRef("events").selectAll()
                 .where("payload", equals: FieldValue.object(FieldObject()))
         }
     }

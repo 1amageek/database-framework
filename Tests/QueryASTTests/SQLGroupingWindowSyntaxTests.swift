@@ -174,13 +174,12 @@ struct SQLGroupingWindowSyntaxTests {
 
     @Test("S09-SYN06 fluent grouping and aggregate calls retain their canonical query metadata")
     func fluentConstruction() throws {
-        let query = SQLQueryBuilder(from: "t").groupBy(elements: [.rollup([[.col("a")]])])
+        let query = TableRef("t").selectAll().groupBy(elements: [.rollup([[.col("a")]])])
             .window(NamedWindow(name: "w", specification: WindowSpecification(partitionBy: [.col("a")])))
-            .buildAST()
         #expect(query.groupBy == [.rollup([[.col("a")]])])
         #expect(query.windows.count == 1)
         #expect(try SQLParser().parseSelect(SQLSerializer().serialize(query)) == query)
-        let global = SQLQueryBuilder(from: "t").groupBy(elements: []).buildAST()
+        let global = TableRef("t").selectAll().groupBy(elements: [])
         #expect(try SQLSerializer().serialize(global).contains("GROUP BY ()"))
         #expect(try SQLParser().parseSelect(SQLSerializer().serialize(global)).groupBy != nil)
     }

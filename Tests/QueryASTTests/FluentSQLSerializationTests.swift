@@ -4,15 +4,15 @@ import TestHeartbeat
 import Testing
 @testable import QueryAST
 
-@Suite("SQL builder query literals", .heartbeat)
-struct SQLQueryBuilderLiteralTests {
+@Suite("Fluent SQL query literals", .heartbeat)
+struct FluentSQLSerializationTests {
     @Test("Primitive builder literals delegate to the canonical width-preserving serializer")
     func primitiveQueryValuesDelegate() throws {
-        let builder = SQLQueryBuilder(from: "items").select(
+        let builder = TableRef("items").select(
             ProjectionItem(.literal(.queryValue(.primitive(.int64(42)))), alias: "answer")
         )
         #expect(try builder.toSQL() == "SELECT CAST(42 AS BIGINT) AS \"answer\" FROM \"items\"")
-        #expect(try builder.toSQL() == SQLSerializer().serialize(builder.buildAST()))
+        #expect(try builder.toSQL() == SQLSerializer().serialize(builder))
     }
 
     @Test("Rich query literals serialize through projections, filters, sources and CTEs")
@@ -28,10 +28,10 @@ struct SQLQueryBuilderLiteralTests {
         ]
         for value in values {
             let literal = Literal.queryValue(value)
-            let rich = SQLQueryBuilder(from: "items").select(ProjectionItem(.literal(literal), alias: "value"))
-            let nested = SQLQueryBuilder(from: "items").where(.isNotNull(.literal(literal)))
-            let source = SQLQueryBuilder(source: .aliased(.subquery(rich.buildAST()), name: "nested"))
-            let cte = SQLQueryBuilder(from: "nested").with("nested", as: rich.buildAST())
+            let rich = TableRef("items").select(ProjectionItem(.literal(literal), alias: "value"))
+            let nested = TableRef("items").selectAll().where(.isNotNull(.literal(literal)))
+            let source = DataSource.aliased(.subquery(rich), name: "nested").selectAll()
+            let cte = TableRef("nested").selectAll().with("nested", as: rich)
             for builder in [rich, nested, source, cte] {
                 let text = try builder.toSQL()
                 let parsed = try SQLParser().parseSelect(text)

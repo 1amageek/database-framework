@@ -36,7 +36,7 @@ no storage or host authority and does not interpret SQL schema as Directory.
 ```text
 SQL text -> Parser -> DatabaseKit semantic statement/block
                               ^
-fluent Builder ---------------|
+Kit fluent construction -----|
                               |
                               v
                    canonical SQL serializer -> SQL text

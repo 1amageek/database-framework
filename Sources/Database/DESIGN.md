@@ -116,7 +116,7 @@ transaction.
 Static schema entity and field names are exact SQL logical names, equivalent
 to quoted identifiers. The parser folds unquoted ASCII names and preserves
 quoted names; runtime resolution still uses exact admitted registration keys.
-SQLQueryBuilder inputs are exact names and canonical serialization quotes
+Kit fluent query inputs are exact names and canonical serialization quotes
 those names. Existing camelCase SQL fixtures must quote their registered names
 rather than renaming registries, adding case-insensitive lookup or silently
 falling back after a missing name. Directory/Partition, authorization and
