@@ -71,11 +71,16 @@ jobs:
           path: /tmp/database-framework-unit-results
           if-no-files-found: error
 
-  benchmark-build:
-    name: Benchmark verification
+  benchmark-lanes:
+    name: Benchmark (${{ matrix.lane }})
     runs-on: xcode-27
-    timeout-minutes: 60
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [bitmap, fulltext, package, access]
     env:
+      XCODE_BENCHMARK_BUILD_TIMEOUT_SECONDS: 1800
       TOOLCHAINS: org.swift.64202608141a
       SWIFT_SNAPSHOT: swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-08-14-a
       SWIFT_SNAPSHOT_URL: https://download.swift.org/swift-6.4.x-branch/xcode/swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-08-14-a/swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-08-14-a-osx.pkg
@@ -116,16 +121,17 @@ jobs:
         run: scripts/test-benchmark-median-validator
 
       - name: Run bitmap regression benchmark
+        if: ${{ matrix.lane == 'bitmap' }}
         working-directory: database-framework
         run: scripts/xcode-benchmark-harness bitmap --result-directory /tmp/database-framework-optimization-benchmarks/bitmap
 
       - name: Run full-text regression benchmark
-        if: ${{ !cancelled() }}
+        if: ${{ matrix.lane == 'fulltext' }}
         working-directory: database-framework
         run: scripts/xcode-benchmark-harness fulltext --result-directory /tmp/database-framework-optimization-benchmarks/fulltext
 
       - name: Build benchmark package without executing workloads
-        if: ${{ !cancelled() }}
+        if: ${{ matrix.lane == 'package' }}
         working-directory: database-framework/Benchmarks
         run: |
           result_directory=/tmp/database-framework-benchmark-build
@@ -136,7 +142,7 @@ jobs:
           resolved_checksum_before="$(shasum -a 256 Package.resolved)"
           mkdir -p "$result_directory" "$source_packages"
           set -o pipefail
-          perl -e 'alarm shift; exec @ARGV' 900 \
+          perl -e 'alarm shift; exec @ARGV' 1800 \
             env TOOLCHAINS=com.apple.dt.toolchain.XcodeDefault \
             xcodebuild build-for-testing \
               -scheme database-framework-benchmarks-Package \
@@ -157,7 +163,7 @@ jobs:
           grep -F "SWIFT_EXEC = $pinned_swiftc" "$log_path"
 
       - name: Validate benchmark build result
-        if: ${{ !cancelled() }}
+        if: ${{ matrix.lane == 'package' }}
         run: |
           summary="$(xcrun xcresulttool get build-results \
             --path /tmp/database-framework-benchmark-build/FrameworkPerformanceBenchmarks.xcresult)"
@@ -167,12 +173,12 @@ jobs:
           test "$(printf '%s' "$summary" | plutil -extract analyzerWarningCount raw -)" = 0
 
       - name: Build independent access measurement executable
-        if: ${{ !cancelled() }}
+        if: ${{ matrix.lane == 'access' }}
         working-directory: database-framework
         run: |
           set -o pipefail
           build_log="$RUNNER_TEMP/database-framework-access-build.log"
-          perl -e 'alarm shift; exec @ARGV' 900 \
+          perl -e 'alarm shift; exec @ARGV' 1800 \
             xcrun --toolchain "$TOOLCHAINS" swift build \
               --package-path Benchmarks/Access \
               --scratch-path "$RUNNER_TEMP/database-framework-access-build" \
@@ -196,11 +202,26 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: benchmark-build-xcresult
+          name: benchmark-${{ matrix.lane }}-evidence
           path: |
-            /tmp/database-framework-benchmark-build
+            /tmp/database-framework-benchmark-build/FrameworkPerformanceBenchmarks.xcresult
+            /tmp/database-framework-benchmark-build/FrameworkPerformanceBenchmarks.log
             /tmp/database-framework-optimization-benchmarks
+            ${{ runner.temp }}/database-framework-access-build.log
+            ${{ runner.temp }}/database-framework-access-quick.log
           if-no-files-found: error
+
+  benchmark-build:
+    name: Benchmark verification
+    if: ${{ always() }}
+    needs: benchmark-lanes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every independent benchmark lane
+        env:
+          BENCHMARK_RESULT: ${{ needs.benchmark-lanes.result }}
+        run: test "$BENCHMARK_RESULT" = success
 
   docker-backends:
     name: ${{ matrix.name }}

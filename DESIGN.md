@@ -355,6 +355,28 @@ evidence. CI keeps exact test-count contracts and committed benchmark dependency
 locks. The bitmap/full-text lane retains its August 14 compiler and reviewed
 median bounds; the unit/parity lane retains its separate September 4 compiler.
 
+The CI workflow composes independent Bitmap, FullText, general benchmark-build,
+and Access jobs. Each job owns one cold package build and its evidence; a failed
+or timed-out build cannot consume a later package's measurement lifecycle.
+`fail-fast: false` preserves each independent result. The existing
+`Benchmark verification` status is an always-evaluated aggregate that succeeds
+only when every matrix job succeeds, preserving the external check contract.
+
+```text
+Bitmap ────────────────────┐
+FullText ──────────────────┤
+General benchmark build ───┼─> Benchmark verification (all must succeed)
+Access build + quick run ──┘
+```
+
+CI owns 1,800-second build guards and a 45-minute outer job limit. The observed
+1,200-second expiry occurred while Bitmap's last test target was compiling,
+after continued compiler progress; it was not a runtime median failure.
+These build/lifecycle operating bounds do not change any request budget,
+reviewed latency maximum, expected test count, or warning gate. Runtime tests
+retain their existing separate timeout owners. Changing a lane's compiler,
+SDK, package graph, executable or measurement inputs invalidates its evidence.
+
 
 ### AS25 integrated acceptance (2026-10-25)
 
