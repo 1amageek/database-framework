@@ -9,7 +9,7 @@ actor SQLCTECache {
     private let reservation: DatabaseIntermediateReservation
     private var factory: (@Sendable () async throws -> any SQLRelationProducer)?
     private var producer: (any SQLRelationProducer)?
-    private var prefix: [CanonicalRelation] = []
+    private var prefix: [SQLRelationRow] = []
     private var capacity = 0
     private var exhausted = false
     private var closed = false
@@ -33,7 +33,7 @@ actor SQLCTECache {
         })
     }
 
-    private func row(at index: Int) async throws -> CanonicalRelation? {
+    private func row(at index: Int) async throws -> SQLRelationRow? {
         try await gate.acquire(meter: meter)
         do {
             try meter.checkpoint(at: .bindingCandidate)
@@ -55,10 +55,10 @@ actor SQLCTECache {
                 await gate.release()
                 return nil
             }
-            guard row.schema == schema, row.rows.count == 1, row.rows.workMeter === meter else {
+            guard row.schema == schema, row.workMeter === meter else {
                 throw CanonicalReadError.unsupportedSelectQuery("A CTE producer changed its schema")
             }
-            let layout = try DatabaseRetainedArrayLayout.forElement(CanonicalRelation.self)
+            let layout = try DatabaseRetainedArrayLayout.forElement(SQLRelationRow.self)
             let growth = try layout.growth(from: capacity, toFit: prefix.count + 1)
             try reservation.reserveAdditional(bytes: growth.additionalByteCount, at: .bindingCandidate)
             if growth.capacity > capacity {

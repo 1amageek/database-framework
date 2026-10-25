@@ -18,17 +18,17 @@ struct SQLRecursiveGeneratedColumns: Sendable {
     let search: Search?
     let cycle: Cycle?
 
-    func project(_ input: CanonicalRelation, seed: Bool, userColumnCount: Int,
+    func project(_ input: SQLRelationRow, seed: Bool, userColumnCount: Int,
         schema: CanonicalRelationSchema, environment: SQLTemporalEnvironment?,
-        meter: DatabaseWorkMeter, limits: QueryValueLimits) throws -> CanonicalRelation {
+        meter: DatabaseWorkMeter, limits: QueryValueLimits) throws -> SQLRelationRow {
         let hiddenCount = seed ? 0 : (search == nil ? 0 : 1) + (cycle == nil ? 0 : 1)
-        guard input.rows.count == 1, input.rows[0].values.count == userColumnCount + hiddenCount else {
+        guard input.value.values.count == userColumnCount + hiddenCount else {
             throw mismatch("recursive generated input arity")
         }
-        let row = input.rows[0]
+        let row = input.value
         var values = try SQLArrayBuffer<QueryValue>(count: schema.layout.slots.count, meter: meter)
         var leases = try SQLArrayBuffer<DatabaseQueryPayloadLease>(meter: meter)
-        try leases.append(input.rows.payloadLease)
+        try leases.append(input.payloadLease)
         for lease in row.payloadLeases { try leases.append(lease) }
         for slot in 0..<userColumnCount { try values.append(row.values[slot]) }
         var hidden = userColumnCount
@@ -85,7 +85,7 @@ struct SQLRecursiveGeneratedColumns: Sendable {
         let leaseReservation = leases.reservation
         try leases.append(DatabaseQueryPayloadLease(retaining: leaseReservation))
         let ownedLeases = leases.finish()
-        return try sqlSingleRow(CanonicalSourceRow(values: owned.values, layout: schema.layout,
+        return try SQLRelationRow.producing(CanonicalSourceRow(values: owned.values, layout: schema.layout,
             payloadLeases: ownedLeases.values), schema: schema, meter: meter)
     }
 

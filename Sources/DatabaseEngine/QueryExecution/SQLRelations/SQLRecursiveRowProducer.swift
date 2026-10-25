@@ -13,7 +13,7 @@ actor SQLRecursiveRowProducer: SQLRelationProducer {
     private var seedFactory: (@Sendable () async throws -> any SQLRelationProducer)?
     private var stepFactory: (@Sendable (SQLRecursiveFrontier) async throws -> any SQLRelationProducer)?
     private var child: (any SQLRelationProducer)?
-    private var frontier: DatabaseRetainedArrayBuilder<CanonicalRelation>?
+    private var frontier: DatabaseRetainedArrayBuilder<SQLRelationRow>?
     private var visited: CanonicalSQLIdentitySet?
     private var seed = true
     private var closed = false
@@ -30,11 +30,11 @@ actor SQLRecursiveRowProducer: SQLRelationProducer {
         self.seedFactory = seedFactory; self.stepFactory = stepFactory
         self.reservation = try meter.reserveIntermediate(bytes: 512, at: .bindingCandidate)
         self.frontier = try DatabaseRetainedArrayBuilder(workMeter: meter, stage: .bindingCandidate,
-            layout: DatabaseRetainedArrayLayout.forElement(CanonicalRelation.self))
+            layout: DatabaseRetainedArrayLayout.forElement(SQLRelationRow.self))
         self.visited = unionAll ? nil : try CanonicalSQLIdentitySet(workMeter: meter, stage: .deduplication)
     }
 
-    func next() async throws -> CanonicalRelation? {
+    func next() async throws -> SQLRelationRow? {
         try await gate.acquire(meter: meter)
         do {
             await Task.yield()
@@ -58,7 +58,7 @@ actor SQLRecursiveRowProducer: SQLRelationProducer {
         }
     }
 
-    private func advance() async throws -> CanonicalRelation? {
+    private func advance() async throws -> SQLRelationRow? {
         guard !closed else { return nil }
         if child == nil {
             guard seed, let factory = seedFactory else {
@@ -70,21 +70,21 @@ actor SQLRecursiveRowProducer: SQLRelationProducer {
         while let child {
             try meter.consume(at: .bindingCandidate)
             if let input = try await child.next() {
-                guard input.rows.workMeter === meter else { throw DatabaseIntermediateReservationError.workMeterMismatch }
-                let row: CanonicalRelation
+                guard input.workMeter === meter else { throw DatabaseIntermediateReservationError.workMeterMismatch }
+                let row: SQLRelationRow
                 if let generated {
                     row = try generated.project(input, seed: seed, userColumnCount: userColumnCount,
                         schema: schema, environment: environment, meter: meter, limits: limits)
                 } else {
-                    guard input.rows.count == 1, input.rows[0].values.count == userColumnCount else {
+                    guard input.value.values.count == userColumnCount else {
                         throw CanonicalReadError.unsupportedSelectQuery("A recursive child changed its selected arity")
                     }
-                    row = try sqlSingleRow(CanonicalSourceRow(values: input.rows[0].values, layout: schema.layout,
-                        payloadLeases: input.rows[0].payloadLeases), schema: schema,
-                        retaining: input.rows.payloadLease, meter: meter)
+                    row = try SQLRelationRow.producing(CanonicalSourceRow(values: input.value.values, layout: schema.layout,
+                        payloadLeases: input.value.payloadLeases), schema: schema,
+                        retaining: input.payloadLease, meter: meter)
                 }
-                guard try accept(row.rows[0]) else { continue }
-                if try generated?.canExpand(row.rows[0], userColumnCount: userColumnCount,
+                guard try accept(row.value) else { continue }
+                if try generated?.canExpand(row.value, userColumnCount: userColumnCount,
                     environment: environment, meter: meter) ?? true {
                     guard frontier != nil else {
                         throw CanonicalReadError.unsupportedSelectQuery("A recursive frontier has closed")
@@ -104,7 +104,7 @@ actor SQLRecursiveRowProducer: SQLRelationProducer {
             guard !rows.isEmpty else { try await finish(); return nil }
             try meter.consume(at: .bindingCandidate)
             frontier = try DatabaseRetainedArrayBuilder(workMeter: meter, stage: .bindingCandidate,
-                layout: DatabaseRetainedArrayLayout.forElement(CanonicalRelation.self))
+                layout: DatabaseRetainedArrayLayout.forElement(SQLRelationRow.self))
             guard let factory = stepFactory else {
                 throw CanonicalReadError.unsupportedSelectQuery("A recursive step has no producer")
             }

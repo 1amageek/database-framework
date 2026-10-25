@@ -85,7 +85,7 @@ struct S10TableFunctionTests {
             let plan = try selected("generate_series", values: values, types: [.integer, .integer, .integer], ordinal: true)
             let source = try producer(plan, values, meter: meter)
             for (index, value) in expected.enumerated() {
-                #expect(try await source.next()?.rows[0].values == [value, .primitive(.int64(Int64(index + 1)))])
+                #expect(try await source.next()?.value.values == [value, .primitive(.int64(Int64(index + 1)))])
             }
             #expect(try await source.next() == nil)
             try await source.close()
@@ -95,7 +95,7 @@ struct S10TableFunctionTests {
             let values: [QueryValue] = [.primitive(.int64(value)), .primitive(.int64(value)), .primitive(.int64(value < 0 ? -1 : 1))]
             let plan = try selected("generate_series", values: values, types: [.bigint, .bigint, .bigint])
             let source = try producer(plan, values, meter: meter())
-            #expect(try await source.next()?.rows[0].values == [values[0]])
+            #expect(try await source.next()?.value.values == [values[0]])
             #expect(try await source.next() == nil)
             try await source.close()
         }
@@ -130,13 +130,13 @@ struct S10TableFunctionTests {
         let values = try [decimal(11, scale: 1), decimal(38, scale: 1), decimal(13, scale: 1)]
         let source = try producer(selected("generate_series", values: values, types: [numeric, numeric, numeric]), values, meter: meter())
         for value in try [decimal(11, scale: 1), decimal(24, scale: 1), decimal(37, scale: 1)] {
-            #expect(try await source.next()?.rows[0].values == [value])
+            #expect(try await source.next()?.value.values == [value])
         }
         #expect(try await source.next() == nil); try await source.close()
         let maximum = try #require(Int128("99999999999999999999999999999999999999"))
         let boundary = try [decimal(maximum), decimal(maximum), decimal(1)]
         let end = try producer(selected("generate_series", values: boundary, types: [numeric, numeric, numeric]), boundary, meter: meter())
-        #expect(try await end.next()?.rows[0].values == [boundary[0]])
+        #expect(try await end.next()?.value.values == [boundary[0]])
         #expect(try await end.next() == nil); try await end.close()
         let wide = try #require(Int128("10000000000000000000000000000000000000"))
         let overflowValues = try [decimal(1, scale: 1), decimal(wide * 2), decimal(wide)]
@@ -144,7 +144,7 @@ struct S10TableFunctionTests {
         let overflowPlan = try locating(selected("generate_series", values: overflowValues, types: [numeric, numeric, numeric]), at: at)
         let overflowMeter = meter()
         let overflow = try producer(overflowPlan, overflowValues, meter: overflowMeter)
-        #expect(try await overflow.next()?.rows[0].values == [overflowValues[0]])
+        #expect(try await overflow.next()?.value.values == [overflowValues[0]])
         for _ in 0..<2 {
             do { _ = try await overflow.next(); Issue.record("Expected finite-profile numeric overflow") }
             catch CanonicalReadError.expressionEvaluation(let cause, let occurrence) {
@@ -165,29 +165,29 @@ struct S10TableFunctionTests {
         #expect(plan.columns.map(\.name) == ["a", "b", "unnest", "ordinality"])
         let meter = meter(); let source = try producer(plan, values, meter: meter)
         var retained = try await source.next()
-        #expect(retained?.rows[0].values == [int(7), .primitive(.string("retained")), int(9), .primitive(.int64(1))])
-        #expect(try await source.next()?.rows[0].values == [.primitive(.null), .primitive(.null), .primitive(.null), .primitive(.int64(2))])
+        #expect(retained?.value.values == [int(7), .primitive(.string("retained")), int(9), .primitive(.int64(1))])
+        #expect(try await source.next()?.value.values == [.primitive(.null), .primitive(.null), .primitive(.null), .primitive(.int64(2))])
         try await source.close(); try await source.close()
-        #expect(retained?.rows[0].values[1] == .primitive(.string("retained")))
+        #expect(retained?.value.values[1] == .primitive(.string("retained")))
         retained = nil
         #expect(meter.retainedIntermediateBytes == 0 && meter.retainedIntermediateRows == 0)
         let subValues: [QueryValue] = [.array(first), int(1), .primitive(.bool(true))]
         let sub = try producer(selected("generate_subscripts", values: subValues, types: [.array(.composite(descriptor)), .integer, .boolean]), subValues, meter: meter)
-        #expect(try await sub.next()?.rows[0].values == [int(-3)])
-        #expect(try await sub.next()?.rows[0].values == [int(-4)])
+        #expect(try await sub.next()?.value.values == [int(-3)])
+        #expect(try await sub.next()?.value.values == [int(-4)])
         #expect(try await sub.next() == nil); try await sub.close()
     }
 
     @Test func scalarNullIsOneRowAndJSONKeepsDuplicateOrder() async throws {
         let scalar = try selected("abs", values: [.primitive(.null)], types: [.integer], ordinal: true)
         let one = try producer(scalar, [.primitive(.null)], meter: meter())
-        #expect(try await one.next()?.rows[0].values == [.primitive(.null), .primitive(.int64(1))])
+        #expect(try await one.next()?.value.values == [.primitive(.null), .primitive(.int64(1))])
         #expect(try await one.next() == nil); try await one.close()
         let json = try QueryJSONValue(bytes: ByteString(utf8: "{\"k\":1,\"k\":null}"), limits: limits)
         let input: [QueryValue] = [.json(json)]
         let source = try producer(selected("json_each_text", values: input, types: [.json]), input, meter: meter())
-        #expect(try await source.next()?.rows[0].values == [.primitive(.string("k")), .primitive(.string("1"))])
-        #expect(try await source.next()?.rows[0].values == [.primitive(.string("k")), .primitive(.null)])
+        #expect(try await source.next()?.value.values == [.primitive(.string("k")), .primitive(.string("1"))])
+        #expect(try await source.next()?.value.values == [.primitive(.string("k")), .primitive(.null)])
         #expect(try await source.next() == nil); try await source.close()
         let wrong: [QueryValue] = [.json(try QueryJSONValue(bytes: ByteString(utf8: "[]"), limits: limits))]
         try expectSemanticFailure(.collection(.jsonObjectRootRequired(function: "json_each"))) {
@@ -200,14 +200,14 @@ struct S10TableFunctionTests {
         let source = try producer(selected("regexp_matches", values: values, types: [.text, .text, .text]), values, meter: meter())
         for expected in ["1", "2"] {
             let row = try #require(await source.next())
-            guard case .array(let array) = row.rows[0].values[0] else { Issue.record("Expected captures"); return }
+            guard case .array(let array) = row.value.values[0] else { Issue.record("Expected captures"); return }
             #expect(array.elements.count == 1 && array.elements[0] == .primitive(.string(expected)))
         }
         #expect(try await source.next() == nil); try await source.close()
         let split: [QueryValue] = [.primitive(.string("ab")), .primitive(.string(""))]
         let pieces = try producer(selected("regexp_split_to_table", values: split, types: [.text, .text]), split, meter: meter())
-        #expect(try await pieces.next()?.rows[0].values == [.primitive(.string("a"))])
-        #expect(try await pieces.next()?.rows[0].values == [.primitive(.string("b"))])
+        #expect(try await pieces.next()?.value.values == [.primitive(.string("a"))])
+        #expect(try await pieces.next()?.value.values == [.primitive(.string("b"))])
         #expect(try await pieces.next() == nil); try await pieces.close()
         let null: [QueryValue] = [.primitive(.null), .primitive(.string("["))]
         let strict = try producer(selected("regexp_matches", values: null, types: [.text, .text]), null, meter: meter())
@@ -223,12 +223,12 @@ struct S10TableFunctionTests {
         let values = try [temporal("2024-01-30", stamp, meter: meter), temporal("2024-04-30", stamp, meter: meter), temporal("1 month", .interval(), meter: meter)]
         let source = try producer(selected("generate_series", values: values, types: [stamp, stamp, .interval()]), values, meter: meter)
         for expected in ["2024-01-30", "2024-02-29", "2024-03-29", "2024-04-29"] {
-            #expect(try await source.next()?.rows[0].values == [temporal(expected, stamp, meter: meter)])
+            #expect(try await source.next()?.value.values == [temporal(expected, stamp, meter: meter)])
         }
         #expect(try await source.next() == nil); try await source.close()
         let infinite: [QueryValue] = [.timestampInfinity(.positive, withTimeZone: false), .timestampInfinity(.positive, withTimeZone: false), values[2]]
         let repeating = try producer(selected("generate_series", values: infinite, types: [stamp, stamp, .interval()]), infinite, meter: meter)
-        for _ in 0..<3 { #expect(try await repeating.next()?.rows[0].values == [infinite[0]]) }
+        for _ in 0..<3 { #expect(try await repeating.next()?.value.values == [infinite[0]]) }
         try await repeating.close()
         #expect(meter.retainedIntermediateBytes == 0 && meter.retainedIntermediateRows == 0)
     }
@@ -254,7 +254,7 @@ struct S10TableFunctionTests {
             .primitive(.string("America/New_York"))]
         let source = try producer(selected("generate_series", values: values, types: [stamp, stamp, .interval(), .text]), values, meter: meter, environment: env)
         for expected in ["2024-03-09 17:00+00", "2024-03-10 16:00+00", "2024-03-11 16:00+00", "2024-03-12 16:00+00"] {
-            #expect(try await source.next()?.rows[0].values == [temporal(expected, stamp, meter: meter)])
+            #expect(try await source.next()?.value.values == [temporal(expected, stamp, meter: meter)])
         }
         #expect(try await source.next() == nil); try await source.close()
         #expect(meter.retainedIntermediateBytes == 0)
@@ -304,7 +304,7 @@ struct S10TableFunctionTests {
         try await source.close()
         #expect(cancelledMeter.retainedIntermediateBytes == 0 && cancelledMeter.retainedIntermediateRows == 0)
         let followup = try producer(plan, values, meter: cancelledMeter)
-        #expect(try await followup.next()?.rows[0].values == [int(1)])
+        #expect(try await followup.next()?.value.values == [int(1)])
         try await followup.close()
     }
 }

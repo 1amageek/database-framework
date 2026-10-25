@@ -3,10 +3,10 @@ import DatabaseKit
 /// An immutable generation with independent cursors and no operational parent.
 struct SQLRecursiveFrontier: Sendable {
     private let schema: CanonicalRelationSchema
-    private let rows: DatabaseSharedRetainedArray<CanonicalRelation>
+    private let rows: DatabaseSharedRetainedArray<SQLRelationRow>
     private let meter: DatabaseWorkMeter
 
-    init(schema: CanonicalRelationSchema, rows: DatabaseSharedRetainedArray<CanonicalRelation>,
+    init(schema: CanonicalRelationSchema, rows: DatabaseSharedRetainedArray<SQLRelationRow>,
          meter: DatabaseWorkMeter) {
         self.schema = schema; self.rows = rows; self.meter = meter
     }

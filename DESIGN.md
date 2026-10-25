@@ -370,3 +370,15 @@ files and initial user files retain their recorded hashes.
 [Integrated evidence](../.codex-tools/access-shutdown-20261025/integration-verification.json)
 links the runtime records, unchanged-source guards and
 [complete Native performance acceptance](Tests/DatabaseAccessPerformance/DESIGN.md).
+
+
+### RX25 execution refactoring scope
+
+This task preserves public invocation/result APIs, original authorization,
+request budgets, rollback and final publication while refining four execution
+responsibilities. [QueryExecution](Sources/DatabaseEngine/QueryExecution/DESIGN.md)
+and its SQLRelations child own positional transfer, ordering and scalar control;
+[SQLBlock](Sources/DatabaseEngine/SQLBlock/DESIGN.md) coordinates SQL admission
+with the sequence, transaction and schema owners. Lower owner designs are
+updated before their implementations. The workspace PROGRESS owns sprint order
+and completion evidence; unrelated user changes remain outside task commits.

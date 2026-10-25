@@ -22,13 +22,13 @@ struct S08RelationProducerTests {
         }
         let first = cache.consumer()
         let second = cache.consumer()
-        #expect(try await first.next()?.rows[0].values == [.primitive(.int64(0))])
+        #expect(try await first.next()?.value.values == [.primitive(.int64(0))])
         try await first.close()
         #expect(await witness.productions == 1)
-        #expect(try await second.next()?.rows[0].values == [.primitive(.int64(0))])
+        #expect(try await second.next()?.value.values == [.primitive(.int64(0))])
         #expect(await witness.productions == 1)
-        #expect(try await second.next()?.rows[0].values == [.primitive(.int64(1))])
-        #expect(try await second.next()?.rows[0].values == [.primitive(.int64(2))])
+        #expect(try await second.next()?.value.values == [.primitive(.int64(1))])
+        #expect(try await second.next()?.value.values == [.primitive(.int64(2))])
         #expect(try await second.next() == nil)
         #expect(await witness.starts == 1)
         #expect(await witness.productions == 3)
@@ -54,7 +54,7 @@ struct S08RelationProducerTests {
         async let lhs = first.next()
         async let rhs = second.next()
         let values = try await (lhs, rhs)
-        #expect(values.0?.rows[0].values == values.1?.rows[0].values)
+        #expect(values.0?.value.values == values.1?.value.values)
         #expect(await witness.starts == 1)
         #expect(await witness.productions == 1)
         try await first.close(); try await second.close(); try await cache.close()
@@ -129,8 +129,8 @@ struct S08RelationProducerTests {
     private func makeSchema() throws -> CanonicalRelationSchema {
         try CanonicalRelationSchema(unscopedColumns: ["n"], types: [.sql(.bigint)], nullability: [false])
     }
-    private func makeRow(_ index: Int, schema: CanonicalRelationSchema, meter: DatabaseWorkMeter) throws -> CanonicalRelation {
-        try sqlSingleRow(CanonicalSourceRow(values: [.primitive(.int64(Int64(index)))], layout: schema.layout), schema: schema, meter: meter)
+    private func makeRow(_ index: Int, schema: CanonicalRelationSchema, meter: DatabaseWorkMeter) throws -> SQLRelationRow {
+        try SQLRelationRow.producing(CanonicalSourceRow(values: [.primitive(.int64(Int64(index)))], layout: schema.layout), schema: schema, meter: meter)
     }
 }
 

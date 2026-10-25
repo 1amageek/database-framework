@@ -75,7 +75,7 @@ actor SQLTableFunctionProducer: SQLRelationProducer {
         inputLeases = retainedLeases.values; ownership = retainedValues.reservation
     }
 
-    func next() throws -> CanonicalRelation? {
+    func next() throws -> SQLRelationRow? {
         if let failure { throw failure }
         guard !terminal else { return nil }
         do {
@@ -118,7 +118,7 @@ actor SQLTableFunctionProducer: SQLRelationProducer {
             let retainedCells = cells.finish()
             try claims.append(DatabaseQueryPayloadLease(retaining: retainedCells.reservation, and: claims.reservation))
             let row = CanonicalSourceRow(values: retainedCells.values, layout: schema.layout, payloadLeases: claims.finish().values)
-            let result = try sqlSingleRow(row, schema: schema, meter: meter)
+            let result = try SQLRelationRow.producing(row, schema: schema, meter: meter)
             try meter.checkpoint(at: .expressionEvaluation)
             return result
         } catch {

@@ -2169,3 +2169,24 @@ S16 diagnostic admission preserves typed grouping, windowing and function-arity
 failures at their binder branches. Their SQLSTATE classification is owned by
 [SQLDiagnostics](../SQLDiagnostics/DESIGN.md), never inferred from operation text.
 Existing occurrence-addressed binding wrappers retain these exact causes.
+
+
+### RX25 positional representation and ordering
+
+Immutable source layout/row/relation schema types are separate source-owned
+values; they do not create a new module or execution authority. The
+[SQLRelations row contract](SQLRelations/DESIGN.md#rx25-single-row-ownership)
+owns producer transfer. CanonicalRelation remains the complete blocking input.
+
+ORDER decoration prepares typed columns directly from the immutable physical
+layout and reuses the current descriptor while that layout identity is unchanged.
+Its array storage is admitted before construction on the request meter and
+released with decoration. A changed layout prepares its own descriptor; equal
+names or correlated row values are not cache identity. No global cache or second
+snapshot is introduced. Fingerprint bytes, tie ordering, NULL/collation policy,
+metadata and source occurrence errors remain identical.
+
+Source decomposition preserves the existing semantic owner and public API.
+Verification covers duplicate labels, aliases, heterogeneous layouts, rich
+values, stable order/fingerprint, reservation failures and retained rows after
+close. The exact AS25 benchmark is the before/after acceptance workload.

@@ -48,7 +48,7 @@ These are internal integration contracts, not additional public package APIs.
 |---|---|
 | `CanonicalBoundSelect` CTE declarations | Binder supplies ordered immutable definition identities, selected body plans/output descriptors, partial output aliases, materialization hint and volatility. Definition identity is distinct from its textual name. It retains no runtime cache or mutable cursor. |
 | `CanonicalQueryEvaluationContext` | Rows passes the existing transaction/session/meter, frozen outer row and immutable lexical CTE handles. Child execution reuses them; a new SELECT invocation creates new local caches while references to inherited definitions retain their declaring invocation's handles. |
-| `SQLRelationProducer: Sendable` | Internal protocol requirements are immutable `schema: CanonicalRelationSchema`, `next() async throws -> CanonicalRelation?`, and `close() async throws`. A successful next returns exactly one retained source row with matching schema/presence and full payload leases; nil means true terminal EOF. Every operation is a protocol requirement, including on Embedded existentials. |
+| `SQLRelationProducer: Sendable` | Internal protocol requirements are immutable `schema: CanonicalRelationSchema`, `next() async throws -> SQLRelationRow?`, and `close() async throws`. A successful next returns one SQLRelationRow with matching schema/presence and full payload ownership; nil means true terminal EOF. Every operation is a protocol requirement, including on Embedded existentials. |
 | `makeSelectProducer` and its returned producer | Each call constructs one invocation's local definitions and main producer. Its immutable SQLCTEEnvironment supplies lookup handles; the returned producer owns local caches through its cleanup path. Draining or stopping awaits close before returning through Read. Reusing a compiled plan for another correlated row constructs a new producer and local caches. |
 | `SQLCTECache` | Serialized async owner of one definition in one invocation: producer state, schema, retained chunks, actual EOF/failure and consumer positions. Reuses existing retained builders, shared owners and bounded views; it neither edits a shared Array nor snapshots a growing Array repeatedly. |
 | CTE consumer | One producer facade with an independent zero-based offset. Cached rows are replayed without evaluation; an offset at the frontier requests new output from the same body producer. Consumer close removes that consumer, not the shared body. Owner close ends the body even if consumers stopped early. |
@@ -375,3 +375,29 @@ QueryExecution's [statement declaration contract](../DESIGN.md#s14-statement-rea
 not a policy grant. Cache/frontier state, gates, demand, work meter and terminal
 cleanup retain their existing owners on all targets. No additional producer or
 Task is created to carry lexical metadata.
+
+
+### RX25 single-row ownership
+
+A producer returns `SQLRelationRow`, an immutable Sendable single-row owner.
+A physical/materialized input is a bounded view: the original retained array
+plus one checked index, with no new array, reservation or payload copy.
+The view retains the original complete owner and its meter claims until the
+last row view ends. A newly computed row owns a separately admitted alias
+footprint and payload lease; creating a view never grants new authority or
+forgets an original claim. Schema, values, presence, annotations and version
+remain unchanged. Blocking operators continue to use CanonicalRelation.
+
+```text
+retained physical/statement relation -> owner + checked index -> SQLRelationRow
+computed projection/join row -> admitted row lease ------------> SQLRelationRow
+    -> CTE/frontier/operator -> final retained destination -> existing Ready owner
+```
+
+CTE prefixes and recursive frontiers store these immutable row owners. They do
+not snapshot a growing array or retain a producer in a final result. Close and
+failure still detach terminal state, await owned children, and release all
+claims. The same actors, gates and Sendable declarations remain in every target.
+Tests must distinguish owner reuse from newly owned rows, check range/meter/schema
+validation, replay, cancellation/cleanup and complete claim release. Actual
+Native/standard/Embedded SQL/IR/CTE output regressions remain required.

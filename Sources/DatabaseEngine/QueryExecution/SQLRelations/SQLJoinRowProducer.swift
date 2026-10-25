@@ -11,7 +11,7 @@ actor SQLJoinRowProducer: SQLRelationProducer {
         let key: HashKey
         let hash: Int
         let ordinal: Int
-        let relation: CanonicalRelation
+        let relation: SQLRelationRow
     }
 
     nonisolated let schema: CanonicalRelationSchema
@@ -60,7 +60,7 @@ actor SQLJoinRowProducer: SQLRelationProducer {
         }
     }
 
-    func next() async throws -> CanonicalRelation? {
+    func next() async throws -> SQLRelationRow? {
         try await gate.acquire(meter: meter)
         do {
             await Task.yield()
@@ -80,7 +80,7 @@ actor SQLJoinRowProducer: SQLRelationProducer {
         }
     }
 
-    private func advance() async throws -> CanonicalRelation? {
+    private func advance() async throws -> SQLRelationRow? {
         guard !closed, let left, let factory, let matches, let merge else { return nil }
         while true {
             try meter.checkpoint(at: .joinCandidate)
@@ -88,8 +88,8 @@ actor SQLJoinRowProducer: SQLRelationProducer {
                 guard let next = try await right?.next() else { try await finish(); return nil }
                 let index = rightIndex; rightIndex += 1
                 if matchedRight.contains(index) { continue }
-                let row = try merge(emptyLeft, next.rows[0].retainingPayload(next.rows.payloadLease))
-                let result = try sqlSingleRow(row, schema: schema, meter: meter)
+                let row = try merge(emptyLeft, next.value.retainingPayload(next.payloadLease))
+                let result = try SQLRelationRow.producing(row, schema: schema, meter: meter)
                 return result
             }
             if currentLeft == nil {
@@ -100,7 +100,7 @@ actor SQLJoinRowProducer: SQLRelationProducer {
                     }
                     try await finish(); return nil
                 }
-                currentLeft = next.rows[0].retainingPayload(next.rows.payloadLease)
+                currentLeft = next.value.retainingPayload(next.payloadLease)
                 matchedLeft = false; rightIndex = 0
                 if let hashKey, let currentLeft {
                     try await prepareHashCandidates()
@@ -124,13 +124,13 @@ actor SQLJoinRowProducer: SQLRelationProducer {
                     try reservation.reserveAdditional(bytes: 64, at: .joinCandidate)
                     matchedRight.insert(index)
                 }
-                let result = try sqlSingleRow(merge(lhs, rhs), schema: schema, meter: meter)
+                let result = try SQLRelationRow.producing(merge(lhs, rhs), schema: schema, meter: meter)
                 return result
             }
             try await right?.close(); right = nil
             currentLeft = nil; probeKey = nil; probeIndex = -1
             if !matchedLeft, type == .left || type == .full {
-                let result = try sqlSingleRow(merge(lhs, emptyRight), schema: schema, meter: meter)
+                let result = try SQLRelationRow.producing(merge(lhs, emptyRight), schema: schema, meter: meter)
                 return result
             }
         }
@@ -140,7 +140,7 @@ actor SQLJoinRowProducer: SQLRelationProducer {
         guard hashKey != nil else {
             guard let next = try await right?.next() else { return nil }
             let index = rightIndex; rightIndex += 1
-            return (index, next.rows[0].retainingPayload(next.rows.payloadLease))
+            return (index, next.value.retainingPayload(next.payloadLease))
         }
         guard let entries = hashEntries, let probeKey else { return nil }
         while probeIndex >= 0 {
@@ -150,7 +150,7 @@ actor SQLJoinRowProducer: SQLRelationProducer {
             guard entry.hash == probeHash,
                   try CanonicalSQLValueIdentity.equal(entry.key.values, probeKey.values,
                     workMeter: meter, stage: .joinCandidate) else { continue }
-            return (entry.ordinal, entry.relation.rows[0].retainingPayload(entry.relation.rows.payloadLease))
+            return (entry.ordinal, entry.relation.value.retainingPayload(entry.relation.payloadLease))
         }
         return nil
     }
@@ -164,7 +164,7 @@ actor SQLJoinRowProducer: SQLRelationProducer {
             var ordinal = 0
             while let relation = try await source.next() {
                 try meter.consume(at: .joinCandidate)
-                if let key = try hashKey(relation.rows[0], false) {
+                if let key = try hashKey(relation.value, false) {
                     let hash = try CanonicalSQLValueIdentity.hash(key.values, workMeter: meter, stage: .joinCandidate)
                     try entries.append(footprint: DatabaseIntermediateFootprint(rows: 1)) {
                         HashEntry(key: key, hash: hash, ordinal: ordinal, relation: relation)

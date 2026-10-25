@@ -66,7 +66,7 @@ struct S10RecursiveProducerTests {
             stepFactory: { frontier in mapped(frontier, schema: step, meter: meter) { [$0.values[0], $0.values[1]] } })
         for length in 1...3 {
             let result = try #require(await producer.next())
-            guard case .array(let path) = result.rows[0].values[1] else { Issue.record("Expected a record array"); return }
+            guard case .array(let path) = result.value.values[1] else { Issue.record("Expected a record array"); return }
             #expect(path.elements.count == length)
             guard case .composite(let key) = path.elements[length - 1] else { Issue.record("Expected a record"); return }
             #expect(key.type.columns[0].name == "f1")
@@ -87,7 +87,7 @@ struct S10RecursiveProducerTests {
             stepFactory: { frontier in mapped(frontier, schema: step, meter: meter) { [$0.values[0], $0.values[1]] } })
         for depth in 0...2 {
             let result = try #require(await producer.next())
-            guard case .composite(let search) = result.rows[0].values[1] else { Issue.record("Expected a breadth record"); return }
+            guard case .composite(let search) = result.value.values[1] else { Issue.record("Expected a breadth record"); return }
             #expect(search.fields[0] == number(depth))
             #expect(search.fields[1] == number(7))
             #expect(search.type.columns[0].name == "f1")
@@ -133,7 +133,7 @@ struct S10RecursiveProducerTests {
             try makeRecursive(schema: schema, meter: meter, witness: witness)
         }
         let first = cache.consumer(); let second = cache.consumer()
-        #expect(try await first.next()?.rows[0].values == [number(1)])
+        #expect(try await first.next()?.value.values == [number(1)])
         try await first.close()
         #expect(try await collect(second) == [[number(1)], [number(2)], [number(3)]])
         #expect(await witness.starts == 1)
@@ -166,7 +166,7 @@ struct S10RecursiveProducerTests {
         try await producer?.close(); producer = nil
         #expect(releasedProducer() == nil)
         #expect(meter.retainedIntermediateBytes > 0)
-        #expect(output?.rows[0].values[0] == number(1))
+        #expect(output?.value.values[0] == number(1))
         output = nil
         expectReleased(meter)
     }
@@ -295,17 +295,17 @@ struct S10RecursiveProducerTests {
         let source = frontier.consumer()
         return SQLRelationPullProducer(schema: schema, meter: meter, operation: { _ in
             while let input = try await source.next() {
-                if let values = try projection(input.rows[0]) { return try row(values, schema: schema, meter: meter) }
+                if let values = try projection(input.value) { return try row(values, schema: schema, meter: meter) }
             }
             return nil
         }, cleanup: { try await source.close() })
     }
-    private func row(_ values: [QueryValue], schema: CanonicalRelationSchema, meter: DatabaseWorkMeter) throws -> CanonicalRelation {
-        try sqlSingleRow(CanonicalSourceRow(values: values, layout: schema.layout), schema: schema, meter: meter)
+    private func row(_ values: [QueryValue], schema: CanonicalRelationSchema, meter: DatabaseWorkMeter) throws -> SQLRelationRow {
+        try SQLRelationRow.producing(CanonicalSourceRow(values: values, layout: schema.layout), schema: schema, meter: meter)
     }
     private func collect(_ source: any SQLRelationProducer) async throws -> [[QueryValue]] {
         var result: [[QueryValue]] = []
-        while let input = try await source.next() { result.append(input.rows[0].values) }
+        while let input = try await source.next() { result.append(input.value.values) }
         return result
     }
     private func number(_ value: Int) -> QueryValue { .primitive(.int64(Int64(value))) }

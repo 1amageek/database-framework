@@ -13,7 +13,7 @@ actor SQLDeferredRowProducer: SQLRelationProducer {
         self.schema = schema; self.meter = meter; self.factory = factory
     }
 
-    func next() async throws -> CanonicalRelation? {
+    func next() async throws -> SQLRelationRow? {
         try await gate.acquire(meter: meter)
         do {
             await Task.yield()
