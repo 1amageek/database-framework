@@ -54,7 +54,7 @@ jobs:
             --only-testing GraphIndexTests \
             --only-testing DatabaseRuntimeTests \
             --only-testing DatabaseTests/SQLBlockExecutionTests \
-            --expected-target-count DatabaseEngineTests=1433 \
+            --expected-target-count DatabaseEngineTests=1438 \
             --expected-target-count GraphIndexTests=913 \
             --expected-target-count DatabaseRuntimeTests=18 \
             --expected-target-count DatabaseTests=15 \
@@ -75,6 +75,10 @@ jobs:
     name: Benchmark verification
     runs-on: xcode-27
     timeout-minutes: 60
+    env:
+      TOOLCHAINS: org.swift.64202608141a
+      SWIFT_SNAPSHOT: swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-08-14-a
+      SWIFT_SNAPSHOT_URL: https://download.swift.org/swift-6.4.x-branch/xcode/swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-08-14-a/swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-08-14-a-osx.pkg
     steps:
       - name: Checkout framework
         uses: actions/checkout@v7
@@ -161,6 +165,17 @@ jobs:
           test "$(printf '%s' "$summary" | plutil -extract errorCount raw -)" = 0
           test "$(printf '%s' "$summary" | plutil -extract warningCount raw -)" = 0
           test "$(printf '%s' "$summary" | plutil -extract analyzerWarningCount raw -)" = 0
+
+      - name: Build independent access measurement executable
+        if: ${{ !cancelled() }}
+        working-directory: database-framework
+        run: |
+          perl -e 'alarm shift; exec @ARGV' 900 \
+            xcrun --toolchain "$TOOLCHAINS" swift build \
+              --package-path Benchmarks/Access \
+              --scratch-path "$RUNNER_TEMP/database-framework-access-build" \
+              --only-use-versions-from-resolved-file \
+              --product DatabaseAccessPerformanceContract -c release --jobs 4
 
       - name: Upload benchmark build results
         if: always()

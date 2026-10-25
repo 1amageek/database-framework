@@ -2,9 +2,9 @@
 
 ## Purpose and Scope
 
-Native test-only C boundary used by the
-[performance executable](../DatabaseAccessPerformance/DESIGN.md).
-Parent: [Framework package](../../DESIGN.md). Children: none.
+Native measurement-only C boundary used by the
+[performance executable](../DatabaseAccessPerformanceContract/DESIGN.md).
+Parent: [Access package](../../DESIGN.md). Children: none.
 It supplies a monotonic clock and Native allocator/process observations.
 
 ## Responsibilities and Boundaries
@@ -18,8 +18,8 @@ allocation pointers, or calls database APIs. Production targets do not link it.
 
 | Design | Relationship | Contract Used | Summary | Cautions |
 |---|---|---|---|---|
-| [Framework](../../DESIGN.md) | parent | Fixture build graph | Owns internal test target | Not a library product |
-| [Performance](../DatabaseAccessPerformance/DESIGN.md) | used by | Numeric observation snapshot | Owns sample interpretation | High-water values are process-cumulative |
+| [Access package](../../DESIGN.md) | parent | Fixture build graph | Owns independent observation target | Not a library product |
+| [Performance](../DatabaseAccessPerformanceContract/DESIGN.md) | used by | Numeric observation snapshot | Owns sample interpretation | High-water values are process-cumulative |
 
 ## Architecture
 

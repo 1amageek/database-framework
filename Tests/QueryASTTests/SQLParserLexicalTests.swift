@@ -171,6 +171,7 @@ struct SQLParserLexicalTests {
             _ = try SQLParser(structuralLimits: .init(maximumRetainedBytes: 8)).parseSelect("SELECT id")
         }
         #expect(throws: QueryStructuralValidationError.self) {
+            // TEST_SCALE_SEMANTICS: correctness rejects source bytes before token allocation.
             _ = try SQLParser(structuralLimits: .init(maximumRetainedBytes: 32)).parseSelect("SELECT '" + String(repeating: "x", count: 100_000) + "'")
         }
     }

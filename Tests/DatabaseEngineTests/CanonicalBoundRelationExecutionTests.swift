@@ -303,6 +303,7 @@ struct CanonicalBoundRelationExecutionTests {
         #expect(inferred[0].type == .primitive(.int64, isArray: true))
         #expect(inferenceExecution.workMeter.retainedIntermediateBytes == 0)
         let conversionExecution = makeExecution(maximumIntermediateBytes: 64 * 1024)
+        // TEST_SCALE_SEMANTICS: correctness rejects conversion scratch beyond the byte budget.
         let oversizedInput = SelectQuery(projection: [ProjectionItem(.equal(
             .literal(.sqlUnknownString(String(repeating: "7", count: 100_000))), .literal(.int(7))))],
             source: .table(TableRef(BindingItem.persistableType)))

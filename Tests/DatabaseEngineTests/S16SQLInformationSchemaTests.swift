@@ -291,6 +291,7 @@ struct S16SQLInformationSchemaTests {
     @Test("Canonical view definitions reject request capacity before row emission")
     func serializedDefinitionAdmissionBeforeEmission() async throws {
         let container = try await open(); defer { await container.shutdown() }
+        // TEST_SCALE_SEMANTICS: correctness rejects catalog serialization before oversized output.
         let query = SelectQuery(projection: [.expression(.string(String(repeating: "a", count: 1_048_576)), alias: "payload")],
             source: .values([[]]))
         _ = try await run(container, [.ddl(.createView(SQLCreateView(name: TableRef("large_definition"), query: query)))])

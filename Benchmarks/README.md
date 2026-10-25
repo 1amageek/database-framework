@@ -35,6 +35,14 @@ throughput, allocation, storage-size, and scale measurements.
 The parent package enforces this boundary with
 `scripts/verify-benchmark-separation`.
 
+## Native access and SQL execution measurements
+
+`Access` owns the SQLite/ScalarIndexes executable and process-local C observer.
+It is independent from both correctness targets and the FoundationDB suite.
+Its [package design](Access/DESIGN.md) fixes ownership and verification.
+`scripts/access-performance-harness` builds its committed graph with the pinned
+Swift 6.4.0 release and records program, lock and observer inputs.
+
 ## Bitmap core microbenchmarks
 
 `BitmapCore` is a separate package because its deterministic in-memory set

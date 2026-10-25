@@ -49,27 +49,28 @@ def run(command, name, timeout=1800, env=None):
 def capture(*command):
     return subprocess.check_output(command, text=True, timeout=60).strip()
 
+package = source/'Benchmarks/Access'
 compiler = capture('xcrun', '--toolchain', TOOLCHAIN, '--find', 'swiftc')
 assert '/swift-6.4.0-RELEASE.xctoolchain/' in compiler
 version = capture(compiler, '--version')
 sdk = capture('xcrun', '--sdk', 'macosx', '--show-sdk-path')
 clang = capture('xcrun', '--toolchain', TOOLCHAIN, '--find', 'clang')
 inputs = {str(p.relative_to(source)): hashlib.sha256(p.read_bytes()).hexdigest()
-          for p in [source/'Package.swift', source/'Package.resolved', *source.joinpath('Tests/DatabaseAccessPerformance').glob('*.swift'),
-                    *source.joinpath('Tests/AccessPerformanceProbe').glob('*.c')]}
+          for p in [source/'Package.swift', package/'Package.swift', package/'Package.resolved', *package.joinpath('Sources/DatabaseAccessPerformanceContract').glob('*.swift'),
+                    *package.joinpath('Sources/AccessPerformanceProbe').rglob('*.[ch]')]}
 metadata = {'compiler': compiler, 'version': version, 'sdk': sdk, 'sdkVersion': capture('xcrun','--sdk','macosx','--show-sdk-version'),
             'traits': ['SQLite','ScalarIndexes'], 'mode': 'diagnostic-local' if args.diagnostic_local else 'URL',
-            'inputs': inputs, 'harnessSHA256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), 'pins': json.loads(source.joinpath('Package.resolved').read_text()), 'started': time.time()}
+            'inputs': inputs, 'harnessSHA256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), 'pins': json.loads(package.joinpath('Package.resolved').read_text()), 'started': time.time()}
 result.joinpath('provenance.json').write_text(json.dumps(metadata, indent=2))
-probe = source/'Tests/AccessPerformanceProbe'
+probe = package/'Sources/AccessPerformanceProbe'
 library = work/'libAccessAllocationObservation.dylib'
 run([clang,'-dynamiclib','-std=c11','-O2','-fno-builtin','-isysroot',sdk,str(probe/'AllocationObservation.c'),'-o',str(library)],'observer-build.log')
 check = work/'observer-check'
 run([clang,'-std=c11','-O2','-fno-builtin','-isysroot',sdk,str(probe/'SelfCheck.c'),'-o',str(check)],'observer-check-build.log')
 environment = dict(os.environ, DYLD_INSERT_LIBRARIES=str(library))
 assert 'ACCESS_OBSERVER_PASS calls=40000 threads=4' in run([str(check)],'observer-check.log',60,environment)
-run(['xcrun','--toolchain',TOOLCHAIN,'swift','build','--package-path',str(source),'--scratch-path',str(work/'build'),
-     '--disable-default-traits','--traits','SQLite,ScalarIndexes','--only-use-versions-from-resolved-file','--jobs','4',
+run(['xcrun','--toolchain',TOOLCHAIN,'swift','build','--package-path',str(package),'--scratch-path',str(work/'build'),
+     '--only-use-versions-from-resolved-file','--jobs','4',
      '--product','DatabaseAccessPerformanceContract','-c','release','-debug-info-format','none'], 'build.log',2400)
 if args.build_only:
     print(f'Access performance build complete: {result}')

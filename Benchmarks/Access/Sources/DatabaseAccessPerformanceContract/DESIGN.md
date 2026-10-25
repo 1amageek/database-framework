@@ -2,7 +2,7 @@
 
 ## Purpose and Scope
 
-Native measurement executable owned by the [Framework package](../../DESIGN.md).
+Native measurement executable owned by the [Access package](../../DESIGN.md).
 It verifies the DatabaseAccess performance acceptance matrix without entering a
 production library product. Children: none. The executable supports the default
 single-root configuration only; MultiBase builds compile an explicit unavailable
@@ -24,9 +24,9 @@ No parser, query executor, retry policy or storage implementation is replaced.
 
 | Design | Relationship | Contract Used | Summary | Cautions |
 |---|---|---|---|---|
-| [Framework](../../DESIGN.md) | parent | Optional fixture composition | Owns executable graph | No production product dependency |
-| [Common access](../../../database-client/Sources/DatabaseAccess/DESIGN.md) | depends on | Lookup, immutable query construction and execution | Owns acceptance matrix | Original result semantics remain fixed |
-| [Embedded](../../Sources/DatabaseEmbedded/DESIGN.md) | depends on | Borrowed scope with original authority | Real SQLite path | Borrowed shutdown preserves the container |
+| [Access package](../../DESIGN.md) | parent | Optional fixture composition | Owns executable graph | No production product dependency |
+| [Common access](../../../../../database-client/Sources/DatabaseAccess/DESIGN.md) | depends on | Lookup, immutable query construction and execution | Owns acceptance matrix | Original result semantics remain fixed |
+| [Embedded](../../../../Sources/DatabaseEmbedded/DESIGN.md) | depends on | Borrowed scope with original authority | Real SQLite path | Borrowed shutdown preserves the container |
 | [Observation](../AccessPerformanceProbe/DESIGN.md) | depends on | Clock, heap/RSS and allocator observations | Native process observer | Allocator calls are not Swift slab suballocations |
 
 ## Architecture
@@ -104,7 +104,7 @@ Swift 6.4.0 release, macOS SDK 27.0 and SQLite/ScalarIndexes produced 84 path
 scenarios (42 direct/named comparisons), five retained rounds per scenario:
 420 time records and 420 independent allocation records, all output checks
 passed. Raw logs, complete comparisons and compiler/input hashes are in
-[the final evidence](../../../.codex-tools/access-shutdown-20261025/s02-url-final/provenance.json).
+[the final evidence](../../../../../.codex-tools/access-shutdown-20261025/s02-url-final/provenance.json).
 The Client endpoint is an in-process Wire loopback; these figures do not
 measure HTTP, network latency or a remote SQL server.
 
@@ -156,7 +156,7 @@ single-connection configuration, input/budget/output checks and URL pins under
 Swift 6.4.0 release. Fresh adjacent baseline/final runs each passed all 84 path
 scenarios: 420 timing and 420 separate allocation records. The allocator observer
 passed its 40000-call, four-thread self-check. Complete data and input provenance:
-[matched comparisons](../../../.codex-tools/sql-execution-refactor-20261025/matched-comparisons.json).
+[matched comparisons](../../../../../.codex-tools/sql-execution-refactor-20261025/matched-comparisons.json).
 
 | SQLite execution, 10000 output rows | Before | Final | Change |
 |---|---:|---:|---:|
@@ -302,7 +302,7 @@ Explicit file-backed WAL controls preserve the single-connection default. Final 
 
 Native SQLite/AllRuntimeFeatures completed2650 tests (Engine1438, Database235, SQLite152, QueryAST825), with zero failures/skips/expected failures/runtime warnings. The2KiB arithmetic storage counterexample fails the payload-wide candidate and passes the final driver. Release Swift6.4.0 standard and Embedded WASM each execute four real groups on wasm32-unknown-wasip1/Node24.19.0, including nested CASE/extrema,100-row/eight-column projection, SQL/IR/block results, budget rollback, concurrent reads, sequence, reinitialization and close. Both builds have zero compiler warnings. Compiled source hashes, fixture bytes and URL pins match the committed implementation; no public invocation/result API, authority, meter, rollback or lifecycle contract changes.
 
-[Raw evidence and measurement manifest](../../../.codex-tools/sql-scalar-tail-20261025/performance-verification.json) retains all original/audit samples, source/probe hashes, pins, compiler/SDK identities, result bundles, wasm artifacts and executable hashes. The owning public harnesses reproduce timing, cycles and explicit storage configurations. Native allocation/RSS observations make no WASM/Embedded memory-performance claim.
+[Raw evidence and measurement manifest](../../../../../.codex-tools/sql-scalar-tail-20261025/performance-verification.json) retains all original/audit samples, source/probe hashes, pins, compiler/SDK identities, result bundles, wasm artifacts and executable hashes. The owning public harnesses reproduce timing, cycles and explicit storage configurations. Native allocation/RSS observations make no WASM/Embedded memory-performance claim.
 
 ### TAIL25 follow-up after human-confirmed job completion
 
@@ -324,7 +324,7 @@ Eight of nine pooled raw medians decrease; wide100/four-worker raw p50 increases
 
 The original two small computed conditions improve raw p50 by15.01%/4.26% and cohort p50 by4.40%/6.89%. Their MAD changes from0.267→0.099ms and1.541→2.212ms. The follow-up therefore does not confirm universal or repeatable dispersion reduction; the earlier19.01%/23.55% reductions remain observations of that earlier interval. Reduced scalar allocation and improved typical latency are supported, while residual scheduling/queue variation remains explicitly observed. No additional source change or favorable-repeat loop follows this fixed observation.
 
-[Follow-up plan, host snapshots and executable identities](../../../.codex-tools/sql-scalar-tail-20261025/quiet-confirmed-plan.json), [raw current samples](../../../.codex-tools/sql-scalar-tail-20261025/quiet-confirmed-current/samples.json), and [identical-binary samples](../../../.codex-tools/sql-scalar-tail-20261025/quiet-confirmed-aa/samples.json) preserve the complete new observation.
+[Follow-up plan, host snapshots and executable identities](../../../../../.codex-tools/sql-scalar-tail-20261025/quiet-confirmed-plan.json), [raw current samples](../../../../../.codex-tools/sql-scalar-tail-20261025/quiet-confirmed-current/samples.json), and [identical-binary samples](../../../../../.codex-tools/sql-scalar-tail-20261025/quiet-confirmed-aa/samples.json) preserve the complete new observation.
 
 ### TAIL25 single user-requested shared-load repetition
 
@@ -344,7 +344,7 @@ The user explicitly requested exactly one more timing observation and noted that
 
 All nine raw and cohort medians decrease in this observation. The unchanged positional ORDER control differs only0.38%, so that small difference is not attributed to scalar optimization. The identical-binary raw-p50 ratios are1.0128/0.9950 and cohort ratios0.9836/1.0031. Cohort MAD decreases in six conditions and increases in three; small computed100/four-worker MAD rises0.142→0.160ms, while computed1000/four-worker MAD falls1.838→1.157ms. Wide1000/single-worker p95 increases1.81%. Typical-latency improvements remain visible, but universal jitter or tail reduction is still not established. This fixed additional observation closes the requested repeat; it does not trigger another run or an execution-code change.
 
-[Plan and host process snapshots](../../../.codex-tools/sql-scalar-tail-20261025/shared-load-once-plan.json), [complete samples](../../../.codex-tools/sql-scalar-tail-20261025/shared-load-once-current/samples.json), and [identical-binary samples](../../../.codex-tools/sql-scalar-tail-20261025/shared-load-once-aa/samples.json) preserve the shared-load context and every result. Existing runtime and allocation proofs remain valid because their execution inputs are unchanged; no build cache was regenerated.
+[Plan and host process snapshots](../../../../../.codex-tools/sql-scalar-tail-20261025/shared-load-once-plan.json), [complete samples](../../../../../.codex-tools/sql-scalar-tail-20261025/shared-load-once-current/samples.json), and [identical-binary samples](../../../../../.codex-tools/sql-scalar-tail-20261025/shared-load-once-aa/samples.json) preserve the shared-load context and every result. Existing runtime and allocation proofs remain valid because their execution inputs are unchanged; no build cache was regenerated.
 
 ### SPEED25 measured results, 2026-10-25
 

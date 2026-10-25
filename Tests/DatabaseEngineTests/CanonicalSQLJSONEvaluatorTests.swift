@@ -413,6 +413,7 @@ struct CanonicalSQLJSONEvaluatorTests {
     @Test func resourceFailureReleasesAndNextOperationSucceeds() throws {
         let work = meter(work: 1_000_000, bytes: 20_000)
         do {
+            // TEST_SCALE_SEMANTICS: correctness rejects JSON construction beyond the byte budget.
             _ = try call("jsonb_build_array", [s(String(repeating: "x", count: 100_000))], [.text], meter: work)
             Issue.record("Expected resource rejection")
         } catch { #expect(work.retainedIntermediateBytes == 0) }

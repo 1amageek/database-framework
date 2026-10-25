@@ -94,6 +94,7 @@ struct S13SQLCascadeCollisionTests {
     /// runtime may drop its copy of a returned result shortly after return, so
     /// release is awaited within a bound, and a leak still fails.
     private func expectReleasedRetention(_ work: DatabaseWorkMeter) async throws {
+        // TEST_TIME_SEMANTICS: correctness bounds asynchronous retention release.
         let deadline = ContinuousClock.now.advanced(by: .seconds(10))
         while work.retainedIntermediateRows != 0 || work.retainedIntermediateBytes != 0,
               ContinuousClock.now < deadline {

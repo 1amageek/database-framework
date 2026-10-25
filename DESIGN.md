@@ -50,6 +50,7 @@ products.
 | [Database](Sources/Database/DESIGN.md) | child | SQL and SQL-facing SPARQL entry/adaptation | Routes public database calls into the execution and graph contracts. | It must not absorb graph-facing SPARQL physical execution or session authority. |
 | [DatabaseEngine](Sources/DatabaseEngine/DESIGN.md) | child | Session, authorization, transaction, persistence, and resource contracts | Owns the in-process execution boundary consumed by feature modules. | Changes to session or retained ownership require every feature child to revalidate its caller path. |
 | [DatabaseRuntime](Sources/DatabaseRuntime/DESIGN.md) | child | Explicit runtime capability and policy composition | Supplies schema-driven entity and authorization factories. | Execution and authority decisions remain with Engine and the application. |
+| [Access measurements](Benchmarks/Access/DESIGN.md) | child | Independent Native measurement composition | Owns fixtures and observer outside the production graph. | Native evidence does not prove portable runtime behavior. |
 | [DatabaseMath](Sources/DatabaseMath/DESIGN.md) | child | Platform-neutral scalar math and bounded decimal formatting | Adapts numeric runtime operations consumed by execution and feature modules. | SQL overload and failure policy remain in QueryExecution. |
 | [DecimalFormatting](Sources/DecimalFormatting/DESIGN.md) | child | Fixed-function bounded C formatting | Owns buffer validation and locale restoration at the C runtime boundary. | It has no external product or SQL policy. |
 | [QueryAST](Sources/QueryAST/DESIGN.md) | child | SQL parsing, building, and canonical serialization | Adapts SQL syntax to DatabaseKit semantic contracts. | Grammar acceptance never proves executable SQL compatibility. |
@@ -346,10 +347,12 @@ or execution into the serializer. The corresponding module contract is
 
 ## Native Access Performance Verification
 
-The package owns the optional [access performance executable](Tests/DatabaseAccessPerformance/DESIGN.md)
-and its [Native observation boundary](Tests/AccessPerformanceProbe/DESIGN.md).
-They measure the common-access acceptance matrix and are excluded from production
-library graphs. Normal/Embedded functional runtime gates remain separate evidence.
+The independent [Access measurement package](Benchmarks/Access/DESIGN.md) owns
+the Native executable and observation boundary outside this package manifest and
+correctness test graph. Normal/Embedded functional runtime gates remain separate
+evidence. CI keeps exact test-count contracts and committed benchmark dependency
+locks. The bitmap/full-text lane retains its August 14 compiler and reviewed
+median bounds; the unit/parity lane retains its separate September 4 compiler.
 
 
 ### AS25 integrated acceptance (2026-10-25)
@@ -369,19 +372,19 @@ files and initial user files retain their recorded hashes.
 
 [Integrated evidence](../.codex-tools/access-shutdown-20261025/integration-verification.json)
 links the runtime records, unchanged-source guards and
-[complete Native performance acceptance](Tests/DatabaseAccessPerformance/DESIGN.md).
+[complete Native performance acceptance](Benchmarks/Access/Sources/DatabaseAccessPerformanceContract/DESIGN.md).
 
 
 ### RX25 execution refactoring scope
 
 TAIL25 closes the remaining scalar-allocation and concurrent-CTE timing gaps
 under [SQLScalar](Sources/DatabaseEngine/QueryExecution/SQLScalar/DESIGN.md#tail25-control-and-value-ownership)
-and the [performance owner](Tests/DatabaseAccessPerformance/DESIGN.md). It keeps
+and the [performance owner](Benchmarks/Access/Sources/DatabaseAccessPerformanceContract/DESIGN.md). It keeps
 the original single-meter, authority, rollback and lifecycle boundaries; SQLite
 transaction capacity remains a StorageKit contract.
 
 TAIL25 source`f0286841` passes Native2650 and release standard/Embedded four-group
-runtimes. The [matched measured results](Tests/DatabaseAccessPerformance/DESIGN.md#tail25-measured-results-2026-10-25)
+runtimes. The [matched measured results](Benchmarks/Access/Sources/DatabaseAccessPerformanceContract/DESIGN.md#tail25-measured-results-2026-10-25)
 retain both allocation baselines, common-origin/rank timing, identical-binary and
 WAL capacity controls, and the original tail events with the fixed pooled audit.
 
@@ -390,7 +393,7 @@ single-row projection and ORDER fingerprint work under the
 [QueryExecution contract](Sources/DatabaseEngine/QueryExecution/DESIGN.md#speed25-repeated-execution-costs).
 Existing correctness evidence remains scoped to its source; latency and
 throughput require paired measurement and are not inferred from passing tests.
-The [measured acceptance](Tests/DatabaseAccessPerformance/DESIGN.md#speed25-measured-results-2026-10-25)
+The [measured acceptance](Benchmarks/Access/Sources/DatabaseAccessPerformanceContract/DESIGN.md#speed25-measured-results-2026-10-25)
 records actual speed gains, the concurrent small-workload p50 variation and
 the remaining historical allocation-volume cost separately.
 SPEED25 source at`c2e5630c` passed Native2649 and exact Swift6.4.0 release
@@ -414,6 +417,6 @@ The async scalar adapter retains one necessary suspension while synchronous
 instructions and positional reads avoid per-node scheduling. Sequence metering
 has one request owner. Authorization, typed failures, original budgets,
 rollback, publication and connection lifetime remain the existing contracts.
-[Performance acceptance](Tests/DatabaseAccessPerformance/DESIGN.md#rx25-matched-refactoring-measurements-2026-10-25)
+[Performance acceptance](Benchmarks/Access/Sources/DatabaseAccessPerformanceContract/DESIGN.md#rx25-matched-refactoring-measurements-2026-10-25)
 records measured allocation reduction and the unresolved elapsed-time variation;
 it does not claim a speed gain from the shared-desktop timing pair.

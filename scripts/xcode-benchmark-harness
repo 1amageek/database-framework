@@ -96,6 +96,23 @@ for command in awk cp date find git grep mkdir mktemp perl plutil rm sed shasum 
   fi
 done
 
+pinned_swiftc="$(xcrun --toolchain "$TOOLCHAIN_IDENTIFIER" --find swiftc)"
+toolchain_root="$(cd "$(dirname "$pinned_swiftc")/../.." && pwd)"
+if ! selected_identifier="$(plutil -extract CFBundleIdentifier raw -o - "$toolchain_root/Info.plist" 2>/dev/null)"; then
+  echo "error: selected compiler has no verifiable toolchain identity ($pinned_swiftc)" >&2
+  exit 1
+fi
+if [[ "$selected_identifier" != "$TOOLCHAIN_IDENTIFIER" ]]; then
+  echo "error: requested $TOOLCHAIN_IDENTIFIER but xcrun selected $selected_identifier ($pinned_swiftc)" >&2
+  exit 1
+fi
+printf 'verified-toolchain=%s compiler=%s\n' "$selected_identifier" "$pinned_swiftc"
+testing_library_path="$toolchain_root/usr/lib/swift/macosx/testing"
+if [[ ! -f "$testing_library_path/libTesting.dylib" ]]; then
+  echo "error: pinned Swift Testing runtime is unavailable: $testing_library_path" >&2
+  exit 1
+fi
+
 if [[ -n "$(git -C "$ROOT_DIR" status --porcelain --untracked-files=all)" ]]; then
   echo "error: benchmark evidence requires a clean committed source tree" >&2
   exit 1
@@ -226,15 +243,10 @@ fi
   printf 'tree=%s\n' "$source_tree"
   printf 'source-clean=true\n'
   printf 'package=%s\n' "$relative_package_directory"
+  printf 'verified-toolchain=%s\n' "$selected_identifier"
+  printf 'compiler=%s\n' "$pinned_swiftc"
+  "$pinned_swiftc" --version
 } | tee "$source_evidence_path"
-
-pinned_swiftc="$(xcrun --toolchain "$TOOLCHAIN_IDENTIFIER" --find swiftc)"
-toolchain_root="$(cd "$(dirname "$pinned_swiftc")/../.." && pwd)"
-testing_library_path="$toolchain_root/usr/lib/swift/macosx/testing"
-if [[ ! -f "$testing_library_path/libTesting.dylib" ]]; then
-  echo "error: pinned Swift Testing runtime is unavailable: $testing_library_path" >&2
-  exit 1
-fi
 
 resolved_checksum_before="$(shasum -a 256 "$package_directory/Package.resolved")"
 

@@ -7,6 +7,7 @@
 # Swift Package Manager
 /.build/
 /Benchmarks/.build/
+/Benchmarks/Access/.build/
 /Benchmarks/BitmapCore/.build/
 /Benchmarks/FullTextQuery/.build/
 /.build-*/

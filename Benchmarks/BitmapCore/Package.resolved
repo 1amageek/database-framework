@@ -2,12 +2,19 @@
   "originHash" : "fa338ad6152b98c696d69ccd0bde43359d54b552651382f323349384add83347",
   "pins" : [
     {
+      "identity" : "database-client",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/1amageek/database-client.git",
+      "state" : {
+        "revision" : "89f03891f9d6700e7eb6d10fd04aaa1a50bf0d5f"
+      }
+    },
+    {
       "identity" : "database-kit",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/database-kit.git",
       "state" : {
-        "revision" : "7492a39d5040bd83730a7cd84ed8de62b3f4741e",
-        "version" : "26.831.1"
+        "revision" : "678b70daee9ef9d72966f147d6e6bb4110a7da95"
       }
     },
     {
@@ -15,8 +22,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/database-types.git",
       "state" : {
-        "revision" : "d075edcb37f8a7be845c5be4d6a7a226d899505b",
-        "version" : "26.831.0"
+        "revision" : "ef1938fd73c1663664eba04df5baa6d5c6b6a306",
+        "version" : "26.1021.0"
       }
     },
     {
@@ -26,6 +33,15 @@
       "state" : {
         "revision" : "1b980cd76cbfe35e9d71f5ce12e1bac7c3286de3",
         "version" : "0.4.1"
+      }
+    },
+    {
+      "identity" : "javascriptkit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/1amageek/JavaScriptKit.git",
+      "state" : {
+        "revision" : "166dc39b6e282a0f039762381332ba6333ec809c",
+        "version" : "0.57.3"
       }
     },
     {
@@ -42,8 +58,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/storage-kit.git",
       "state" : {
-        "revision" : "1666339eaeaae193b628834286413c4bccd2d3af",
-        "version" : "26.831.1"
+        "revision" : "b63d99931a511c5e339ed257e4936fb3c692f30f"
       }
     },
     {
