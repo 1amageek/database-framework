@@ -326,6 +326,26 @@ The original two small computed conditions improve raw p50 by15.01%/4.26% and co
 
 [Follow-up plan, host snapshots and executable identities](../../../.codex-tools/sql-scalar-tail-20261025/quiet-confirmed-plan.json), [raw current samples](../../../.codex-tools/sql-scalar-tail-20261025/quiet-confirmed-current/samples.json), and [identical-binary samples](../../../.codex-tools/sql-scalar-tail-20261025/quiet-confirmed-aa/samples.json) preserve the complete new observation.
 
+### TAIL25 single user-requested shared-load repetition
+
+The user explicitly requested exactly one more timing observation and noted that other builds were running. This is a shared-load reference, not an isolated-host claim. The same retained binary hashes, fixture,9 rounds and AB/BA order were used for the same nine current-baseline conditions plus the two-condition identical-binary control. Earlier samples and conclusions remain unchanged; no extra repeat is selected after seeing these results.
+
+| Condition | Rows / workers | Raw p50 before → after ms | Median cohort p50 before → after ms | Cohort MAD before → after ms | p95 before → after ms |
+|---|---:|---:|---:|---:|---:|
+| computed | 100 / 4 | 9.938 → 9.621 | 9.870 → 9.562 | 0.142 → 0.160 | 15.947 → 15.446 |
+| computed | 1000 / 4 | 94.452 → 91.770 | 94.637 → 90.323 | 1.838 → 1.157 | 154.167 → 144.971 |
+| wide | 100 / 4 | 25.819 → 22.793 | 25.626 → 22.843 | 0.287 → 0.099 | 41.116 → 36.210 |
+| wide | 1000 / 4 | 288.792 → 223.869 | 246.419 → 223.754 | 4.296 → 2.284 | 493.314 → 359.436 |
+| computed | 1000 / 1 | 38.161 → 37.019 | 38.163 → 37.020 | 0.606 → 0.430 | 45.354 → 38.687 |
+| wide | 1000 / 1 | 98.596 → 90.572 | 98.597 → 90.572 | 0.386 → 1.325 | 101.522 → 103.355 |
+| computed | 10000 / 1 | 379.217 → 364.601 | 379.219 → 364.602 | 2.469 → 1.657 | 387.370 → 375.304 |
+| ordered | 10000 / 1 | 307.714 → 306.542 | 307.716 → 306.543 | 2.268 → 2.153 | 316.014 → 313.597 |
+| ties | 1000 / 1 | 38.260 → 36.871 | 38.261 → 36.871 | 0.302 → 0.452 | 39.184 → 37.598 |
+
+All nine raw and cohort medians decrease in this observation. The unchanged positional ORDER control differs only0.38%, so that small difference is not attributed to scalar optimization. The identical-binary raw-p50 ratios are1.0128/0.9950 and cohort ratios0.9836/1.0031. Cohort MAD decreases in six conditions and increases in three; small computed100/four-worker MAD rises0.142→0.160ms, while computed1000/four-worker MAD falls1.838→1.157ms. Wide1000/single-worker p95 increases1.81%. Typical-latency improvements remain visible, but universal jitter or tail reduction is still not established. This fixed additional observation closes the requested repeat; it does not trigger another run or an execution-code change.
+
+[Plan and host process snapshots](../../../.codex-tools/sql-scalar-tail-20261025/shared-load-once-plan.json), [complete samples](../../../.codex-tools/sql-scalar-tail-20261025/shared-load-once-current/samples.json), and [identical-binary samples](../../../.codex-tools/sql-scalar-tail-20261025/shared-load-once-aa/samples.json) preserve the shared-load context and every result. Existing runtime and allocation proofs remain valid because their execution inputs are unchanged; no build cache was regenerated.
+
 ### SPEED25 measured results, 2026-10-25
 
 Identical fixture sources, C probe/header and URL pins were compiled against
