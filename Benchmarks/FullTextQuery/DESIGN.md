@@ -46,3 +46,11 @@ counts, zero warnings, unchanged lock and all existing median bounds. The CI
 macOS26-to-SQLite27 link warning is the original failing host contract. A local
 linker fixture distinguishes the incompatible and matching deployment floors;
 final acceptance still requires the actual full-text build and execution.
+
+The cursor scheduling contract is owned by
+[StorageKit Storage](../../../storage-kit/Sources/StorageKit/Storage/DESIGN.md).
+The pinned graph includes its bounded handoff quantum. FullText retains complete
+posting validation, budget admission, canonical identifiers and tail-error
+handling; no source scan is shortened for an output LIMIT. Local matched runtime
+observations establish the scheduling improvement; the archived URL-graph CI
+run remains authoritative for this package's existing median maxima.

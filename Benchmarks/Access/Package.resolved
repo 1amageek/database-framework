@@ -1,5 +1,5 @@
 {
-  "originHash" : "fa9bd713d89abb316843974785de3081dc95e5b29fae31e74ae9e59b6bb339cc",
+  "originHash" : "c32bf163a2ae8079f6372649217c5b6a2bf13aac2822133501aa66dc651349fb",
   "pins" : [
     {
       "identity" : "database-client",
@@ -58,7 +58,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/1amageek/storage-kit.git",
       "state" : {
-        "revision" : "b63d99931a511c5e339ed257e4936fb3c692f30f"
+        "revision" : "18f968e853084e61396f9c16ae5ca03db7fee364"
       }
     },
     {

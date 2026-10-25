@@ -243,6 +243,13 @@ semantics, or limit pushdown. Retiring the obsolete read facades and
 unconnected utility surfaces is an API-surface correction, not a compatibility
 bridge. The design does not add a second decoded-algebra representation.
 
+The cursor scheduling quantum is owned by the
+[StorageKit Storage component](../../../storage-kit/Sources/StorageKit/Storage/DESIGN.md).
+A bounded handoff cadence may reduce scheduling overhead; FullText still
+advances every posting and performs the same admission/decode/canonicalization,
+tail validation, cancellation and cleanup. It does not substitute an output
+limit for a storage scan limit.
+
 ## Verification and Change Impact
 
 The owning tests are in `Tests/FullTextIndexTests`. The retained behavior map

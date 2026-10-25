@@ -118,7 +118,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/storage-kit.git",
-            revision: "b63d99931a511c5e339ed257e4936fb3c692f30f"
+            revision: "18f968e853084e61396f9c16ae5ca03db7fee364"
         ),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.7.0"),
         .package(url: "https://github.com/apple/swift-metrics.git", from: "2.7.0"),
