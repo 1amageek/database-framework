@@ -146,3 +146,50 @@ Observation calibration records 20000 malloc/free iterations: disabled
 516000ns, enabled 497000ns. This short diagnostic is not evidence that
 instrumentation is faster or free. All reported response timings come from
 the separate process without the injected allocation observer.
+
+
+### RX25 matched refactoring measurements (2026-10-25)
+
+Final source is `ee1af9dd`; the archived baseline has the original `a7bcf834`
+production path. Both run the unchanged 10000-row fixture, SQLite in-memory
+single-connection configuration, input/budget/output checks and URL pins under
+Swift 6.4.0 release. Fresh adjacent baseline/final runs each passed all 84 path
+scenarios: 420 timing and 420 separate allocation records. The allocator observer
+passed its 40000-call, four-thread self-check. Complete data and input provenance:
+[matched comparisons](../../../.codex-tools/sql-execution-refactor-20261025/matched-comparisons.json).
+
+| SQLite execution, 10000 output rows | Before | Final | Change |
+|---|---:|---:|---:|
+| Direct allocator calls/query, concurrency 1 | 1883702 | 1760780 | -6.53% |
+| Direct requested allocation bytes/query | 133827552 | 126439601 | -5.52% |
+| Named allocator calls/query, concurrency 1 | 1883703 | 1760780 | -6.53% |
+| Named requested allocation bytes/query | 133826984 | 126438937 | -5.52% |
+| Retained heap, concurrency 1 | 524912 bytes | 524912 bytes | Equal |
+| Retained heap, concurrency 8 | 4198784 bytes | 4198784 bytes | Equal |
+| Process-cumulative peak RSS, complete observation run | 72.89 MiB | 73.03 MiB | +0.19% |
+
+Requested bytes are cumulative allocator requests, not copied bytes or live heap.
+Allocator heap high-water remains unavailable. One intermediate run increased
+requested bytes by12.6%; its positional-root VM startup was corrected before
+acceptance, with an exact-overlay-budget regression and the final decrease above.
+
+| Raw SQLite timing, direct path | Before p50/p95 ms | Final p50/p95 ms | Before/final queries per second |
+|---|---:|---:|---:|
+| Concurrency 1 | 369.194 / 374.557 | 564.934 / 629.453 | 2.708 / 1.770 |
+| Concurrency 8 | 1653.548 / 2910.124 | 2074.562 / 3744.716 | 2.749 / 2.226 |
+
+These elapsed values do not establish a causal speed improvement or regression:
+the source-unchanged Client loopback control also slowed from10.079 to18.718ms
+at concurrency1 and12.729 to22.456ms at concurrency8, with unchanged allocation
+counts. An earlier timing pair moved in the opposite direction. All owned builds
+were stopped before the final pair, but this shared desktop's elapsed-time
+variation remains unresolved. Preserve the raw latency/throughput results;
+accept the reproducible allocation reduction and equal retained memory without
+claiming a latency gain. Dedicated-runner scheduling/power observations are
+needed for a causal speed claim, rather than another uncontrolled repetition.
+
+SQL admission overlap is separately proven by the controlled Native commit
+barrier test. This fixture intentionally retains one physical SQLite connection;
+its throughput does not measure a parallel backend pool. Client loopback is not
+HTTP/server/network performance. Standard/Embedded four-case functional results
+do not constitute portable performance or durable-storage measurements.

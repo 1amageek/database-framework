@@ -382,3 +382,14 @@ and its SQLRelations child own positional transfer, ordering and scalar control;
 with the sequence, transaction and schema owners. Lower owner designs are
 updated before their implementations. The workspace PROGRESS owns sprint order
 and completion evidence; unrelated user changes remain outside task commits.
+
+
+RX25 acceptance uses Native2647 (Engine1437, Database233, SQLite152, QueryAST825)
+and exact Swift6.4.0 release standard/Embedded four-case runtime fixtures.
+The async scalar adapter retains one necessary suspension while synchronous
+instructions and positional reads avoid per-node scheduling. Sequence metering
+has one request owner. Authorization, typed failures, original budgets,
+rollback, publication and connection lifetime remain the existing contracts.
+[Performance acceptance](Tests/DatabaseAccessPerformance/DESIGN.md#rx25-matched-refactoring-measurements-2026-10-25)
+records measured allocation reduction and the unresolved elapsed-time variation;
+it does not claim a speed gain from the shared-desktop timing pair.
