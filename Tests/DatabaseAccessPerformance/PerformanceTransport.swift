@@ -1,4 +1,4 @@
-#if os(macOS)
+#if os(macOS) && !MultiBase
 import DatabaseClient
 import DatabaseKit
 import DatabaseTypes

@@ -33,7 +33,10 @@ Instructions replace scalar recursive descent. Every evaluated node consumes
 work and checks the original cancel/deadline. Admitted stack capacity and
 payload leases survive contextual suspension and end on success/failure.
 Only selected CASE/COALESCE/boolean branches run. CASE operand evaluation is
-once, coercion is per WHEN and before that WHEN's other operand. The original
+once, coercion is per WHEN and before that WHEN's other operand. GREATEST and
+LEAST evaluate arguments in order, retaining only the current selected value
+and the next argument; discarded candidates release their leases before the
+following argument is evaluated. The original
 selected numeric, collection, temporal, pattern and comparison kernels remain
 the sole semantic implementations. Diagnostics retain child occurrences.
 

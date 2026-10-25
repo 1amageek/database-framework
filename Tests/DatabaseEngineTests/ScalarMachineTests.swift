@@ -58,13 +58,32 @@ struct ScalarMachineTests {
         #expect(limited.retainedIntermediateBytes == 0)
     }
 
+    @Test("Extrema retain only the current selection and next computed argument")
+    func boundedExtremeArguments() async throws {
+        for greatest in [true, false] {
+            let meter = makeMeter(work: 10000000, bytes: 256 * 1024)
+            do {
+                let child = Expression.function(FunctionCall(name: "repeat", arguments: [.literal(.string("x")),
+                    .literal(.queryValue(.primitive(.int32(65536)), type: .sql(.integer)))]))
+                let arguments = Array(repeating: child, count: 8)
+                let expression = greatest ? Expression.greatest(arguments) : Expression.least(arguments)
+                let result = try await DatabaseContext.evaluateCanonicalScalar(binder(meter).bind(expression),
+                    on: empty(), workMeter: meter)
+                #expect(result.value == .primitive(.string(String(repeating: "x", count: 65536))))
+                withExtendedLifetime(result) {}
+            }
+            #expect(meter.retainedIntermediateBytes == 0)
+            #expect(meter.retainedIntermediateRows == 0)
+        }
+    }
+
     private func binder(_ meter: DatabaseWorkMeter) -> CanonicalQueryTypeBinder {
         CanonicalQueryTypeBinder(columns: [], resolveColumn: { _ in throw DatabaseExpressionEvaluationError.missingColumn("test") },
             wildcardSlots: { _ in [] }, workMeter: meter)
     }
     private func empty() -> CanonicalSourceRow { CanonicalSourceRow(values: [], layout: CanonicalSourceLayout(slots: [])) }
-    private func makeMeter(work: UInt64 = 1000000) -> DatabaseWorkMeter {
+    private func makeMeter(work: UInt64 = 1000000, bytes: UInt64 = 64 * 1024 * 1024) -> DatabaseWorkMeter {
         DatabaseWorkMeter(budget: ExecutionBudget(maximumRows: 10000, maximumWorkUnits: work,
-            maximumIntermediateBytes: 64 * 1024 * 1024, timeoutMilliseconds: 30000), monotonicClock: SystemStorageClock())
+            maximumIntermediateBytes: bytes, timeoutMilliseconds: 30000), monotonicClock: SystemStorageClock())
     }
 }

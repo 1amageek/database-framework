@@ -1,4 +1,4 @@
-#if os(macOS) && SQLITE
+#if os(macOS) && SQLITE && !MultiBase
 import AccessPerformanceProbe
 import Database
 import DatabaseAccess
@@ -291,7 +291,7 @@ struct AccessPerformanceContract {
 #else
 @main
 struct UnavailableAccessPerformanceContract {
-    enum Failure: Error { case requiresMacOSAndSQLite }
-    static func main() throws { throw Failure.requiresMacOSAndSQLite }
+    enum Failure: Error { case requiresMacOSSQLiteAndSingleRoot }
+    static func main() throws { throw Failure.requiresMacOSSQLiteAndSingleRoot }
 }
 #endif

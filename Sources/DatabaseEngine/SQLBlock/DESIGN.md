@@ -767,6 +767,9 @@ promote. A combined cleanup failure cannot retry. Promotion retains original
 principal, SQL input, temporal timeline, meter consumption and deadline, creates
 no result and never replays an already consumed sequence effect. Reacquisition
 never upgrades storage authority: the original write permission is checked anew.
+A request restricted to read-only pagination rejects the hidden effect instead
+of promoting; its rollback/close and permit return complete before the typed
+unsupported-paged-query error escapes, without consuming an allocator value.
 
 Native controlled-commit tests must prove overlapping reads and exclusive
 blocking without sleeps, queue fairness and cancellation/timeout permit races;
@@ -774,3 +777,14 @@ view/CTE sequence and existing allocation/rollback/restart tests retain their
 owners. Exact release portable runtime also executes concurrent reads and a
 sequence-backed view before final completion. Final before/after benchmarks keep
 the original backend configuration and distinguish admission from backend limits.
+
+| RX25 state | Native / standard WASM / Embedded storage and isolation | Read / mutation entries | End of lifetime |
+|---|---|---|---|
+| Active permits, fair waiters and identities | Same SQLRequestAdmission actor | enter / grant / drain / expire / leave | Exact permit return releases its claim; deadline task is joined |
+| Exclusive effect permission and replay history | Same SQLSequenceRequest actor | effect / promoteAdmission / beginAttempt | Request close precedes permit return |
+| Scalar control and ORDER descriptor reuse | Invocation-exclusive admitted arrays / decoration-local value | Selected instruction loop / columns(for:meter:) | Scope success or failure releases retained claims |
+
+These source declarations have no target-conditioned storage, conformance or
+mutation path. Existing timeline, failure position, prepared registry and CTE
+state keep their shared Mutex/actor contracts listed above. Target compilation
+and actual concurrent/cancellation/close fixtures verify the composed paths.

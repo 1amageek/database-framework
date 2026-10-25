@@ -122,6 +122,9 @@ struct NamedDatabaseAccessTests {
         _ = try await connection.execute("CREATE SEQUENCE counter START WITH 1 MAXVALUE 100; CREATE VIEW sequence_view AS SELECT nextval('counter') AS n")
         #expect(try await values(connection.execute("SELECT n FROM sequence_view").rows) == [[.primitive(.int64(1))]])
         await #expect(throws: SQLExecutionFailure.self) {
+            try await connection.execute("SELECT n FROM sequence_view", options: .init(pageSize: 1))
+        }
+        await #expect(throws: SQLExecutionFailure.self) {
             try await connection.execute("SELECT n, 1/0 FROM sequence_view")
         }
         #expect(try await values(connection.execute("SELECT n FROM sequence_view").rows) == [[.primitive(.int64(3))]])

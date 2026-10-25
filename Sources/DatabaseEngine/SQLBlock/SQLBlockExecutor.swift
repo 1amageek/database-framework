@@ -153,6 +153,12 @@ public struct SQLBlockExecutor: Sendable {
             } catch is SQLExclusiveAdmissionDemand where permit.mode == .shared {
                 // Only the unwrapped demand proves rollback and authoritative close succeeded.
                 // No event exists yet; a cleanup failure never enters this promotion path.
+                guard !options.requiresReadOnlyQuery else {
+                    do { try await request.close() }
+                    catch { await admission.leave(permit); throw error }
+                    await admission.leave(permit)
+                    throw SQLBlockExecutionError.unsupportedPagedQuery
+                }
                 await admission.leave(permit)
                 permit = try await admission.enter(.exclusive, meter: meter, clock: clock, deadline: deadline)
                 do { try await request.promoteAdmission() }

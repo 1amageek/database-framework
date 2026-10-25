@@ -148,6 +148,10 @@ struct EmbeddedRuntimeContract {
         try require(try await values(shared.1.rows) == [[.primitive(.int64(100))]])
         _ = try await primary.execute("CREATE SEQUENCE runtime_counter START WITH 1 MAXVALUE 100; CREATE VIEW runtime_sequence_view AS SELECT nextval('runtime_counter') AS n")
         try require(try await values(primary.execute("SELECT n FROM runtime_sequence_view").rows) == [[.primitive(.int64(1))]])
+        var pagedEffectRejected = false
+        do { _ = try await primary.execute("SELECT n FROM runtime_sequence_view", options: .init(pageSize: 1)) }
+        catch { pagedEffectRejected = true }
+        try require(pagedEffectRejected)
         try require(try await values(primary.execute("SELECT n FROM runtime_sequence_view").rows) == [[.primitive(.int64(2))]])
         await directory.shutdown()
         try await directory.configure(databases: ["primary": .borrowingEmbedded(context: secondContext, maximumConcurrentExecutions: 2)])

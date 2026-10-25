@@ -4,7 +4,9 @@
 
 Native measurement executable owned by the [Framework package](../../DESIGN.md).
 It verifies the DatabaseAccess performance acceptance matrix without entering a
-production library product. Children: none. The fixed Native lane uses Swift
+production library product. Children: none. The executable supports the default
+single-root configuration only; MultiBase builds compile an explicit unavailable
+entry point and do not claim a performance result. The fixed Native lane uses Swift
 6.4.0 release with macOS SDK identity recorded by its harness. Ordinary/Embedded
 runtime regression remains in the existing adapter and Client runtime gates;
 these Native measurements are not portable performance claims.

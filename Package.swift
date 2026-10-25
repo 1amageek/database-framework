@@ -195,6 +195,7 @@ let package = Package(
                 "QueryExecution/SQLAggregation/DESIGN.md",
                 "QueryExecution/SQLJSON/DESIGN.md",
                 "QueryExecution/SQLRelations/DESIGN.md",
+                "QueryExecution/SQLScalar/DESIGN.md",
                 "QueryExecution/SQLTableFunctions/DESIGN.md",
                 "QueryExecution/SQLTemporal/DESIGN.md",
                 "QueryExecution/SQLTemporal/TimeZoneRules/DESIGN.md",

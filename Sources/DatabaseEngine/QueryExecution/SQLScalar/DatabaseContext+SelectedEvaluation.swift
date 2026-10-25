@@ -104,6 +104,7 @@ extension DatabaseContext {
         case evaluate(CanonicalBoundExpression)
         case kernel(CanonicalBoundExpression, Int)
         case coalesce(CanonicalBoundExpression, Int)
+        case extreme(CanonicalBoundExpression, Int, ProjectedQueryValue?)
         case boolean(CanonicalBoundExpression)
         case normalize(CanonicalBoundExpression)
         case caseOperand(CanonicalBoundExpression)
@@ -152,7 +153,7 @@ extension DatabaseContext {
             }
             let condition = bound.children[offset + index]
             if let operand {
-                guard condition.children.count == 2 else { throw DatabaseExpressionEvaluationError.typeMismatch(operation: "simple CASE selected equality") }
+                guard case .equal = condition.expression, condition.children.count == 2 else { throw DatabaseExpressionEvaluationError.typeMismatch(operation: "simple CASE selected equality") }
                 let left: ProjectedQueryValue
                 do { left = try coerceSelectedComparisonValue(operand.value, from: bound.children[0].type,
                     to: condition.children[0].type, temporalEnvironment: temporal, workMeter: workMeter) }
@@ -181,6 +182,9 @@ extension DatabaseContext {
                     case .coalesce:
                         if bound.children.isEmpty { try append(normalized(.init(value: .primitive(.null), leases: [], payloadIsRetained: false), to: bound)) }
                         else { try push(.coalesce(bound, 0)); try push(.evaluate(bound.children[0])) }
+                    case .greatest, .least:
+                        if bound.children.isEmpty { try append(normalized(.init(value: .primitive(.null), leases: [], payloadIsRetained: false), to: bound)) }
+                        else { try push(.extreme(bound, 0, nil)); try push(.evaluate(bound.children[0])) }
                     case .and, .or:
                         try push(.boolean(bound)); try push(.evaluate(bound.children[0]))
                     case .arraySubquery, .subquery, .exists, .inSubquery, .aggregate,
@@ -235,6 +239,23 @@ extension DatabaseContext {
                     else if index + 1 < bound.children.count {
                         try push(.coalesce(bound, index + 1)); try push(.evaluate(bound.children[index + 1]))
                     } else { try append(normalized(.init(value: .primitive(.null), leases: [], payloadIsRetained: false), to: bound)) }
+                case .extreme(let bound, let index, let current):
+                    occurrence = bound.occurrence
+                    let candidate = values.removeLast()
+                    let selected: ProjectedQueryValue?
+                    if candidate.value.isNull { selected = current }
+                    else if let current {
+                        let greatest: Bool
+                        if case .greatest = bound.expression { greatest = true } else { greatest = false }
+                        selected = try selectedComparison(candidate.value, current.value,
+                            comparison: greatest ? .greaterThan : .lessThan, leftType: bound.type, rightType: bound.type,
+                            temporalEnvironment: temporal, mode: bound.comparisonMode, workMeter: workMeter) == true ? candidate : current
+                    } else { selected = candidate }
+                    if index + 1 < bound.children.count {
+                        try push(.extreme(bound, index + 1, selected)); try push(.evaluate(bound.children[index + 1]))
+                    } else {
+                        try append(normalized(selected ?? .init(value: .primitive(.null), leases: [], payloadIsRetained: false), to: bound))
+                    }
                 case .boolean(let bound):
                     occurrence = bound.occurrence
                     let left = values.last!
@@ -932,19 +953,6 @@ extension DatabaseContext {
                     rightType: bound.children[1].type, temporalEnvironment: temporalEnvironment,
                     mode: bound.comparisonMode, workMeter: workMeter) == true
             return try booleanResult(negated ? equal : !equal)
-        case .greatest, .least:
-            let greatest: Bool
-            if case .greatest = bound.expression { greatest = true } else { greatest = false }
-            var selected: ProjectedQueryValue?
-            for value in children where !value.value.isNull {
-                if let current = selected {
-                    if try selectedComparison(value.value, current.value, comparison: greatest ? .greaterThan : .lessThan,
-                        leftType: bound.type, rightType: bound.type, temporalEnvironment: temporalEnvironment,
-                        mode: bound.comparisonMode, workMeter: workMeter) == true { selected = value }
-                } else { selected = value }
-            }
-            let value = selected ?? ProjectedQueryValue(value: .primitive(.null), leases: [], payloadIsRetained: false)
-            return ProjectedQueryValue(value: try normalize(value.value), leases: value.leases, payloadIsRetained: value.payloadIsRetained)
         case .nullIf:
             let left = children[0], right = children[1]
             let equal = try selectedComparison(left.value, right.value, comparison: .equal,
