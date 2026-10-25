@@ -53,6 +53,15 @@ struct EmbeddedRuntimeContract {
             try require(try await values(scalar.rows) == [[.primitive(.int32(7)), .primitive(.int32(14)),
                 .primitive(.string("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11")), .primitive(.string("00ff80")),
                 .primitive(.int32(255)), .primitive(.int32(1)), .primitive(.int32(3)), .primitive(.int32(24))]])
+            phase = "computed-projection"
+            let tuples = (1...100).map { "(\($0))" }.joined(separator: ",")
+            let projection = (0..<8).map { "n+\($0) AS c\($0)" }.joined(separator: ",")
+            let computed = try await execute(access, .sql("WITH q AS NOT MATERIALIZED (SELECT n FROM (VALUES " + tuples + ") AS v(n)) SELECT " + projection + " FROM q"))
+            let computedValues = try await values(computed.rows)
+            try require(computedValues.count == 100)
+            for (index, row) in computedValues.enumerated() {
+                try require(row == (0..<8).map { .primitive(.int32(Int32(index + 1 + $0))) })
+            }
             print("EMBEDDED_ACCESS_CASE representations PASS")
             _ = try await execute(access, .sql("CREATE TABLE items(id integer); INSERT INTO items VALUES(1)"))
             var rejected = false
@@ -152,6 +161,19 @@ struct EmbeddedRuntimeContract {
         try require(try await values(result.rows) == values(primary.execute(pure).rows))
         try require(try await values(result.rows) == [[.primitive(.string("value1")), .primitive(.int32(1))], [.primitive(.string("value2")), .primitive(.int32(2))]])
         try require(try await values(analytics.execute(pure).rows) == [[.primitive(.string("analytics")), .primitive(.int32(20))]])
+        print("EMBEDDED_ACCESS_PHASE fingerprint-ties")
+        let tiedText = "SELECT name, age FROM \"EmbeddedRuntimePerson\" ORDER BY age-age"
+        let tiedSQL = try await primary.execute(SQL(text: tiedText))
+        let tiedIR = try await primary.execute(SQLParser(preservesCastOutputNames: true).parse(tiedText))
+        let tiedValues = try await values(tiedSQL.rows)
+        try require(tiedSQL.columns == tiedIR.columns && tiedValues.count == 100)
+        try require(tiedValues == (try await values(tiedIR.rows)))
+        let ages = try tiedValues.map { row -> Int32 in
+            guard row.count == 2, case .primitive(.int32(let age)) = row[1],
+                  row[0] == .primitive(.string("value\(age)")) else { throw Failure.assertion }
+            return age
+        }
+        try require(ages.sorted() == Array(Int32(1)...Int32(100)))
         print("EMBEDDED_ACCESS_PHASE concurrent-read")
         async let sharedFirst = primary.execute("SELECT count(*) FROM \"EmbeddedRuntimePerson\"")
         async let sharedSecond = primary.execute("SELECT count(*) FROM \"EmbeddedRuntimePerson\"")

@@ -81,16 +81,14 @@ struct ScalarMachineTests {
     func positionalLeafBudget() async throws {
         let schema = try CanonicalRelationSchema(unscopedColumns: ["n"], types: [.sql(.bigint)], nullability: [false])
         let row = CanonicalSourceRow(values: [.primitive(.int64(7))], layout: schema.layout)
-        let probe = makeMeter()
-        let footprint = try DatabaseContext.prospectiveSourceCompositionFootprint(row, outer: nil, workMeter: probe)
-        let meter = makeMeter(bytes: footprint.bytes)
+        let meter = makeMeter(bytes: 0)
         let bound = CanonicalBoundExpression(expression: .column(ColumnRef("n")), type: .sql(.bigint),
             isNullable: false, columnSlot: 0)
         do {
             let result = try await DatabaseContext.evaluateSelectedValue(bound, on: row,
                 context: nil, databaseContext: nil, workMeter: meter)
             #expect(result.value == .primitive(.int64(7)))
-            #expect(meter.consumedWorkUnits == probe.consumedWorkUnits + 1)
+            #expect(meter.consumedWorkUnits == 1)
             withExtendedLifetime(result) {}
         }
         #expect(meter.retainedIntermediateBytes == 0)

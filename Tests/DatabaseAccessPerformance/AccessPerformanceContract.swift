@@ -16,17 +16,23 @@ import StorageKitSystemClock
 
 @main
 struct AccessPerformanceContract {
-    enum Failure: Error { case invalidOutput, observationUnavailable, invalidClock, authorizationBypassed }
+    enum Failure: Error { case invalidOutput, observationUnavailable, invalidClock, authorizationBypassed, invalidInput }
     enum Output: Sendable {
         case local(QueryRowPage)
         case remote(QueryRowStream<PerformanceTransport>)
         case named(RowStream)
-        func consume() async throws -> (Int, Int64, Bool) {
+        func consume(width: Int = 1, ordered: Bool = true) async throws -> (Int, Int64, Bool) {
             var count = 0, sum: Int64 = 0, valid = true
+            var seen: Set<Int64> = []
             func accumulate(_ row: QueryRow) {
                 count += 1
                 let number = value(row)
-                valid = valid && row.values.count == 1 && number == Int64(count)
+                valid = valid && row.values.count == width
+                if ordered { valid = valid && number == Int64(count) }
+                else { valid = valid && number > 0 && seen.insert(number).inserted }
+                for (index, cell) in row.values.enumerated() {
+                    valid = valid && integer(cell) == number + Int64(index)
+                }
                 sum += number
             }
             switch self {
@@ -41,8 +47,15 @@ struct AccessPerformanceContract {
             return (count, sum, valid)
         }
         private func value(_ row: QueryRow) -> Int64 {
-            if let value = row.values.first, case .primitive(.int32(let number)) = value { return Int64(number) }
-            return 0
+            guard let value = row.values.first else { return 0 }
+            return integer(value)
+        }
+        private func integer(_ value: QueryValue) -> Int64 {
+            switch value {
+            case .primitive(.int32(let value)): return Int64(value)
+            case .primitive(.int64(let value)): return value
+            default: return Int64.min
+            }
         }
     }
     struct BenchmarkWallClock: WallClock {
@@ -55,6 +68,10 @@ struct AccessPerformanceContract {
             let observing = CommandLine.arguments.contains("--observe")
             let quick = CommandLine.arguments.contains("--quick")
             let rounds = quick ? 1 : 5
+            let sqlCase = argument("--sql-workload")
+            let inputRows = try positiveArgument("--input-rows", default: 10000, allowed: 1...10000)
+            let workers = try positiveArgument("--workers", default: 1, allowed: 1...8)
+            let sqlRounds = try positiveArgument("--rounds", default: 5, allowed: 1...10)
             let initial = access_performance_observe()
             guard initial.valid == 1 else { throw Failure.observationUnavailable }
             if observing {
@@ -79,8 +96,9 @@ struct AccessPerformanceContract {
             let setup = try await context.openConnection(maximumConcurrentExecutions: 8)
             defer { await setup.close() }
             _ = try await setup.execute("CREATE TABLE access_items(n integer)")
-            for start in stride(from: 1, through: 10000, by: 100) {
-                let values = (start..<(start + 100)).map { "(\($0))" }.joined(separator: ",")
+            for start in stride(from: 1, through: sqlCase == nil ? 10000 : inputRows, by: 100) {
+                let upper = min(start + 100, (sqlCase == nil ? 10000 : inputRows) + 1)
+                let values = (start..<upper).map { "(\($0))" }.joined(separator: ",")
                 _ = try await setup.execute(SQL(text: "INSERT INTO access_items VALUES " + values))
             }
             let denied = try await container.newContext(authorization: .authenticated(.init(identifier: "denied", roles: []))).openConnection()
@@ -92,6 +110,28 @@ struct AccessPerformanceContract {
                 wasDenied = true
             }
             guard wasDenied else { throw Failure.authorizationBypassed }
+            if let sqlCase {
+                let workload = try workload(sqlCase)
+                let options = QueryExecutionOptions(pageSize: 256, budget: .init(maximumRows: UInt32(inputRows),
+                    maximumWorkUnits: 100_000_000, maximumIntermediateRows: 1_000_000,
+                    maximumIntermediateBytes: 256 * 1024 * 1024, timeoutMilliseconds: 60000))
+                for round in 0...sqlRounds {
+                    let result = try await execute({
+                        guard case .rows(let rows) = try await setup.execute(SQL(text: workload.sql), options: options)
+                        else { throw Failure.invalidOutput }
+                        return .local(rows)
+                    }, count: inputRows, concurrency: workers, observing: observing,
+                        width: workload.width, ordered: sqlCase == "ordered")
+                    if round > 0 {
+                        emit(result.merging(["kind": "sql-execution", "workload": sqlCase, "inputRows": inputRows,
+                            "rows": inputRows, "concurrency": workers, "round": round,
+                            "observing": observing]) { _, new in new })
+                    }
+                }
+                emit(["kind": "complete", "scenarios": 1, "rounds": sqlRounds, "observing": observing])
+                print("ACCESS_PERFORMANCE_PASS")
+                return
+            }
             var records = 0
             for count in quick ? [100] : [1, 100, 10000] {
                 let query = TableRef("access_items").select("n").orderBy("n").limit(UInt64(count))
@@ -151,7 +191,32 @@ struct AccessPerformanceContract {
         }
     }
 
-    static func execute(_ produce: @escaping Producer, count: Int, concurrency: Int, observing: Bool) async throws -> [String: Any] {
+    static func argument(_ name: String) -> String? {
+        guard let index = CommandLine.arguments.firstIndex(of: name),
+              CommandLine.arguments.indices.contains(index + 1) else { return nil }
+        return CommandLine.arguments[index + 1]
+    }
+
+    static func positiveArgument(_ name: String, default fallback: Int, allowed: ClosedRange<Int>) throws -> Int {
+        guard let text = argument(name) else { return fallback }
+        guard let value = Int(text), allowed.contains(value) else { throw Failure.invalidInput }
+        return value
+    }
+
+    static func workload(_ name: String) throws -> (sql: String, width: Int) {
+        switch name {
+        case "ordered": return ("SELECT n FROM access_items ORDER BY n", 1)
+        case "ties": return ("SELECT n FROM access_items ORDER BY n-n", 1)
+        case "computed": return ("WITH q AS NOT MATERIALIZED (SELECT n FROM access_items) SELECT n+0 AS n FROM q", 1)
+        case "wide":
+            let projection = (0..<8).map { "n+\($0) AS c\($0)" }.joined(separator: ",")
+            return ("WITH a AS NOT MATERIALIZED (SELECT n FROM access_items), b AS NOT MATERIALIZED (SELECT n FROM a), c AS NOT MATERIALIZED (SELECT n FROM b) SELECT " + projection + " FROM c", 8)
+        default: throw Failure.invalidInput
+        }
+    }
+
+    static func execute(_ produce: @escaping Producer, count: Int, concurrency: Int, observing: Bool,
+        width: Int = 1, ordered: Bool = true) async throws -> [String: Any] {
         let before = access_performance_observe()
         var perCall: [UInt64] = []
         var total = 0, checksum: Int64 = 0, valid = true
@@ -166,7 +231,7 @@ struct AccessPerformanceContract {
             }
             retained = access_performance_observe()
             for output in outputs {
-                let value = try await output.consume(); total += value.0; checksum += value.1; valid = valid && value.2
+                let value = try await output.consume(width: width, ordered: ordered); total += value.0; checksum += value.1; valid = valid && value.2
             }
             withExtendedLifetime(outputs) {}
         } else {
@@ -174,7 +239,7 @@ struct AccessPerformanceContract {
                 for _ in 0..<concurrency {
                     group.addTask {
                         let callStart = access_performance_now()
-                        let value = try await produce().consume()
+                        let value = try await produce().consume(width: width, ordered: ordered)
                         return (access_performance_now() - callStart, value.0, value.1, value.2)
                     }
                 }
@@ -189,6 +254,7 @@ struct AccessPerformanceContract {
         guard end > start, before.valid == 1, after.valid == 1, retained.valid == 1,
             valid, total == count * concurrency, checksum == Int64(count * (count + 1) / 2 * concurrency) else { throw Failure.invalidOutput }
         var result: [String: Any] = ["wallNS": end - start, "callNS": perCall,
+            "processCPUNS": after.process_cpu_ns - before.process_cpu_ns,
             "rowsConsumed": total, "checksum": checksum,
             "queriesPerSecond": Double(concurrency) * 1e9 / Double(end - start),
             "rowsPerSecond": Double(total) * 1e9 / Double(end - start)]

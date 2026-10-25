@@ -374,6 +374,12 @@ links the runtime records, unchanged-source guards and
 
 ### RX25 execution refactoring scope
 
+SPEED25 reopens performance acceptance and removes measured repeated frame,
+single-row projection and ORDER fingerprint work under the
+[QueryExecution contract](Sources/DatabaseEngine/QueryExecution/DESIGN.md#speed25-repeated-execution-costs).
+Existing correctness evidence remains scoped to its source; latency and
+throughput require paired measurement and are not inferred from passing tests.
+
 This task preserves public invocation/result APIs, original authorization,
 request budgets, rollback and final publication while refining four execution
 responsibilities. [QueryExecution](Sources/DatabaseEngine/QueryExecution/DESIGN.md)
@@ -384,7 +390,7 @@ updated before their implementations. The workspace PROGRESS owns sprint order
 and completion evidence; unrelated user changes remain outside task commits.
 
 
-RX25 acceptance uses Native2647 (Engine1437, Database233, SQLite152, QueryAST825)
+Historical RX25 verification at5ef46212 used Native2647 (Engine1437, Database233, SQLite152, QueryAST825)
 and exact Swift6.4.0 release standard/Embedded four-case runtime fixtures.
 The async scalar adapter retains one necessary suspension while synchronous
 instructions and positional reads avoid per-node scheduling. Sequence metering

@@ -193,3 +193,40 @@ barrier test. This fixture intentionally retains one physical SQLite connection;
 its throughput does not measure a parallel backend pool. Client loopback is not
 HTTP/server/network performance. Standard/Embedded four-case functional results
 do not constitute portable performance or durable-storage measurements.
+
+### SPEED25 latency and throughput acceptance
+
+The RX25 completion judgement above is withdrawn: allocation reduction alone
+does not satisfy execution-speed acceptance. The preserved numbers remain
+historical measurements, not acceptance of the elapsed-time variation.
+
+The SQL workload mode uses the same real SQLite engine, original security and
+execution APIs, with independently selected physical input rows and worker count.
+`ordered` exercises unique ordering, `ties` forces canonical fingerprint ties,
+`computed` executes a nonmaterialized computed CTE projection, and `wide` adds
+three lexical CTE levels and eight computed outputs. Output validation checks
+all cells, row multiplicity and checksums; unordered SQL results do not assume
+source order. The ordinary named/direct fixture remains available.
+
+Before and after executables compile identical fixture bytes and URL pins with
+the same release compiler. Sequential builds stop before measurement. The runner
+alternates executable order per workload/size/concurrency block, preserves raw
+per-call latency and batch throughput, and measures allocations separately from
+uninstrumented timing. Sampling is a separate diagnostic run, never a timing
+sample. Setup is excluded from query timing, and warmup precedes recorded rounds.
+Process user+system CPU deltas are collected at the same observation boundaries;
+they include the boundary observation overhead and separate CPU work from wall
+time changes caused by competing host processes.
+
+Acceptance requires lower paired representative execution latency and higher
+throughput, with unchanged-result validation and no repeatable regression in
+the tied-order or computed/wide workload. Record noisy or inconclusive cases;
+do not dismiss adverse timing from a control alone. Allocation and requested-byte
+results describe cumulative allocation traffic; retained heap and process peak
+RSS remain separately reported and cannot establish a heap high-water bound.
+
+Projection values/flags/leases, ORDER ordinals and optional fingerprints are
+invocation-local exclusive buffers on Native, standard WASM and Embedded.
+Their reservation and the unchanged request work meter use the same Mutex-backed
+owners on every target. No new shared state, conditional Sendable conformance,
+background task, authority source or cleanup path is introduced.

@@ -46,6 +46,8 @@ AccessPerformanceObservation access_performance_observe(void) {
     observation.peak_retained_bytes = heap.max_size_in_use;
     observation.reserved_bytes = heap.size_allocated;
     observation.peak_resident_bytes = (uint64_t)process.ru_maxrss;
+    observation.process_cpu_ns = ((uint64_t)process.ru_utime.tv_sec + (uint64_t)process.ru_stime.tv_sec) * UINT64_C(1000000000)
+        + ((uint64_t)process.ru_utime.tv_usec + (uint64_t)process.ru_stime.tv_usec) * UINT64_C(1000);
     ReadCounts read = counts_reader();
     if (read) {
         read(&observation.allocation_calls, &observation.requested_bytes);

@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+"""Compare source-attributed executables with alternating, identical SQL loads."""
+import argparse
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import signal
+import statistics
+import subprocess
+import time
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--before', type=Path, required=True)
+parser.add_argument('--after', type=Path, required=True)
+parser.add_argument('--observer', type=Path, required=True)
+parser.add_argument('--result-directory', type=Path, required=True)
+parser.add_argument('--quick', action='store_true')
+parser.add_argument('--representative', action='store_true')
+parser.add_argument('--case', action='append', default=[])
+parser.add_argument('--rounds', type=int, choices=range(1, 11), default=3)
+args = parser.parse_args()
+result = args.result_directory.resolve()
+result.mkdir(parents=True, exist_ok=False)
+executables = {'before': args.before.resolve(), 'after': args.after.resolve()}
+assert all(p.is_file() for p in [*executables.values(), args.observer])
+assert executables['before'] != executables['after']
+provenance = {'started': time.time(), 'executables': {
+    name: {'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+    for name, path in executables.items()}, 'observerSHA256': hashlib.sha256(args.observer.read_bytes()).hexdigest()}
+result.joinpath('provenance.json').write_text(json.dumps(provenance, indent=2))
+records = []
+
+
+def run(version, workload, rows, workers, block, observing=False):
+    mode = 'allocation' if observing else 'time'
+    name = f'{workload}-{rows}-{workers}-{block}-{version}-{mode}'
+    command = [str(executables[version]), '--sql-workload', workload,
+               '--input-rows', str(rows), '--workers', str(workers), '--rounds', str(args.rounds)]
+    environment = dict(os.environ)
+    environment.pop('DYLD_INSERT_LIBRARIES', None)
+    if observing:
+        command.append('--observe')
+        environment['DYLD_INSERT_LIBRARIES'] = str(args.observer.resolve())
+    host = {'load': os.getloadavg(), 'start': time.time(), 'command': command}
+    with result.joinpath(name + '.log').open('w') as log:
+        process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
+                                   env=environment, start_new_session=True)
+        try:
+            code = process.wait(timeout=600)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+            raise
+    host.update(completed=time.time(), exitCode=code)
+    result.joinpath(name + '-host.json').write_text(json.dumps(host, indent=2))
+    assert code == 0, name
+    raw = result.joinpath(name + '.log').read_text()
+    assert raw.splitlines().count('ACCESS_PERFORMANCE_PASS') == 1, name
+    values = [json.loads(line[len('ACCESS_PERFORMANCE '):]) for line in raw.splitlines()
+              if line.startswith('ACCESS_PERFORMANCE ')]
+    samples = [v for v in values if v['kind'] == 'sql-execution']
+    assert len(samples) == args.rounds and {v['round'] for v in samples} == set(range(1, args.rounds + 1)), name
+    for sample in samples:
+        assert (sample['workload'], sample['inputRows'], sample['concurrency'], sample['observing']) == (
+            workload, rows, workers, observing), name
+        assert sample['rowsConsumed'] == rows * workers and sample['wallNS'] > 0, name
+        assert sample['processCPUNS'] > 0, name
+        assert sample['checksum'] == rows * (rows + 1) // 2 * workers, name
+        assert observing or len(sample['callNS']) == workers, name
+        sample.update(version=version, block=block)
+        records.append(sample)
+    print(f'{name} PASS', flush=True)
+
+
+cases = [('ordered', 100, 1), ('computed', 100, 1)] if args.quick else [
+    *[('ordered', rows, workers) for rows in (100, 1000, 10000) for workers in (1, 8)],
+    *[('ties', rows, 1) for rows in (100, 1000, 10000)],
+    *[('computed', rows, workers) for rows in (100, 1000, 10000) for workers in (1, 4)],
+    *[('wide', rows, workers) for rows in (100, 1000) for workers in (1, 4)]]
+if args.representative:
+    cases = [('ordered', 10000, 1), ('computed', 1000, 1), ('wide', 1000, 1)]
+if args.case:
+    selected = {f'{workload}:{rows}:{workers}': (workload, rows, workers) for workload, rows, workers in cases}
+    assert all(case in selected for case in args.case), 'Unknown workload/size/concurrency case'
+    cases = [selected[case] for case in dict.fromkeys(args.case)]
+for workload, rows, workers in cases:
+    for block, order in enumerate((('before', 'after'), ('after', 'before'))):
+        for version in order:
+            run(version, workload, rows, workers, block)
+observed = cases if args.quick or args.representative or args.case else [('ordered', 10000, 1), ('ties', 10000, 1),
+                                    ('computed', 10000, 1), ('wide', 1000, 4)]
+for workload, rows, workers in observed:
+    for version in ('before', 'after'):
+        run(version, workload, rows, workers, 0, observing=True)
+result.joinpath('samples.json').write_text(json.dumps(records, indent=2))
+comparisons = []
+for workload, rows, workers in cases:
+    entry = dict(workload=workload, inputRows=rows, concurrency=workers)
+    for version in executables:
+        selected = [v for v in records if (v['workload'], v['inputRows'], v['concurrency'], v['version']) == (
+            workload, rows, workers, version)]
+        timed = [v for v in selected if not v['observing']]
+        allocation = [v for v in selected if v['observing']]
+        calls = sorted(n for v in timed for n in v['callNS'])
+        entry[version] = {'latencyP50NS': statistics.median(calls),
+            'latencyP95NS': calls[math.ceil(len(calls) * .95) - 1],
+            'queriesPerSecond': statistics.median(v['queriesPerSecond'] for v in timed),
+            'processCPUNSPerQuery': statistics.median(v['processCPUNS'] / workers for v in timed)}
+        if allocation:
+            entry[version].update(allocatorCallsPerQuery=statistics.median(v['allocationCalls'] / workers for v in allocation),
+                requestedBytesPerQuery=statistics.median(v['requestedBytes'] / workers for v in allocation),
+                retainedHeapDelta=statistics.median(v['retainedHeapDelta'] for v in allocation),
+                processPeakRSSBytes=max(v['processPeakRSSBytes'] for v in allocation))
+    entry['afterToBefore'] = {key: entry['after'][key] / value for key, value in entry['before'].items() if value > 0}
+    comparisons.append(entry)
+result.joinpath('comparisons.json').write_text(json.dumps(comparisons, indent=2))
+provenance['completed'] = time.time()
+result.joinpath('provenance.json').write_text(json.dumps(provenance, indent=2))
+print(f'SQL_EXECUTION_MEASUREMENTS_COMPLETE cases={len(cases)}; assess latency/throughput ratios and raw variation')

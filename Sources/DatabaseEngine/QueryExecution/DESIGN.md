@@ -2208,8 +2208,9 @@ selected root -> synchronous instruction/value loop
 Contextual execution retains the original transaction, lexical frames, grouping,
 window values, temporal environment and source authority. Its existing relation
 pull/cleanup scheduling remains the cooperative boundary for recursive queries;
-the expression driver yields only around actual contextual descent, preserving
-fixed-target stack safety without scheduling every scalar column. No detached
+the expression driver retains one suspension at each async evaluation entry and
+additional suspensions around contextual descent, preserving the demonstrated
+fixed-target continuation bound. No detached
 task, alternate evaluator, new meter or changed stack size is introduced.
 
 The machine uses the existing selected normalization/comparison/scalar kernels.
@@ -2219,3 +2220,41 @@ that WHEN's other operand. Failures retain the most specific occurrence. Native
 selected scalar/group/window/volatile/lazy tests and release standard/Embedded
 UUID/bytea, wide/deep expression, CTE, budget/rollback/lifecycle fixtures are
 required before the sprint is complete.
+
+### SPEED25 repeated execution costs
+
+An already admitted row with no outer frame is the effective evaluation frame.
+Reading it does not allocate an overlay, reserve hypothetical composition storage,
+or traverse unrelated columns. Actual outer-frame composition is still admitted
+before construction and remains alive through evaluation. Selected-node work,
+address/type checks, occurrence errors and cancellation/deadline checks remain.
+
+One row projection returns values, payload-retention flags and derived leases
+under one scratch reservation. The complete-result adapter admits and appends
+that row into its retained result; the streaming adapter admits its produced
+source row directly. Neither adapter converts a single row into a complete
+query-result container to invoke the projection kernel. Source and derived leases
+survive destination transfer; failures discard unfinished scratch and values
+before existing transaction cleanup.
+
+ORDER validates every source row before sorting. It computes the unchanged
+canonical row fingerprint only when all selected sort keys compare equal, and
+retains that fingerprint by original ordinal for the decoration pass. Descriptor,
+cache capacity and digest ownership are admitted on the original meter before
+allocation. Different-key comparisons never hash unrelated source payloads.
+The sort still uses its original selected SQL comparator and fingerprint tie
+ordering; no ordinal tie rule, result limit pushdown or authority change occurs.
+
+Verification combines zero-composition-allocation positional tests, computed
+projection lease/failure tests, unique-key and tied-key ordering, existing budget,
+rollback and lifecycle suites and exact standard/Embedded runtime. Performance
+acceptance requires interleaved executable comparisons with identical fixtures,
+physical input sizes and query complexity; allocation reductions alone are not
+latency or throughput acceptance. The performance fixture owns measurements.
+
+| State | Native / standard WASM / Embedded storage and isolation | Read / mutation entry | End of lifetime |
+|---|---|---|---|
+| Projected values, retention flags and derived leases | Same invocation-local Arrays, exclusively owned by the projection call | `projectValues`, then the synchronous destination transfer | Scratch reservation ends after destination admission or failure; destination retains value leases |
+| ORDER ordinal and optional fingerprint buffers | Same invocation-local Arrays; synchronous sort closure has exclusive mutation, with no suspension or escaping callback | Decoration and fingerprint lookup by checked original ordinal | Decoration reservation and buffers end with ordering on success or throw |
+| Intermediate claims | Same `DatabaseIntermediateReservation` with `Mutex<State>` | Existing reserve/grow/release methods | Exactly-once release or transfer under existing owners |
+| Work, deadline and cancellation | Same original request `DatabaseWorkMeter` and its existing synchronization | Existing per-node consume/checkpoint methods | Request completion; no replacement meter or cancellation scope |

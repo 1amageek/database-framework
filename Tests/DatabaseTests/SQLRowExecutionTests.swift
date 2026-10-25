@@ -1011,6 +1011,44 @@ struct SQLRowExecutionTests {
         #expect(successful.rows[0].values == [try sqlNumeric(35, scale: 1, displayScale: 3)])
     }
 
+    @Test("Computed streaming projections retain derived and borrowed values after shutdown", .timeLimit(.minutes(1)))
+    func computedProjectionOwnership() async throws {
+        let container = try await makeContainer()
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        try context.insert(SQLRowItem(id: "first", category: "payload", rank: 7))
+        try await context.save()
+        let result = try await context.executeSQL("""
+            WITH q AS NOT MATERIALIZED (SELECT category, rank FROM "SQLRowItem")
+            SELECT UPPER(category), category || category, rank+1, category FROM q
+            """)
+        await container.shutdown()
+        #expect(result.rows.map(\.values) == [[.primitive(.string("PAYLOAD")),
+            .primitive(.string("payloadpayload")), .primitive(.int64(8)), .primitive(.string("payload"))]])
+    }
+
+    @Test("Deferred ORDER fingerprints preserve the canonical tie order", .timeLimit(.minutes(1)))
+    func orderingFingerprintTieCompatibility() async throws {
+        let container = try await makeContainer()
+        defer { await container.shutdown() }
+        let context = container.testBaseContext()
+        for index in 0..<12 {
+            try context.insert(SQLRowItem(id: "item-\(index)", category: "same", rank: Int64(index)))
+        }
+        try await context.save()
+        let input = try await context.executeSQL("SELECT id, category, rank FROM \"SQLRowItem\"")
+        let meter = DatabaseWorkMeter(budget: .init(maximumWorkUnits: 1_000_000,
+            maximumIntermediateBytes: 4 * 1024 * 1024), monotonicClock: TestProcessMonotonicClock())
+        let expected = try input.rows.map { row in
+            (row.values, try CanonicalRowFingerprint.compute(row, columns: input.columns, workMeter: meter))
+        }.sorted { $0.1.lexicographicallyPrecedes($1.1) }.map { $0.0 }
+        let tied = try await context.executeSQL("SELECT id, category, rank FROM \"SQLRowItem\" ORDER BY category")
+        #expect(tied.rows.map(\.values) == expected)
+        let unique = try await context.executeSQL("SELECT rank FROM \"SQLRowItem\" ORDER BY rank")
+        #expect(unique.rows.map(\.values) == (0..<12).map { [.primitive(.int64(Int64($0)))] })
+        #expect(meter.retainedIntermediateBytes == 0)
+    }
+
     private func sqlNumeric(_ coefficient: Int128, scale: Int32 = 0, displayScale: Int32 = 0) throws -> QueryValue {
         .numeric(try QueryNumericValue(value: ExactDecimal(coefficient: coefficient, scale: scale), displayScale: displayScale))
     }

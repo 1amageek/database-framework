@@ -72,7 +72,13 @@ bound frame read. The async adapter retains its single suspension and the same
 work/checkpoint/error-attribution contract, then resolves that leaf without
 allocating instruction/value arrays. Other expressions use the admitted machine.
 This fast path calls the same selected-reference normalization and bounds checks;
-it introduces no second column semantics or authority lookup. A fixture budget admits only the existing overlay footprint; it
-must read one admitted column and consume exactly one additional node's work, while invalid
+it introduces no second column semantics or authority lookup. A fixture with no
+outer frame admits no scratch bytes and consumes exactly one node's work, while invalid
 addresses and cancellation retain the existing failures. Native allocator
 measurements verify the repeated allocation reduction.
+
+When no outer row exists, the supplied row is already the complete effective
+frame. The evaluator reserves no hypothetical overlay and performs no metadata
+walk for that identity operation. A real overlay keeps its prior prospective
+admission and lexical shadowing. This changes charges only for work/storage no
+longer performed; every evaluated node retains its work and cancellation checks.

@@ -123,7 +123,7 @@ extension DatabaseContext {
         // independent of expression size, rather than once per scalar node.
         await Task.yield()
         let temporal = suppliedTemporalEnvironment ?? context?.options.temporalEnvironment ?? databaseContext?.inheritedSQLTemporalEnvironment
-        let overlayClaim = try suppliedRow == nil ? workMeter.reserveIntermediate(bytes:
+        let overlayClaim = try suppliedRow == nil && context?.outerRow != nil ? workMeter.reserveIntermediate(bytes:
             prospectiveSourceCompositionFootprint(row, outer: context?.outerRow, workMeter: workMeter).bytes,
             at: .expressionEvaluation) : nil
         let effective = suppliedRow ?? row.overlaying(outer: context?.outerRow)
@@ -421,6 +421,7 @@ extension DatabaseContext {
         let overlayClaim: DatabaseIntermediateReservation?
         let effectiveRow: CanonicalSourceRow
         if let suppliedRow { effectiveRow = suppliedRow; overlayClaim = nil }
+        else if context?.outerRow == nil { effectiveRow = row; overlayClaim = nil }
         else {
             overlayClaim = try workMeter.reserveIntermediate(
                 bytes: prospectiveSourceCompositionFootprint(row, outer: context?.outerRow,

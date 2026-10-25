@@ -2606,41 +2606,30 @@ extension DatabaseContext {
                         if let failure { throw failure }
                     })
             }
-            let transfersColumns = !plan.projection.isEmpty && plan.projection.allSatisfy {
-                guard let slot = $0.columnSlot else { return false }
-                return sourcePlan.schema.layout.slots.indices.contains(slot)
-            }
             return SQLSelectRowProducer(schema: outputSchema, meter: meter, source: source,
                 pagination: pagination, caches: caches, predicate: { [self] row in
                     guard let filter = plan.filter else { return true }
                     return try await evaluateBoundBoolean(filter, on: row, context: active, workMeter: meter)
                 }, projection: { [self] row in
-                    if transfersColumns {
-                        try meter.consume(at: .projection)
-                        let claim = try meter.reserveIntermediate(bytes:
-                            DatabaseIntermediateCollectionMeter.arrayFootprint(count: plan.projection.count,
-                                element: QueryValue.self).bytes, at: .projection)
-                        defer { claim.release() }
-                        var values: [QueryValue] = []
-                        values.reserveCapacity(plan.projection.count)
-                        for (index, bound) in plan.projection.enumerated() {
-                            let cell = try await evaluateBoundValue(bound, on: row, context: active, workMeter: meter)
-                            values.append(try CanonicalQueryTypeBinder.normalize(cell.value, to: plan.columns[index].type))
-                        }
-                        // Bound column evaluation borrows cells from the retained source owner.
-                        return try SQLRelationRow.producing(CanonicalSourceRow(values: values, layout: outputSchema.layout,
-                            annotations: row.annotations, version: row.version, payloadLeases: row.payloadLeases),
-                            schema: outputSchema, meter: meter, stage: .projection)
-                    }
-                    let relation = try SQLRelationRow.producing(row, schema: sourcePlan.schema, meter: meter)
-                    let projected = try await projectRows(relation, sourceLease: relation.payloadLease, projection: query.projection,
-                        columns: plan.columns, sourceSchema: sourcePlan.schema, workMeter: meter,
-                        evaluationContext: active, boundPlan: plan)
-                    return try projected.withElement(at: 0) { output in
-                        try SQLRelationRow.producing(CanonicalSourceRow(values: output.values,
-                            layout: outputSchema.layout, annotations: output.annotations, version: output.version,
-                            payloadLeases: projected.originPayloadLeases), schema: outputSchema,
-                            meter: meter, stage: .bindingCandidate)
+                    let projected = try await projectValues(on: row, columns: plan.columns,
+                        boundPlan: plan, context: active, workMeter: meter)
+                    defer { projected.scratch.release() }
+                    let (leaseCount, overflow) = row.payloadLeases.count.addingReportingOverflow(projected.leases.count)
+                    guard !overflow else { throw DatabaseExpressionEvaluationError.numericOverflow }
+                    let footprint = try CanonicalRelationalFootprintMeter.positionalValueArrayFootprint(
+                        count: projected.values.count,
+                        valueAt: { projected.retainedPayload[$0] ? .primitive(.null) : projected.values[$0] },
+                        annotations: row.annotations, version: row.version,
+                        workMeter: meter, stage: .projection)
+                        .adding(DatabaseIntermediateCollectionMeter.arrayFootprint(count: leaseCount,
+                            element: DatabaseQueryPayloadLease.self))
+                        .adding(DatabaseIntermediateCollectionMeter.arrayFootprint(
+                            count: outputSchema.layout.frameScopes.reduce(0) { $0 + $1.count }, element: Bool.self))
+                    return try SQLRelationRow(schema: outputSchema, footprint: footprint, meter: meter,
+                        stage: .projection) {
+                        CanonicalSourceRow(values: projected.values, layout: outputSchema.layout,
+                            annotations: row.annotations, version: row.version,
+                            payloadLeases: row.payloadLeases + projected.leases)
                     }
                 })
         } catch {
@@ -6214,7 +6203,7 @@ extension DatabaseContext {
                 element: (
                     CanonicalSourceRow,
                     [ProjectedQueryValue],
-                    ByteString
+                    Int
                 ).self
             )
         let nestedValuesFootprint = try DatabaseIntermediateCollectionMeter
@@ -6226,6 +6215,7 @@ extension DatabaseContext {
         let decorationFootprint = try outerArrayFootprint
             .multiplied(by: 2)
             .adding(nestedValuesFootprint)
+            .adding(DatabaseIntermediateCollectionMeter.arrayFootprint(count: rows.count, element: ByteString?.self))
             .adding(
                 try DatabaseIntermediateFootprint(bytes: 32)
                     .multiplied(by: UInt64(rows.count))
@@ -6243,7 +6233,7 @@ extension DatabaseContext {
         var decorated: [(
             CanonicalSourceRow,
             [ProjectedQueryValue],
-            ByteString
+            Int
         )] = []
         decorated.reserveCapacity(rows.count)
         var orderingColumns = CanonicalOrderColumns()
@@ -6261,15 +6251,24 @@ extension DatabaseContext {
                 )
             }
             let sourceColumns = try orderingColumns.columns(for: row.layout, meter: workMeter)
-            let fingerprint = try CanonicalRowFingerprint.compute(
+            try ExecutionQueryRow(validatedValues: row.values, annotations: row.annotations, version: row.version)
+                .validate(columns: sourceColumns)
+            decorated.append((row, values, decorated.count))
+        }
+        var fingerprints = [ByteString?](repeating: nil, count: rows.count)
+        func fingerprint(_ row: CanonicalSourceRow, ordinal: Int) throws -> ByteString {
+            if let value = fingerprints[ordinal] { return value }
+            let columns = try orderingColumns.columns(for: row.layout, meter: workMeter)
+            let value = try CanonicalRowFingerprint.compute(
                 ExecutionQueryRow(validatedValues: row.values, annotations: row.annotations, version: row.version),
-                columns: sourceColumns, workMeter: workMeter)
-            decorated.append((row, values, fingerprint))
+                columns: columns, workMeter: workMeter)
+            fingerprints[ordinal] = value
+            return value
         }
         let sorted: [(
             CanonicalSourceRow,
             [ProjectedQueryValue],
-            ByteString
+            Int
         )]
         do {
             sorted = try decorated.sorted { lhs, rhs in
@@ -6282,7 +6281,8 @@ extension DatabaseContext {
                     return comparison == .lessThan
                 }
                 try workMeter.consume(2, at: .sortComparison)
-                return lhs.2.lexicographicallyPrecedes(rhs.2)
+                return try fingerprint(lhs.0, ordinal: lhs.2)
+                    .lexicographicallyPrecedes(fingerprint(rhs.0, ordinal: rhs.2))
             }
         } catch let failure as FieldValueComparisonError {
             throw canonicalComparisonReadError(
@@ -6307,6 +6307,42 @@ extension DatabaseContext {
             )
         }
         return try retained.finish().moveToSharedOwnership(at: .sortInput)
+    }
+
+    private func projectValues(on row: CanonicalSourceRow, columns: [QueryColumn],
+        boundPlan: CanonicalBoundSelect, context: CanonicalQueryEvaluationContext?,
+        workMeter: DatabaseWorkMeter
+    ) async throws -> (values: [QueryValue], retainedPayload: [Bool],
+        leases: [DatabaseQueryPayloadLease], scratch: DatabaseIntermediateReservation) {
+        try workMeter.consume(at: .projection)
+        let footprint = try DatabaseIntermediateCollectionMeter.arrayFootprint(count: columns.count, element: QueryValue.self)
+            .adding(DatabaseIntermediateCollectionMeter.arrayFootprint(count: columns.count, element: Bool.self))
+            .adding(DatabaseIntermediateCollectionMeter.arrayFootprint(count: 0, element: DatabaseQueryPayloadLease.self))
+        let scratch = try workMeter.reserveIntermediate(bytes: footprint.bytes, at: .projection)
+        do {
+            var values: [QueryValue] = []; values.reserveCapacity(columns.count)
+            var retainedPayload: [Bool] = []; retainedPayload.reserveCapacity(columns.count)
+            var leases: [DatabaseQueryPayloadLease] = []
+            let leaseLayout = try DatabaseRetainedArrayLayout.forElement(DatabaseQueryPayloadLease.self)
+            var leaseCapacity = 0
+            for (index, bound) in boundPlan.projection.enumerated() {
+                let cell = try await evaluateBoundValue(bound, on: row, context: context, workMeter: workMeter)
+                let (count, overflow) = leases.count.addingReportingOverflow(cell.leases.count)
+                guard !overflow else { throw DatabaseExpressionEvaluationError.numericOverflow }
+                let growth = try leaseLayout.growth(from: leaseCapacity, toFit: count)
+                if growth.additionalByteCount > 0 {
+                    try scratch.reserveAdditional(bytes: growth.additionalByteCount, at: .projection)
+                    leases.reserveCapacity(growth.capacity); leaseCapacity = growth.capacity
+                }
+                leases.append(contentsOf: cell.leases)
+                values.append(try CanonicalQueryTypeBinder.normalize(cell.value, to: columns[index].type))
+                retainedPayload.append(cell.payloadIsRetained)
+            }
+            return (values, retainedPayload, leases, scratch)
+        } catch {
+            scratch.release()
+            throw error
+        }
     }
 
     private func projectRows<Rows: Collection & Sendable>(
@@ -6357,24 +6393,12 @@ extension DatabaseContext {
             workMeter: workMeter, stage: .projection,
             layout: DatabaseRetainedArrayLayout.forElement(ExecutionQueryRow.self), expectedCount: rows.count)
         for row in rows {
-            try workMeter.consume(at: .projection)
-            let scratchFootprint = try DatabaseIntermediateCollectionMeter.arrayFootprint(count: columns.count, element: QueryValue.self)
-                .adding(DatabaseIntermediateCollectionMeter.arrayFootprint(count: columns.count, element: Bool.self))
-            let scratchClaim = try workMeter.reserveIntermediate(bytes: scratchFootprint.bytes, at: .projection)
-            defer { scratchClaim.release() }
-            let cells: [QueryValue]
-            var retainedPayload: [Bool] = []
-            retainedPayload.reserveCapacity(columns.count)
-            var values: [QueryValue] = []
-            values.reserveCapacity(columns.count)
-            for (index, bound) in boundPlan.projection.enumerated() {
-                let cell = try await evaluateBoundValue(bound, on: row,
-                    context: evaluationContext, workMeter: workMeter)
-                try retainDerived(cell.leases)
-                retainedPayload.append(cell.payloadIsRetained)
-                values.append(try CanonicalQueryTypeBinder.normalize(cell.value, to: columns[index].type))
-            }
-            cells = values
+            let projected = try await projectValues(on: row, columns: columns,
+                boundPlan: boundPlan, context: evaluationContext, workMeter: workMeter)
+            defer { projected.scratch.release() }
+            try retainDerived(projected.leases)
+            let cells = projected.values
+            let retainedPayload = projected.retainedPayload
             try retained.append(
                 footprint: CanonicalRelationalFootprintMeter.positionalValueArrayFootprint(
                     count: cells.count,

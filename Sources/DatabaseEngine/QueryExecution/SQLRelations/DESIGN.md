@@ -122,13 +122,12 @@ operator adapters internally; it does not duplicate their scalar algorithms.
 
 ### Positional column transfer
 
-A streaming SELECT whose every selected expression is a bound local column transfers
-normalized cells directly into its retained source-row output. It still invokes
-the selected evaluator, including occurrence failures,
-work/cancellation/deadline checks and normalization. The source row retains the
-payload owners; this path avoids the intermediate public ExecutionQueryRow container and
-per-row public schema/lease-vector construction. Computed, composite-field,
-outer-frame, aggregate and volatile targets continue through the selected projection owner.
+A streaming SELECT invokes the parent's single-row projection kernel for every
+projection, including plain columns and computed values. The complete-result
+adapter uses that same kernel. Occurrence failures, work/cancellation/deadline
+checks and normalization remain selected evaluation responsibilities. The source
+row and derived leases retain their original payload owners; streaming does not
+construct a complete query-result container or public schema for one row.
 Scratch cell storage is admitted before allocation and output storage before
 publication, on the same invocation meter. Selected destination containers are
 admitted at `projection`, including direct-column transfers. Failed admission

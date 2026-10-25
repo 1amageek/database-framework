@@ -10,6 +10,7 @@ typedef struct {
     uint64_t peak_retained_bytes;
     uint64_t reserved_bytes;
     uint64_t peak_resident_bytes;
+    uint64_t process_cpu_ns;
     int valid;
     int observer_present;
 } AccessPerformanceObservation;
