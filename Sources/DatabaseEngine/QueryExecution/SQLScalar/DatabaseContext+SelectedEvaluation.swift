@@ -127,8 +127,21 @@ extension DatabaseContext {
             prospectiveSourceCompositionFootprint(row, outer: context?.outerRow, workMeter: workMeter).bytes,
             at: .expressionEvaluation) : nil
         let effective = suppliedRow ?? row.overlaying(outer: context?.outerRow)
+        defer { withExtendedLifetime(overlayClaim) {} }
+        if root.columnSlot != nil, group == nil, root.window == nil {
+            do {
+                try workMeter.checkpoint(at: .expressionEvaluation)
+                try workMeter.consume(at: .expressionEvaluation)
+                guard let result = try selectedReference(root, on: effective, group: nil, context: context,
+                    databaseContext: databaseContext, temporalEnvironment: temporal, workMeter: workMeter) else {
+                    throw CanonicalReadError.unsupportedSelectQuery("A positional root has no admitted frame value")
+                }
+                try workMeter.checkpoint(at: .expressionEvaluation)
+                return result
+            } catch { throw selectedEvaluationFailure(error, occurrence: root.occurrence) }
+        }
         let scratch = try workMeter.reserveIntermediate(at: .expressionEvaluation)
-        defer { withExtendedLifetime(overlayClaim) {}; scratch.release() }
+        defer { scratch.release() }
         @AdmittedArray var instructions: [ScalarInstruction] = []
         @AdmittedArray var values: [ProjectedQueryValue] = []
         func push(_ instruction: ScalarInstruction) throws {
@@ -295,14 +308,20 @@ extension DatabaseContext {
             guard values.count == 1 else { throw CanonicalReadError.unsupportedSelectQuery("Invalid selected evaluation stack") }
             try workMeter.checkpoint(at: .expressionEvaluation)
             return values.removeLast()
-        } catch let cause as SQLTimeZoneError {
-            throw CanonicalReadError.expressionEvaluation(.timeZone(cause), occurrence: occurrence)
-        } catch let cause as DatabaseExpressionEvaluationError {
-            throw CanonicalReadError.expressionEvaluation(cause, occurrence: occurrence)
-        } catch let cause as QueryValueError {
-            throw CanonicalReadError.expressionEvaluation(.queryValue(cause), occurrence: occurrence)
-        } catch CanonicalReadError.expressionEvaluation(let cause, let child) {
-            throw CanonicalReadError.expressionEvaluation(cause, occurrence: child ?? occurrence)
+        } catch { throw selectedEvaluationFailure(error, occurrence: occurrence) }
+    }
+
+    private static func selectedEvaluationFailure(_ error: any Error, occurrence: QueryOccurrenceID?) -> any Error {
+        switch error {
+        case let cause as SQLTimeZoneError:
+            return CanonicalReadError.expressionEvaluation(.timeZone(cause), occurrence: occurrence)
+        case let cause as DatabaseExpressionEvaluationError:
+            return CanonicalReadError.expressionEvaluation(cause, occurrence: occurrence)
+        case let cause as QueryValueError:
+            return CanonicalReadError.expressionEvaluation(.queryValue(cause), occurrence: occurrence)
+        case CanonicalReadError.expressionEvaluation(let cause, let child):
+            return CanonicalReadError.expressionEvaluation(cause, occurrence: child ?? occurrence)
+        default: return error
         }
     }
 

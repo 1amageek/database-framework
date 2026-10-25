@@ -22,7 +22,9 @@ original authority and request meter; this component opens no transaction.
 ## Architecture
 
 ```text
-bound expression -> admitted instruction/value stack -> synchronous kernel
+bound expression -> async adapter (one suspension)
+    -> positional leaf -> existing frame read
+    -> admitted instruction/value stack -> synchronous kernel
     -> contextual operation -> same-task await -> original stack
     -> normalized value + retained leases
 ```
@@ -62,3 +64,15 @@ cleanup bypass is introduced. Failed evaluation discards all unfinished values.
 Selected-signature, lazy/error/occurrence, group/window and rich-value Native
 suites plus exact ordinary/Embedded runtime fixtures own the behavior. Changes
 recheck parent QueryExecution, SQLRelations and Mutation's scalar entry seam.
+
+### Positional leaf admission
+
+A root positional column without grouped or window interpretation is already a
+bound frame read. The async adapter retains its single suspension and the same
+work/checkpoint/error-attribution contract, then resolves that leaf without
+allocating instruction/value arrays. Other expressions use the admitted machine.
+This fast path calls the same selected-reference normalization and bounds checks;
+it introduces no second column semantics or authority lookup. A fixture budget admits only the existing overlay footprint; it
+must read one admitted column and consume exactly one additional node's work, while invalid
+addresses and cancellation retain the existing failures. Native allocator
+measurements verify the repeated allocation reduction.
