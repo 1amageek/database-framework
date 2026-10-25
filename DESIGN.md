@@ -374,6 +374,12 @@ links the runtime records, unchanged-source guards and
 
 ### RX25 execution refactoring scope
 
+TAIL25 closes the remaining scalar-allocation and concurrent-CTE timing gaps
+under [SQLScalar](Sources/DatabaseEngine/QueryExecution/SQLScalar/DESIGN.md#tail25-control-and-value-ownership)
+and the [performance owner](Tests/DatabaseAccessPerformance/DESIGN.md). It keeps
+the original single-meter, authority, rollback and lifecycle boundaries; SQLite
+transaction capacity remains a StorageKit contract.
+
 SPEED25 reopens performance acceptance and removes measured repeated frame,
 single-row projection and ORDER fingerprint work under the
 [QueryExecution contract](Sources/DatabaseEngine/QueryExecution/DESIGN.md#speed25-repeated-execution-costs).

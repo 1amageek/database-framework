@@ -100,15 +100,39 @@ extension DatabaseContext {
             effectiveRow: suppliedRow, context: context, databaseContext: self, workMeter: workMeter)
     }
 
+    /// Retains existing immutable metadata without copying a full bound node into every command.
+    private enum ScalarExpressionReference: Sendable {
+        case root
+        case child([CanonicalBoundExpression], Int)
+
+        func resolve(root: CanonicalBoundExpression) -> CanonicalBoundExpression {
+            switch self {
+            case .root: return root
+            case .child(let owner, let index): return owner[index]
+            }
+        }
+    }
+
+    /// A zero-based read-only view, owned entirely by the synchronous kernel call.
+    private struct ScalarOperands: RandomAccessCollection, Sendable {
+        let storage: ArraySlice<ProjectedQueryValue>
+        init(_ storage: ArraySlice<ProjectedQueryValue>) { self.storage = storage }
+        var startIndex: Int { 0 }
+        var endIndex: Int { storage.count }
+        func index(after index: Int) -> Int { index + 1 }
+        func index(before index: Int) -> Int { index - 1 }
+        subscript(index: Int) -> ProjectedQueryValue { storage[storage.startIndex + index] }
+    }
+
     private enum ScalarInstruction: Sendable {
-        case evaluate(CanonicalBoundExpression)
-        case kernel(CanonicalBoundExpression, Int)
-        case coalesce(CanonicalBoundExpression, Int)
-        case extreme(CanonicalBoundExpression, Int, ProjectedQueryValue?)
-        case boolean(CanonicalBoundExpression)
-        case normalize(CanonicalBoundExpression)
-        case caseOperand(CanonicalBoundExpression)
-        case caseCondition(CanonicalBoundExpression, Int, ProjectedQueryValue?, ProjectedQueryValue?)
+        case evaluate(ScalarExpressionReference)
+        case kernel(ScalarExpressionReference, Int)
+        case coalesce(ScalarExpressionReference, Int)
+        case extreme(ScalarExpressionReference, Int, Bool)
+        case boolean(ScalarExpressionReference)
+        case normalize(ScalarExpressionReference)
+        case caseOperand(ScalarExpressionReference)
+        case caseCondition(ScalarExpressionReference, Int, Int?)
     }
 
     static func evaluateSelectedValue(
@@ -142,10 +166,10 @@ extension DatabaseContext {
         }
         let scratch = try workMeter.reserveIntermediate(at: .expressionEvaluation)
         defer { scratch.release() }
-        @AdmittedArray var instructions: [ScalarInstruction] = []
+        var instructions = AdmittedArray<ScalarInstruction>(wrappedValue: [])
         @AdmittedArray var values: [ProjectedQueryValue] = []
         func push(_ instruction: ScalarInstruction) throws {
-            try CanonicalBindingStorage.append(instruction, to: &$instructions, reservation: scratch)
+            try CanonicalBindingStorage.append(instruction, to: &instructions, reservation: scratch)
         }
         func append(_ value: ProjectedQueryValue) throws {
             try CanonicalBindingStorage.append(value, to: &$values, reservation: scratch)
@@ -158,33 +182,45 @@ extension DatabaseContext {
                 ? CanonicalQueryTypeBinder.normalize(value.value, to: bound.type) : bound.normalize(value.value),
                 leases: value.leases, payloadIsRetained: value.payloadIsRetained)
         }
-        func scheduleCase(_ bound: CanonicalBoundExpression, index: Int, operand: ProjectedQueryValue?) throws {
+        func scheduleCase(_ reference: ScalarExpressionReference, index: Int, operandSlot: Int?) throws {
+            let bound = reference.resolve(root: root)
             guard case .caseWhen(let original, let pairs, let fallback) = bound.expression else {
                 throw CanonicalReadError.unsupportedSelectQuery("Invalid selected CASE instruction")
             }
             let offset = original == nil ? 0 : 1
             if index == pairs.count {
-                if fallback != nil { try push(.normalize(bound)); try push(.evaluate(bound.children[offset + pairs.count * 2])) }
+                if let operandSlot {
+                    guard operandSlot == values.count - 1 else { throw CanonicalReadError.unsupportedSelectQuery("Invalid CASE operand position") }
+                    values.removeLast()
+                }
+                if fallback != nil { try push(.normalize(reference)); try push(.evaluate(.child(bound.children, offset + pairs.count * 2))) }
                 else { try append(normalized(.init(value: .primitive(.null), leases: [], payloadIsRetained: false), to: bound)) }
                 return
             }
             let condition = bound.children[offset + index]
-            if let operand {
+            if let operandSlot {
+                guard operandSlot == values.count - 1 else { throw CanonicalReadError.unsupportedSelectQuery("Invalid CASE operand position") }
+                let operand = values[operandSlot]
                 guard case .equal = condition.expression, condition.children.count == 2 else { throw DatabaseExpressionEvaluationError.typeMismatch(operation: "simple CASE selected equality") }
                 let left: ProjectedQueryValue
                 do { left = try coerceSelectedComparisonValue(operand.value, from: bound.children[0].type,
                     to: condition.children[0].type, temporalEnvironment: temporal, workMeter: workMeter) }
                 catch let cause as DatabaseExpressionEvaluationError { throw CanonicalReadError.expressionEvaluation(cause, occurrence: condition.occurrence) }
-                try push(.caseCondition(bound, index, operand, left)); try push(.evaluate(condition.children[1]))
-            } else { try push(.caseCondition(bound, index, nil, nil)); try push(.evaluate(condition)) }
+                try append(left)
+                try push(.caseCondition(reference, index, operandSlot)); try push(.evaluate(.child(condition.children, 1)))
+            } else { try push(.caseCondition(reference, index, nil)); try push(.evaluate(.child(bound.children, offset + index))) }
         }
-        try push(.evaluate(root))
+        var rootPending = true
         var occurrence = root.occurrence
         do {
-            while let instruction = instructions.popLast() {
+            while rootPending || !instructions.wrappedValue.isEmpty {
+                let instruction: ScalarInstruction
+                if rootPending { rootPending = false; instruction = .evaluate(.root) }
+                else { instruction = instructions.wrappedValue.removeLast() }
                 try workMeter.checkpoint(at: .expressionEvaluation)
                 switch instruction {
-                case .evaluate(let bound):
+                case .evaluate(let reference):
+                    let bound = reference.resolve(root: root)
                     occurrence = bound.occurrence
                     try workMeter.consume(at: .expressionEvaluation)
                     if let value = try selectedReference(bound, on: effective, group: group, context: context,
@@ -194,16 +230,16 @@ extension DatabaseContext {
                     switch bound.expression {
                     case .defaultValue: throw DatabaseExpressionEvaluationError.unsupportedExpression("DEFAULT requires a selected mutation column")
                     case .caseWhen(let operand, _, _):
-                        if operand != nil { try push(.caseOperand(bound)); try push(.evaluate(bound.children[0])) }
-                        else { try scheduleCase(bound, index: 0, operand: nil) }
+                        if operand != nil { try push(.caseOperand(reference)); try push(.evaluate(.child(bound.children, 0))) }
+                        else { try scheduleCase(reference, index: 0, operandSlot: nil) }
                     case .coalesce:
                         if bound.children.isEmpty { try append(normalized(.init(value: .primitive(.null), leases: [], payloadIsRetained: false), to: bound)) }
-                        else { try push(.coalesce(bound, 0)); try push(.evaluate(bound.children[0])) }
+                        else { try push(.coalesce(reference, 0)); try push(.evaluate(.child(bound.children, 0))) }
                     case .greatest, .least:
                         if bound.children.isEmpty { try append(normalized(.init(value: .primitive(.null), leases: [], payloadIsRetained: false), to: bound)) }
-                        else { try push(.extreme(bound, 0, nil)); try push(.evaluate(bound.children[0])) }
+                        else { try push(.extreme(reference, 0, false)); try push(.evaluate(.child(bound.children, 0))) }
                     case .and, .or:
-                        try push(.boolean(bound)); try push(.evaluate(bound.children[0]))
+                        try push(.boolean(reference)); try push(.evaluate(.child(bound.children, 0)))
                     case .arraySubquery, .subquery, .exists, .inSubquery, .aggregate,
                          .quantifiedComparison(_, _, _, .subquery):
                         await Task.yield()
@@ -222,43 +258,56 @@ extension DatabaseContext {
                             let claim = try workMeter.reserveIntermediate(bytes: footprint.bytes, at: .expressionEvaluation)
                             try append(normalized(.init(value: value, leases: [DatabaseQueryPayloadLease(retaining: claim)], payloadIsRetained: true), to: bound))
                         } else {
-                            try push(.kernel(bound, values.count))
-                            for child in bound.children.reversed() { try push(.evaluate(child)) }
+                            let count = bound.children.count.addingReportingOverflow(1)
+                            guard !count.overflow else { throw DatabaseExpressionEvaluationError.numericOverflow }
+                            try instructions.admit(adding: count.partialValue,
+                                layout: DatabaseRetainedArrayLayout.forElement(ScalarInstruction.self)) {
+                                    try scratch.reserveAdditional(bytes: $0, at: .bindingCandidate)
+                                }
+                            try push(.kernel(reference, values.count))
+                            for index in bound.children.indices.reversed() { try push(.evaluate(.child(bound.children, index))) }
                         }
                     }
-                case .kernel(let bound, let base):
+                case .kernel(let reference, let base):
+                    let bound = reference.resolve(root: root)
                     occurrence = bound.occurrence
-                    let operandsClaim = try workMeter.reserveIntermediate(bytes: DatabaseIntermediateCollectionMeter.arrayFootprint(
-                        count: values.count - base, element: ProjectedQueryValue.self).bytes, at: .expressionEvaluation)
-                    let children = Array(values[base...]); values.removeLast(values.count - base)
-                    defer { withExtendedLifetime(operandsClaim) {} }
+                    let result: ProjectedQueryValue
                     if case .function(let function) = bound.expression,
                        ["nextval", "currval", "lastval", "setval"].contains(function.name) {
-                        let arguments = try children.map { cell -> FieldValue in
+                        let argumentsClaim = try workMeter.reserveIntermediate(bytes: DatabaseIntermediateCollectionMeter.arrayFootprint(
+                            count: values.count - base, element: FieldValue.self).bytes, at: .expressionEvaluation)
+                        defer { withExtendedLifetime(argumentsClaim) {} }
+                        let arguments = try values[base...].map { cell -> FieldValue in
                             guard case .primitive(let value) = cell.value else { throw DatabaseExpressionEvaluationError.typeMismatch(operation: function.name) }
                             return value
                         }
                         guard let value = try await SQLSequenceRuntime.evaluate(function.name, arguments: arguments, occurrence: bound.expression) else {
                             throw DatabaseExpressionEvaluationError.unsupportedFunction(function.name)
                         }
-                        try append(normalized(.init(value: .primitive(value), leases: [], payloadIsRetained: false), to: bound))
+                        result = try normalized(.init(value: .primitive(value), leases: [], payloadIsRetained: false), to: bound)
                     } else {
-                        try append(evaluateScalarKernel(bound, children: children, on: effective, context: context,
-                            databaseContext: databaseContext, temporalEnvironment: temporal, workMeter: workMeter, groupingNulls: group != nil))
+                        result = try evaluateScalarKernel(bound, values: values, from: base, on: effective, context: context,
+                            databaseContext: databaseContext, temporalEnvironment: temporal, workMeter: workMeter, groupingNulls: group != nil)
                     }
-                case .normalize(let bound):
+                    values.removeLast(values.count - base)
+                    try append(result)
+                case .normalize(let reference):
+                    let bound = reference.resolve(root: root)
                     occurrence = bound.occurrence
                     let value = values.removeLast(); try append(normalized(value, to: bound))
-                case .coalesce(let bound, let index):
+                case .coalesce(let reference, let index):
+                    let bound = reference.resolve(root: root)
                     occurrence = bound.occurrence
                     let value = values.removeLast()
                     if !value.value.isNull { try append(normalized(value, to: bound)) }
                     else if index + 1 < bound.children.count {
-                        try push(.coalesce(bound, index + 1)); try push(.evaluate(bound.children[index + 1]))
+                        try push(.coalesce(reference, index + 1)); try push(.evaluate(.child(bound.children, index + 1)))
                     } else { try append(normalized(.init(value: .primitive(.null), leases: [], payloadIsRetained: false), to: bound)) }
-                case .extreme(let bound, let index, let current):
+                case .extreme(let reference, let index, let hasCurrent):
+                    let bound = reference.resolve(root: root)
                     occurrence = bound.occurrence
                     let candidate = values.removeLast()
+                    let current = hasCurrent ? values.removeLast() : nil
                     let selected: ProjectedQueryValue?
                     if candidate.value.isNull { selected = current }
                     else if let current {
@@ -269,23 +318,29 @@ extension DatabaseContext {
                             temporalEnvironment: temporal, mode: bound.comparisonMode, workMeter: workMeter) == true ? candidate : current
                     } else { selected = candidate }
                     if index + 1 < bound.children.count {
-                        try push(.extreme(bound, index + 1, selected)); try push(.evaluate(bound.children[index + 1]))
+                        if let selected { try append(selected) }
+                        try push(.extreme(reference, index + 1, selected != nil)); try push(.evaluate(.child(bound.children, index + 1)))
                     } else {
                         try append(normalized(selected ?? .init(value: .primitive(.null), leases: [], payloadIsRetained: false), to: bound))
                     }
-                case .boolean(let bound):
+                case .boolean(let reference):
+                    let bound = reference.resolve(root: root)
                     occurrence = bound.occurrence
                     let left = values.last!
                     if (isAnd(bound.expression) && left.value == .primitive(.bool(false)))
                         || (!isAnd(bound.expression) && left.value == .primitive(.bool(true))) {
                         values.removeLast(); try append(normalized(left, to: bound))
-                    } else { try push(.kernel(bound, values.count - 1)); try push(.evaluate(bound.children[1])) }
-                case .caseOperand(let bound):
+                    } else { try push(.kernel(reference, values.count - 1)); try push(.evaluate(.child(bound.children, 1))) }
+                case .caseOperand(let reference):
+                    let bound = reference.resolve(root: root)
                     occurrence = bound.occurrence
-                    try scheduleCase(bound, index: 0, operand: values.removeLast())
-                case .caseCondition(let bound, let index, let operand, let left):
+                    try scheduleCase(reference, index: 0, operandSlot: values.count - 1)
+                case .caseCondition(let reference, let index, let operandSlot):
+                    let bound = reference.resolve(root: root)
                     occurrence = bound.occurrence
-                    let condition = values.removeLast(), offset = operand == nil ? 0 : 1
+                    let condition = values.removeLast()
+                    let left = operandSlot == nil ? nil : values.removeLast()
+                    let offset = operandSlot == nil ? 0 : 1
                     let matches: Bool
                     if let left {
                         let selected = bound.children[offset + index]
@@ -301,8 +356,12 @@ extension DatabaseContext {
                         }
                     }
                     if matches, case .caseWhen(_, let pairs, _) = bound.expression {
-                        try push(.normalize(bound)); try push(.evaluate(bound.children[offset + pairs.count + index]))
-                    } else { try scheduleCase(bound, index: index + 1, operand: operand) }
+                        if let operandSlot {
+                            guard operandSlot == values.count - 1 else { throw CanonicalReadError.unsupportedSelectQuery("Invalid CASE operand position") }
+                            values.removeLast()
+                        }
+                        try push(.normalize(reference)); try push(.evaluate(.child(bound.children, offset + pairs.count + index)))
+                    } else { try scheduleCase(reference, index: index + 1, operandSlot: operandSlot) }
                 }
             }
             guard values.count == 1 else { throw CanonicalReadError.unsupportedSelectQuery("Invalid selected evaluation stack") }
@@ -871,13 +930,16 @@ extension DatabaseContext {
             payloadIsRetained: result.lease != nil || QueryValueValidator.accepts(value, type: target))
     }
 
-    static func evaluateScalarKernel(
+    @inline(never)
+    private static func evaluateScalarKernel(
         _ bound: CanonicalBoundExpression,
-        children: [ProjectedQueryValue],
+        values: borrowing [ProjectedQueryValue], from base: Int,
         on row: CanonicalSourceRow,
         context: CanonicalQueryEvaluationContext?, databaseContext: DatabaseContext?,
         temporalEnvironment: SQLTemporalEnvironment? = nil, workMeter: DatabaseWorkMeter, groupingNulls: Bool = false
     ) throws -> ProjectedQueryValue {
+        // This view ends before the caller mutates the value stack, avoiding a COW copy.
+        let children = ScalarOperands(values[base...])
         let claim = try workMeter.reserveIntermediate(bytes: UInt64(children.count) * 512 + 256,
             at: .expressionEvaluation)
         defer { claim.release() }
@@ -1080,19 +1142,19 @@ extension DatabaseContext {
             }
             if bound.children.contains(where: { CanonicalSQLValueSemantics.isTemporal($0.type) }) { return try temporalResult() }
             let result = try CanonicalSQLNumericEvaluator.evaluate(bound,
-                operands: children.map { $0.value }, workMeter: workMeter)
+                operands: children.lazy.map { $0.value }, workMeter: workMeter)
             return ProjectedQueryValue(value: try normalize(result),
                 leases: children.flatMap { $0.leases }, payloadIsRetained: false)
         case .cast(_, let target) where selectedNumericCastTarget(target)
             && bound.type == .sql(target)
             && bound.children.first.map({ selectedNumericCastSource($0.type) }) == true:
             let result = try CanonicalSQLNumericEvaluator.evaluate(bound,
-                operands: children.map { $0.value }, workMeter: workMeter)
+                operands: children.lazy.map { $0.value }, workMeter: workMeter)
             return ProjectedQueryValue(value: try normalize(result),
                 leases: children.flatMap { $0.leases }, payloadIsRetained: false)
         case .function(let function) where selectedNumericFunction(function.name):
             let result = try CanonicalSQLNumericEvaluator.evaluate(bound,
-                operands: children.map { $0.value }, workMeter: workMeter)
+                operands: children.lazy.map { $0.value }, workMeter: workMeter)
             return ProjectedQueryValue(value: try normalize(result),
                 leases: children.flatMap { $0.leases }, payloadIsRetained: false)
         case .cast where selectedScalarCastTarget(bound.type):

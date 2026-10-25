@@ -859,9 +859,13 @@ bound children + selected input/result types
           -> QueryValue -> selected declaration validation -> retained output
 ```
 
-Planned internal shared entry:
+Internal shared entry:
 `CanonicalSQLNumericEvaluator.evaluate(_: CanonicalBoundExpression,
-operands: [QueryValue], workMeter: DatabaseWorkMeter) throws -> QueryValue`.
+operands: Operands, workMeter: DatabaseWorkMeter) throws -> QueryValue`,
+where Operands is a zero-based RandomAccessCollection of QueryValue whose
+contents stay immutable for the synchronous call and never escape it. Arrays remain
+valid inputs; the scalar machine also supplies an owner-retaining lazy operand view.
+A nonzero start index is rejected with a typed operand-count failure.
 It handles selected numeric arithmetic/functions/casts and preserves
 QueryNumericValue.displayScale. CanonicalRows calls it directly with evaluated
 children, never through primitive literal materialization/demotion. Raw
@@ -2222,6 +2226,12 @@ UUID/bytea, wide/deep expression, CTE, budget/rollback/lifecycle fixtures are
 required before the sprint is complete.
 
 ### SPEED25 repeated execution costs
+
+TAIL25 refines the [SQLScalar control/value ownership contract](SQLScalar/DESIGN.md#tail25-control-and-value-ownership)
+without changing selected semantics, contextual suspension, authority or the
+single request meter. Runtime values belong to the value stack rather than
+every instruction's representation. Parent projection and producer lifetimes
+remain the existing contracts.
 
 An already admitted row with no outer frame is the effective evaluation frame.
 Reading it does not allocate an overlay, reserve hypothetical composition storage,

@@ -4,13 +4,13 @@ import DatabaseMath
 
 /// Executes an already-selected SQL signature. Row values never select overloads.
 enum CanonicalSQLNumericEvaluator {
-    static func evaluate(
+    static func evaluate<Operands: RandomAccessCollection>(
         _ bound: CanonicalBoundExpression,
-        operands: [QueryValue],
+        operands: Operands,
         workMeter: DatabaseWorkMeter
-    ) throws -> QueryValue {
+    ) throws -> QueryValue where Operands.Element == QueryValue, Operands.Index == Int {
         try workMeter.consume(at: .expressionEvaluation)
-        guard operands.count == bound.children.count else {
+        guard operands.startIndex == 0, operands.count == bound.children.count else {
             throw mismatch("selected numeric operand count")
         }
         if case .cast(_, let target) = bound.expression {
@@ -38,8 +38,8 @@ enum CanonicalSQLNumericEvaluator {
 
     private enum Arithmetic { case add, subtract, multiply, divide, modulo, negate }
 
-    private static func arithmetic(_ operation: Arithmetic, _ values: [QueryValue], type: QueryColumnType,
-                                   workMeter: DatabaseWorkMeter) throws -> QueryValue {
+    private static func arithmetic<Operands: RandomAccessCollection>(_ operation: Arithmetic, _ values: Operands, type: QueryColumnType,
+                                   workMeter: DatabaseWorkMeter) throws -> QueryValue where Operands.Element == QueryValue, Operands.Index == Int {
         guard values.count == (operation == .negate ? 1 : 2) else { throw mismatch("arithmetic arity") }
         switch kind(type) {
         case .smallint, .integer, .bigint:
@@ -119,8 +119,8 @@ enum CanonicalSQLNumericEvaluator {
         }
     }
 
-    private static func functionValue(_ name: String, _ values: [QueryValue], type: QueryColumnType,
-                                      workMeter: DatabaseWorkMeter) throws -> QueryValue {
+    private static func functionValue<Operands: RandomAccessCollection>(_ name: String, _ values: Operands, type: QueryColumnType,
+                                      workMeter: DatabaseWorkMeter) throws -> QueryValue where Operands.Element == QueryValue, Operands.Index == Int {
         if name == "width_bucket" { return try widthBucket(values, workMeter: workMeter) }
         if name == "scale" || name == "min_scale" {
             guard values.count == 1 else { throw mismatch(name) }
@@ -165,8 +165,8 @@ enum CanonicalSQLNumericEvaluator {
         }
     }
 
-    private static func decimalFunction(_ name: String, _ values: [QueryValue],
-                                        workMeter: DatabaseWorkMeter) throws -> QueryValue {
+    private static func decimalFunction<Operands: RandomAccessCollection>(_ name: String, _ values: Operands,
+                                        workMeter: DatabaseWorkMeter) throws -> QueryValue where Operands.Element == QueryValue, Operands.Index == Int {
         guard !values.isEmpty else { throw mismatch(name) }
         let left = try numeric(values[0])
         if ["sqrt", "exp", "ln", "log", "log10", "power"].contains(name) {
@@ -229,7 +229,7 @@ enum CanonicalSQLNumericEvaluator {
         return try numericResult(result, scale: scale)
     }
 
-    private static func floatingFunction(_ name: String, _ values: [QueryValue], type: QueryColumnType) throws -> QueryValue {
+    private static func floatingFunction<Operands: RandomAccessCollection>(_ name: String, _ values: Operands, type: QueryColumnType) throws -> QueryValue where Operands.Element == QueryValue, Operands.Index == Int {
         guard values.count == (name == "pi" ? 0 : ["power", "atan2"].contains(name) ? 2 : 1) else { throw mismatch(name) }
         let x = values.isEmpty ? 0 : try double(values[0])
         let y = values.count == 2 ? try double(values[1]) : 0
@@ -281,7 +281,7 @@ enum CanonicalSQLNumericEvaluator {
         return .primitive(.float64(result))
     }
 
-    private static func widthBucket(_ values: [QueryValue], workMeter: DatabaseWorkMeter) throws -> QueryValue {
+    private static func widthBucket<Operands: RandomAccessCollection>(_ values: Operands, workMeter: DatabaseWorkMeter) throws -> QueryValue where Operands.Element == QueryValue, Operands.Index == Int {
         if values.count == 2 {
             guard case .array(let thresholds) = values[1], thresholds.dimensions.count <= 1 else { throw domain("width_bucket") }
             for threshold in thresholds.elements {

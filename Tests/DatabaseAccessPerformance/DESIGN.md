@@ -231,6 +231,31 @@ Their reservation and the unchanged request work meter use the same Mutex-backed
 owners on every target. No new shared state, conditional Sendable conformance,
 background task, authority source or cleanup path is introduced.
 
+### TAIL25 measurement contract
+
+TAIL25 reopens the remaining cumulative-allocation and concurrent-p50 gaps.
+Its measurement contract retains the same single-connection SQLite control.
+That backend deliberately grants a FIFO native transaction lease through
+terminal cleanup, so concurrent request latency includes queue position.
+The framework does not remove or bypass this storage isolation boundary.
+
+A cohort gate releases all measured requests from one monotonic origin. Raw
+records retain request identity, dispatch time, query-ready time, consumption
+completion and the original per-call duration. Reports preserve pooled p50/p95
+and additionally compare cohort p50 and each completion rank; they never select
+the favorable statistic or discard a recorded cohort. An identical-binary
+calibration distinguishes pooled multilevel-distribution artifacts and host
+noise from repeatable implementation regressions. Explicit file-backed WAL
+connections are a separate parallel-capacity control, never a replacement for
+the single-connection baseline. Generated files close after container shutdown.
+
+Before/current/final executables use identical fixture bytes, pins, compiler,
+physical rows, budgets and backend configuration. Allocation observations remain
+separate from uninstrumented timing. Acceptance requires cumulative byte traffic
+below both47df0b2a and a7bcf834 for computed/wide workloads, improved paired
+small-CTE latency with its observed dispersion and completion-rank distributions
+reported, and unchanged correctness/authority/budget/rollback/lifetime evidence.
+
 ### SPEED25 measured results, 2026-10-25
 
 Identical fixture sources, C probe/header and URL pins were compiled against

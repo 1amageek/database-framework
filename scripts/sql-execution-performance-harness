@@ -19,6 +19,11 @@ parser.add_argument('--result-directory', type=Path, required=True)
 parser.add_argument('--quick', action='store_true')
 parser.add_argument('--representative', action='store_true')
 parser.add_argument('--case', action='append', default=[])
+parser.add_argument('--storage', choices=['memory', 'file'], default='memory')
+parser.add_argument('--storage-connections', type=int, choices=range(1, 9), default=1)
+parser.add_argument('--calibration', action='store_true')
+parser.add_argument('--timing-only', action='store_true')
+parser.add_argument('--cycles', type=int, choices=range(1, 6), default=1)
 parser.add_argument('--rounds', type=int, choices=range(1, 11), default=3)
 args = parser.parse_args()
 result = args.result_directory.resolve()
@@ -26,10 +31,14 @@ result.mkdir(parents=True, exist_ok=False)
 executables = {'before': args.before.resolve(), 'after': args.after.resolve()}
 assert all(p.is_file() for p in [*executables.values(), args.observer])
 assert executables['before'] != executables['after']
+assert args.storage == 'file' or args.storage_connections == 1
+if args.calibration:
+    assert executables['before'].read_bytes() == executables['after'].read_bytes()
 provenance = {'started': time.time(), 'executables': {
     name: {'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
     for name, path in executables.items()}, 'observerSHA256': hashlib.sha256(args.observer.read_bytes()).hexdigest()}
 result.joinpath('provenance.json').write_text(json.dumps(provenance, indent=2))
+provenance.update(storage=args.storage, storageConnections=args.storage_connections, calibration=args.calibration, cycles=args.cycles)
 records = []
 
 
@@ -37,7 +46,8 @@ def run(version, workload, rows, workers, block, observing=False):
     mode = 'allocation' if observing else 'time'
     name = f'{workload}-{rows}-{workers}-{block}-{version}-{mode}'
     command = [str(executables[version]), '--sql-workload', workload,
-               '--input-rows', str(rows), '--workers', str(workers), '--rounds', str(args.rounds)]
+               '--input-rows', str(rows), '--workers', str(workers), '--rounds', str(args.rounds),
+               '--storage', args.storage, '--storage-connections', str(args.storage_connections)]
     environment = dict(os.environ)
     environment.pop('DYLD_INSERT_LIBRARIES', None)
     if observing:
@@ -68,7 +78,15 @@ def run(version, workload, rows, workers, block, observing=False):
         assert sample['rowsConsumed'] == rows * workers and sample['wallNS'] > 0, name
         assert sample['processCPUNS'] > 0, name
         assert sample['checksum'] == rows * (rows + 1) // 2 * workers, name
+        assert (sample['storage'], sample['storageConnections']) == (args.storage, args.storage_connections), name
         assert observing or len(sample['callNS']) == workers, name
+        if not observing:
+            timings = sample['requestTimings']
+            assert len(timings) == workers and len({t['originNS'] for t in timings}) == 1, name
+            assert {t['request'] for t in timings} == set(range(workers)), name
+            assert [t['rank'] for t in timings] == list(range(1, workers + 1)), name
+            assert all(t['originNS'] <= t['dispatchNS'] <= t['readyNS'] <= t['completeNS'] for t in timings), name
+            assert sample['callNS'] == [t['completeNS'] - t['dispatchNS'] for t in timings], name
         sample.update(version=version, block=block)
         records.append(sample)
     print(f'{name} PASS', flush=True)
@@ -86,11 +104,13 @@ if args.case:
     assert all(case in selected for case in args.case), 'Unknown workload/size/concurrency case'
     cases = [selected[case] for case in dict.fromkeys(args.case)]
 for workload, rows, workers in cases:
-    for block, order in enumerate((('before', 'after'), ('after', 'before'))):
+    for block, order in enumerate((('before', 'after'), ('after', 'before')) * args.cycles):
         for version in order:
             run(version, workload, rows, workers, block)
 observed = cases if args.quick or args.representative or args.case else [('ordered', 10000, 1), ('ties', 10000, 1),
                                     ('computed', 10000, 1), ('wide', 1000, 4)]
+if args.timing_only:
+    observed = []
 for workload, rows, workers in observed:
     for version in ('before', 'after'):
         run(version, workload, rows, workers, 0, observing=True)
@@ -108,12 +128,22 @@ for workload, rows, workers in cases:
             'latencyP95NS': calls[math.ceil(len(calls) * .95) - 1],
             'queriesPerSecond': statistics.median(v['queriesPerSecond'] for v in timed),
             'processCPUNSPerQuery': statistics.median(v['processCPUNS'] / workers for v in timed)}
+        cohort = [statistics.median(t['responseNS'] for t in v['requestTimings']) for v in timed]
+        center = statistics.median(cohort)
+        entry[version].update(responseP50NS=statistics.median(t['responseNS'] for v in timed for t in v['requestTimings']),
+            cohortP50NS=center, cohortMedianAbsoluteDeviationNS=statistics.median(abs(n - center) for n in cohort),
+            cohortP50SamplesNS=cohort,
+            completionRanks={str(rank): {
+                'responseP50NS': statistics.median(t['responseNS'] for v in timed for t in v['requestTimings'] if t['rank'] == rank),
+                'dispatchP50NS': statistics.median(t['dispatchDelayNS'] for v in timed for t in v['requestTimings'] if t['rank'] == rank),
+                'executeP50NS': statistics.median(t['executeNS'] for v in timed for t in v['requestTimings'] if t['rank'] == rank),
+                'consumeP50NS': statistics.median(t['consumeNS'] for v in timed for t in v['requestTimings'] if t['rank'] == rank)} for rank in range(1, workers + 1)})
         if allocation:
             entry[version].update(allocatorCallsPerQuery=statistics.median(v['allocationCalls'] / workers for v in allocation),
                 requestedBytesPerQuery=statistics.median(v['requestedBytes'] / workers for v in allocation),
                 retainedHeapDelta=statistics.median(v['retainedHeapDelta'] for v in allocation),
                 processPeakRSSBytes=max(v['processPeakRSSBytes'] for v in allocation))
-    entry['afterToBefore'] = {key: entry['after'][key] / value for key, value in entry['before'].items() if value > 0}
+    entry['afterToBefore'] = {key: entry['after'][key] / value for key, value in entry['before'].items() if isinstance(value, (int, float)) and value > 0}
     comparisons.append(entry)
 result.joinpath('comparisons.json').write_text(json.dumps(comparisons, indent=2))
 provenance['completed'] = time.time()

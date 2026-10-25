@@ -6,6 +6,24 @@ import Testing
 
 @Suite("Selected scalar instruction ownership", .timeLimit(.minutes(1)))
 struct ScalarMachineTests {
+    @Test("Ordinary arithmetic admits compact control storage without CASE payload slots")
+    func compactArithmeticControl() async throws {
+        // Includes the scalar kernel and value owners, but rejects payload-wide control slots.
+        let meter = makeMeter(bytes: 2 * 1024)
+        let left = CanonicalBoundExpression(expression: .int(1), type: .sql(.bigint), isNullable: false)
+        let right = CanonicalBoundExpression(expression: .int(2), type: .sql(.bigint), isNullable: false)
+        let bound = CanonicalBoundExpression(expression: .add(left.expression, right.expression),
+            type: .sql(.bigint), isNullable: false, children: [left, right])
+        do {
+            let result = try await DatabaseContext.evaluateSelectedValue(bound, on: empty(),
+                context: nil, databaseContext: nil, workMeter: meter)
+            #expect(result.value == .primitive(.int64(3)))
+            withExtendedLifetime(result) {}
+        }
+        #expect(meter.retainedIntermediateBytes == 0)
+        #expect(meter.retainedIntermediateRows == 0)
+    }
+
     @Test("Deep scalar control uses admitted instructions and releases unfinished storage")
     func explicitScalarStack() async throws {
         let meter = makeMeter()

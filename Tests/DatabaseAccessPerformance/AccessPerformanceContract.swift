@@ -63,6 +63,22 @@ struct AccessPerformanceContract {
     }
     typealias Producer = @Sendable () async throws -> Output
 
+    actor CohortGate {
+        let count: Int
+        var waiting: [CheckedContinuation<UInt64, Never>] = []
+        init(count: Int) { self.count = count }
+        func arrive() async -> UInt64 {
+            await withCheckedContinuation { continuation in
+                waiting.append(continuation)
+                if waiting.count == count {
+                    let origin = access_performance_now()
+                    for worker in waiting { worker.resume(returning: origin) }
+                    waiting.removeAll()
+                }
+            }
+        }
+    }
+
     static func main() async {
         do {
             let observing = CommandLine.arguments.contains("--observe")
@@ -72,6 +88,19 @@ struct AccessPerformanceContract {
             let inputRows = try positiveArgument("--input-rows", default: 10000, allowed: 1...10000)
             let workers = try positiveArgument("--workers", default: 1, allowed: 1...8)
             let sqlRounds = try positiveArgument("--rounds", default: 5, allowed: 1...10)
+            let connections = try positiveArgument("--storage-connections", default: 1, allowed: 1...8)
+            let storage = argument("--storage") ?? "memory"
+            guard ["memory", "file"].contains(storage), storage == "file" || connections == 1 else { throw Failure.invalidInput }
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("sql-cohort-" + UUID().uuidString)
+            if storage == "file" { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false) }
+            defer {
+                if storage == "file" {
+                    do { try FileManager.default.removeItem(at: directory) }
+                    catch { print("ACCESS_PERFORMANCE_CLEANUP_FAILURE \(error)"); exit(1) }
+                }
+            }
+            let storageConfiguration: SQLiteStorageEngine.Configuration = storage == "file"
+                ? .init(path: directory.appendingPathComponent("fixture.sqlite").path, connectionCount: connections) : .inMemory
             let initial = access_performance_observe()
             guard initial.valid == 1 else { throw Failure.observationUnavailable }
             if observing {
@@ -88,7 +117,7 @@ struct AccessPerformanceContract {
                     return AuthorizationPolicyHandler(schemaDriven: entity) { _, context in context.principal?.roles.contains("reader") == true }
                 })
             let container = try await DBContainer.open(for: schema,
-                configuration: DBConfiguration(storageEngine: SQLiteStorageEngine(configuration: .inMemory),
+                configuration: DBConfiguration(storageEngine: SQLiteStorageEngine(configuration: storageConfiguration),
                     monotonicClock: SystemStorageClock(), wallClock: BenchmarkWallClock()),
                 runtimeConfiguration: runtime, security: .enabled())
             defer { await container.shutdown() }
@@ -121,11 +150,11 @@ struct AccessPerformanceContract {
                         else { throw Failure.invalidOutput }
                         return .local(rows)
                     }, count: inputRows, concurrency: workers, observing: observing,
-                        width: workload.width, ordered: sqlCase == "ordered")
+                        width: workload.width, ordered: sqlCase == "ordered", synchronized: true)
                     if round > 0 {
                         emit(result.merging(["kind": "sql-execution", "workload": sqlCase, "inputRows": inputRows,
                             "rows": inputRows, "concurrency": workers, "round": round,
-                            "observing": observing]) { _, new in new })
+                            "observing": observing, "storage": storage, "storageConnections": connections]) { _, new in new })
                     }
                 }
                 emit(["kind": "complete", "scenarios": 1, "rounds": sqlRounds, "observing": observing])
@@ -216,9 +245,10 @@ struct AccessPerformanceContract {
     }
 
     static func execute(_ produce: @escaping Producer, count: Int, concurrency: Int, observing: Bool,
-        width: Int = 1, ordered: Bool = true) async throws -> [String: Any] {
+        width: Int = 1, ordered: Bool = true, synchronized: Bool = false) async throws -> [String: Any] {
         let before = access_performance_observe()
         var perCall: [UInt64] = []
+        var requestTimings: [[String: UInt64]] = []
         var total = 0, checksum: Int64 = 0, valid = true
         let start = access_performance_now()
         var retained = before
@@ -235,25 +265,35 @@ struct AccessPerformanceContract {
             }
             withExtendedLifetime(outputs) {}
         } else {
-            let values = try await withThrowingTaskGroup(of: (UInt64, Int, Int64, Bool).self) { group in
-                for _ in 0..<concurrency {
+            let gate = synchronized ? CohortGate(count: concurrency) : nil
+            let values = try await withThrowingTaskGroup(of: (UInt64, UInt64, UInt64, UInt64, UInt64, Int, Int64, Bool).self) { group in
+                for identifier in 0..<concurrency {
                     group.addTask {
+                        let origin = await gate?.arrive() ?? access_performance_now()
                         let callStart = access_performance_now()
-                        let value = try await produce().consume(width: width, ordered: ordered)
-                        return (access_performance_now() - callStart, value.0, value.1, value.2)
+                        let output = try await produce()
+                        let ready = access_performance_now()
+                        let value = try await output.consume(width: width, ordered: ordered)
+                        return (UInt64(identifier), origin, callStart, ready, access_performance_now(), value.0, value.1, value.2)
                     }
                 }
-                var result: [(UInt64, Int, Int64, Bool)] = []
+                var result: [(UInt64, UInt64, UInt64, UInt64, UInt64, Int, Int64, Bool)] = []
                 for try await value in group { result.append(value) }
-                return result
+                return result.sorted { $0.4 < $1.4 }
             }
-            for value in values { perCall.append(value.0); total += value.1; checksum += value.2; valid = valid && value.3 }
+            for (rank, value) in values.enumerated() {
+                perCall.append(value.4 - value.2); total += value.5; checksum += value.6; valid = valid && value.7
+                requestTimings.append(["request": value.0, "originNS": value.1, "dispatchNS": value.2,
+                    "readyNS": value.3, "completeNS": value.4, "rank": UInt64(rank + 1),
+                    "dispatchDelayNS": value.2 - value.1, "executeNS": value.3 - value.2,
+                    "consumeNS": value.4 - value.3, "responseNS": value.4 - value.1])
+            }
         }
         let end = access_performance_now()
         let after = access_performance_observe()
         guard end > start, before.valid == 1, after.valid == 1, retained.valid == 1,
             valid, total == count * concurrency, checksum == Int64(count * (count + 1) / 2 * concurrency) else { throw Failure.invalidOutput }
-        var result: [String: Any] = ["wallNS": end - start, "callNS": perCall,
+        var result: [String: Any] = ["wallNS": end - start, "callNS": perCall, "requestTimings": requestTimings,
             "processCPUNS": after.process_cpu_ns - before.process_cpu_ns,
             "rowsConsumed": total, "checksum": checksum,
             "queriesPerSecond": Double(concurrency) * 1e9 / Double(end - start),

@@ -375,6 +375,15 @@ struct CanonicalSQLNumericEvaluatorTests {
 
     @Test("NULLs propagate and supplied values cannot reselect the bound signature")
     func nullAndSelectedSignature() throws {
+        let operands: [QueryValue] = [.primitive(.int32(1)), .primitive(.int32(2))]
+        let child = CanonicalBoundExpression(expression: .null, type: .sql(.integer), isNullable: true)
+        let selected = CanonicalBoundExpression(expression: .add(.null, .null), type: .sql(.integer),
+            isNullable: true, children: [child, child])
+        #expect(try CanonicalSQLNumericEvaluator.evaluate(selected, operands: operands.lazy.map { $0 }, workMeter: meter()) == .primitive(.int32(3)))
+        let shifted = [.primitive(.int32(0))] + operands
+        #expect(throws: DatabaseExpressionEvaluationError.typeMismatch(operation: "selected numeric operand count")) {
+            try CanonicalSQLNumericEvaluator.evaluate(selected, operands: shifted[1...], workMeter: meter())
+        }
         #expect(try run(.add(.null,.null),result:decimal,inputs:[decimal,decimal],values:[.primitive(.null),try numeric(1)]) == .primitive(.null))
         #expect(throws: DatabaseExpressionEvaluationError.typeMismatch(operation:"selected numeric input")) {
             try run(.add(.null,.null),result:.real,inputs:[.real,.real],values:[.primitive(.int32(1)),.primitive(.int32(2))])

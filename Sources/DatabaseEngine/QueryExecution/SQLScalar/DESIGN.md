@@ -44,6 +44,12 @@ the sole semantic implementations. Diagnostics retain child occurrences.
 
 ## State, Ownership, and Lifecycle
 
+| Logical state | Native / standard WASM / Embedded | Access and release |
+|---|---|---|
+| Control instructions and value stack | Identical invocation-local admitted Arrays; no conditional storage or Sendable conformance | The same evaluator exclusively pushes/pops; stack slots and leases end on return or throw |
+| Work and retained bytes | Existing `DatabaseWorkMeter` and reservation `Mutex<State>` on all targets | Existing consume/checkpoint/reserve/release entry points; no callback or await under the mutex |
+| CASE operand and extreme candidate | Values in the same invocation-local stack on all targets | Stable operand position or current-candidate tag; retained across contextual await, removed before subsequent branch/argument |
+
 Stacks are invocation-local exclusive values, not shared mutable state. Group,
 window and lexical frames are immutable references owned by the existing read
 session. All types and isolation remain identical on Native/WASM/Embedded.
@@ -82,3 +88,53 @@ frame. The evaluator reserves no hypothetical overlay and performs no metadata
 walk for that identity operation. A real overlay keeps its prior prospective
 admission and lexical shadowing. This changes charges only for work/storage no
 longer performed; every evaluated node retains its work and cancellation checks.
+
+### TAIL25 control and value ownership
+
+Control instructions carry a root tag or a retained immutable child-array owner
+plus ordinal, continuation indices and small tags. They do not copy the complete
+`CanonicalBoundExpression` into each command slot. The original root and the
+shared bound children own the metadata; each child reference retains its actual
+array owner across suspension, without raw pointers or a flattened metadata copy. They never embed evaluated values or lease vectors: otherwise the
+largest CASE continuation determines every instruction slot's storage, including
+ordinary arithmetic. The admitted value stack owns CASE's original operand and
+selected comparison operand, and the current GREATEST/LEAST candidate.
+
+Simple CASE keeps the original operand at a stable stack position, coerces it
+independently before each WHEN's other operand, and removes all control-owned
+values before the selected result/fallback is evaluated. Searched CASE retains
+no operand. Extrema retain only the selected candidate and the next argument;
+discarded candidates end before evaluation of the following argument. Nested
+operators cannot consume a parent's pending control values. All stack capacity
+is admitted before growth on the unchanged meter and discarded on failure.
+
+Synchronous kernels read a zero-based, owner-retaining view of the existing value
+stack. The view's complete lifetime ends inside the synchronous kernel before
+the caller removes operands or appends the result, so COW cannot duplicate the
+stack at mutation. At the sequence boundary the machine materializes the primitive argument array
+required by its async API, admitting that actual container and retaining the
+original value stack's leases until the await returns. Domain kernels retain
+their existing explicit input ownership boundaries. Numeric kernels consume a lazy zero-based QueryValue view rather than mapping
+these operands into another Array. Their existing arithmetic, casts, functions,
+validation and original meter remain the only semantics.
+
+Instruction admission and pushes mutate one explicit `AdmittedArray` owner.
+A projected property-wrapper writeback must not leave a retained Array alias
+across the admitted batch: allocation stacks reproduced a full COW buffer copy
+on each push despite enough capacity. The loop reads/removes the stored buffer
+directly, and shares no snapshot of that mutable owner with its scheduling code.
+
+The initial root instruction lives in the driver's current slot. A known eager
+child-command batch admits its complete pending instruction capacity once before
+any child runs. This is the same pending-command peak as individual appends;
+value-stack capacity still grows only as values are produced, so a child's
+transient payload is not overlapped with speculative sibling value capacity.
+No speculative operand array or extra reservation is constructed for ordinary
+synchronous kernels.
+
+The arithmetic storage regression admits the existing scalar-kernel/operand
+space plus compact control space; it must reject a representation that charges
+rare branch payload storage to ordinary operators. Native allocation observations
+must confirm reduced cumulative bytes against both47df0b2a and a7bcf834. Exact
+standard/Embedded runtime covers nested CASE, lazy failures, extrema ownership,
+typed SQL/IR results, cancellation/budgets, rollback and authoritative close.

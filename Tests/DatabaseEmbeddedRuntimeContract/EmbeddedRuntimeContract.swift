@@ -53,6 +53,9 @@ struct EmbeddedRuntimeContract {
             try require(try await values(scalar.rows) == [[.primitive(.int32(7)), .primitive(.int32(14)),
                 .primitive(.string("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11")), .primitive(.string("00ff80")),
                 .primitive(.int32(255)), .primitive(.int32(1)), .primitive(.int32(3)), .primitive(.int32(24))]])
+            phase = "scalar-control-values"
+            let nested = try await execute(access, .sql("SELECT 10 + CASE 3 WHEN 1 THEN 1/0 WHEN 2 THEN 1/0 WHEN 3 THEN GREATEST(NULL, 1, LEAST(9, 7), 4) ELSE 1/0 END, CASE 8 WHEN 1 THEN 1/0 ELSE CASE 2 WHEN 2 THEN 6 ELSE 1/0 END END, GREATEST(NULL, NULL), LEAST(NULL, 5, 2)"))
+            try require(try await values(nested.rows) == [[.primitive(.int32(17)), .primitive(.int32(6)), .primitive(.null), .primitive(.int32(2))]])
             phase = "computed-projection"
             let tuples = (1...100).map { "(\($0))" }.joined(separator: ",")
             let projection = (0..<8).map { "n+\($0) AS c\($0)" }.joined(separator: ",")
