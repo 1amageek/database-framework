@@ -64,4 +64,4 @@ quick matrix completed 12 time and 12 observation records with exact output
 validation. Swift/C fixture bytes match the prior paths. This validates package
 relocation; it does not replace historical performance acceptance or the final
 CI benchmark gates. Raw evidence is in
-[the local verification record](../../../../.codex-tools/ci-repair-20261025/local-verification.json).
+[the local verification record](../../../.codex-tools/ci-repair-20261025/local-verification.json).
