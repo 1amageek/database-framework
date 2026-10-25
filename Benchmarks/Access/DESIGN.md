@@ -10,7 +10,9 @@ Parent: [Framework](../../DESIGN.md). Children:
 ## Responsibilities and Boundaries
 
 Own the measurement executable, C observation target and fixed SQLite/ScalarIndexes
-composition. Consume the adjacent Framework under test and URL-pinned Client,
+composition. The measurement host requires macOS 27, matching the CI-provided
+SQLite library deployment requirement. Framework retains its separate deployment
+floor. Consume the adjacent Framework under test and URL-pinned Client,
 Kit, Types and Storage contracts. Production and correctness targets never depend
 on this package. Functional standard/Embedded fixtures remain with Framework.
 
@@ -36,7 +38,9 @@ Source relocation preserves fixture code, output checks, authority, budget,
 rollback and lifecycle. The package enables only SQLite/ScalarIndexes in Framework;
 its observer is never linked into production products. The harness verifies the
 fixed release compiler, builds with this package's committed lock and retains
-source/lock/compiler provenance. Existing performance bounds are unchanged.
+source/lock/compiler provenance. CI matches the Native harness by omitting release
+debug information and rejects internal compiler/tool warnings even when the
+build process exits zero. Existing performance bounds are unchanged.
 
 ## State, Ownership, and Lifecycle
 
@@ -53,7 +57,7 @@ bound local disk use; raw result evidence survives cache cleanup.
 
 Run the observer self-check and quick time/observation matrix through
 `scripts/access-performance-harness`. CI builds this independent product with its
-locked graph. `scripts/verify-benchmark-separation` guards the root boundary.
+locked graph and runs its quick time matrix as a correctness smoke check. `scripts/verify-benchmark-separation` guards the root boundary.
 Moving fixture inputs invalidates provenance paths, not historical measurements
 whose program bytes and settings remain unchanged. Changes to fixture semantics
 require their behavioral and measurement gates again.
@@ -65,3 +69,10 @@ validation. Swift/C fixture bytes match the prior paths. This validates package
 relocation; it does not replace historical performance acceptance or the final
 CI benchmark gates. Raw evidence is in
 [the local verification record](../../../.codex-tools/ci-repair-20261025/local-verification.json).
+
+The follow-up host check used the pinned August 14 snapshot, macOS27 target and
+debug-free release setting: the actual executable built in 562 seconds with zero
+internal tool warnings and completed all 12 quick records. Its exact input and
+compiler record is [retained here](../../../.codex-tools/ci-repair-20261025/host-access-verification.json).
+The CI guard rejects the first run's 293 input-verification warnings even though
+that build exited zero. Actual updated FullText medians remain a final CI gate.

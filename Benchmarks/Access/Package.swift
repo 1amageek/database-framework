@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "database-framework-access-measurements",
-    platforms: [.macOS(.v26)],
+    platforms: [.macOS("27.0")],
     products: [.executable(name: "DatabaseAccessPerformanceContract", targets: ["DatabaseAccessPerformanceContract"])],
     dependencies: [
         .package(path: "../..", traits: ["SQLite", "ScalarIndexes"]),

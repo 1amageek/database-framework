@@ -4,7 +4,7 @@ import PackageDescription
 
 let package = Package(
     name: "database-framework-fulltext-benchmarks",
-    platforms: [.macOS(.v26)],
+    platforms: [.macOS("27.0")],
     dependencies: [
         .package(
             path: "../..",

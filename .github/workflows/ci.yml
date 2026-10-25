@@ -170,12 +170,27 @@ jobs:
         if: ${{ !cancelled() }}
         working-directory: database-framework
         run: |
+          set -o pipefail
+          build_log="$RUNNER_TEMP/database-framework-access-build.log"
           perl -e 'alarm shift; exec @ARGV' 900 \
             xcrun --toolchain "$TOOLCHAINS" swift build \
               --package-path Benchmarks/Access \
               --scratch-path "$RUNNER_TEMP/database-framework-access-build" \
               --only-use-versions-from-resolved-file \
-              --product DatabaseAccessPerformanceContract -c release --jobs 4
+              --product DatabaseAccessPerformanceContract -c release --jobs 4 \
+              -debug-info-format none 2>&1 | tee "$build_log"
+          if grep -En 'Internal Error:|LLVM Profile Error:|warning: input verification failed' "$build_log"; then
+            echo "error: internal tool failure in access measurement build" >&2
+            exit 1
+          fi
+          perl -e 'alarm shift; exec @ARGV' 120 \
+            xcrun --toolchain "$TOOLCHAINS" swift run \
+              --package-path Benchmarks/Access \
+              --scratch-path "$RUNNER_TEMP/database-framework-access-build" \
+              --skip-build -c release DatabaseAccessPerformanceContract --quick \
+              > "$RUNNER_TEMP/database-framework-access-quick.log"
+          cat "$RUNNER_TEMP/database-framework-access-quick.log"
+          grep -Fx 'ACCESS_PERFORMANCE_PASS' "$RUNNER_TEMP/database-framework-access-quick.log"
 
       - name: Upload benchmark build results
         if: always()
