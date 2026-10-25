@@ -256,6 +256,54 @@ below both47df0b2a and a7bcf834 for computed/wide workloads, improved paired
 small-CTE latency with its observed dispersion and completion-rank distributions
 reported, and unchanged correctness/authority/budget/rollback/lifetime evidence.
 
+### TAIL25 measured results, 2026-10-25
+
+Framework source at `f0286841` was compared with `47df0b2a` (current baseline) and `a7bcf834` (pre-refactoring). All three executables use identical fixture/probe/header bytes, current URL pins and release Swift6.4.0 with SQLite/ScalarIndexes. These isolate Framework source changes; they are not historical whole-stack release comparisons. Each timing condition alternates AB/BA with9 measured cohorts per process after a warm cohort. Allocation uses five separate observed cohorts per condition. Raw pooled quantiles and every cohort remain in the evidence.
+
+| Current baseline comparison | Rows / workers | p50 before → after ms | Initial p95 before → after ms | Cohort p50 MAD before → after ms | Throughput change | CPU/query change |
+|---|---:|---:|---:|---:|---:|---:|
+| computed | 100 / 4 | 10.198 → 9.829 | 16.474 → 15.953 | 0.197 → 0.160 | +4.07% | -2.45% |
+| computed | 1000 / 4 | 96.989 → 93.025 | 155.393 → 147.819 | 1.123 → 0.859 | +5.37% | -4.40% |
+| wide | 100 / 4 | 27.802 → 23.783 | 41.991 → 38.030 | 0.212 → 0.220 | +9.92% | -6.31% |
+| wide | 1000 / 4 | 253.216 → 224.846 | 399.817 → 360.680 | 1.615 → 2.205 | +10.83% | -6.73% |
+| computed | 1000 / 1 | 38.011 → 37.252 | 39.266 → 38.538 | 0.225 → 0.407 | +2.04% | -1.31% |
+| wide | 1000 / 1 | 101.418 → 92.201 | 103.762 → 94.543 | 1.069 → 0.574 | +9.99% | -6.19% |
+| computed | 10000 / 1 | 375.904 → 363.813 | 396.754 → 637.509 | 2.337 → 2.183 | +3.32% | -2.47% |
+| ordered | 10000 / 1 | 308.523 → 307.226 | 318.518 → 315.337 | 2.401 → 3.313 | +0.42% | -0.41% |
+| ties | 1000 / 1 | 39.267 → 37.174 | 39.746 → 38.220 | 0.427 → 0.272 | +5.63% | -5.20% |
+
+The original two small concurrent computed-CTE conditions improve raw p50 by3.62%/4.09% and cohort MAD by19.01%/23.55%. All nine initial raw p50 values decrease, including the unchanged positional ORDER control whose0.42% difference is not evidence of a meaningful speed change. Dispersion does not decrease universally: the wide1000/four-worker condition has a larger MAD, while its p50 and p95 decrease. No claim of deterministic latency or universal tail improvement is made.
+
+An identical-binary control for the two small conditions measures raw-p50 ratios1.0078/0.9872 and cohort-p50 ratios0.9852/0.9764. These are observed drift, not confidence intervals. Request origin/dispatch/ready/completion timestamps and completion rank remain in every uninstrumented record; the ready interval includes backend waiting plus execution and is not claimed as isolated storage wait.
+
+Two initial p95 observations required one predeclared audit rather than favorable-sample selection. With18 single-worker observations, the empirical95th percentile is the maximum. The audit adds exactly three AB/BA cycles of nine cohorts to the10000-row memory condition and100-row/four-connection WAL condition, with identical-binary controls. Original and additional records are pooled in full:
+
+| Pooled condition | Cohorts / responses per version | p50 before → after ms | p95 before → after ms | Maximum before → after ms |
+|---|---:|---:|---:|---:|
+| computed10000, memory/one connection | 72 / 72 | 384.870 → 364.938 | 414.054 → 383.353 | 541.994 → 637.509 |
+| computed100, WAL/four connections | 72 / 288 | 7.438 → 7.064 | 8.341 → 8.377 | 10.777 → 13.195 |
+
+The WAL small-condition pooled p95 is0.43% higher. Its identical-binary audit also varies substantially (p95 ratio0.7831); the large-memory identical-binary p95 ratio is1.0108. The initial637.509ms event remains recorded. This audit finds no reproducible code-driven tail regression and does not erase maximum latency or declare every p95 improved.
+
+| Cumulative allocator API requested bytes/query | Rows / workers | Pre-refactor a7bcf834 | Before47df0b2a | After f0286841 |
+|---|---:|---:|---:|---:|
+| computed | 1000 / 1 | 82,864,823 | 86,396,883 | 79,819,883 |
+| wide | 1000 / 1 | 113,800,033 | 162,044,079 | 109,428,079 |
+| computed | 100 / 4 | 69,190,435 | 69,505,391 | 68,847,651 |
+| computed | 1000 / 4 | 82,868,547 | 86,397,419 | 79,820,455 |
+| wide | 100 / 4 | 72,747,673 | 77,573,367 | 72,311,803 |
+| wide | 1000 / 4 | 113,803,797 | 162,044,675 | 109,428,615 |
+
+All six byte-volume gates are below both references. For1000-row single-worker computed/wide queries the reduction from47df0b2a is7.61%/32.47%, and from a7bcf834 is3.67%/3.84%. These are cumulative successful allocator API requested bytes, including realloc, not live heap or RSS. Current-baseline retained-result snapshots stay equal at66,784/99,856 bytes. Observed process-cumulative peak RSS is27,131,904→27,213,824 and30,031,872→30,703,616 bytes; both are below the pre-refactor28,295,168/31,653,888. RSS includes startup, seeding and warmup and is not a per-query heap peak.
+
+Attribution follows actual allocation stacks: full bound/evaluated payloads amplified all instruction capacity, and synchronous projected/numeric operand arrays repeated transport copies. A candidate projected batch owner additionally copied a192-byte instruction buffer on push. The final direct owner reduces that size-class count from128,052 to32,052 in the diagnostic wide workload; no extra copy remains beyond one admitted buffer per arithmetic root. The diagnostic histogram/stack library is separate from the original observer used for accepted allocation totals. The diagnostic allocation-size distribution separates the repeated small-buffer copies from infrequent large allocation classes; no async-frame ABI interpretation is required for the accepted byte-volume result.
+
+Explicit file-backed WAL controls preserve the single-connection default. Final cohort p50 for one→four connections is10.646→7.081ms (computed100),94.619→59.362ms (computed1000), and224.601→132.887ms (wide1000). Queue position explains the single-connection staircase; the framework does not bypass transaction leases or change storage defaults. The initial small/four-connection before/after raw median is7.008→7.090ms, while cohort medians are7.071→7.081ms; these and the pooled audit remain visible rather than selecting a favorable run.
+
+Native SQLite/AllRuntimeFeatures completed2650 tests (Engine1438, Database235, SQLite152, QueryAST825), with zero failures/skips/expected failures/runtime warnings. The2KiB arithmetic storage counterexample fails the payload-wide candidate and passes the final driver. Release Swift6.4.0 standard and Embedded WASM each execute four real groups on wasm32-unknown-wasip1/Node24.19.0, including nested CASE/extrema,100-row/eight-column projection, SQL/IR/block results, budget rollback, concurrent reads, sequence, reinitialization and close. Both builds have zero compiler warnings. Compiled source hashes, fixture bytes and URL pins match the committed implementation; no public invocation/result API, authority, meter, rollback or lifecycle contract changes.
+
+[Raw evidence and measurement manifest](../../../.codex-tools/sql-scalar-tail-20261025/performance-verification.json) retains all original/audit samples, source/probe hashes, pins, compiler/SDK identities, result bundles, wasm artifacts and executable hashes. The owning public harnesses reproduce timing, cycles and explicit storage configurations. Native allocation/RSS observations make no WASM/Embedded memory-performance claim.
+
 ### SPEED25 measured results, 2026-10-25
 
 Identical fixture sources, C probe/header and URL pins were compiled against

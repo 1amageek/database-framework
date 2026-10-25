@@ -380,6 +380,11 @@ and the [performance owner](Tests/DatabaseAccessPerformance/DESIGN.md). It keeps
 the original single-meter, authority, rollback and lifecycle boundaries; SQLite
 transaction capacity remains a StorageKit contract.
 
+TAIL25 source`f0286841` passes Native2650 and release standard/Embedded four-group
+runtimes. The [matched measured results](Tests/DatabaseAccessPerformance/DESIGN.md#tail25-measured-results-2026-10-25)
+retain both allocation baselines, common-origin/rank timing, identical-binary and
+WAL capacity controls, and the original tail events with the fixed pooled audit.
+
 SPEED25 reopens performance acceptance and removes measured repeated frame,
 single-row projection and ORDER fingerprint work under the
 [QueryExecution contract](Sources/DatabaseEngine/QueryExecution/DESIGN.md#speed25-repeated-execution-costs).
