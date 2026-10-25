@@ -146,3 +146,12 @@ This adapter forwards the original operation and does not add per-query yields,
 a second budget meter or a transaction boundary. Standalone WASI and hosted
 execution are separate runtime evidence; the common API never installs or
 replaces a global executor.
+
+### Named shutdown boundary
+
+Named result admission is owned by the Client
+[Results contract](../../../database-client/Sources/DatabaseAccess/Results/DESIGN.md#named-result-admission).
+The adapter continues to produce final retained pages and delegates execution,
+authorization, budgets and transaction closure to the existing QueryConnection.
+A named directory closes all generation admission before awaiting any adapter
+drain. Local retained results remain readable after owned container shutdown.

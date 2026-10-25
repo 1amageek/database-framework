@@ -343,3 +343,10 @@ or execution into the serializer. The corresponding module contract is
 ## IR-centered Execution Integration
 
 [Database facade](Sources/Database/DESIGN.md) owns the directly consumed contract for the accepted QueryStatement/SQLBlock unification. Existing authorization, exact work budgets, first-error rollback, retained ownership and authoritative shutdown remain required. Runtime state and publication do not move into Kit declarations.
+
+## Native Access Performance Verification
+
+The package owns the optional [access performance executable](Tests/DatabaseAccessPerformance/DESIGN.md)
+and its [Native observation boundary](Tests/AccessPerformanceProbe/DESIGN.md).
+They measure the common-access acceptance matrix and are excluded from production
+library graphs. Normal/Embedded functional runtime gates remain separate evidence.

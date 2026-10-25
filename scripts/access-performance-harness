@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+"""Reproduce Native access measurements without modifying host configuration."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import signal
+import math
+import statistics
+import subprocess
+import time
+
+ROOT = Path(__file__).resolve().parent.parent
+TOOLCHAIN = 'org.swift.640202609131a'
+parser = argparse.ArgumentParser()
+parser.add_argument('--source-root', type=Path, default=ROOT)
+parser.add_argument('--work-root', type=Path, required=True)
+parser.add_argument('--result-directory', type=Path, required=True)
+parser.add_argument('--diagnostic-local', action='store_true')
+parser.add_argument('--quick', action='store_true')
+parser.add_argument('--build-only', action='store_true')
+args = parser.parse_args()
+source, work, result = (p.resolve() for p in (args.source_root, args.work_root, args.result_directory))
+assert work != Path('/') and source.joinpath('Package.swift').is_file()
+assert args.diagnostic_local or '.package(path:' not in source.joinpath('Package.swift').read_text()
+work.mkdir(parents=True, exist_ok=True)
+result.mkdir(parents=True, exist_ok=False)
+owner = work / '.access-performance-owner'
+if owner.exists():
+    assert owner.read_text() == str(ROOT)
+else:
+    assert not list(work.iterdir())
+    owner.write_text(str(ROOT))
+
+def run(command, name, timeout=1800, env=None):
+    with result.joinpath(name).open('w') as log:
+        log.write(json.dumps(command) + '\n'); log.flush()
+        process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, env=env, start_new_session=True)
+        try:
+            code = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL); process.wait()
+            raise
+    if code:
+        raise RuntimeError(f'{name}: exit {code}; see {result / name}')
+    return result.joinpath(name).read_text()
+
+def capture(*command):
+    return subprocess.check_output(command, text=True, timeout=60).strip()
+
+compiler = capture('xcrun', '--toolchain', TOOLCHAIN, '--find', 'swiftc')
+assert '/swift-6.4.0-RELEASE.xctoolchain/' in compiler
+version = capture(compiler, '--version')
+sdk = capture('xcrun', '--sdk', 'macosx', '--show-sdk-path')
+clang = capture('xcrun', '--toolchain', TOOLCHAIN, '--find', 'clang')
+inputs = {str(p.relative_to(source)): hashlib.sha256(p.read_bytes()).hexdigest()
+          for p in [source/'Package.swift', source/'Package.resolved', *source.joinpath('Tests/DatabaseAccessPerformance').glob('*.swift'),
+                    *source.joinpath('Tests/AccessPerformanceProbe').glob('*.c')]}
+metadata = {'compiler': compiler, 'version': version, 'sdk': sdk, 'sdkVersion': capture('xcrun','--sdk','macosx','--show-sdk-version'),
+            'traits': ['SQLite','ScalarIndexes'], 'mode': 'diagnostic-local' if args.diagnostic_local else 'URL',
+            'inputs': inputs, 'harnessSHA256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), 'pins': json.loads(source.joinpath('Package.resolved').read_text()), 'started': time.time()}
+result.joinpath('provenance.json').write_text(json.dumps(metadata, indent=2))
+probe = source/'Tests/AccessPerformanceProbe'
+library = work/'libAccessAllocationObservation.dylib'
+run([clang,'-dynamiclib','-std=c11','-O2','-fno-builtin','-isysroot',sdk,str(probe/'AllocationObservation.c'),'-o',str(library)],'observer-build.log')
+check = work/'observer-check'
+run([clang,'-std=c11','-O2','-fno-builtin','-isysroot',sdk,str(probe/'SelfCheck.c'),'-o',str(check)],'observer-check-build.log')
+environment = dict(os.environ, DYLD_INSERT_LIBRARIES=str(library))
+assert 'ACCESS_OBSERVER_PASS calls=40000 threads=4' in run([str(check)],'observer-check.log',60,environment)
+run(['xcrun','--toolchain',TOOLCHAIN,'swift','build','--package-path',str(source),'--scratch-path',str(work/'build'),
+     '--disable-default-traits','--traits','SQLite,ScalarIndexes','--only-use-versions-from-resolved-file','--jobs','4',
+     '--product','DatabaseAccessPerformanceContract','-c','release','-debug-info-format','none'], 'build.log',2400)
+if args.build_only:
+    print(f'Access performance build complete: {result}')
+    raise SystemExit(0)
+executable = work/'build/out/Products/Release/DatabaseAccessPerformanceContract'
+assert executable.is_file()
+for observing in (False, True):
+    mode = 'observation' if observing else 'time'
+    command = [str(executable)] + (['--observe'] if observing else []) + (['--quick'] if args.quick else [])
+    raw = run(command, mode+'.log', 900, environment if observing else None)
+    assert raw.count('ACCESS_PERFORMANCE_PASS\n') == 1
+    rows = [json.loads(line.removeprefix('ACCESS_PERFORMANCE ')) for line in raw.splitlines() if line.startswith('ACCESS_PERFORMANCE ')]
+    measurements = [r for r in rows if r['kind'] in ('execution','construction','lookup')]
+    expected = 12 if args.quick else 420
+    assert len(measurements) == expected, (len(measurements), expected)
+    assert rows[-1]['kind'] == 'complete' and rows[-1]['scenarios'] == (12 if args.quick else 84)
+    assert all(r['wallNS'] > 0 and r['concurrency'] in (1,4,8) for r in measurements)
+    if not args.quick:
+        assert {(r['kind'], r['backend'], r['path'], r['rows'], r['concurrency'], r['round']) for r in measurements} == {
+            (kind,backend,path,count,concurrency,round_number)
+            for kind in ('lookup','construction','execution') for backend in ('local','remote') for path in ('direct','named')
+            for count in ([0] if kind == 'lookup' else [1,100,10000]) for concurrency in (1,4,8) for round_number in range(1,6)}
+    if observing:
+        assert rows[0]['kind'] == 'calibration' and all('allocationCalls' in r and r['processPeakRSSBytes'] > 0 for r in measurements)
+    result.joinpath(mode+'.json').write_text(json.dumps(rows, indent=2))
+time_rows = [r for r in json.loads(result.joinpath('time.json').read_text()) if r['kind'] in ('execution','construction','lookup')]
+observation_rows = [r for r in json.loads(result.joinpath('observation.json').read_text()) if r['kind'] in ('execution','construction','lookup')]
+comparisons = []
+def quantile(values, proportion):
+    return sorted(values)[max(0, math.ceil(len(values) * proportion) - 1)]
+for kind, backend, count, concurrency in sorted({(r['kind'],r['backend'],r['rows'],r['concurrency']) for r in time_rows}):
+    comparison = dict(kind=kind, backend=backend, rows=count, concurrency=concurrency)
+    for path in ('direct','named'):
+        samples = [r for r in time_rows if (r['kind'],r['backend'],r['rows'],r['concurrency'],r['path']) == (kind,backend,count,concurrency,path)]
+        observations = [r for r in observation_rows if (r['kind'],r['backend'],r['rows'],r['concurrency'],r['path']) == (kind,backend,count,concurrency,path)]
+        latencies = [n for r in samples for n in r['callNS']] if kind == 'execution' else [n/r['iterationsPerWorker'] for r in samples for n in r['workerNS']]
+        units = concurrency if kind == 'execution' else concurrency * 1000
+        comparison[path] = {'latencyP50NS': statistics.median(latencies), 'latencyP95NS': quantile(latencies,0.95),
+            'latencySamples': len(latencies), 'amortizedWallNSPerOperation': statistics.median([r['wallNS']/(concurrency if kind == 'execution' else r['operations']) for r in samples]), 'throughputPerSecond': statistics.median([r['queriesPerSecond' if kind == 'execution' else 'operationsPerSecond'] for r in samples]),
+            'allocatorCallsPerOperation': statistics.median([r['allocationCalls']/units for r in observations]),
+            'requestedBytesPerOperation': statistics.median([r['requestedBytes']/units for r in observations]),
+            'retainedHeapDelta': statistics.median([r['retainedHeapDelta'] for r in observations]),
+            'processPeakRSSBytes': max(r['processPeakRSSBytes'] for r in observations)}
+    comparison['namedToDirectLatencyRatio'] = comparison['named']['latencyP50NS']/comparison['direct']['latencyP50NS']
+    comparison['additionalAllocatorCallsPerOperation'] = comparison['named']['allocatorCallsPerOperation']-comparison['direct']['allocatorCallsPerOperation']
+    comparisons.append(comparison)
+result.joinpath('comparisons.json').write_text(json.dumps(comparisons,indent=2))
+for relative, expected in inputs.items():
+    assert hashlib.sha256(source.joinpath(relative).read_bytes()).hexdigest() == expected
+metadata.update(completed=time.time(), executableSHA256=hashlib.sha256(executable.read_bytes()).hexdigest(),
+                observerSHA256=hashlib.sha256(library.read_bytes()).hexdigest())
+result.joinpath('provenance.json').write_text(json.dumps(metadata, indent=2))
+print(f'Access performance matrix passed: {result}')

@@ -102,7 +102,7 @@ let package = Package(
         .trait(name: "Relationships"),
     ],
     dependencies: [
-        .package(url: "https://github.com/1amageek/database-client.git", revision: "4561ecda81ba63e60e28e81001f26ae96badde3d", traits: multiBaseTraits),
+        .package(url: "https://github.com/1amageek/database-client.git", revision: "89f03891f9d6700e7eb6d10fd04aaa1a50bf0d5f", traits: multiBaseTraits),
         .package(
             url: "https://github.com/1amageek/database-types.git",
             from: "26.1021.0"
@@ -128,6 +128,19 @@ let package = Package(
         ),
     ],
     targets: [
+        .target(name: "AccessPerformanceProbe", path: "Tests/AccessPerformanceProbe",
+            exclude: ["DESIGN.md", "AllocationObservation.c", "SelfCheck.c"], publicHeadersPath: "include",
+            cSettings: [.unsafeFlags(["-fno-builtin"])]),
+        .executableTarget(name: "DatabaseAccessPerformanceContract",
+            dependencies: ["DatabaseEmbedded", "DatabaseRuntime", "QueryAST",
+                .target(name: "AccessPerformanceProbe", condition: .when(platforms: [.macOS])),
+                .product(name: "DatabaseClient", package: "database-client"),
+                .product(name: "DatabaseTypes", package: "database-types"),
+                .product(name: "StorageKit", package: "storage-kit"),
+                .product(name: "StorageKitSystemClock", package: "storage-kit"),
+                .product(name: "SQLiteStorage", package: "storage-kit", condition: .when(traits: ["SQLite"]))],
+            path: "Tests/DatabaseAccessPerformance", exclude: ["DESIGN.md"],
+            swiftSettings: [.define("SQLITE", .when(traits: ["SQLite"]))]),
         .executableTarget(
             name: "DatabaseEmbeddedRuntimeContract",
             dependencies: ["DatabaseEmbedded", "DatabaseRuntime", "QueryAST",
