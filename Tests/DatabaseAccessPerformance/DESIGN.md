@@ -304,6 +304,28 @@ Native SQLite/AllRuntimeFeatures completed2650 tests (Engine1438, Database235, S
 
 [Raw evidence and measurement manifest](../../../.codex-tools/sql-scalar-tail-20261025/performance-verification.json) retains all original/audit samples, source/probe hashes, pins, compiler/SDK identities, result bundles, wasm artifacts and executable hashes. The owning public harnesses reproduce timing, cycles and explicit storage configurations. Native allocation/RSS observations make no WASM/Embedded memory-performance claim.
 
+### TAIL25 follow-up after human-confirmed job completion
+
+The delayed confirmation of external-job completion requested a new timing observation. The original records above remain unchanged. The retained executables and fixtures were reused without rebuilding or changing execution code, URL pins or budgets. This predeclared follow-up runs one nine-round AB/BA comparison of the same nine current-baseline conditions and a two-condition identical-binary control. It does not repeat allocation or target runtime verification whose inputs remain unchanged.
+
+| Condition | Rows / workers | Raw p50 before → after ms | Median cohort p50 before → after ms | Cohort MAD before → after ms | p95 before → after ms |
+|---|---:|---:|---:|---:|---:|
+| computed | 100 / 4 | 12.005 → 10.203 | 10.611 → 10.144 | 0.267 → 0.099 | 17.471 → 16.513 |
+| computed | 1000 / 4 | 97.384 → 93.233 | 99.168 → 92.337 | 1.541 → 2.212 | 160.674 → 153.276 |
+| wide | 100 / 4 | 25.939 → 26.663 | 26.556 → 24.626 | 0.824 → 0.565 | 43.405 → 41.526 |
+| wide | 1000 / 4 | 251.935 → 222.601 | 250.775 → 223.925 | 3.440 → 2.660 | 407.029 → 358.554 |
+| computed | 1000 / 1 | 38.428 → 36.873 | 38.429 → 36.874 | 0.329 → 0.510 | 40.230 → 39.525 |
+| wide | 1000 / 1 | 103.913 → 90.793 | 103.915 → 90.793 | 1.879 → 0.669 | 107.578 → 92.870 |
+| computed | 10000 / 1 | 379.565 → 365.724 | 379.567 → 365.724 | 3.178 → 2.917 | 391.765 → 369.171 |
+| ordered | 10000 / 1 | 308.729 → 303.870 | 308.731 → 303.870 | 4.638 → 1.785 | 336.277 → 308.117 |
+| ties | 1000 / 1 | 40.183 → 37.636 | 40.184 → 37.638 | 0.583 → 0.783 | 44.212 → 41.598 |
+
+Eight of nine pooled raw medians decrease; wide100/four-worker raw p50 increases2.79% while its median cohort p50 decreases7.27% and throughput increases7.56%. Both measurements remain visible. Every median cohort p50 and p95 decreases in this observation. The same-binary small-condition raw-p50 ratios are1.0398/1.0028 versus cohort ratios1.0037/0.9861, again exposing pooled rank-distribution sensitivity rather than establishing a new confidence bound.
+
+The original two small computed conditions improve raw p50 by15.01%/4.26% and cohort p50 by4.40%/6.89%. Their MAD changes from0.267→0.099ms and1.541→2.212ms. The follow-up therefore does not confirm universal or repeatable dispersion reduction; the earlier19.01%/23.55% reductions remain observations of that earlier interval. Reduced scalar allocation and improved typical latency are supported, while residual scheduling/queue variation remains explicitly observed. No additional source change or favorable-repeat loop follows this fixed observation.
+
+[Follow-up plan, host snapshots and executable identities](../../../.codex-tools/sql-scalar-tail-20261025/quiet-confirmed-plan.json), [raw current samples](../../../.codex-tools/sql-scalar-tail-20261025/quiet-confirmed-current/samples.json), and [identical-binary samples](../../../.codex-tools/sql-scalar-tail-20261025/quiet-confirmed-aa/samples.json) preserve the complete new observation.
+
 ### SPEED25 measured results, 2026-10-25
 
 Identical fixture sources, C probe/header and URL pins were compiled against
