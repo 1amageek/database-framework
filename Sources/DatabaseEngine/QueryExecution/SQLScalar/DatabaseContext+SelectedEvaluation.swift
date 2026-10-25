@@ -118,6 +118,10 @@ extension DatabaseContext {
         temporalEnvironment suppliedTemporalEnvironment: SQLTemporalEnvironment? = nil,
         workMeter: DatabaseWorkMeter
     ) async throws -> ProjectedQueryValue {
+        // A synchronous instruction run can otherwise return into an unbounded
+        // immediate caller continuation chain. Suspend once at the async adapter,
+        // independent of expression size, rather than once per scalar node.
+        await Task.yield()
         let temporal = suppliedTemporalEnvironment ?? context?.options.temporalEnvironment ?? databaseContext?.inheritedSQLTemporalEnvironment
         let overlayClaim = try suppliedRow == nil ? workMeter.reserveIntermediate(bytes:
             prospectiveSourceCompositionFootprint(row, outer: context?.outerRow, workMeter: workMeter).bytes,

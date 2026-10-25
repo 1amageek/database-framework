@@ -49,8 +49,12 @@ session. All types and isolation remain identical on Native/WASM/Embedded.
 ## Failure, Concurrency, and Constraints
 
 Stack growth, work and value construction are admitted on the original meter.
-Contextual descent yields around the existing async work; ordinary scalar
-nodes do not schedule. No new Task, detached work, retry, VM stack change or
+The async entry yields once per selected evaluation: an entirely synchronous
+instruction run must not return into an unbounded immediate caller continuation
+chain. Release standard WASM reproduced that chain in projectRows after the
+representations fixture. This adapter boundary is shared across all targets;
+ordinary scalar nodes do not schedule. Contextual descent additionally yields
+around its existing async work. No new Task, detached work, retry, VM stack change or
 cleanup bypass is introduced. Failed evaluation discards all unfinished values.
 
 ## Verification and Change Impact
