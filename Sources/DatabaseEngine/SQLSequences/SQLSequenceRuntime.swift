@@ -40,7 +40,7 @@ package enum SQLSequenceRuntime {
             return .int64(try await request.currentValue(sequence: sequence))
         case "nextval":
             guard arguments.count == 1 else { throw SQLSequenceExecutionError.invalidArguments(function) }
-            let identity = try expressionIdentity(occurrence)
+            let identity = try expressionIdentity(occurrence, workMeter: request.meter)
             defer { withExtendedLifetime(identity.reservation) {} }
             return .int64(try await effect(sequence, operation: .next,
                 occurrence: .expression(identity.bytes), request: request))
@@ -56,7 +56,7 @@ package enum SQLSequenceRuntime {
             guard value >= sequence.minimum, value <= sequence.maximum else {
                 throw SQLSequenceExecutionError.invalidArguments("SETVAL value is outside sequence bounds")
             }
-            let identity = try expressionIdentity(occurrence)
+            let identity = try expressionIdentity(occurrence, workMeter: request.meter)
             defer { withExtendedLifetime(identity.reservation) {} }
             return .int64(try await effect(sequence, operation: .set(value, called),
                 occurrence: .expression(identity.bytes), request: request))
@@ -66,7 +66,7 @@ package enum SQLSequenceRuntime {
     package static func nextValue(sequenceID: String, occurrence: String) async throws -> Int64 {
         guard let request else { throw SQLSequenceExecutionError.requestRequired }
         let catalog = try request.context.makeSQLReadResolution(searchPath: ActiveSQLSession.binding?.resolution.searchPath ?? request.searchPath,
-            workMeter: requestWorkMeter()).snapshot.catalog
+            workMeter: request.meter).snapshot.catalog
         guard let sequence = catalog.sequences.first(where: { $0.id.utf8.elementsEqual(sequenceID.utf8) }) else {
             throw SQLSequenceExecutionError.unknownSequence(sequenceID)
         }
@@ -84,7 +84,7 @@ package enum SQLSequenceRuntime {
 
     static func resolve(name: String, request: SQLSequenceRequest) throws -> SQLSequence {
         let resolution = try request.context.makeSQLReadResolution(searchPath: ActiveSQLSession.binding?.resolution.searchPath ?? request.searchPath,
-            workMeter: requestWorkMeter())
+            workMeter: request.meter)
         let parts = try identifiers(name)
         let namespaces: [String]
         if parts.count == 2 { namespaces = [parts[0]] }
@@ -108,9 +108,8 @@ package enum SQLSequenceRuntime {
         throw SQLSequenceExecutionError.unknownSequence(name)
     }
 
-    private static func expressionIdentity(_ expression: Expression) throws
+    private static func expressionIdentity(_ expression: Expression, workMeter meter: DatabaseWorkMeter) throws
         -> (bytes: ByteString, reservation: DatabaseIntermediateReservation?) {
-        let meter = try requestWorkMeter()
         var reservation: DatabaseIntermediateReservation?
         var bytes: [UInt8] = []
         // Canonical QueryIR bytes preserve exact UTF-8 literals and every argument;
@@ -126,13 +125,6 @@ package enum SQLSequenceRuntime {
         })
         return (ByteString(bytes), reservation)
     }
-
-    private static func requestWorkMeter() throws -> DatabaseWorkMeter {
-        guard let meter = workMeter else { throw SQLSequenceExecutionError.requestRequired }
-        return meter
-    }
-
-    @TaskLocal package static var workMeter: DatabaseWorkMeter?
 
     static func identifiers(_ name: String) throws -> [String] {
         let bytes = Array(name.utf8)

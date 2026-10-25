@@ -24,7 +24,7 @@ package actor SQLSequenceRequest {
 
     nonisolated let context: DatabaseContext
     nonisolated let searchPath: SQLSearchPath
-    let meter: DatabaseWorkMeter
+    nonisolated let meter: DatabaseWorkMeter
     private let configuration: TransactionConfiguration
     private let deadline: TransactionExecutionDeadline
     private let nonce: ByteString

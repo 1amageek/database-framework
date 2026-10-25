@@ -119,7 +119,6 @@ public struct SQLBlockExecutor: Sendable {
             do {
                 boxed = try await SQLMutationRuntime.$request.withValue(mutations) {
                   try await SQLSequenceRuntime.$request.withValue(request) {
-                    try await SQLSequenceRuntime.$workMeter.withValue(meter) {
                         while true {
                             do {
                                 return try await context.withCheckpointTransaction(requiredAccess: attemptAccess,
@@ -147,7 +146,6 @@ public struct SQLBlockExecutor: Sendable {
                                 try await request.allocate(demand)
                             }
                         }
-                    }
                   }
                 }
             } catch is SQLExclusiveAdmissionDemand where permit.mode == .shared {

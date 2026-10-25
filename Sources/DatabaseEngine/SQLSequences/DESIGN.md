@@ -63,6 +63,7 @@ must preserve that restart's transactional rollback semantics.
 |---|---|---|
 | Request admission | SQLBlock-owned container actor | Request, including mandatory close |
 | Event cache/current values | SQLSequenceRequest actor | One request, all attempts |
+| Work meter | The same immutable meter retained by SQLSequenceRequest | Original request budget; no duplicate ambient meter |
 | Allocator cell | selected Partition system root | Durable across restart |
 | Recovery marker | same transaction as allocation | Until authoritative request cleanup; interrupted markers remain completed durable evidence, never pending work |
 | Data changes/catalog | DatabaseTransaction | Checkpoint/attempt lifecycle |
@@ -208,3 +209,14 @@ close, reacquires exclusive admission fairly, and enables effects for the same
 request. No sequence event can exist before promotion; allocation and close keep
 their original durability, write authorization, retry and recovery guarantees.
 CURRVAL/LASTVAL remain request-local and cannot fabricate an initialized value.
+
+### Request-owned metering
+
+Sequence resolution and canonical occurrence encoding consume request.meter.
+SQLBlock installs only the request binding; it does not install an independent
+work-meter TaskLocal. The request already retains the authoritative meter across
+rollback/allocation/replay. Exact Swift 6.4.0 Embedded execution reached sequence
+resolution with a request but without the duplicated ambient meter. Removing that
+second lookup preserves one budget owner without replacing it or falling back.
+A focused test resolves through an explicit request outside any ambient sequence
+binding; portable direct NEXTVAL and sequence-backed view fixtures cover replay.

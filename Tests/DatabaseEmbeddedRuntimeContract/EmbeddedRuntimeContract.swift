@@ -85,9 +85,17 @@ struct EmbeddedRuntimeContract {
             print("EMBEDDED_ACCESS_PASS cases=4")
         } catch {
             print("EMBEDDED_ACCESS_FAIL phase=\(phase)")
-            #if !hasFeature(Embedded)
-            print(error)
-            #endif
+            if let failure = error as? SQLExecutionFailure,
+               let sequence = failure.underlyingError as? SQLSequenceExecutionError {
+                switch sequence {
+                case .requestRequired: print("EMBEDDED_SEQUENCE_CAUSE requestRequired")
+                case .invalidPersistedState: print("EMBEDDED_SEQUENCE_CAUSE invalidPersistedState")
+                case .replayDiverged: print("EMBEDDED_SEQUENCE_CAUSE replayDiverged")
+                default: print("EMBEDDED_SEQUENCE_CAUSE other")
+                }
+            }
+            let diagnostic = SQLDiagnostics.diagnostic(for: error)
+            print("EMBEDDED_ACCESS_DIAGNOSTIC \(diagnostic.sqlState) \(diagnostic.message)")
             exit(1)
         }
         #endif
@@ -118,9 +126,11 @@ struct EmbeddedRuntimeContract {
         for database in [primary, analytics] {
             _ = try await database.execute("CREATE TABLE \"EmbeddedRuntimePerson\"(id text, name text, age integer, \"isActive\" boolean)")
         }
+        print("EMBEDDED_ACCESS_PHASE seed")
         let tuples = (1...100).map { "('\($0)', 'value\($0)', \($0), true)" }.joined(separator: ",")
         _ = try await primary.execute(SQL(text: "INSERT INTO \"EmbeddedRuntimePerson\" VALUES " + tuples))
         _ = try await analytics.execute("INSERT INTO \"EmbeddedRuntimePerson\" VALUES('a','analytics',20,true)")
+        print("EMBEDDED_ACCESS_PHASE aggregate")
         let active = try TableRef("EmbeddedRuntimePerson").select("isActive")
             .where("age", .greaterThan, Int16(0))
         let aggregate = TableRef("active").selectAll().count().groupBy("isActive")
@@ -132,6 +142,7 @@ struct EmbeddedRuntimeContract {
         try require(counted.columns == textCounted.columns)
         try require(try await values(counted.rows) == values(textCounted.rows))
         try require(try await values(analytics.execute(aggregate).rows) == [[.primitive(.int64(1))]])
+        print("EMBEDDED_ACCESS_PHASE typed-query")
         let pure = try EmbeddedRuntimePerson.select(EmbeddedRuntimePerson.fields.name, EmbeddedRuntimePerson.fields.age)
             .where(EmbeddedRuntimePerson.fields.isActive == true).orderBy(EmbeddedRuntimePerson.fields.age).limit(2)
         let bound = try primary.entity(EmbeddedRuntimePerson.self).select(EmbeddedRuntimePerson.fields.name, EmbeddedRuntimePerson.fields.age)
@@ -141,18 +152,27 @@ struct EmbeddedRuntimeContract {
         try require(try await values(result.rows) == values(primary.execute(pure).rows))
         try require(try await values(result.rows) == [[.primitive(.string("value1")), .primitive(.int32(1))], [.primitive(.string("value2")), .primitive(.int32(2))]])
         try require(try await values(analytics.execute(pure).rows) == [[.primitive(.string("analytics")), .primitive(.int32(20))]])
+        print("EMBEDDED_ACCESS_PHASE concurrent-read")
         async let sharedFirst = primary.execute("SELECT count(*) FROM \"EmbeddedRuntimePerson\"")
         async let sharedSecond = primary.execute("SELECT count(*) FROM \"EmbeddedRuntimePerson\"")
         let shared = try await (sharedFirst, sharedSecond)
         try require(try await values(shared.0.rows) == [[.primitive(.int64(100))]])
         try require(try await values(shared.1.rows) == [[.primitive(.int64(100))]])
+        print("EMBEDDED_ACCESS_PHASE sequence-create")
         _ = try await primary.execute("CREATE SEQUENCE runtime_counter START WITH 1 MAXVALUE 100; CREATE VIEW runtime_sequence_view AS SELECT nextval('runtime_counter') AS n")
+        print("EMBEDDED_ACCESS_PHASE sequence-direct")
+        _ = try await primary.execute("CREATE SEQUENCE runtime_probe START WITH 1 MAXVALUE 100")
+        try require(try await values(primary.execute("SELECT nextval('runtime_probe')").rows) == [[.primitive(.int64(1))]])
+        print("EMBEDDED_ACCESS_PHASE sequence-first")
         try require(try await values(primary.execute("SELECT n FROM runtime_sequence_view").rows) == [[.primitive(.int64(1))]])
+        print("EMBEDDED_ACCESS_PHASE sequence-page")
         var pagedEffectRejected = false
         do { _ = try await primary.execute("SELECT n FROM runtime_sequence_view", options: .init(pageSize: 1)) }
         catch { pagedEffectRejected = true }
         try require(pagedEffectRejected)
+        print("EMBEDDED_ACCESS_PHASE sequence-second")
         try require(try await values(primary.execute("SELECT n FROM runtime_sequence_view").rows) == [[.primitive(.int64(2))]])
+        print("EMBEDDED_ACCESS_PHASE reinitialize")
         await directory.shutdown()
         try await directory.configure(databases: ["primary": .borrowingEmbedded(context: secondContext, maximumConcurrentExecutions: 2)])
         var rejected = false

@@ -80,6 +80,33 @@ struct SQLRequestAdmissionTests {
         }
     }
 
+    @Test("Sequence resolution consumes its explicit request meter without an ambient duplicate")
+    func sequenceMeterOwnership() async throws {
+        let container = try await open(InMemoryEngine())
+        defer { await container.shutdown() }
+        let context = container.testBaseContext(), meter = makeMeter(), clock = SystemStorageClock()
+        let request = SQLSequenceRequest(context: context, searchPath: .default, meter: meter,
+            configuration: .default, deadline: .init(instant: clock.now.advanced(by: .seconds(30)),
+                timeoutMilliseconds: 30000), exclusiveAdmission: true)
+        #expect(request.meter === meter)
+        _ = try await context.withDataOperation {
+            #expect(throws: SQLSequenceExecutionError.unknownSequence("missing")) {
+                try SQLSequenceRuntime.resolve(name: "missing", request: request)
+            }
+        }
+        let limited = DatabaseWorkMeter(budget: ExecutionBudget(maximumIntermediateBytes: 0), monotonicClock: clock)
+        let restricted = SQLSequenceRequest(context: context, searchPath: .default, meter: limited,
+            configuration: .default, deadline: .init(instant: clock.now.advanced(by: .seconds(30)),
+                timeoutMilliseconds: 30000), exclusiveAdmission: true)
+        _ = try await context.withDataOperation {
+            #expect(throws: DatabaseWorkLimitError.self) {
+                try SQLSequenceRuntime.resolve(name: "missing", request: restricted)
+            }
+        }
+        #expect(meter.retainedIntermediateBytes == 0)
+        #expect(limited.retainedIntermediateBytes == 0)
+    }
+
     private struct AdmissionClock: StorageMonotonicClock {
         let queued: StorageOperationBarrier
         var now: StorageInstant { SystemStorageClock().now }
