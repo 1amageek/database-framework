@@ -266,6 +266,18 @@ commit-unknown. Their source definitions are not passing runtime evidence.
 
 ## Verification and Change Impact
 
+`SQLRequestAdmissionTests.sharedReadsOverlap` proves shared admission by holding
+one read's authoritative commit and completing the second read before releasing
+that commit. Both reads must succeed. It uses the fixture's ordinary 30-second
+request deadline and the suite's one-minute hang guard; a serialized admission
+cannot pass because the held commit is released only after the second read
+completes. The former incidental 300-millisecond success threshold mixed host
+scheduling latency into this ordering proof and failed under concurrent CI load.
+`exclusiveOwnerBlocksReaders` separately retains its explicit 100-millisecond
+typed deadline rejection. Production budgets and reviewed performance bounds
+remain unchanged; latency acceptance belongs to the performance package.
+
+
 | ID | Falsifiable behavior and owner |
 |---|---|
 | S12-B01 | Public semantic block writes then reads its own changes in one transaction; independent readback sees only terminal committed state. |

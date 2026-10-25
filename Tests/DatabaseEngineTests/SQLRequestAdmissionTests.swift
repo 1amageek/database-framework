@@ -17,7 +17,8 @@ struct SQLRequestAdmissionTests {
         let first = Task { try await execute(container, block: read()) }
         let monitor = try await barrier.waitUntilEntered(beforeCompletionOf: first)
         do {
-            let second = try await execute(container, block: read(), timeout: 300)
+            // The held commit proves overlap; the deadline only bounds a hang.
+            let second = try await execute(container, block: read())
             #expect(second.results.count == 1)
             barrier.release()
             _ = try await first.value
