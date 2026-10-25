@@ -102,14 +102,14 @@ let package = Package(
         .trait(name: "Relationships"),
     ],
     dependencies: [
-        .package(url: "https://github.com/1amageek/database-client.git", revision: "89f03891f9d6700e7eb6d10fd04aaa1a50bf0d5f", traits: multiBaseTraits),
+        .package(url: "https://github.com/1amageek/database-client.git", from: "26.1026.0", traits: multiBaseTraits),
         .package(
             url: "https://github.com/1amageek/database-types.git",
             from: "26.1021.0"
         ),
         .package(
             url: "https://github.com/1amageek/database-kit.git",
-            revision: "678b70daee9ef9d72966f147d6e6bb4110a7da95",
+            from: "26.1026.0",
             traits: multiBaseTraits
         ),
         .package(
@@ -118,7 +118,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/1amageek/storage-kit.git",
-            revision: "18f968e853084e61396f9c16ae5ca03db7fee364"
+            from: "26.1026.0"
         ),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.7.0"),
         .package(url: "https://github.com/apple/swift-metrics.git", from: "2.7.0"),

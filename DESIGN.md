@@ -443,3 +443,14 @@ rollback, publication and connection lifetime remain the existing contracts.
 [Performance acceptance](Benchmarks/Access/Sources/DatabaseAccessPerformanceContract/DESIGN.md#rx25-matched-refactoring-measurements-2026-10-25)
 records measured allocation reduction and the unresolved elapsed-time variation;
 it does not claim a speed gain from the shared-desktop timing pair.
+
+## Versioned Release Graph
+
+The 26.1026.0 release consumes published DatabaseKit, DatabaseClient and
+StorageKit 26.1026.0 URL tags. Core execution, authorization, work accounting,
+rollback and owner lifetimes remain the verified component contracts. All five
+committed dependency graphs must resolve the same release revisions, retaining
+unrelated pins. A version-only transition is accepted only after source-content
+comparison and the final tag-based integration gates. Host distributions consume
+this tag after publication; platform toolchain and service pins remain owned by
+their verification lanes.

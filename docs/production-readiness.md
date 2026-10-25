@@ -136,15 +136,13 @@ owned by [the CI workflow](../.github/workflows/ci.yml). These target-level
 counts prevent a hidden test group from being offset by an unrelated target's
 additions or removals.
 
-The framework release gate resolves database-kit 26.0831.1. That published tag
-contains the `CompositionSelection`, `CompositionResolution`, and DatabaseWire
-v5 contracts consumed by this source revision and resolves to database-kit
-commit `7492a39d5040bd83730a7cd84ed8de62b3f4741e`. The remaining release
-dependencies are database-types 26.0831.0, storage-kit 26.0831.1, and
-swift-hnsw 1.2.0. Record every resolved version and revision, the framework
-commit, result bundles, backend service identities, and platform build logs in
-the release report; do not preserve a previous release's results as evidence
-for a later source revision.
+The framework release gate resolves the published DatabaseKit, DatabaseClient
+and StorageKit 26.1026.0 tags. The exact graph is owned by the root and four
+measurement-package `Package.resolved` files; unrelated pins remain unchanged.
+Record every resolved version and revision, the framework commit, result
+bundles, backend service identities, and platform build logs in the release
+report. Verification evidence applies only while its source and execution
+assumptions remain unchanged; the final version-based graph must be exercised.
 
 Command-line portability and process verification belong to the independent
 [`database-cli`](https://github.com/1amageek/database-cli) package. This
