@@ -111,6 +111,29 @@ struct NamedDatabaseAccessTests {
         await #expect(throws: (any Error).self) { try await closed.execute("SELECT 1") }
     }
 
+    @Test("Sequence-backed views promote after rollback and preserve durable allocation")
+    func hiddenViewEffectsRequireExclusiveAdmission() async throws {
+        let file = try SQLiteTestDatabase(prefix: "named-hidden-sequence")
+        defer { file.remove() }
+        let container = try await open(file)
+        defer { await container.shutdown() }
+        let connection = try await container.testBaseContext().openConnection(maximumConcurrentExecutions: 2)
+        defer { await connection.close() }
+        _ = try await connection.execute("CREATE SEQUENCE counter START WITH 1 MAXVALUE 100; CREATE VIEW sequence_view AS SELECT nextval('counter') AS n")
+        #expect(try await values(connection.execute("SELECT n FROM sequence_view").rows) == [[.primitive(.int64(1))]])
+        await #expect(throws: SQLExecutionFailure.self) {
+            try await connection.execute("SELECT n, 1/0 FROM sequence_view")
+        }
+        #expect(try await values(connection.execute("SELECT n FROM sequence_view").rows) == [[.primitive(.int64(3))]])
+        await connection.close()
+        await container.shutdown()
+        let restored = try await open(file)
+        defer { await restored.shutdown() }
+        let reopened = try await restored.testBaseContext().openConnection()
+        defer { await reopened.close() }
+        #expect(try await values(reopened.execute("SELECT n FROM sequence_view").rows) == [[.primitive(.int64(4))]])
+    }
+
     private func open(_ file: SQLiteTestDatabase) async throws -> DBContainer {
         try await DBContainer.open(for: Schema(entities: []), configuration: .file(file.path),
             runtimeConfiguration: DatabaseFrameworkRuntime.configuration(executionIdentity: identity, entityRuntimes: []), security: .testingDisabled)

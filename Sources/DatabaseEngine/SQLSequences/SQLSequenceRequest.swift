@@ -28,13 +28,15 @@ package actor SQLSequenceRequest {
     private let configuration: TransactionConfiguration
     private let deadline: TransactionExecutionDeadline
     private let nonce: ByteString
+    private var hasExclusiveAdmission: Bool
     private var events: [Event] = []
     private var cursor = 0
     private var current: [ByteString: Int64] = [:]
     private var last: ByteString?
 
     init(context: DatabaseContext, searchPath: SQLSearchPath, meter: DatabaseWorkMeter,
-         configuration: TransactionConfiguration, deadline: TransactionExecutionDeadline) {
+         configuration: TransactionConfiguration, deadline: TransactionExecutionDeadline, exclusiveAdmission: Bool) {
+        self.hasExclusiveAdmission = exclusiveAdmission
         self.context = context
         self.searchPath = searchPath
         self.meter = meter
@@ -47,6 +49,11 @@ package actor SQLSequenceRequest {
     var nonceIdentity: String {
         let digits = Array("0123456789abcdef".utf8)
         return String(decoding: nonce.flatMap { [digits[Int($0 >> 4)], digits[Int($0 & 15)]] }, as: UTF8.self)
+    }
+
+    func promoteAdmission() throws {
+        guard events.isEmpty else { throw SQLSequenceExecutionError.replayDiverged }
+        hasExclusiveAdmission = true
     }
 
     func beginAttempt() {
@@ -63,6 +70,7 @@ package actor SQLSequenceRequest {
 
     func effect(sequence: SQLSequence, operation: Operation, occurrence: Occurrence,
                 statement: Int, transaction: any TransactionAccess, root: Subspace) async throws -> Int64 {
+        guard hasExclusiveAdmission else { throw SQLExclusiveAdmissionDemand() }
         try meter.consume(at: .mutationPlanning)
         let store = SQLSequenceStore(root: root)
         let head = try await transaction.getValue(for: store.headKey(sequence.id), snapshot: false,

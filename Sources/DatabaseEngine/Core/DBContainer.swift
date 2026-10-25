@@ -97,8 +97,8 @@ public final class DBContainer: Sendable {
 
     // MARK: - Properties
 
-    /// Owns serial SQL request admission through sequence allocation and close.
-    package let sqlSequenceCoordinator = SQLSequenceCoordinator()
+    /// Owns fair shared/read and exclusive/effect admission through authoritative close.
+    package let sqlRequestAdmission = SQLRequestAdmission()
 
     /// The underlying storage engine
     ///

@@ -10,9 +10,10 @@ CURRVAL/LASTVAL for S13. Parent: [DatabaseEngine](../DESIGN.md). Children: none.
 Sequence declaration and identity belong to Kit; catalog generation belongs to
 SQLCatalog/Schema; data-attempt rollback and authoritative close belong to
 Transaction. This owner neither opens a nested allocator transaction nor alters
-StorageKit retry classification. A container-owned actor serializes admitted SQL
-requests; durable allocator transactions serialize allocation across processes.
-The bounded profile does not promise PostgreSQL nonblocking concurrency.
+StorageKit retry classification. [SQLBlock admission](../SQLBlock/DESIGN.md#rx25-sql-request-admission)
+owns fair shared/exclusive request permits; durable allocator transactions
+serialize allocation across processes. Effectful requests retain exclusive
+admission through authoritative close and recovery cleanup.
 
 ## Related Designs
 
@@ -27,7 +28,7 @@ The bounded profile does not promise PostgreSQL nonblocking concurrency.
 ## Architecture
 
 ```text
-SQLBlock request -> container FIFO permit -> data attempt
+SQLBlock effectful request -> exclusive admission permit -> data attempt
     -> sequence effect -> cached occurrence value
                        -> private allocation demand
     -> rollback + authoritative close
@@ -60,7 +61,7 @@ must preserve that restart's transactional rollback semantics.
 
 | State | Owner | Lifetime |
 |---|---|---|
-| FIFO admission | DBContainer actor | Request, including mandatory close |
+| Request admission | SQLBlock-owned container actor | Request, including mandatory close |
 | Event cache/current values | SQLSequenceRequest actor | One request, all attempts |
 | Allocator cell | selected Partition system root | Durable across restart |
 | Recovery marker | same transaction as allocation | Until authoritative request cleanup; interrupted markers remain completed durable evidence, never pending work |
@@ -195,3 +196,15 @@ restart with a nondefault start, and allocation-demand replay after restart.
 Existing sequence durability and nonrollback tests remain authoritative for
 ordinary NEXTVAL/SETVAL; this section does not reinterpret those effects as
 rollbackable allocations.
+
+
+### RX25 hidden-effect promotion
+
+SQLSequenceRequest receives whether its current SQLBlock admission is exclusive.
+An actual NEXTVAL/SETVAL or identity effect under shared admission raises the
+private SQLExclusiveAdmissionDemand before event cursor, allocator reads or
+history mutation. SQLBlock alone handles it after rollback and authoritative
+close, reacquires exclusive admission fairly, and enables effects for the same
+request. No sequence event can exist before promotion; allocation and close keep
+their original durability, write authorization, retry and recovery guarantees.
+CURRVAL/LASTVAL remain request-local and cannot fabricate an initialized value.

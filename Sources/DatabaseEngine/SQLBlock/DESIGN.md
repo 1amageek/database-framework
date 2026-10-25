@@ -725,3 +725,52 @@ calls and write effects before transaction entry. The original explicit-block
 rejection belongs to the linked Database Query Execution entry contract, before
 lowering loses the input kind; default complete execution preserves the profile.
 No public result or connection can bypass Collecting -> Ready -> promotion.
+
+
+### RX25 SQL request admission
+
+SQLBlock owns container admission through SQLRequestAdmission; sequence allocation
+no longer owns a global all-SQL FIFO. Pure statement SELECT blocks without a
+known sequence function request shared permits. Other steps, unknown operational
+forms and known sequence use request exclusive permits. This classification
+attenuates scheduling only; the original authorization check and transaction
+access remain mandatory. A shared request uses read-authorized storage access.
+
+```text
+shared SELECT cohort -> original read transaction -> close -> return permit
+exclusive effect    -> original transaction/replay/cleanup -> return permit
+shared hidden effect -> private demand before any allocation
+    -> rollback + authoritative close -> return shared permit
+    -> fair exclusive wait -> original authorization with required write access
+    -> replay same input/meter/deadline/timeline -> close -> return permit
+```
+
+The container actor retains exact permit identities and admitted bookkeeping.
+Readers may share a cohort while no earlier exclusive waiter exists. A queued
+writer prevents later readers from overtaking it; contiguous queued readers may
+start together after an exclusive owner closes. The connection's configured
+execution limit still bounds its own admitted work; this coordinator adds no
+second caller-selected capacity or unbounded uncharged queue.
+
+Waiting uses the original absolute deadline and cancellation. Cancellation or
+expiry removes that waiter and releases only its claim; delivery races return
+the actually granted permit before failure. A permit is returned exactly once,
+after transaction/read/schema/sequence cleanup; cleanup failure remains failure.
+The same actor/state/Sendable declarations apply to Native, standard WASM and
+Embedded. Backend transaction capacity is a separate StorageKit contract;
+shared Framework admission does not promise parallel single-connection SQLite.
+
+Hidden sequence effects in views/nested definitions trigger the private promotion
+demand before reading/modifying allocator history or opening its independent
+transaction. Only an unwrapped demand after successful rollback/close may
+promote. A combined cleanup failure cannot retry. Promotion retains original
+principal, SQL input, temporal timeline, meter consumption and deadline, creates
+no result and never replays an already consumed sequence effect. Reacquisition
+never upgrades storage authority: the original write permission is checked anew.
+
+Native controlled-commit tests must prove overlapping reads and exclusive
+blocking without sleeps, queue fairness and cancellation/timeout permit races;
+view/CTE sequence and existing allocation/rollback/restart tests retain their
+owners. Exact release portable runtime also executes concurrent reads and a
+sequence-backed view before final completion. Final before/after benchmarks keep
+the original backend configuration and distinguish admission from backend limits.

@@ -107,60 +107,84 @@ public struct SQLBlockExecutor: Sendable {
         let requiredAccess: Security.Access = try requiredAccess(for: block, workMeter: meter)
         let ddlRequest = SQLDDLRequest()
         let mutations = SQLMutationRequest(workMeter: meter)
+        let admission = context.container.sqlRequestAdmission
+        let mode = try admissionMode(block, workMeter: meter)
         let request = SQLSequenceRequest(context: context, searchPath: options.searchPath,
-            meter: meter, configuration: options.configuration, deadline: deadline)
-        try await context.container.sqlSequenceCoordinator.enter(clock: clock, deadline: deadline)
-        let boxed: DatabaseReadResultBox<Collecting>
-        do {
-            boxed = try await SQLMutationRuntime.$request.withValue(mutations) {
-              try await SQLSequenceRuntime.$request.withValue(request) {
-                try await SQLSequenceRuntime.$workMeter.withValue(meter) {
-                    while true {
-                        do {
-                            return try await context.withCheckpointTransaction(requiredAccess: requiredAccess,
-                                configuration: options.configuration, checkpointLimits: options.checkpointLimits,
-                                workMeter: meter, executionDeadline: deadline) { transaction in
-                                failurePosition?.reset()
-                                await request.beginAttempt()
-                                await mutations.beginAttempt()
-                                let collecting = try await collect(block, parameters: parameters, options: options,
-                                    binder: binder, transaction: transaction, timeline: timeline, workMeter: meter, ddlRequest: ddlRequest,
-                                    occurrences: occurrences, occurrence: occurrence, occurrenceRoots: occurrenceRoots, failurePosition: failurePosition, encoder: encoder)
-                                let boxed = DatabaseReadResultBox(consume collecting)
-                                if case .transaction(.rollback) = block.steps.last {
-                                    throw RollbackDemand(result: boxed)
+            meter: meter, configuration: options.configuration, deadline: deadline, exclusiveAdmission: mode == .exclusive)
+        var permit = try await admission.enter(mode, meter: meter, clock: clock, deadline: deadline)
+        var promoted = false
+        while true {
+            let attemptAccess: Security.Access = promoted ? requiredAccess.union(.write) : requiredAccess
+            let boxed: DatabaseReadResultBox<Collecting>
+            do {
+                boxed = try await SQLMutationRuntime.$request.withValue(mutations) {
+                  try await SQLSequenceRuntime.$request.withValue(request) {
+                    try await SQLSequenceRuntime.$workMeter.withValue(meter) {
+                        while true {
+                            do {
+                                return try await context.withCheckpointTransaction(requiredAccess: attemptAccess,
+                                    configuration: options.configuration, checkpointLimits: options.checkpointLimits,
+                                    workMeter: meter, executionDeadline: deadline) { transaction in
+                                    failurePosition?.reset()
+                                    await request.beginAttempt()
+                                    await mutations.beginAttempt()
+                                    let collecting = try await collect(block, parameters: parameters, options: options,
+                                        binder: binder, transaction: transaction, timeline: timeline, workMeter: meter, ddlRequest: ddlRequest,
+                                        occurrences: occurrences, occurrence: occurrence, occurrenceRoots: occurrenceRoots, failurePosition: failurePosition, encoder: encoder)
+                                    let boxed = DatabaseReadResultBox(consume collecting)
+                                    if case .transaction(.rollback) = block.steps.last {
+                                        throw RollbackDemand(result: boxed)
+                                    }
+                                    return boxed
                                 }
-                                return boxed
+                            } catch let demand as RollbackDemand {
+                                try ensureDatabaseTaskIsActive()
+                                return demand.result
+                            } catch let demand as SQLSequenceAllocationDemand {
+                                failurePosition?.reset()
+                                // Only the unwrapped private demand proves rollback and close succeeded.
+                                // Composite cleanup failures never enter this independent allocator path.
+                                try await request.allocate(demand)
                             }
-                        } catch let demand as RollbackDemand {
-                            try ensureDatabaseTaskIsActive()
-                            return demand.result
-                        } catch let demand as SQLSequenceAllocationDemand {
-                            failurePosition?.reset()
-                            // Only the unwrapped private demand proves rollback and close succeeded.
-                            // Composite cleanup failures never enter this independent allocator path.
-                            try await request.allocate(demand)
                         }
                     }
+                  }
                 }
-              }
+            } catch is SQLExclusiveAdmissionDemand where permit.mode == .shared {
+                // Only the unwrapped demand proves rollback and authoritative close succeeded.
+                // No event exists yet; a cleanup failure never enters this promotion path.
+                await admission.leave(permit)
+                permit = try await admission.enter(.exclusive, meter: meter, clock: clock, deadline: deadline)
+                do { try await request.promoteAdmission() }
+                catch { await admission.leave(permit); throw error }
+                promoted = true
+                failurePosition?.reset()
+                continue
+            } catch {
+                do { try await request.close() }
+                catch let cleanupError {
+                    await admission.leave(permit)
+                    throw SQLSequenceRequestCleanupError(operationError: error, cleanupError: cleanupError)
+                }
+                await admission.leave(permit)
+                throw error
             }
-        } catch {
             do { try await request.close() }
-            catch let cleanupError {
-                await context.container.sqlSequenceCoordinator.leave()
-                throw SQLSequenceRequestCleanupError(operationError: error, cleanupError: cleanupError)
+            catch { await admission.leave(permit); throw error }
+            await admission.leave(permit)
+            return boxed
+        }
+    }
+
+    private func admissionMode(_ block: SQLBlock, workMeter: DatabaseWorkMeter) throws -> SQLRequestAdmission.Mode {
+        guard !block.steps.isEmpty else { return .exclusive }
+        for step in block.steps {
+            guard case .statement(.select(let query)) = step,
+                  try !SQLSequenceEffectAnalysis.containsSequence(.select(query), workMeter: workMeter) else {
+                return .exclusive
             }
-            await context.container.sqlSequenceCoordinator.leave()
-            throw error
         }
-        do { try await request.close() }
-        catch {
-            await context.container.sqlSequenceCoordinator.leave()
-            throw error
-        }
-        await context.container.sqlSequenceCoordinator.leave()
-        return boxed
+        return .shared
     }
 
     private func collect(

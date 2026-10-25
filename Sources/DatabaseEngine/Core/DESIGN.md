@@ -237,3 +237,12 @@ before constructing the observable runtime generation/security delegate, under
 [Configuration's logical SQL policy contract](../Configuration/DESIGN.md#logical-sql-authorization).
 The same binding precedes a generation replacement; existing leases retain the
 old immutable runtime. No container or storage lifecycle changes are introduced.
+
+
+### RX25 SQL scheduling owner
+
+DBContainer retains the [SQLBlock-owned request admission actor](../SQLBlock/DESIGN.md#rx25-sql-request-admission).
+Its permit lifetime ends only after the original request closes; shared reads
+and exclusive effects preserve existing data-operation shutdown ownership. The
+container does not classify SQL or grant authority. Actor isolation is identical
+on all targets and adds no target-specific storage or mutable global registry.
