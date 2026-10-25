@@ -350,3 +350,23 @@ The package owns the optional [access performance executable](Tests/DatabaseAcce
 and its [Native observation boundary](Tests/AccessPerformanceProbe/DESIGN.md).
 They measure the common-access acceptance matrix and are excluded from production
 library graphs. Normal/Embedded functional runtime gates remain separate evidence.
+
+
+### AS25 integrated acceptance (2026-10-25)
+
+The URL Client reference `89f03891f9d6700e7eb6d10fd04aaa1a50bf0d5f`
+includes shared generation admission for named execution and continuation.
+The [Embedded adapter contract](Sources/DatabaseEmbedded/DESIGN.md) remains
+under the original context's authority, budgets, rollback and lifecycle.
+Native focused3 and consolidated2633 passed with zero failures, skips,
+expected failures and runtime warnings. Exact Swift 6.4.0 release standard and
+Embedded SDKs each built, linked and executed all four adapter cases; the
+Embedded compiler command explicitly enables Embedded for wasm32-unknown-wasip1.
+Client's own Native100/MultiBase103, JavaScript77 and portable12-per-target
+proofs remain source-matched. Node emits its WASI ExperimentalWarning; no
+portable trap or case failure occurred. Existing connection/container source
+files and initial user files retain their recorded hashes.
+
+[Integrated evidence](../.codex-tools/access-shutdown-20261025/integration-verification.json)
+links the runtime records, unchanged-source guards and
+[complete Native performance acceptance](Tests/DatabaseAccessPerformance/DESIGN.md).
