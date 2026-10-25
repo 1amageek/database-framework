@@ -518,9 +518,9 @@ struct CanonicalSQLRetainedOwnershipTests {
     func setAlignmentRejectsBeforeDestinationAdmission() async throws {
         let container = try await makeContainer()
         defer { await container.shutdown() }
-        // Each operand retains VALUES, alias, SELECT input, projected row,
-        // canonical output and drained-source containers before alignment.
-        let inputRowOwners: UInt32 = 2 * (1 + 1 + 1 + 1 + 1 + 1)
+        // Each operand now retains VALUES, alias, projected output and drained rows;
+        // physical pulls share original owners instead of adding one-row containers.
+        let inputRowOwners: UInt32 = 2 * (1 + 1 + 1 + 1)
         let meter = makeMeter(
             maximumIntermediateRows: inputRowOwners,
             maximumIntermediateBytes: 1_024 * 1_024

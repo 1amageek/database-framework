@@ -12,6 +12,7 @@ final public output.
 - Child: [SQLTemporal](SQLTemporal/DESIGN.md), the S06 temporal evaluation design; S06 contract and completion are tracked by the workspace progress record.
 - Child: [SQLArray](SQLArray/DESIGN.md), selected array algorithms and bounded row cursors.
 - Child: [SQLJSON](SQLJSON/DESIGN.md), lexical JSON and semantic JSONB algorithms and bounded row cursors.
+- Child: [SQLScalar](SQLScalar/DESIGN.md), the selected scalar instruction and kernel component.
 - Child: [SQLRelations](SQLRelations/DESIGN.md), demand-driven SELECT and recursive producers and execution-local CTE cache lifecycle.
 - Child: [SQLTableFunctions](SQLTableFunctions/DESIGN.md), selected FROM-function cursors, series and ordinality.
 - Child: [SQLAggregation](SQLAggregation/DESIGN.md), S09 selected aggregate transitions and ordered-set/statistical results.
@@ -1414,16 +1415,11 @@ before descending into the child query. Group validation runs afterward. Scalar-
 binding, so their complete active chain is included alongside source, JOIN,
 SET and CTE chains in the Native depth witness and compiled-frame evidence.
 
-Selected expression evaluation also owns a cooperative scheduling boundary:
-it yields before descending into a selected node and before publishing that
-node's value, checking the same request meter on each resume. The selected
-body, conditional evaluation order, temporal environment and source context
-remain in the same Task. The returned value and payload leases remain owned
-through publication; failure releases them through the existing parent scope.
-This bounds fast-path async continuations across child evaluation and successive
-projection columns within one producer pull. The S05 UUID/bytea eight-target
-public SELECT is the concrete ordinary-WASM regression witness; producer pull
-scheduling alone does not bound this expression-level chain.
+Selected expression evaluation now uses the
+[SQLScalar instruction machine](SQLScalar/DESIGN.md). Scalar descent uses admitted
+explicit state; contextual work retains cooperative scheduling, the same request
+meter and task/session owner. The S05 UUID/bytea eight-target public SELECT
+remains the concrete ordinary-WASM regression witness.
 
 Bound descriptors/key frames, projection values, presence masks, multiset
 counts, sort/peer state, producer state, retained CTE prefix, construction
@@ -2190,3 +2186,36 @@ Source decomposition preserves the existing semantic owner and public API.
 Verification covers duplicate labels, aliases, heterogeneous layouts, rich
 values, stable order/fingerprint, reservation failures and retained rows after
 close. The exact AS25 benchmark is the before/after acceptance workload.
+
+
+### RX25 selected evaluation machine
+
+Selected scalar control is an explicit request-local instruction/value machine.
+Ordinary columns, constants, scalar kernels and lazy CASE/COALESCE/boolean
+selection advance synchronously on admitted stacks. No per-node Task.yield or
+recursive scalar descent is used. Each selected node consumes the original
+meter, checks cancellation/deadline and preserves occurrence diagnostics.
+Stack growth is admitted before allocation and every derived value retains its
+original payload lease until consumed by its parent or published.
+
+```text
+selected root -> synchronous instruction/value loop
+    -> selected references / lazy branch control / scalar kernel
+    -> contextual instruction -> same-task await (subquery/aggregate/sequence)
+                              -> resume same instruction/value owner
+```
+
+Contextual execution retains the original transaction, lexical frames, grouping,
+window values, temporal environment and source authority. Its existing relation
+pull/cleanup scheduling remains the cooperative boundary for recursive queries;
+the expression driver yields only around actual contextual descent, preserving
+fixed-target stack safety without scheduling every scalar column. No detached
+task, alternate evaluator, new meter or changed stack size is introduced.
+
+The machine uses the existing selected normalization/comparison/scalar kernels.
+Unselected branches never execute. CASE evaluates its operand once and coerces
+that saved original value independently for each selected WHEN, before evaluating
+that WHEN's other operand. Failures retain the most specific occurrence. Native
+selected scalar/group/window/volatile/lazy tests and release standard/Embedded
+UUID/bytea, wide/deep expression, CTE, budget/rollback/lifecycle fixtures are
+required before the sprint is complete.

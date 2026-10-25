@@ -326,14 +326,16 @@ struct SQLBlockExecutionTests {
             "c\($0) AS (INSERT INTO snapshot_target VALUES ((SELECT n FROM snapshot_source ORDER BY n LIMIT 1)) RETURNING n)"
         }.joined(separator: ",")
         let prefix = "WITH " + definitions + " INSERT INTO snapshot_target VALUES "
-        let budget = ExecutionBudget(maximumIntermediateRows: 1000)
+        // Original row views no longer allocate one-row containers for every pull.
+        // This admits one captured 100-row source, but rejects eight independent snapshots.
+        let budget = ExecutionBudget(maximumIntermediateRows: 700)
         _ = try await context.executeSQLBlock(prefix + "(7)", options: options(budget: budget))
         let selected = try rows(try await context.executeStatement(parse("SELECT COUNT(*),SUM(n) FROM snapshot_target"), options: options()))
         #expect(selected.rows.first?.values == [.primitive(.int64(9)), .primitive(.int64(15))])
         _ = try await context.executeSQLBlock("DELETE FROM snapshot_target", options: options())
         do {
             _ = try await context.executeSQLBlock(prefix + "(7)",
-                options: options(budget: ExecutionBudget(maximumIntermediateRows: 500)))
+                options: options(budget: ExecutionBudget(maximumIntermediateRows: 80)))
             Issue.record("Expected intermediate row rejection")
         } catch let failure as SQLExecutionFailure {
             #expect(failure.diagnostic.sqlState == "54000")

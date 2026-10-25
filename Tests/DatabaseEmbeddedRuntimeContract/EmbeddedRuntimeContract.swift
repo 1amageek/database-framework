@@ -48,6 +48,11 @@ struct EmbeddedRuntimeContract {
                 try require(try await values(textResult.rows) == values(ir.rows))
                 try require(try await values(ir.rows) == values(block.rows))
             }
+            phase = "scalar-machine"
+            let scalar = try await execute(access, .sql("SELECT CASE WHEN false THEN 1/0 ELSE COALESCE(NULL, 7) END, 2 + 3 * 4, CAST('{A0EEBC99-9C0B-4EF8-BB6D-6BB9BD380A11}' AS uuid)::text, ENCODE(DECODE('00ff80', 'hex'), 'hex'), GET_BYTE(DECODE('00ff80', 'hex'), 1), GET_BIT(DECODE('01', 'hex'), 0), LENGTH(DECODE('00ff80', 'hex')), BIT_LENGTH(DECODE('00ff80', 'hex'))"))
+            try require(try await values(scalar.rows) == [[.primitive(.int32(7)), .primitive(.int32(14)),
+                .primitive(.string("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11")), .primitive(.string("00ff80")),
+                .primitive(.int32(255)), .primitive(.int32(1)), .primitive(.int32(3)), .primitive(.int32(24))]])
             print("EMBEDDED_ACCESS_CASE representations PASS")
             _ = try await execute(access, .sql("CREATE TABLE items(id integer); INSERT INTO items VALUES(1)"))
             var rejected = false
