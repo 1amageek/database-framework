@@ -230,3 +230,44 @@ invocation-local exclusive buffers on Native, standard WASM and Embedded.
 Their reservation and the unchanged request work meter use the same Mutex-backed
 owners on every target. No new shared state, conditional Sendable conformance,
 background task, authority source or cleanup path is introduced.
+
+### SPEED25 measured results, 2026-10-25
+
+Identical fixture sources, C probe/header and URL pins were compiled against
+`a7bcf834`, `5ef46212` and the SPEED25 implementation with release Swift6.4.0.
+The complete alternating comparison contains19 physical-input/workload/worker
+conditions; three representative conditions also compare against `a7bcf834`.
+Raw evidence and source hashes are retained in the workspace
+`.codex-tools/sql-speedup-20261025/performance-verification.json` and its linked
+`paired-full`, `paired-reference` and `paired-cte-recheck` directories.
+
+| Warm Native SQLite workload, one worker | Before5ef p50 ms | SPEED25 p50 ms | Before / after queries per second |
+|---|---:|---:|---:|
+| Unique ORDER,10000 rows | 341.276 | 302.142 | 2.930 / 3.310 |
+| Tied ORDER,10000 rows | 405.811 | 364.912 | 2.464 / 2.740 |
+| Computed CTE,10000 rows | 420.854 | 384.016 | 2.376 / 2.604 |
+| Three CTE levels / eight computed columns,1000 rows | 106.551 | 101.477 | 9.384 / 9.853 |
+
+All19 conditions improve median batch throughput, process CPU per query and
+individual-call p95. Individual-call p50 improves in17 of19 initial conditions.
+Computed CTE at100/1000 rows with four workers initially increases p50 by5.6%/
+0.7%; one targeted nine-round repetition improves both. Retain both recordings:
+the pooled100-row individual-call p50 remains mixed across blocks, so universal
+p50 improvement is not established. No further favorable-sample search is used.
+
+Against `a7bcf834`, unique ORDER10000 rows improves364.493->301.911ms and
+2.744->3.312queries/sec; computed CTE1000 rows improves44.611->38.661ms, and
+the eight-column workload improves119.674->102.644ms. These are paired SQL-text
+measurements, not comparisons against the earlier uncontrolled IR timing pair.
+
+The four current-baseline allocation observations reduce allocator calls by
+1.1%-8.2% and cumulative requested bytes by0.6%-3.8%, with equal retained heap.
+Process peak RSS is separately recorded and is not a query-local heap maximum.
+Compared with `a7bcf834`, cumulative requested bytes still increase4.26% in the
+computed1000-row case and42.39% in the eight-column1000-row case, despite fewer
+allocator calls, equal retained output heap and lower CPU/latency. This remaining
+cost predates SPEED25; its cause was not separately profiled here. These results
+do not claim every memory metric improves over the pre-refactoring implementation.
+WASM/Embedded runtime regressions are separate functional evidence, not portable
+performance measurements. No cold-start, HTTP-server or parallel SQLite-pool
+speed claim is made.

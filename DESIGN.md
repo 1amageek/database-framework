@@ -379,6 +379,13 @@ single-row projection and ORDER fingerprint work under the
 [QueryExecution contract](Sources/DatabaseEngine/QueryExecution/DESIGN.md#speed25-repeated-execution-costs).
 Existing correctness evidence remains scoped to its source; latency and
 throughput require paired measurement and are not inferred from passing tests.
+The [measured acceptance](Tests/DatabaseAccessPerformance/DESIGN.md#speed25-measured-results-2026-10-25)
+records actual speed gains, the concurrent small-workload p50 variation and
+the remaining historical allocation-volume cost separately.
+SPEED25 source at`c2e5630c` passed Native2649 and exact Swift6.4.0 release
+standard/Embedded four-case runtimes, including100-row/eight-column computed
+projection and canonical fingerprint ties. Native and portable evidence is
+source-hash attributed; the portable checks are functional, not speed claims.
 
 This task preserves public invocation/result APIs, original authorization,
 request budgets, rollback and final publication while refining four execution
